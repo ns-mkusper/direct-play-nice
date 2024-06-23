@@ -10,6 +10,9 @@ anyhow = "1.0.86"
 rsmpeg = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
 
 [package.metadata.vcpkg]
-dependencies = ["ffmpeg[x264,vpx]:x64-windows-static-md", "x264[asm,core,default-features]:x64-windows-static-md"]
 git = "https://github.com/microsoft/vcpkg"
 rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
+
+[package.metadata.vcpkg.target]
+x86_64-pc-windows-msvc = {install = ["ffmpeg[x264,vpx]", "x264[asm,core,default-features]"], triplet = "x64-windows-static-md" }
+
