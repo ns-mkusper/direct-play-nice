@@ -1,13 +1,10 @@
 use anyhow::{anyhow, Context};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext};
-use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamRef};
-use std::any::Any;
+use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_int;
-use std::path::Path;
 
 // TODO: Register all codecs and formats
 
