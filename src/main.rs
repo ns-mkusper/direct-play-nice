@@ -76,6 +76,4 @@ fn main() {
     let output_file = &args[2];
 
     convert_video_file(input_file, output_file);
-
-    // dump_av_info(&CString::new("./test.jpg").unwrap()).unwrap();
 }
