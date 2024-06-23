@@ -95,11 +95,6 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), Box<d
     Iterate over the video streams
      */
 
-    match video_index {
-        Some(n) => println!("Video stream: {}", n),
-        None => println!("No video streams detected!"),
-    }
-
     Ok(())
 }
 
