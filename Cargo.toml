@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+cstr = "0.2.12"
+log = "0.4.22"
 # TODO: upgrade to ffmpeg7 once in vcpkg
 # see: https://github.com/microsoft/vcpkg/pull/38011
 rsmpeg = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
@@ -16,4 +18,3 @@ rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
 
 [package.metadata.vcpkg.target]
 x86_64-pc-windows-msvc = {triplet = "x64-windows-static-md" }
-
