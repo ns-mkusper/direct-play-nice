@@ -5,11 +5,17 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+clap = { version = "4.5.9", features = ["derive"] }
 cstr = "0.2.12"
+env_logger = "0.11.3"
 log = "0.4.22"
 # TODO: upgrade to ffmpeg7 once in vcpkg
 # see: https://github.com/microsoft/vcpkg/pull/38011
 rsmpeg = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
+syslog = "6.1.1"
+
+[patch.crates-io]
+rusty_ffmpeg = { git = "https://github.com/ns-mkusper/rusty_ffmpeg.git", branch = "enable-non-windows-vcpkg" } 
 
 [package.metadata.vcpkg]
 dependencies = ["ffmpeg[x264,vpx]", "x264[asm,core,default-features]"]
