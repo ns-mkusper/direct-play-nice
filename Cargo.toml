@@ -12,10 +12,11 @@ log = "0.4.22"
 # TODO: upgrade to ffmpeg7 once in vcpkg
 # see: https://github.com/microsoft/vcpkg/pull/38011
 rsmpeg = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
+rusty_ffmpeg = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
 syslog = "6.1.1"
 
 [patch.crates-io]
-rusty_ffmpeg = { git = "https://github.com/ns-mkusper/rusty_ffmpeg.git", branch = "enable-non-windows-vcpkg" } 
+rusty_ffmpeg = { git = "https://github.com/ns-mkusper/rusty_ffmpeg.git", branch = "enable-non-windows-vcpkg" }
 
 [package.metadata.vcpkg]
 dependencies = ["ffmpeg[x264,vpx]", "x264[asm,core,default-features]"]
