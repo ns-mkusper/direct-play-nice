@@ -1,18 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use log::{debug, error, info, warn};
-use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket, AVSubtitle};
+use log::{error, info};
+use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi::{self, AVSubtitleRect};
+use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
-use std::backtrace::Backtrace;
-use std::error::Error;
-use std::mem;
-use std::ptr;
-
 use std::{
     ffi::{CStr, CString},
     sync::atomic::{AtomicI64, Ordering},
@@ -169,7 +164,7 @@ fn process_video_stream(
         .open(None)
         .context("Error opening video encoding context")?;
 
-    match sp_context.decode_context.send_packet(Some(&packet)) {
+    match sp_context.decode_context.send_packet(Some(packet)) {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
             info!("{}", e); // Erroring here
@@ -242,11 +237,11 @@ fn process_audio_stream(
         .open(None)
         .context("Error opening audio encoding context")?;
 
-    let Some(mut fifo) = sp_context.frame_buffer.as_mut() else {
+    let Some(fifo) = sp_context.frame_buffer.as_mut() else {
         panic!("Failed to get Audio FIFO buffer!");
     };
 
-    match sp_context.decode_context.send_packet(Some(&packet)) {
+    match sp_context.decode_context.send_packet(Some(packet)) {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
             info!("{}", e); // Erroring here
@@ -294,13 +289,13 @@ fn process_audio_stream(
             None => {}
         }
 
-        add_samples_to_fifo(&mut fifo, &output_samples, frame.nb_samples)?;
+        add_samples_to_fifo(fifo, &output_samples, frame.nb_samples)?;
 
         info!("FIFO SIZE: {}", fifo.size());
         info!("AUDIO STREAM INDEX: {}", sp_context.stream_index);
         while fifo.size() >= output_frame_size {
             load_encode_and_write(
-                &mut fifo,
+                fifo,
                 output_format_context,
                 &mut sp_context.encode_context,
                 sp_context.stream_index,
@@ -430,7 +425,7 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
     input_format_context.dump(0, input_file)?;
 
-    let mut output_format_context = AVFormatContextOutput::create(&output_file, None)?;
+    let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     // let mut subtitle_buffer: Vec<u8> = vec![0u8; 1024 * 1024];
@@ -569,49 +564,45 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
                     .context("Could not open subitle encoder context")?;
 
                 // TODO: should I decode the subs this way?
+
                 match sp_context.decode_context.decode_subtitle(Some(&mut packet)) {
                     Ok(sub) => {
-                        match sub {
-                            Some(s) => {
-                                // TODO: Find the max size of subtitle data in a single packet
-                                const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
-                                let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
-                                sp_context
-                                    .encode_context
-                                    .encode_subtitle(&s, &mut subtitle_buffer)?;
+                        if let Some(s) = sub {
+                            // TODO: Find the max size of subtitle data in a single packet
+                            const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
+                            let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
+                            sp_context
+                                .encode_context
+                                .encode_subtitle(&s, &mut subtitle_buffer)?;
 
-                                let encoded_size = subtitle_buffer
-                                    .iter()
-                                    .rposition(|&x| x != 0)
-                                    .map(|pos| pos + 1)
-                                    .unwrap_or(0);
+                            let encoded_size = subtitle_buffer
+                                .iter()
+                                .rposition(|&x| x != 0)
+                                .map(|pos| pos + 1)
+                                .unwrap_or(0);
 
-                                // Create a new packet for the encoded subtitle
-                                let mut encoded_packet = AVPacket::new();
-                                unsafe {
-                                    (*encoded_packet.as_mut_ptr()).data =
-                                        subtitle_buffer.as_mut_ptr();
-                                    (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
-                                }
-                                encoded_packet.set_stream_index(sp_context.stream_index);
-                                encoded_packet.set_pts(packet.pts);
-                                encoded_packet.set_dts(packet.dts);
-                                encoded_packet.set_duration(packet.duration);
-                                encoded_packet.set_flags(packet.flags);
-
-                                encoded_packet.rescale_ts(
-                                    sp_context.decode_context.time_base,
-                                    output_format_context.streams()
-                                        [sp_context.stream_index as usize]
-                                        .time_base,
-                                );
-
-                                // Write the packet to the output file
-                                output_format_context
-                                    .interleaved_write_frame(&mut encoded_packet)
-                                    .context("Could not write subtitle packet")?;
+                            // Create a new packet for the encoded subtitle
+                            let mut encoded_packet = AVPacket::new();
+                            unsafe {
+                                (*encoded_packet.as_mut_ptr()).data = subtitle_buffer.as_mut_ptr();
+                                (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
                             }
-                            None => {}
+                            encoded_packet.set_stream_index(sp_context.stream_index);
+                            encoded_packet.set_pts(packet.pts);
+                            encoded_packet.set_dts(packet.dts);
+                            encoded_packet.set_duration(packet.duration);
+                            encoded_packet.set_flags(packet.flags);
+
+                            encoded_packet.rescale_ts(
+                                sp_context.decode_context.time_base,
+                                output_format_context.streams()[sp_context.stream_index as usize]
+                                    .time_base,
+                            );
+
+                            // Write the packet to the output file
+                            output_format_context
+                                .interleaved_write_frame(&mut encoded_packet)
+                                .context("Could not write subtitle packet")?;
                         }
 
                         // process_subtitle(&sub);
