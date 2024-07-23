@@ -1,6 +1,6 @@
 [package]
 name = "direct_play_nice"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 
 [dependencies]
@@ -16,7 +16,7 @@ rusty_ffmpeg = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
 syslog = "6.1.1"
 
 [patch.crates-io]
-rusty_ffmpeg = { git = "https://github.com/ns-mkusper/rusty_ffmpeg.git", branch = "enable-non-windows-vcpkg" }
+rusty_ffmpeg = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git" }
 
 [package.metadata.vcpkg]
 dependencies = ["ffmpeg[x264,vpx]", "x264[asm,core,default-features]"]
