@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use log::{error, info};
+use log::{debug, error, info};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -52,12 +52,8 @@ pub struct StreamProcessingContext {
 impl std::fmt::Debug for StreamProcessingContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamProcessingContext")
-            // .field("decode_context", &self.decode_context)
-            // .field("encode_context", &self.encode_context)
             .field("stream_index", &self.stream_index)
             .field("media_type", &self.media_type)
-            // .field("frame_buffer", &self.frame_buffer)
-            // .field("resample_context", &self.resample_context)
             .field("pts", &self.pts)
             .finish()
     }
@@ -128,7 +124,7 @@ fn encode_and_write_frame(
             Err(RsmpegError::EncoderDrainError) | Err(RsmpegError::EncoderFlushedError) => {
                 break;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => bail!(e),
         };
 
         packet.set_stream_index(stream_index as i32);
@@ -150,30 +146,33 @@ fn encode_and_write_frame(
 }
 
 fn process_video_stream(
-    sp_context: &mut StreamProcessingContext,
+    stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
-    // ... (video stream processing logic)
+    packet.rescale_ts(
+        input_stream.time_base,
+        stream_processing_context.decode_context.time_base,
+    );
 
-    packet.rescale_ts(input_stream.time_base, sp_context.decode_context.time_base);
-
-    sp_context
+    stream_processing_context
         .encode_context
         .open(None)
         .context("Error opening video encoding context")?;
 
-    match sp_context.decode_context.send_packet(Some(packet)) {
+    match stream_processing_context
+        .decode_context
+        .send_packet(Some(packet))
+    {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
-            info!("{}", e); // Erroring here
-            return Err(e.into()); // TODO: reasonable to end here on error?
+            bail!("Packet failed to send to decoder: {}", e); // TODO: reasonable to end here on error?
         }
     }
 
     loop {
-        let frame = match sp_context.decode_context.receive_frame() {
+        let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => {
                 info!("Successfully processed frame!");
                 frame
@@ -188,18 +187,18 @@ fn process_video_stream(
         };
 
         let mut new_frame = AVFrame::new();
-        new_frame.set_width(sp_context.decode_context.width);
-        new_frame.set_height(sp_context.decode_context.height);
+        new_frame.set_width(stream_processing_context.decode_context.width);
+        new_frame.set_height(stream_processing_context.decode_context.height);
         new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
         new_frame.alloc_buffer().context("Error allocating ")?;
 
         let mut sws_context = SwsContext::get_context(
-            sp_context.decode_context.width,
-            sp_context.decode_context.height,
-            sp_context.decode_context.pix_fmt,
-            sp_context.encode_context.width,
-            sp_context.encode_context.height,
-            sp_context.encode_context.pix_fmt,
+            stream_processing_context.decode_context.width,
+            stream_processing_context.decode_context.height,
+            stream_processing_context.decode_context.pix_fmt,
+            stream_processing_context.encode_context.width,
+            stream_processing_context.encode_context.height,
+            stream_processing_context.encode_context.pix_fmt,
             ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND,
             None,
             None,
@@ -210,11 +209,16 @@ fn process_video_stream(
         new_frame.set_pts(frame.best_effort_timestamp);
 
         sws_context
-            .scale_frame(&frame, 0, sp_context.decode_context.height, &mut new_frame)
+            .scale_frame(
+                &frame,
+                0,
+                stream_processing_context.decode_context.height,
+                &mut new_frame,
+            )
             .context("Failed to scale frame.")?;
 
         encode_and_write_frame(
-            &mut sp_context.encode_context,
+            &mut stream_processing_context.encode_context,
             output_format_context,
             packet.stream_index as usize,
             Some(new_frame),
@@ -225,37 +229,40 @@ fn process_video_stream(
 }
 
 fn process_audio_stream(
-    sp_context: &mut StreamProcessingContext,
+    stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
-    packet.rescale_ts(input_stream.time_base, sp_context.decode_context.time_base);
+    packet.rescale_ts(
+        input_stream.time_base,
+        stream_processing_context.decode_context.time_base,
+    );
 
-    sp_context
+    stream_processing_context
         .encode_context
         .open(None)
         .context("Error opening audio encoding context")?;
 
-    let Some(fifo) = sp_context.frame_buffer.as_mut() else {
+    let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
         panic!("Failed to get Audio FIFO buffer!");
     };
 
-    match sp_context.decode_context.send_packet(Some(packet)) {
+    match stream_processing_context
+        .decode_context
+        .send_packet(Some(packet))
+    {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
-            info!("{}", e); // Erroring here
-            return Err(e.into()); // TODO: reasonable to end here on error?
+            bail!("Packet failed to send to decoder: {}", e); // TODO: reasonable to end here on error?
         }
     }
 
     loop {
-        let frame = match sp_context.decode_context.receive_frame() {
-            Ok(frame) => {
-                info!("Successfully processed frame!");
-                frame
-            }
+        let frame = match stream_processing_context.decode_context.receive_frame() {
+            Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
+                error!("Cannot read from drianed/flushed Decoder.");
                 break;
             }
             Err(e) => {
@@ -264,18 +271,22 @@ fn process_audio_stream(
             }
         };
 
-        let output_frame_size = sp_context.encode_context.frame_size; // TODO: sp_context.encode_context.frame_size but it's 0 for some reason
-        info!("OUTPUT FRAME SIZE: {}", output_frame_size);
+        let output_frame_size = stream_processing_context.encode_context.frame_size; // TODO: Why is this 0 in some cases and how to handle that?
+
+        debug!("OUTPUT FRAME SIZE: {}", output_frame_size);
 
         let mut output_samples = AVSamples::new(
-            sp_context.encode_context.ch_layout.nb_channels,
+            stream_processing_context
+                .encode_context
+                .ch_layout
+                .nb_channels,
             frame.nb_samples,
-            sp_context.encode_context.sample_fmt,
+            stream_processing_context.encode_context.sample_fmt,
             0,
         )
         .context("Create samples buffer failed.")?;
 
-        match &mut sp_context.resample_context {
+        match &mut stream_processing_context.resample_context {
             Some(resampler) => unsafe {
                 resampler
                     .convert(
@@ -291,16 +302,94 @@ fn process_audio_stream(
 
         add_samples_to_fifo(fifo, &output_samples, frame.nb_samples)?;
 
-        info!("FIFO SIZE: {}", fifo.size());
-        info!("AUDIO STREAM INDEX: {}", sp_context.stream_index);
+        debug!("FIFO SIZE: {}", fifo.size());
+        debug!(
+            "AUDIO STREAM INDEX: {}",
+            stream_processing_context.stream_index
+        );
         while fifo.size() >= output_frame_size {
             load_encode_and_write(
                 fifo,
                 output_format_context,
-                &mut sp_context.encode_context,
-                sp_context.stream_index,
-                &mut sp_context.pts,
+                &mut stream_processing_context.encode_context,
+                stream_processing_context.stream_index,
+                &mut stream_processing_context.pts,
             )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn process_subtitle_stream(
+    stream_processing_context: &mut StreamProcessingContext,
+    input_stream: &AVStreamRef,
+    output_format_context: &mut AVFormatContextOutput,
+    packet: &mut AVPacket,
+) -> Result<()> {
+    packet.rescale_ts(
+        input_stream.time_base,
+        stream_processing_context.decode_context.time_base,
+    );
+
+    stream_processing_context
+        .encode_context
+        .open(None)
+        .context("Could not open subitle encoder context")?;
+
+    match stream_processing_context
+        .decode_context
+        .decode_subtitle(Some(packet))
+    {
+        Ok(sub) => {
+            if let Some(s) = sub {
+                // TODO: Find the max size of subtitle data in a single packet
+                const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
+                let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
+                stream_processing_context
+                    .encode_context
+                    .encode_subtitle(&s, &mut subtitle_buffer)?;
+
+                let encoded_size = subtitle_buffer
+                    .iter()
+                    .rposition(|&x| x != 0)
+                    .map(|pos| pos + 1)
+                    .unwrap_or(0);
+
+                // Create a new packet for the encoded subtitle
+                let mut encoded_packet = AVPacket::new();
+                unsafe {
+                    (*encoded_packet.as_mut_ptr()).data = subtitle_buffer.as_mut_ptr();
+                    (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
+                }
+                encoded_packet.set_stream_index(stream_processing_context.stream_index);
+                encoded_packet.set_pts(packet.pts);
+                encoded_packet.set_dts(packet.dts);
+                encoded_packet.set_duration(packet.duration);
+                encoded_packet.set_flags(packet.flags);
+
+                encoded_packet.rescale_ts(
+                    stream_processing_context.decode_context.time_base,
+                    output_format_context.streams()
+                        [stream_processing_context.stream_index as usize]
+                        .time_base,
+                );
+
+                output_format_context
+                    .interleaved_write_frame(&mut encoded_packet)
+                    .context("Could not write subtitle packet")?;
+            }
+        }
+        Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
+            error!("Error: The decoder has been fully drained, no more subtitles to decode. Continuing...");
+        }
+        Err(rsmpeg::error::RsmpegError::DecoderFlushedError) => {
+            error!(
+                "Error: The decoder has been flushed, no more subtitles to decode. Continuing..."
+            );
+        }
+        Err(e) => {
+            error!("Error decoding subtitle: {}", e);
         }
     }
 
@@ -326,7 +415,7 @@ fn load_encode_and_write(
 
     if unsafe {
         let read_frame_size = fifo.read(frame.data_mut().as_mut_ptr(), frame_size)?;
-        info!("Read frame size: {}", read_frame_size);
+        debug!("Read audio frame size (bytes): {}", read_frame_size);
         read_frame_size
     } < frame_size
     {
@@ -351,7 +440,6 @@ fn set_video_codec_par(
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
 ) {
-    // apply video encoder params from input file
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_width(decode_context.width);
     encode_context.set_height(decode_context.height);
@@ -365,7 +453,6 @@ fn set_video_codec_par(
     unsafe {
         (*encode_context.as_mut_ptr()).profile = ffi::FF_PROFILE_H264_HIGH as i32;
         (*encode_context.as_mut_ptr()).level = 41;
-        // opt_set(encode_context.priv_data, c"level", c"4.1", 0);
     }
     output_stream.set_codecpar(encode_context.extract_codecpar());
 }
@@ -381,7 +468,7 @@ fn set_audio_codec_par(
         .set_ch_layout(AVChannelLayout::from_nb_channels(decode_context.channels).into_inner());
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
-    encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]);
+    encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
     encode_context.set_bit_rate(decode_context.bit_rate);
 
     output_stream.set_codecpar(encode_context.extract_codecpar());
@@ -428,8 +515,6 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
-    // let mut subtitle_buffer: Vec<u8> = vec![0u8; 1024 * 1024];
-    // let subtitle_buffer: &mut [u8] = &mut subtitle_buffer;
 
     for stream in input_format_context.streams() {
         let input_stream_codecpar = stream.codecpar();
@@ -496,8 +581,11 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
                 );
             }
             // TODO: Handle metadata streams
-            n => {
-                info!("Found unknown stream type ({})", n);
+            unsupported_type => {
+                debug!(
+                    "Encountered unsupported stream type ({}). Not setting up Codec.",
+                    unsupported_type
+                );
                 continue;
             }
         }
@@ -520,118 +608,60 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
         .write_header(&mut None)
         .context("Error writing output file header")?;
 
-    // Write output frames
+    // Demux streams
     loop {
         let mut packet = match input_format_context.read_packet()? {
             Some(x) => x,
             None => break,
         };
 
-        let Some(sp_context) = stream_contexts
+        let Some(stream_processing_context) = stream_contexts
             .iter_mut()
             .find(|context| context.stream_index == packet.stream_index)
         else {
+            // TODO: handle missing matching streams
             break;
-        }; // TODO: handle missing matching streams
+        };
 
         let input_stream: &rsmpeg::avformat::AVStreamRef<'_> =
             &input_format_context.streams()[packet.stream_index as usize];
-        match sp_context.media_type {
+        match stream_processing_context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 process_video_stream(
-                    sp_context,
+                    stream_processing_context,
                     input_stream,
                     &mut output_format_context,
                     &mut packet,
                 )?;
             }
-            // TODO: process medstream into AAC
-            // see: https://github.com/larksuite/rsmpeg/blob/master/tests/ffmpeg_examples/transcode_aac.rs
             ffi::AVMEDIA_TYPE_AUDIO => {
                 process_audio_stream(
-                    sp_context,
+                    stream_processing_context,
                     input_stream,
                     &mut output_format_context,
                     &mut packet,
                 )?;
             }
             ffi::AVMEDIA_TYPE_SUBTITLE => {
-                packet.rescale_ts(input_stream.time_base, sp_context.decode_context.time_base);
-
-                sp_context
-                    .encode_context
-                    .open(None)
-                    .context("Could not open subitle encoder context")?;
-
-                // TODO: should I decode the subs this way?
-
-                match sp_context.decode_context.decode_subtitle(Some(&mut packet)) {
-                    Ok(sub) => {
-                        if let Some(s) = sub {
-                            // TODO: Find the max size of subtitle data in a single packet
-                            const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
-                            let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
-                            sp_context
-                                .encode_context
-                                .encode_subtitle(&s, &mut subtitle_buffer)?;
-
-                            let encoded_size = subtitle_buffer
-                                .iter()
-                                .rposition(|&x| x != 0)
-                                .map(|pos| pos + 1)
-                                .unwrap_or(0);
-
-                            // Create a new packet for the encoded subtitle
-                            let mut encoded_packet = AVPacket::new();
-                            unsafe {
-                                (*encoded_packet.as_mut_ptr()).data = subtitle_buffer.as_mut_ptr();
-                                (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
-                            }
-                            encoded_packet.set_stream_index(sp_context.stream_index);
-                            encoded_packet.set_pts(packet.pts);
-                            encoded_packet.set_dts(packet.dts);
-                            encoded_packet.set_duration(packet.duration);
-                            encoded_packet.set_flags(packet.flags);
-
-                            encoded_packet.rescale_ts(
-                                sp_context.decode_context.time_base,
-                                output_format_context.streams()[sp_context.stream_index as usize]
-                                    .time_base,
-                            );
-
-                            // Write the packet to the output file
-                            output_format_context
-                                .interleaved_write_frame(&mut encoded_packet)
-                                .context("Could not write subtitle packet")?;
-                        }
-
-                        // process_subtitle(&sub);
-                    }
-                    Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
-                        // The decoder has been fully drained, no more subtitles to decode
-                        // You can choose to break out of the loop or continue processing
-                        break;
-                    }
-                    Err(rsmpeg::error::RsmpegError::DecoderFlushedError) => {
-                        // The decoder has been flushed, no more subtitles to decode
-                        // You can choose to break out of the loop or continue processing
-                        break;
-                    }
-                    Err(e) => {
-                        // Handle any other error cases
-                        eprintln!("Error decoding subtitle: {}", e);
-                        // You can choose to break out of the loop or continue processing
-                    }
-                }
+                process_subtitle_stream(
+                    stream_processing_context,
+                    input_stream,
+                    &mut output_format_context,
+                    &mut packet,
+                )?;
             }
 
-            _ => {}
+            unsupported_type => {
+                debug!(
+                    "Encountered unsupported stream type ({}). Not setting up Codec.",
+                    unsupported_type
+                );
+            }
         }
     }
 
     // After processing all packets, flush each encoder
     for mut context in stream_contexts {
-        info!("StreamProcessingContext: {:?}", context);
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 encode_and_write_frame(
@@ -652,7 +682,12 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
                 .context("Failed to flush audio encoder.")?;
             }
             ffi::AVMEDIA_TYPE_SUBTITLE => {}
-            _ => {}
+            unsupported_type => {
+                debug!(
+                    "Encountered unsupported stream type ({}). Not flushing.",
+                    unsupported_type
+                );
+            }
         }
     }
 
