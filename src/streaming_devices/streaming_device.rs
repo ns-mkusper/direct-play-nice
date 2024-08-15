@@ -35,19 +35,19 @@ impl Resolution {
 }
 
 #[derive(Clone, Debug)]
-pub struct StreamingDevice<'a> {
-    pub name: &'a str,
-    pub max_h264_profile: &'a str,
+pub struct StreamingDevice {
+    pub name: &'static str,
+    pub max_h264_profile: &'static str,
     pub max_h264_level: f32,
     pub max_fps: u32,
     pub max_resolution: Resolution,
-    pub model: &'a str,
-    pub maker: &'a str,
-    pub audio_codec: i32,
-    pub video_codec: i32,
+    pub model: &'static str,
+    pub maker: &'static str,
+    pub audio_codec: u32,
+    pub video_codec: u32,
 }
 
-impl StreamingDevice<'_> {
+impl StreamingDevice {
     // pub fn find_common_video_codec(devices: &[StreamingDevice]) -> Option<String> {
     //     // Find the common video codec among all devices
     //     // TODO: Implement

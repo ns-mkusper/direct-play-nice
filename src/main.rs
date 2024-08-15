@@ -21,10 +21,10 @@ mod streaming_devices;
 // TODO: Make doc comments
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-struct Args<'a> {
+struct Args {
     /// List of StreamingDevice
     #[arg(short, long, value_enum, value_delimiter = ',', value_parser = |s: &_| Args::get_device_by_name(&streaming_devices::STREAMING_DEVICES, s))]
-    streaming_devices: Option<Vec<streaming_devices::StreamingDevice<'a>>>,
+    streaming_devices: Option<Vec<streaming_devices::StreamingDevice>>,
 
     /// Path to the configuration file
     #[arg(short, long, value_parser = value_parser!(PathBuf))]
@@ -39,15 +39,15 @@ struct Args<'a> {
     output_file: CString,
 }
 
-impl Args<'_> {
+impl Args {
     fn parse_cstring(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
 
     fn get_device_by_name<'a>(
-        devices: &'a [StreamingDevice],
+        devices: &'static [StreamingDevice],
         name: &str,
-    ) -> Result<&'a StreamingDevice<'a>, String> {
+    ) -> Result<&'static StreamingDevice, String> {
         devices
             .iter()
             .find(|device| device.name == name)
