@@ -13,7 +13,9 @@ log = "0.4.22"
 # see: https://github.com/microsoft/vcpkg/pull/38011
 rsmpeg = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
 rusty_ffmpeg = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
+serde = {version = "1.0.204", features = ["derive"]}
 syslog = "6.1.1"
+toml = "0.8.16"
 
 [patch.crates-io]
 rusty_ffmpeg = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git" }

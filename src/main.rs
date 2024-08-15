@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
-use log::{debug, error, info};
+use clap::{value_parser, Parser};
+use log::{debug, error};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -8,32 +8,53 @@ use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
+use std::path::PathBuf;
 use std::{
     ffi::{CStr, CString},
     sync::atomic::{AtomicI64, Ordering},
 };
+use streaming_devices::StreamingDevice;
+
+mod config;
+mod streaming_devices;
 
 // TODO: Make doc comments
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+struct Args<'a> {
+    /// List of StreamingDevice
+    #[arg(short, long, value_enum, value_delimiter = ',', value_parser = |s: &_| Args::get_device_by_name(&streaming_devices::STREAMING_DEVICES, s))]
+    streaming_devices: Option<Vec<streaming_devices::StreamingDevice<'a>>>,
+
+    /// Path to the configuration file
+    #[arg(short, long, value_parser = value_parser!(PathBuf))]
+    config_file: Option<PathBuf>,
+
+    /// Video file to convert
     #[arg(value_parser = Args::parse_cstring)]
     input_file: CString,
 
+    /// Our output direct-play-compatible video file
     #[arg(value_parser = Args::parse_cstring)]
     output_file: CString,
 }
 
-impl Args {
+impl Args<'_> {
     fn parse_cstring(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
+
+    fn get_device_by_name<'a>(
+        devices: &'a [StreamingDevice],
+        name: &str,
+    ) -> Result<&'a StreamingDevice<'a>, String> {
+        devices
+            .iter()
+            .find(|device| device.name == name)
+            .ok_or_else(|| format!("Provided device { } not found!", name))
+    }
 }
 
-// TODO: Register all codecs and formats
-// TODO: ensure audio streams have the same metadata
-// inspired by https://github.com/larksuite/rsmpeg/blob/master/tests/ffmpeg_examples/transcode_aac.rs
 pub enum StreamExtras {
     Some((SwrContext, AVAudioFifo)),
     None,
@@ -174,14 +195,14 @@ fn process_video_stream(
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => {
-                info!("Successfully processed frame!");
+                error!("Successfully processed frame!");
                 frame
             }
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
                 break;
             }
             Err(e) => {
-                info!("Decoder receive frame error: {}", e);
+                error!("Decoder receive frame error: {}", e);
                 break;
             }
         };
@@ -234,6 +255,8 @@ fn process_audio_stream(
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
+    // TODO: ensure audio streams have the same metadata
+    // based on https://github.com/larksuite/rsmpeg/blob/master/tests/ffmpeg_examples/transcode_aac.rs
     packet.rescale_ts(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
@@ -697,11 +720,26 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
 }
 
 fn main() -> Result<()> {
+    // FFMPEG TRACE LOGGING
     // unsafe {
-    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32); // Set the log level to TRACE (most verbose)
+    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32);
     // }
 
     let args = Args::parse();
+
+    let config_file = args.config_file.unwrap();
+
+    let config_streaming_devices = config::parse_config_from_toml(config_file).unwrap();
+
+    let cli_arg_streaming_devices = args.streaming_devices.unwrap();
+
+    // let common_video_codec = streaming_devices::find_common_video_codec(&streaming_devices);
+    // let common_audio_codec = streaming_devices::find_common_audio_codec(&streaming_devices);
+    // let min_h264_profile = streaming_devices::find_min_h264_profile(&streaming_devices);
+    // let min_h264_level = streaming_devices::find_min_h264_level(&streaming_devices);
+    // let min_fps = streaming_devices::find_min_fps(&streaming_devices);
+    let min_resolution =
+        streaming_devices::StreamingDevice::find_min_resolution(&cli_arg_streaming_devices);
 
     convert_video_file(&args.input_file, &args.output_file)?;
     Ok(())
