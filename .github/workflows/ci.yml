@@ -50,6 +50,7 @@ jobs:
         with:
           fetch-depth: 0 # Fetch all history for tags
 
+      # TODO: Remove duplicate code between this and build all job
       - name: install rust
         run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }} && rustup component add rustfmt
 
