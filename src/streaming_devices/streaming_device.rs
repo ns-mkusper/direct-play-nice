@@ -1,6 +1,11 @@
 //! Streaming devices and their direct-play specs
 
-use std::clone::Clone;
+use std::{clone::Clone, cmp::Ordering};
+
+use anyhow::{anyhow, bail, Error};
+use rusty_ffmpeg::ffi;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resolution {
@@ -34,47 +39,171 @@ impl Resolution {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, Ord, EnumIter)]
+pub enum H264Level {
+    Level1 = 10,
+    Level1_1 = 11,
+    Level1_2 = 12,
+    Level1_3 = 13,
+    Level2 = 20,
+    Level2_1 = 21,
+    Level2_2 = 22,
+    Level3 = 30,
+    Level3_1 = 31,
+    Level3_2 = 32,
+    Level4 = 40,
+    Level4_1 = 41,
+    Level4_2 = 42,
+    Level5 = 50,
+    Level5_1 = 51,
+    Level5_2 = 52,
+}
+
+impl PartialEq for H264Level {
+    fn eq(&self, other: &Self) -> bool {
+        (*self as u32) == (*other as u32)
+    }
+}
+
+impl PartialOrd for H264Level {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some((*self as u32).cmp(&(*other as u32)))
+    }
+}
+
+impl TryFrom<i32> for H264Level {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            10 => Ok(H264Level::Level1),
+            11 => Ok(H264Level::Level1_1),
+            12 => Ok(H264Level::Level1_2),
+            13 => Ok(H264Level::Level1_3),
+            20 => Ok(H264Level::Level2),
+            21 => Ok(H264Level::Level2_1),
+            22 => Ok(H264Level::Level2_2),
+            30 => Ok(H264Level::Level3),
+            31 => Ok(H264Level::Level3_1),
+            32 => Ok(H264Level::Level3_2),
+            40 => Ok(H264Level::Level4),
+            41 => Ok(H264Level::Level4_1),
+            42 => Ok(H264Level::Level4_2),
+            50 => Ok(H264Level::Level5),
+            51 => Ok(H264Level::Level5_1),
+            52 => Ok(H264Level::Level5_2),
+            _ => Err("Invalid H.264 level value"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum H264Profile {
+    Baseline = ffi::FF_PROFILE_H264_BASELINE as isize,
+    Main = ffi::FF_PROFILE_H264_MAIN as isize,
+    Extended = ffi::FF_PROFILE_H264_EXTENDED as isize,
+    High = ffi::FF_PROFILE_H264_HIGH as isize,
+    High10 = ffi::FF_PROFILE_H264_HIGH_10 as isize,
+    High422 = ffi::FF_PROFILE_H264_HIGH_422 as isize,
+    High444 = ffi::FF_PROFILE_H264_HIGH_444 as isize,
+}
+
 #[derive(Clone, Debug)]
 pub struct StreamingDevice {
     pub name: &'static str,
-    pub max_h264_profile: &'static str,
-    pub max_h264_level: f32,
+    pub max_h264_profile: H264Profile,
+    pub max_h264_level: H264Level,
     pub max_fps: u32,
     pub max_resolution: Resolution,
     pub model: &'static str,
     pub maker: &'static str,
-    pub audio_codec: u32,
-    pub video_codec: u32,
+    pub audio_codec: [Option<ffi::AVCodecID>; 5],
+    pub video_codec: [Option<ffi::AVCodecID>; 5],
 }
 
 impl StreamingDevice {
-    // pub fn find_common_video_codec(devices: &[StreamingDevice]) -> Option<String> {
-    //     // Find the common video codec among all devices
-    //     // TODO: Implement
-    // }
+    /// Finds the intersection of video codecs among all `StreamingDevice`'s
+    pub fn get_common_video_codec(
+        devices: &Vec<&StreamingDevice>,
+    ) -> Result<ffi::AVCodecID, self::Error> {
+        let mut common_codecs: Vec<ffi::AVCodecID> = devices[0]
+            .video_codec
+            .iter()
+            .filter_map(|codec_id| *codec_id)
+            .collect();
 
-    // pub fn find_common_audio_codec(devices: &[StreamingDevice]) -> Option<String> {
-    //     // Find the common audio codec among all devices
-    //     // TODO: Implement
-    // }
+        for device in &devices[1..] {
+            common_codecs.retain(|codec_id| device.video_codec.contains(&Some(*codec_id)));
+        }
 
-    // pub fn find_min_h264_profile(devices: &[StreamingDevice]) -> u8 {
-    //     // Find the minimum H.264 profile level among all devices
-    //     // TODO: Implement
-    // }
+        common_codecs.into_iter().next().ok_or_else(|| {
+            anyhow!("No common video codec found among the provided streaming devices.")
+        })
+    }
 
-    // pub fn find_min_h264_level(devices: &[StreamingDevice]) -> f32 {
-    //     // Find the minimum H.264 level among all devices
-    //     // TODO: Implement
-    // }
+    /// Finds the intersection of audio codecs among all `StreamingDevice`'s
+    pub fn get_common_audio_codec(
+        devices: &Vec<&StreamingDevice>,
+    ) -> Result<ffi::AVCodecID, self::Error> {
+        let mut common_codecs: Vec<ffi::AVCodecID> = devices[0]
+            .audio_codec
+            .iter()
+            .filter_map(|codec_id| *codec_id)
+            .collect();
 
-    // pub fn find_min_fps(devices: &[StreamingDevice]) -> u32 {
-    //     // Find the minimum FPS among all devices
-    //     // TODO: Implement
-    // }
+        for device in &devices[1..] {
+            common_codecs.retain(|codec_id| device.audio_codec.contains(&Some(*codec_id)));
+        }
 
-    pub fn find_min_resolution(devices: &[StreamingDevice]) -> Resolution {
-        let mut min_res = (9999, 9999); // TODO: set to more sensible value
+        common_codecs.into_iter().next().ok_or_else(|| {
+            anyhow!("No common audio codec found among the provided streaming devices.")
+        })
+    }
+
+    /// Gets the minimum H.264 profile level among all devices
+    pub fn get_min_h264_profile(
+        devices: &Vec<&StreamingDevice>,
+    ) -> Result<H264Profile, self::Error> {
+        let mut min_profile = H264Profile::High444; // TODO: implement more intelligent max method
+
+        for device in devices {
+            if device.max_h264_profile < min_profile {
+                min_profile = device.max_h264_profile;
+            }
+        }
+
+        Ok(min_profile)
+    }
+
+    /// Gets the minimum H.264 level among all `StreamingDevice`'s
+    pub fn get_min_h264_level(devices: &Vec<&StreamingDevice>) -> Result<H264Level, self::Error> {
+        let mut min_level = H264Level::iter().max_by_key(|level| *level as i32).unwrap();
+
+        for device in devices {
+            if device.max_h264_level < min_level {
+                min_level = device.max_h264_level;
+            }
+        }
+
+        Ok(min_level)
+    }
+
+    /// Gets the minimum FPS among all `StreamingDevice`'s
+    pub fn get_min_fps(devices: &Vec<&StreamingDevice>) -> Result<u32, self::Error> {
+        let mut min_fps = u32::MAX;
+
+        for device in devices {
+            if device.max_fps < min_fps as u32 {
+                min_fps = device.max_fps as u32;
+            }
+        }
+
+        Ok(min_fps)
+    }
+
+    /// Gets the minimum resolution of all provided `StreamingDevice`'s
+    pub fn get_min_resolution(devices: &Vec<&StreamingDevice>) -> Result<Resolution, self::Error> {
+        let mut min_res = (u32::MAX, u32::MAX);
 
         for device in devices {
             let res = device.max_resolution.to_dimensions();
@@ -83,6 +212,15 @@ impl StreamingDevice {
             }
         }
 
-        Resolution::from_resolution(min_res.0, min_res.1)
+        // TODO: Better safety feature to avoid undesired resolutions?
+        if min_res.0 < 1 || min_res.1 < 1 {
+            bail!(
+                "Target resolution ({}, {}) too small. Exiting...",
+                min_res.0,
+                min_res.1
+            );
+        }
+
+        Ok(Resolution::from_resolution(min_res.0, min_res.1))
     }
 }

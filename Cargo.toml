@@ -19,6 +19,8 @@ log                     = "0.4.22"
 rsmpeg                  = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
 rusty_ffmpeg            = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
 serde                   = {version = "1.0.204", features = ["derive"]}
+strum = "0.26.3"
+strum_macros = "0.26.4"
 syslog                  = "6.1.1"
 toml                    = "0.8.16"
 
@@ -26,7 +28,7 @@ toml                    = "0.8.16"
 rusty_ffmpeg            = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git" }
 
 [package.metadata.vcpkg]
-dependencies            = ["ffmpeg[x264,vpx]", "x264[asm,core,default-features]"]
+dependencies            = ["ffmpeg[x264,vpx,freetype,fontconfig]", "x264[asm,core,default-features]"]
 git                     = "https://github.com/microsoft/vcpkg"
 rev                     = "c4467cb686f92671f0172aa8299a77d908175b4e"
 
