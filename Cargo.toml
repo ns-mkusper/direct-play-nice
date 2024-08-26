@@ -18,14 +18,15 @@ log                     = "0.4.22"
 # see: https://github.com/microsoft/vcpkg/pull/38011
 rsmpeg                  = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
 rusty_ffmpeg            = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
-serde                   = {version = "1.0.204", features = ["derive"]}
+serde                   = { version = "1.0.204", features = ["derive"] }
 strum = "0.26.3"
 strum_macros = "0.26.4"
 syslog                  = "6.1.1"
 toml                    = "0.8.16"
+vcpkg = "0.2.15"
 
 [patch.crates-io]
-rusty_ffmpeg            = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git" }
+rusty_ffmpeg            = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git", rev = "4011018dacd67e0651c5118d9f698e37bd80ac68" }
 
 [package.metadata.vcpkg]
 dependencies            = ["ffmpeg[x264,vpx,freetype,fontconfig]", "x264[asm,core,default-features]"]
