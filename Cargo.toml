@@ -6,7 +6,7 @@ license-files           = "LICENSE"
 documentation           = "https://github.com/ns-mkusper/direct-play-nice"
 homepage                = "https://github.com/ns-mkusper/direct-play-nice"
 version                 = "0.1.0-alpha.1"
-edition                 = "2024"
+edition                 = "2021"
 
 [dependencies]
 anyhow                  = "1.0.86"
