@@ -5,8 +5,10 @@ license                 = "GPLv3"
 license-files           = "LICENSE"
 documentation           = "https://github.com/ns-mkusper/direct-play-nice"
 homepage                = "https://github.com/ns-mkusper/direct-play-nice"
+repository              = "https://github.com/ns-mkusper/direct-play-nice"
 version                 = "0.1.0-alpha.1"
 edition                 = "2021"
+
 
 [dependencies]
 anyhow                  = "1.0.86"
@@ -28,10 +30,33 @@ vcpkg = "0.2.15"
 [patch.crates-io]
 rusty_ffmpeg            = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git", rev = "4011018dacd67e0651c5118d9f698e37bd80ac68" }
 
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.22.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# customize cargo-dist build env (install vcpkg and vcpkg build, etc)
+# see: https://opensource.axo.dev/cargo-dist/book/ci/customizing.html#customizing-build-setup
+github-build-setup = "build-setup.yml"
+
 [package.metadata.vcpkg]
 dependencies            = ["ffmpeg[x264,vpx,freetype,fontconfig]", "x264[asm,core,default-features]"]
 git                     = "https://github.com/microsoft/vcpkg"
 rev                     = "c4467cb686f92671f0172aa8299a77d908175b4e"
 
 [package.metadata.vcpkg.target]
-x86_64-pc-windows-msvc  = { triplet = "x64-windows-static-md" }
+x86_64-pc-windows-msvc  = { triplet = "x64-windows-static" }
