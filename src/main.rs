@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
-use log::{debug, error, info};
+use clap::{value_parser, Parser};
+use log::{debug, error, warn};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -8,19 +8,36 @@ use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
+use std::path::PathBuf;
 use std::{
     ffi::{CStr, CString},
     sync::atomic::{AtomicI64, Ordering},
 };
+use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
+
+mod config;
+mod streaming_devices;
 
 // TODO: Make doc comments
 
+// TODO: switch to enum to allow for different modes
+// see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// List of StreamingDevice
+    #[arg(short, long, value_enum, value_delimiter = ',', value_parser = |s: &_| Args::get_device_by_name(streaming_devices::STREAMING_DEVICES, s))]
+    streaming_devices: Option<Vec<&'static streaming_devices::StreamingDevice>>,
+
+    /// Path to the configuration file
+    #[arg(short, long, value_parser = value_parser!(PathBuf))]
+    config_file: Option<PathBuf>,
+
+    /// Video file to convert
     #[arg(value_parser = Args::parse_cstring)]
     input_file: CString,
 
+    /// Our output direct-play-compatible video file
     #[arg(value_parser = Args::parse_cstring)]
     output_file: CString,
 }
@@ -29,11 +46,18 @@ impl Args {
     fn parse_cstring(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
+
+    fn get_device_by_name<'a>(
+        devices: &'a [StreamingDevice],
+        model: &str,
+    ) -> Result<&'a StreamingDevice, String> {
+        devices
+            .iter()
+            .find(|device| device.model == model)
+            .ok_or_else(|| format!("Provided streaming device model { } not found!", model))
+    }
 }
 
-// TODO: Register all codecs and formats
-// TODO: ensure audio streams have the same metadata
-// inspired by https://github.com/larksuite/rsmpeg/blob/master/tests/ffmpeg_examples/transcode_aac.rs
 pub enum StreamExtras {
     Some((SwrContext, AVAudioFifo)),
     None,
@@ -174,14 +198,14 @@ fn process_video_stream(
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => {
-                info!("Successfully processed frame!");
+                error!("Successfully processed frame!");
                 frame
             }
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
                 break;
             }
             Err(e) => {
-                info!("Decoder receive frame error: {}", e);
+                error!("Decoder receive frame error: {}", e);
                 break;
             }
         };
@@ -234,6 +258,8 @@ fn process_audio_stream(
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
+    // TODO: ensure audio streams have the same metadata
+    // based on https://github.com/larksuite/rsmpeg/blob/master/tests/ffmpeg_examples/transcode_aac.rs
     packet.rescale_ts(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
@@ -439,6 +465,8 @@ fn set_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
+    h264_profile: H264Profile, // TODO: handle cases somewhere when target video codec is NOT h264
+    h264_level: H264Level,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_width(decode_context.width);
@@ -451,8 +479,8 @@ fn set_video_codec_par(
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // TODO: find a safe way to do this
     unsafe {
-        (*encode_context.as_mut_ptr()).profile = ffi::FF_PROFILE_H264_HIGH as i32;
-        (*encode_context.as_mut_ptr()).level = 41;
+        (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
+        (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
     output_stream.set_codecpar(encode_context.extract_codecpar());
 }
@@ -508,7 +536,17 @@ fn set_subtitle_codec_par(
     output_stream.set_codecpar(encode_context.extract_codecpar());
 }
 
-fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyhow::Error> {
+/// Takes input video files and outputs direct-play-compatible video files
+fn convert_video_file(
+    input_file: &CStr,
+    output_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    min_h264_profile: H264Profile,
+    min_h264_level: H264Level,
+    min_fps: u32,
+    min_resolution: Resolution,
+) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
     input_format_context.dump(0, input_file)?;
 
@@ -517,10 +555,20 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
 
     for stream in input_format_context.streams() {
+        // TODO: ID streams either unsupported in output container type or without a supported decoder and skip them, producing a warning for each skipped.
+        let input_codec_type = stream.codecpar().codec_type;
+        // TODO: implement support for attachments
+        if input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+            warn!("Warning: Input file contains attachment streams, which may not be handled correctly. Skipping...");
+            continue;
+        }
+
+        let mut output_stream = output_format_context.new_stream();
+
         let input_stream_codecpar = stream.codecpar();
         let input_codec_id = input_stream_codecpar.codec_id;
         let decoder = AVCodec::find_decoder(input_codec_id)
-            .with_context(|| anyhow!("decoder ({}) not found.", input_codec_id))?;
+            .with_context(|| anyhow!("Decoder not found for stream {}.", output_stream.index))?;
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
         decode_context.set_time_base(stream.time_base); // TODO: needed?
@@ -529,7 +577,6 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
         }
         decode_context.open(None)?;
 
-        let mut output_stream = output_format_context.new_stream();
         let mut encode_context: AVCodecContext;
         let media_type: ffi::AVMediaType;
         let mut frame_buffer: Option<AVAudioFifo> = None;
@@ -538,17 +585,23 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
-                let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264)
-                    .expect("Could not find H264 encoder");
+                let encoder =
+                    AVCodec::find_encoder(target_video_codec).expect("Could not find H264 encoder");
                 encode_context = AVCodecContext::new(&encoder);
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
-                set_video_codec_par(&mut decode_context, &mut encode_context, &mut output_stream);
+                set_video_codec_par(
+                    &mut decode_context,
+                    &mut encode_context,
+                    &mut output_stream,
+                    min_h264_profile,
+                    min_h264_level,
+                );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
-                let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC)
-                    .expect("Could not find AAC encoder");
+                let encoder =
+                    AVCodec::find_encoder(target_audio_codec).expect("Could not find AAC encoder");
 
                 encode_context = AVCodecContext::new(&encoder);
                 media_type = ffi::AVMEDIA_TYPE_AUDIO;
@@ -697,12 +750,52 @@ fn convert_video_file(input_file: &CStr, output_file: &CStr) -> Result<(), anyho
 }
 
 fn main() -> Result<()> {
+    // FFMPEG TRACE LOGGING
     // unsafe {
-    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32); // Set the log level to TRACE (most verbose)
+    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32);
     // }
 
     let args = Args::parse();
 
-    convert_video_file(&args.input_file, &args.output_file)?;
-    Ok(())
+    // CLI ARG validation
+    // TODO: Use clap integration for this?
+    if args.streaming_devices.is_none() && args.config_file.is_none() {
+        eprintln!("Error: At least one of --streaming-devices or --config-file is required.");
+        std::process::exit(1);
+    }
+
+    // TODO: implement config file
+    if args.config_file.is_some() {
+        eprintln!("Error: The --config-file option is not implemented yet.");
+        std::process::exit(1);
+    }
+
+    // TODO: add reading of config file
+    // let config_file = args.config_file.unwrap();
+
+    // let config_streaming_devices = config::parse_config_from_toml(config_file).unwrap();
+
+    let cli_arg_streaming_devices = args.streaming_devices.unwrap();
+
+    let streaming_devices = &cli_arg_streaming_devices;
+
+    let common_video_codec = StreamingDevice::get_common_video_codec(streaming_devices)?;
+    let common_audio_codec = StreamingDevice::get_common_audio_codec(streaming_devices)?;
+    let min_h264_profile = StreamingDevice::get_min_h264_profile(streaming_devices)?;
+    let min_h264_level = StreamingDevice::get_min_h264_level(streaming_devices)?;
+    let min_fps = StreamingDevice::get_min_fps(streaming_devices)?;
+    let min_resolution = StreamingDevice::get_min_resolution(streaming_devices)?;
+
+    // TODO: Check if video file is already compatible and skip if it is
+
+    convert_video_file(
+        &args.input_file,
+        &args.output_file,
+        common_video_codec,
+        common_audio_codec,
+        min_h264_profile,
+        min_h264_level,
+        min_fps,
+        min_resolution,
+    )
 }
