@@ -2,16 +2,18 @@ name: Cargo Build & Test
 
 on:
   push:
-  pull_request:
+    branches:
+      - "*"
 
 env:
   CARGO_TERM_COLOR: always
 
-# TODO: setup versioning and relase with knope
 jobs:
-  build_and_test:
-    name: Build all
+  test:
+    name: Test
     runs-on: ubuntu-latest
+    # Run only on pushes to branches with open PRs
+    if: github.event_name == 'push' && contains(fromJson('["refs/heads/main"]'), github.ref) == false && github.event.repository.pulls != '[]'
     strategy:
       matrix:
         toolchain:
@@ -37,43 +39,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
-
-  release:
-    name: Release Main
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0 # Fetch all history for tags
-
-      # TODO: Remove duplicate code between this and build all job
-      - name: install rust
-        run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }} && rustup component add rustfmt
-
-      - name: Install vcpkg build dependencies
-        run: sudo apt-get --assume-yes install nasm
-
-      - name: Install vcpkg
-        run: cargo install cargo-vcpkg
-
-      - name: Build vcpkg dependencies
-        run: cargo vcpkg --verbose build
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Run tests
-        run: cargo test
-
-      - name: Install cargo-release
-        run: cargo install cargo-release
-
-      - name: Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Required for creating releases
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }} # If publishing to crates.io
-        run: cargo release --execute # Automatically determines version bump and creates release
