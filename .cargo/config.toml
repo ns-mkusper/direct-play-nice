@@ -12,3 +12,6 @@ rustflags = [
 "-C", "link-arg=User32.lib",
 "-C", "link-arg=msvcrtd.lib"
 ]
+
+[env]
+RUST_LOG="info"
