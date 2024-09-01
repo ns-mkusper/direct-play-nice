@@ -4,7 +4,7 @@ A CLI utility to convert video files to Direct-Play-compatible (the single best 
 
 ## Purpose
 
-This tool was created to convert video files to formats that satisfy Direct Play requirements (eg. Chromcast) for all users of your video streaming server. It's intended to be paired with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc as a Custom Script. It is intended to be added to a video streaming service as an optimization feature and seamless to the end user (ie. Direct Play selected by default).
+This tool was created to convert video files to formats that satisfy Direct Play requirements for all users of your video streaming server and their streaming devices (eg. [Chromcast](https://developers.google.com/cast/docs/media)). It's intended to be paired with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc as a Custom Script. It is intended to be added to a video streaming service as an optimization feature and seamless to the end user (ie. Direct Play selected by default).
 
 ## Features
 
