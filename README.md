@@ -4,13 +4,14 @@ A CLI utility to convert video files to Direct-Play-compatible (the single best 
 
 ## Purpose
 
-This tool was created to convert video files to formats that satisfy Direct Play requirements (eg. Chromcast) for all users of your video streaming server. It's intended to be paired with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc. as a Custom Script.
+This tool was created to convert video files to formats that satisfy Direct Play requirements (eg. Chromcast) for all users of your video streaming server. It's intended to be paired with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc as a Custom Script. It is intended to be added to a video streaming service as an optimization feature and seamless to the end user (ie. Direct Play selected by default).
 
 ## Features
 
 - Converts any video file supported by [FFmpeg](https://www.ffmpeg.org/)
 - Satisfies Direct Play requirements for [Plex](https://www.plex.tv/), [Jellyfin](https://jellyfin.org/), etc.
-- Can be used standalone or as a Custom Script Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts).
+- Can be used standalone or as a Custom Script Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc.
+- Allows for achieving [Direct Play](https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/) with all videos in a way seamless to the end user.
 
 ### Supported Streaming Devices
 
@@ -27,6 +28,10 @@ This tool was created to convert video files to formats that satisfy Direct Play
 
 ## Usage
 
+This program can be run standlone directly on the CLI or as a Custom Script Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts) or [Radarr](https://wiki.servarr.com/radarr/custom-scripts).
+
+### CLI
+
 ``` bash
 Usage: direct_play_nice.exe [OPTIONS] <INPUT_FILE> <OUTPUT_FILE>
 
@@ -40,6 +45,12 @@ Options:
   -h, --help                                   Print help
   -V, --version                                Print version
 ```
+
+### Sonarr / Radarr
+
+When running via Sonarr, Radarr, etc you can use this program to convert each downloaded video file to a Direct-Play-compatible format by adding it as a Custom Script Connection ( `Settings >> Connection >> Custom Script` )
+
+![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
 ## Building
 
