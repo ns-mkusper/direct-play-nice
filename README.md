@@ -8,11 +8,22 @@ This tool was created to convert video files to formats that satisfy Direct Play
 
 ## Features
 
-- Convert any video file supported by [FFmpeg](https://www.ffmpeg.org/).
+- Converts any video file supported by [FFmpeg](https://www.ffmpeg.org/)
+- Satisfies Direct Play requirements for [Plex](https://www.plex.tv/), [Jellyfin](https://jellyfin.org/), etc.
+- Can be used standalone or as a Custom Script Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts).
 
-## Contributions / Support
+### Supported Streaming Devices
 
-If you run into any issues while using this software or want to add a feature or bug fix feel free to raise an issue.
+|Device Name                   |Release Year|Video Codecs                                      |Audio Codecs                                                                                 |Resolution Support|
+|------------------------------|------------|--------------------------------------------------|---------------------------------------------------------------------------------------------|------------------|
+|Chromecast                    |2013        |H.264, VP8                                        |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                      |Up to 1080p       |
+|Chromecast 2                  |2015        |H.264, VP8                                        |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                      |Up to 1080p       |
+|Chromecast Audio              |2015        |N/A                                               |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC                                                |N/A               |
+|Chromecast Ultra              |2016        |H.264, VP8, VP9, HEVC                             |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC                                                |Up to 4K          |
+|Chromecast 3                  |2018        |H.264, VP8, VP9                                   |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                      |Up to 1080p       |
+|Chromecast with Google TV     |2020        |H.264, VP8, VP9, HEVC, Dolby Vision, HDR10, HDR10+|HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos|Up to 4K HDR      |
+|Chromecast with Google TV (HD)|2022        |H.264, VP8, VP9, HEVC, HDR10, HDR10+              |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos|Up to 1080p HDR   |
+
 
 ## Usage
 
@@ -39,3 +50,7 @@ cargo install cargo-vcpkg
 cargo vcpkg --verbose build
 cargo build --verbose
 ```
+
+## Contributions / Support
+
+If you run into any issues while using this software or want to add a feature or bug fix feel free to raise an issue.
