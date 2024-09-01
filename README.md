@@ -1,6 +1,6 @@
 # direct-play-nice
 
-A CLI utility to convert video files to Direct-Play-compatible (the single best optimization for your home video streaming server) formats for your video streaming server.
+A CLI utility to convert video files to Direct-Play-compatible (the single best optimization for your home video streaming server) formats.
 
 ## Purpose
 
