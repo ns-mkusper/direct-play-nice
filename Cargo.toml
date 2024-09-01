@@ -51,7 +51,7 @@ install-path = "CARGO_HOME"
 install-updater = false
 # customize cargo-dist build env (install vcpkg and vcpkg build, etc)
 # see: https://opensource.axo.dev/cargo-dist/book/ci/customizing.html#customizing-build-setup
-github-build-setup = "build-setup.yml"
+github-build-setup = "../templates/build-setup.yml"
 
 [package.metadata.vcpkg]
 dependencies            = ["ffmpeg[x264,vpx,freetype,fontconfig]", "x264[asm,core,default-features]"]
