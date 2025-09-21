@@ -7,7 +7,7 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches:
-      - "**"
+      - main
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,11 +36,33 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
 
+      - name: Detect rustc version
+        id: rustc
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER_RAW=$(rustc -V)
+          # sanitize spaces for cache key safety
+          VER_KEY=$(echo "$VER_RAW" | tr ' ' '_' )
+          echo "ver=$VER_KEY" >> "$GITHUB_OUTPUT"
+
       - name: Install vcpkg build dependencies
         run: sudo apt-get --assume-yes install nasm
 
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
+
+      - name: Read pinned vcpkg revision from Cargo.toml
+        id: vcpkg_rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ -z "$REV" ]; then
+            # Fallback to hashing Cargo.toml if not found
+            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
+          fi
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
       - name: Cache vcpkg artifacts
         uses: actions/cache@v4
@@ -49,7 +71,10 @@ jobs:
             vcpkg
             vcpkg_installed
             target/vcpkg
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}-${{ matrix.toolchain }}
+          key: vcpkg-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}-${{ matrix.toolchain }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}-
+            vcpkg-${{ runner.os }}-
 
       - name: Cache cargo registry/git
         uses: actions/cache@v4
@@ -57,7 +82,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ matrix.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-
+            cargo-${{ runner.os }}-
 
       - name: Build vcpkg dependencies (cache may speed this up)
         run: cargo vcpkg --verbose build
