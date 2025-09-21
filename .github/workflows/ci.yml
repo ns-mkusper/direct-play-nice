@@ -1,19 +1,17 @@
-name: Cargo Build & Test
+name: CI
 
 on:
-  push:
+  pull_request:
     branches:
-      - "*"
+      - "**"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   test:
-    name: Test
+    name: Test (Linux)
     runs-on: ubuntu-latest
-    # Run only on pushes to branches with open PRs
-    if: github.event_name == 'push' && contains(fromJson('["refs/heads/main"]'), github.ref) == false && github.event.repository.pulls != '[]'
     strategy:
       matrix:
         toolchain:
@@ -34,16 +32,15 @@ jobs:
       - name: Build vcpkg dependencies
         run: cargo vcpkg --verbose build
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Compile tests (no run)
+        run: cargo test --no-run --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test -q
 
   windows-test:
     name: Test (Windows MSVC)
     runs-on: windows-latest
-    if: github.event_name == 'push' && contains(fromJson('["refs/heads/main"]'), github.ref) == false && github.event.repository.pulls != '[]'
     env:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: C:\\vcpkg
@@ -60,8 +57,8 @@ jobs:
         run: |
           & "C:\\vcpkg\\vcpkg.exe" install "ffmpeg[x264,vpx,freetype,fontconfig]:x64-windows-static"
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Compile tests (no run)
+        run: cargo test --no-run --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test -q
