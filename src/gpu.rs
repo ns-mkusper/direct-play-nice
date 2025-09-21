@@ -34,25 +34,7 @@ pub fn find_hw_encoder(
     codec_id: ffi::AVCodecID,
     pref: HwAccel,
 ) -> (Option<AVCodec>, Option<*mut ffi::AVBufferRef>) {
-    let encoders: &[(&str, &[&str])] = match codec_id {
-        ffi::AV_CODEC_ID_H264 => {
-            #[cfg(target_os = "macos")]
-            { &[("h264_videotoolbox", &["videotoolbox"]), ("h264_nvenc", &["cuda"]), ("h264_qsv", &["qsv"]), ("h264_vaapi", &["vaapi"]), ("h264_amf", &["d3d11va", "dxva2"])] }
-            #[cfg(all(not(target_os = "macos"), target_os = "windows"))]
-            { &[("h264_nvenc", &["cuda"]), ("h264_amf", &["d3d11va", "dxva2"]), ("h264_qsv", &["qsv"])] }
-            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-            { &[("h264_nvenc", &["cuda"]), ("h264_vaapi", &["vaapi"]), ("h264_qsv", &["qsv"])] }
-        }
-        ffi::AV_CODEC_ID_HEVC => {
-            #[cfg(target_os = "macos")]
-            { &[("hevc_videotoolbox", &["videotoolbox"]), ("hevc_nvenc", &["cuda"]), ("hevc_qsv", &["qsv"]), ("hevc_vaapi", &["vaapi"]), ("hevc_amf", &["d3d11va", "dxva2"])] }
-            #[cfg(all(not(target_os = "macos"), target_os = "windows"))]
-            { &[("hevc_nvenc", &["cuda"]), ("hevc_amf", &["d3d11va", "dxva2"]), ("hevc_qsv", &["qsv"])] }
-            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-            { &[("hevc_nvenc", &["cuda"]), ("hevc_vaapi", &["vaapi"]), ("hevc_qsv", &["qsv"])] }
-        }
-        _ => return (None, None),
-    };
+    let encoders = encoder_candidates(codec_id);
 
     let filter = |name: &str| match pref {
         HwAccel::Auto => true,
@@ -75,6 +57,41 @@ pub fn find_hw_encoder(
         }
     }
     (None, None)
+}
+
+pub fn encoder_candidates(codec_id: ffi::AVCodecID) -> &'static [(&'static str, &'static [&'static str])] {
+    match codec_id {
+        ffi::AV_CODEC_ID_H264 => h264_candidates(),
+        ffi::AV_CODEC_ID_HEVC => hevc_candidates(),
+        _ => &[],
+    }
+}
+
+#[cfg(target_os = "macos")]
+const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("h264_videotoolbox", &["videotoolbox"]), ("h264_nvenc", &["cuda"]), ("h264_qsv", &["qsv"]), ("h264_vaapi", &["vaapi"]), ("h264_amf", &["d3d11va", "dxva2"]) ]
+}
+#[cfg(target_os = "macos")]
+const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("hevc_videotoolbox", &["videotoolbox"]), ("hevc_nvenc", &["cuda"]), ("hevc_qsv", &["qsv"]), ("hevc_vaapi", &["vaapi"]), ("hevc_amf", &["d3d11va", "dxva2"]) ]
+}
+
+#[cfg(all(not(target_os = "macos"), target_os = "windows"))]
+const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("h264_nvenc", &["cuda"]), ("h264_amf", &["d3d11va", "dxva2"]), ("h264_qsv", &["qsv"]) ]
+}
+#[cfg(all(not(target_os = "macos"), target_os = "windows"))]
+const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("hevc_nvenc", &["cuda"]), ("hevc_amf", &["d3d11va", "dxva2"]), ("hevc_qsv", &["qsv"]) ]
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("h264_nvenc", &["cuda"]), ("h264_vaapi", &["vaapi"]), ("h264_qsv", &["qsv"]) ]
+}
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("hevc_nvenc", &["cuda"]), ("hevc_vaapi", &["vaapi"]), ("hevc_qsv", &["qsv"]) ]
 }
 
 pub fn probe_hw_devices() -> HashMap<&'static str, bool> {
@@ -291,4 +308,3 @@ pub fn gather_probe_json(only_video: bool, only_hw: bool, include_hw: bool, incl
         CodecProbeSummary { ffmpeg: ver, devices: device_entries, hw_encoders: hw_encs, encoders, decoders }
     }
 }
-
