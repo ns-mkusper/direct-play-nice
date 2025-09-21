@@ -20,6 +20,11 @@ jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: 2G
+      CARGO_INCREMENTAL: 0
+      SCCACHE_GHA_ENABLED: 'true'
     strategy:
       matrix:
         toolchain:
@@ -51,6 +56,11 @@ jobs:
 
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
+
+      - name: Install sccache
+        run: cargo install sccache
+
+      # No explicit cache steps needed — GHA backend handles it
 
       - name: Read pinned vcpkg revision from Cargo.toml
         id: vcpkg_rev
@@ -95,3 +105,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+
+      - name: sccache stats
+        run: sccache --show-stats || true
