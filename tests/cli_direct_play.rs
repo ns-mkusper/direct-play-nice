@@ -118,8 +118,9 @@ fn probe_duration_ms(path: &PathBuf) -> u64 {
 }
 
 #[test]
-#[ignore]
 fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::Error>> {
+    // Fail fast if ffmpeg CLI is not present
+    ensure_ffmpeg_present();
 
     let tmp = TempDir::new()?;
     let (input, in_dur_ms) = gen_problem_input(&tmp);
