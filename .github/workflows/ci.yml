@@ -20,6 +20,9 @@ jobs:
   test:
     name: Build and Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_CACHE_SIZE: 2G
@@ -58,12 +61,10 @@ jobs:
       - name: Install sccache
         run: cargo install sccache
         env:
-          RUSTC_WRAPPER: '' # Temporarily disable the wrapper for this step
+          RUSTC_WRAPPER: ''
 
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
-
-      # No explicit cache steps needed — GHA backend handles it
 
       - name: Read pinned vcpkg revision from Cargo.toml
         id: vcpkg_rev
@@ -72,7 +73,6 @@ jobs:
           set -euo pipefail
           REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
           if [ -z "$REV" ]; then
-            # Fallback to hashing Cargo.toml if not found
             REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
           fi
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
