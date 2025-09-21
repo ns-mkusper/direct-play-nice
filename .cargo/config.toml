@@ -3,15 +3,35 @@ git-fetch-with-cli = true
 
 [target.x86_64-pc-windows-msvc]
 rustflags = [
-"-C", "link-arg=Mfplat.lib",
-"-C", "link-arg=Strmiids.lib",
-"-C", "link-arg=Mfuuid.lib",
-"-C", "link-arg=Bcrypt.lib",
-"-C", "link-arg=Secur32.lib",
-"-C", "link-arg=Ole32.lib",
-"-C", "link-arg=User32.lib",
-"-C", "link-arg=msvcrtd.lib"
+  "-C",
+  "link-arg=Mfplat.lib",
+  "-C",
+  "link-arg=Strmiids.lib",
+  "-C",
+  "link-arg=Mfuuid.lib",
+  "-C",
+  "link-arg=Bcrypt.lib",
+  "-C",
+  "link-arg=Secur32.lib",
+  "-C",
+  "link-arg=Ole32.lib",
+  "-C",
+  "link-arg=User32.lib",
+  "-C",
+  "target-feature=+crt-static",
 ]
 
 [env]
-RUST_LOG="info"
+RUST_LOG = "info"
+
+# On Linux, dynamic FFmpeg libs from vcpkg may be under installed/x64-linux/lib.
+# Uncomment to help the test runner locate them at runtime.
+# LD_LIBRARY_PATH = { value = "target/vcpkg/installed/x64-linux/lib", relative = true }
+
+# On macOS, use DYLD_FALLBACK_LIBRARY_PATH similarly.
+# DYLD_FALLBACK_LIBRARY_PATH = { value = "target/vcpkg/installed/x64-osx/lib", relative = true }
+
+[target.x86_64-pc-windows-msvc.env]
+# Default triplet for vcpkg-rs on Windows; CI/local can override by exporting
+# VCPKGRS_TRIPLET to a different value (e.g., x64-windows-static-md).
+VCPKGRS_TRIPLET = "x64-windows-static"

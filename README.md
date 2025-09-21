@@ -58,8 +58,38 @@ This project relies on [FFmpeg](https://www.ffmpeg.org/) and [rsmpeg](https://gi
 
 ```bash
 cargo install cargo-vcpkg
-cargo vcpkg --verbose build
-cargo build --verbose
+cargo vcpkg build
+cargo build
+```
+
+After running `cargo vcpkg build` once, you can either point to that local vcpkg with `VCPKG_ROOT` or rely on your global vcpkg. This repo does not force a vcpkg path in `.cargo/config.toml` so your global `VCPKG_ROOT` (from shell/CI) is respected.
+
+## Tests
+
+```bash
+# If you use a global vcpkg, ensure VCPKG_ROOT is set in your shell/CI
+# export VCPKG_ROOT=/path/to/vcpkg
+cargo test
+```
+
+End‑to‑end conversion tests that synthesize media require the `ffmpeg` CLI and are marked `#[ignore]`. To run them explicitly:
+
+```bash
+VCPKG_ROOT=/path/to/vcpkg cargo test -- --ignored
+
+### Optional: direnv
+
+If you use `direnv`, you can let local builds auto‑discover a project vcpkg checkout:
+
+```sh
+# .envrc (example)
+export RUST_LOG=WARN
+if [ -z "${VCPKG_ROOT}" ] && [ -f "$(pwd)/target/vcpkg/.vcpkg-root" ]; then
+  export VCPKG_ROOT="$(pwd)/target/vcpkg"
+fi
+```
+Then run `direnv allow` once in the repo.
+```
 ```
 
 ## Contributions / Support
