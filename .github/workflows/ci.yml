@@ -42,6 +42,23 @@ jobs:
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
 
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg
+            vcpkg_installed
+            target/vcpkg
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}-${{ matrix.toolchain }}
+
+      - name: Cache cargo registry/git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ matrix.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build vcpkg dependencies (cache may speed this up)
         run: cargo vcpkg --verbose build
 
