@@ -40,7 +40,7 @@ jobs:
           components: rustfmt
 
       - name: Install vcpkg build dependencies
-        run: sudo apt-get --assume-yes install nasm
+        run: sudo apt-get --assume-yes install nasm ffmpeg
 
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
