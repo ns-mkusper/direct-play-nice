@@ -51,7 +51,6 @@ jobs:
         run: |
           set -euo pipefail
           VER_RAW=$(rustc -V)
-          # sanitize spaces for cache key safety
           VER_KEY=$(echo "$VER_RAW" | tr ' ' '_' )
           echo "ver=$VER_KEY" >> "$GITHUB_OUTPUT"
 
@@ -77,6 +76,17 @@ jobs:
           fi
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
+      - name: Cache cargo registry/git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-
+            cargo-${{ runner.os }}-
+
       - name: Cache vcpkg artifacts
         uses: actions/cache@v4
         with:
@@ -88,17 +98,6 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}-
             vcpkg-${{ runner.os }}-
-
-      - name: Cache cargo registry/git
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-
-            cargo-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
         run: cargo vcpkg --verbose build
