@@ -66,10 +66,20 @@ jobs:
           VCPKG_ENV_PASSTHROUGH: CC,CXX
           CC: sccache gcc
           CXX: sccache g++
-          VCPKG_CMAKE_CONFIGURE_OPTIONS: -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           VCPKG_MAX_CONCURRENCY: 2
           CMAKE_BUILD_PARALLEL_LEVEL: 2
         run: cargo vcpkg --verbose build
+
+      - name: Upload vcpkg logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: vcpkg-logs
+          path: |
+            target/vcpkg/buildtrees/**/*.log
+            target/vcpkg/buildtrees/**/*.txt
+          retention-days: 7
 
       - name: Compile tests (no run)
         env:
@@ -116,7 +126,7 @@ jobs:
           VCPKG_ENV_PASSTHROUGH: CC,CXX
           CC: sccache cl
           CXX: sccache cl
-          VCPKG_CMAKE_CONFIGURE_OPTIONS: -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           VCPKG_MAX_CONCURRENCY: 2
         run: cargo vcpkg --verbose build
 
