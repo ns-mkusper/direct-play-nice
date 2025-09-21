@@ -67,6 +67,8 @@ jobs:
           CC: sccache gcc
           CXX: sccache g++
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
         run: cargo vcpkg --verbose build
 
       - name: Compile tests (no run)
@@ -115,6 +117,7 @@ jobs:
           CC: sccache cl
           CXX: sccache cl
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          VCPKG_MAX_CONCURRENCY: 2
         run: cargo vcpkg --verbose build
 
       - name: Compile tests (no run)
