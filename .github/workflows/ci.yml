@@ -23,12 +23,6 @@ jobs:
     permissions:
       contents: read
       actions: write
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: 2G
-      CARGO_INCREMENTAL: 0
-      SCCACHE_GHA_ENABLED: 'true'
-      SCCACHE_RUSTC_PATH: rustc
     strategy:
       matrix:
         toolchain:
@@ -45,22 +39,8 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
 
-      - name: Detect rustc version
-        id: rustc
-        shell: bash
-        run: |
-          set -euo pipefail
-          VER_RAW=$(rustc -V)
-          VER_KEY=$(echo "$VER_RAW" | tr ' ' '_' )
-          echo "ver=$VER_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Install vcpkg build dependencies
         run: sudo apt-get --assume-yes install nasm
-
-      - name: Install sccache
-        run: cargo install sccache
-        env:
-          RUSTC_WRAPPER: ''
 
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
@@ -76,29 +56,11 @@ jobs:
           fi
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
-      - name: Cache cargo registry/git
-        uses: actions/cache@v4
+      - name: Cache and build dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-
-            cargo-${{ runner.os }}-
-
-      - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            vcpkg
-            vcpkg_installed
-            target/vcpkg
-          key: vcpkg-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}-${{ matrix.toolchain }}
-          restore-keys: |
-            vcpkg-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}-
-            vcpkg-${{ runner.os }}-
-
+          cache-directories: 'vcpkg_installed'
+      
       - name: Build vcpkg dependencies
         run: cargo vcpkg --verbose build
 
@@ -107,6 +69,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
-
-      - name: sccache stats
-        run: sccache --show-stats || true
