@@ -54,11 +54,11 @@ jobs:
       - name: Install vcpkg build dependencies
         run: sudo apt-get --assume-yes install nasm
 
-      - name: Install vcpkg
-        run: cargo install cargo-vcpkg
-
       - name: Install sccache
         run: cargo install sccache
+
+      - name: Install vcpkg
+        run: cargo install cargo-vcpkg
 
       # No explicit cache steps needed — GHA backend handles it
 
