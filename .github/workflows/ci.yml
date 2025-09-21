@@ -1,19 +1,28 @@
-name: Cargo Build & Test
+name: CI
 
 on:
+  pull_request:
+    branches:
+      - "**"
+    types: [opened, synchronize, reopened]
   push:
     branches:
-      - "*"
+      - main
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    name: Test
+    name: Build and Test
     runs-on: ubuntu-latest
-    # Run only on pushes to branches with open PRs
-    if: github.event_name == 'push' && contains(fromJson('["refs/heads/main"]'), github.ref) == false && github.event.repository.pulls != '[]'
+    permissions:
+      contents: read
+      actions: write
     strategy:
       matrix:
         toolchain:
@@ -21,9 +30,14 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@v3
-      - name: Install rust
-        run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }} && rustup component add rustfmt
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt
 
       - name: Install vcpkg build dependencies
         run: sudo apt-get --assume-yes install nasm
@@ -31,6 +45,22 @@ jobs:
       - name: Install vcpkg
         run: cargo install cargo-vcpkg
 
+      - name: Read pinned vcpkg revision from Cargo.toml
+        id: vcpkg_rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ -z "$REV" ]; then
+            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
+          fi
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Cache and build dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: 'vcpkg_installed'
+      
       - name: Build vcpkg dependencies
         run: cargo vcpkg --verbose build
 
