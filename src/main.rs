@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{value_parser, Parser};
+use clap::{value_parser, Parser, ValueEnum};
 use log::{debug, error, warn};
-use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
+use rsmpeg::avcodec::{AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
@@ -16,7 +16,9 @@ use std::{
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 
 mod config;
+mod gpu;
 mod streaming_devices;
+use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
 
 // TODO: Make doc comments
 
@@ -40,6 +42,30 @@ struct Args {
     /// Our output direct-play-compatible video file
     #[arg(value_parser = Args::parse_cstring)]
     output_file: CString,
+
+    /// Hardware acceleration preference (auto tries GPU encoders if available)
+    #[arg(long, value_enum, default_value_t = HwAccel::Auto)]
+    hw_accel: HwAccel,
+
+    /// Print available HW devices/encoders and exit
+    #[arg(long, default_value_t = false)]
+    probe_hw: bool,
+
+    /// Print all FFmpeg encoders/decoders and exit
+    #[arg(long, default_value_t = false)]
+    probe_codecs: bool,
+
+    /// Filter probes to video codecs only
+    #[arg(long, default_value_t = false)]
+    only_video: bool,
+
+    /// Filter probes to hardware-capable codecs only
+    #[arg(long, default_value_t = false)]
+    only_hw: bool,
+
+    /// Emit probe output as JSON (machine-readable)
+    #[arg(long, default_value_t = false)]
+    probe_json: bool,
 }
 
 impl Args {
@@ -71,6 +97,8 @@ pub struct StreamProcessingContext {
     frame_buffer: Option<AVAudioFifo>, // TODO: Support video stream buffers too?
     resample_context: Option<SwrContext>,
     pts: AtomicI64,
+    #[allow(dead_code)]
+    hw_device_ctx: Option<*mut ffi::AVBufferRef>,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -546,6 +574,7 @@ fn convert_video_file(
     min_h264_level: H264Level,
     min_fps: u32,
     min_resolution: Resolution,
+    hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
     input_format_context.dump(0, input_file)?;
@@ -581,13 +610,25 @@ fn convert_video_file(
         let media_type: ffi::AVMediaType;
         let mut frame_buffer: Option<AVAudioFifo> = None;
         let mut resample_context: Option<SwrContext> = None;
+        let mut hw_device_ctx_ptr: Option<*mut ffi::AVBufferRef> = None;
 
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
-                let encoder =
-                    AVCodec::find_encoder(target_video_codec).expect("Could not find H264 encoder");
+                // Prefer HW encoder when available and requested
+                let (maybe_hw_encoder, maybe_hw_dev) =
+                    find_hw_encoder(target_video_codec, hw_accel);
+                let encoder = maybe_hw_encoder
+                    .or_else(|| AVCodec::find_encoder(target_video_codec))
+                    .expect("Could not find H264 encoder");
                 encode_context = AVCodecContext::new(&encoder);
+                // Attach hardware device if present (must be set before open())
+                if let Some(buf) = maybe_hw_dev {
+                    unsafe {
+                        (*encode_context.as_mut_ptr()).hw_device_ctx = ffi::av_buffer_ref(buf);
+                    }
+                    hw_device_ctx_ptr = Some(maybe_hw_dev.unwrap());
+                }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
                 set_video_codec_par(
@@ -651,6 +692,7 @@ fn convert_video_file(
             frame_buffer,
             resample_context,
             pts: AtomicI64::new(0),
+            hw_device_ctx: hw_device_ctx_ptr,
         };
 
         stream_contexts.push(stream_process_context);
@@ -724,6 +766,11 @@ fn convert_video_file(
                     None,
                 )
                 .context("Failed to flush video encoder.")?;
+                if let Some(mut dev) = context.hw_device_ctx {
+                    unsafe {
+                        ffi::av_buffer_unref(&mut dev);
+                    }
+                }
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 encode_and_write_frame(
@@ -756,6 +803,26 @@ fn main() -> Result<()> {
     // }
 
     let args = Args::parse();
+
+    if args.probe_hw || args.probe_codecs {
+        if args.probe_json {
+            let summary = gather_probe_json(
+                args.only_video,
+                args.only_hw,
+                args.probe_hw,
+                args.probe_codecs,
+            );
+            println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+            return Ok(());
+        }
+        if args.probe_hw {
+            print_probe();
+        }
+        if args.probe_codecs {
+            print_probe_codecs(args.only_video, args.only_hw);
+        }
+        return Ok(());
+    }
 
     // CLI ARG validation
     // TODO: Use clap integration for this?
@@ -797,5 +864,6 @@ fn main() -> Result<()> {
         min_h264_level,
         min_fps,
         min_resolution,
+        args.hw_accel,
     )
 }
