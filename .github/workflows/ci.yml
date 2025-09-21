@@ -87,7 +87,7 @@ jobs:
             cargo-${{ runner.os }}-${{ steps.rustc.outputs.ver }}-
             cargo-${{ runner.os }}-
 
-      - name: Build vcpkg dependencies (cache may speed this up)
+      - name: Build vcpkg dependencies
         run: cargo vcpkg --verbose build
 
       - name: Build
