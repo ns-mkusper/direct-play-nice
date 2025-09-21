@@ -17,6 +17,9 @@ jobs:
   test:
     name: Test (Linux)
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     permissions:
       contents: read
       actions: write
@@ -59,7 +62,7 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
       
-      - name: Build vcpkg dependencies (with binary cache + sccache)
+      - name: Build vcpkg dependencies
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
