@@ -109,10 +109,12 @@ jobs:
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.5
 
-      - name: Ensure vcpkg triplet installed
-        shell: pwsh
-        run: |
-          & "C:\\vcpkg\\vcpkg.exe" install "ffmpeg[x264,vpx,freetype,fontconfig]:x64-windows-static"
+      # Should already be installed
+      # TODO: verify
+      # - name: Ensure vcpkg triplet installed
+      #   shell: pwsh
+      #   run: |
+      #     & "C:\\vcpkg\\vcpkg.exe" install "ffmpeg[x264,vpx,freetype,fontconfig]:x64-windows-static"
 
       - name: Install ffmpeg CLI (for e2e test)
         shell: pwsh
