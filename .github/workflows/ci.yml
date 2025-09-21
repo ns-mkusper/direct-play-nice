@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   pull_request:
@@ -25,6 +25,7 @@ jobs:
       SCCACHE_CACHE_SIZE: 2G
       CARGO_INCREMENTAL: 0
       SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_RUSTC_PATH: rustc
     strategy:
       matrix:
         toolchain:
