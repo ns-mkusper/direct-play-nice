@@ -138,7 +138,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     assert!(output.exists(), "output file was not created");
 
     // Validate via rsmpeg
-    let mut octx = AVFormatContextInput::open(
+    let octx = AVFormatContextInput::open(
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),

@@ -544,8 +544,8 @@ fn convert_video_file(
     target_audio_codec: ffi::AVCodecID,
     min_h264_profile: H264Profile,
     min_h264_level: H264Level,
-    min_fps: u32,
-    min_resolution: Resolution,
+    _min_fps: u32,
+    _min_resolution: Resolution,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
     input_format_context.dump(0, input_file)?;
