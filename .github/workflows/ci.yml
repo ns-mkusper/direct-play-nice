@@ -103,6 +103,10 @@ jobs:
 
   windows-test:
     name: Test (Windows MSVC)
+    # Temporarily disabled: vcpkg/libiconv download is flaky and very slow
+    # on CI, causing frequent failures. Re-enable when we remove cargo-vcpkg
+    # for Windows or switch to prebuilt FFmpeg.
+    if: ${{ false }}
     runs-on: windows-latest
     env:
       CARGO_TERM_COLOR: always
