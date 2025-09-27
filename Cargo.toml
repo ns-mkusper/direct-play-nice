@@ -1,34 +1,41 @@
 [package]
-name                    = "direct_play_nice"
-description             = "CLI program that converts video files to direct-play-compatible formats."
-license                 = "GPLv3"
-license-files           = "LICENSE"
-documentation           = "https://github.com/ns-mkusper/direct-play-nice"
-homepage                = "https://github.com/ns-mkusper/direct-play-nice"
-repository              = "https://github.com/ns-mkusper/direct-play-nice"
-version                 = "0.1.0-alpha.1"
-edition                 = "2021"
+name = "direct_play_nice"
+description = "CLI program that converts video files to direct-play-compatible formats."
+license = "GPLv3"
+license-files = "LICENSE"
+documentation = "https://github.com/ns-mkusper/direct-play-nice"
+homepage = "https://github.com/ns-mkusper/direct-play-nice"
+repository = "https://github.com/ns-mkusper/direct-play-nice"
+version = "0.1.0-alpha.1"
+edition = "2021"
 
 
 [dependencies]
-anyhow                  = "1.0.86"
-clap                    = { version = "4.5.9", features = ["derive"] }
-cstr                    = "0.2.12"
-env_logger              = "0.11.3"
-log                     = "0.4.22"
+anyhow = "1.0.86"
+clap = { version = "4.5.9", features = ["derive"] }
+cstr = "0.2.12"
+env_logger = "0.11.3"
+log = "0.4.22"
 # TODO: upgrade to ffmpeg7 once in vcpkg
 # see: https://github.com/microsoft/vcpkg/pull/38011
-rsmpeg                  = { version = "0.15.1", default-features = false, features = ["ffmpeg6"] }
-rusty_ffmpeg            = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
-serde                   = { version = "1.0.204", features = ["derive"] }
+rsmpeg = { version = "0.15.1", default-features = false, features = [
+  "ffmpeg6",
+] }
+rusty_ffmpeg = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
+serde = { version = "1.0.204", features = ["derive"] }
 strum = "0.26.3"
 strum_macros = "0.26.4"
-syslog                  = "6.1.1"
-toml                    = "0.8.16"
+syslog = "6.1.1"
+toml = "0.8.16"
 vcpkg = "0.2.15"
 
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+
 [patch.crates-io]
-rusty_ffmpeg            = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git", rev = "4011018dacd67e0651c5118d9f698e37bd80ac68" }
+rusty_ffmpeg = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git", rev = "4011018dacd67e0651c5118d9f698e37bd80ac68" }
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -44,7 +51,12 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
@@ -54,9 +66,12 @@ install-updater = false
 github-build-setup = "../templates/build-setup.yml"
 
 [package.metadata.vcpkg]
-dependencies            = ["ffmpeg[x264,vpx,freetype,fontconfig]", "x264[asm,core,default-features]"]
-git                     = "https://github.com/microsoft/vcpkg"
-rev                     = "c4467cb686f92671f0172aa8299a77d908175b4e"
+dependencies = [
+  "ffmpeg[x264,vpx,freetype,fontconfig]",
+  "x264[asm,core,default-features]",
+]
+git = "https://github.com/microsoft/vcpkg"
+rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
 
 [package.metadata.vcpkg.target]
-x86_64-pc-windows-msvc  = { triplet = "x64-windows-static" }
+x86_64-pc-windows-msvc = { triplet = "x64-windows-static" }

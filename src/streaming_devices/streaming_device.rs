@@ -97,6 +97,7 @@ impl TryFrom<i32> for H264Level {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum H264Profile {
     Baseline = ffi::FF_PROFILE_H264_BASELINE as isize,
@@ -108,14 +109,17 @@ pub enum H264Profile {
     High444 = ffi::FF_PROFILE_H264_HIGH_444 as isize,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct StreamingDevice {
+    #[allow(dead_code)]
     pub name: &'static str,
     pub max_h264_profile: H264Profile,
     pub max_h264_level: H264Level,
     pub max_fps: u32,
     pub max_resolution: Resolution,
     pub model: &'static str,
+    #[allow(dead_code)]
     pub maker: &'static str,
     pub audio_codec: [Option<ffi::AVCodecID>; 5],
     pub video_codec: [Option<ffi::AVCodecID>; 5],
