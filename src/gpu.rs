@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use rsmpeg::avcodec::AVCodec;
+use rsmpeg::avcodec::{AVCodec, AVCodecRef};
 use rsmpeg::ffi::{self};
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
@@ -21,7 +21,7 @@ pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> 
     unsafe {
         let c_name = CString::new(device_name).ok()?;
         let dev_type = ffi::av_hwdevice_find_type_by_name(c_name.as_ptr());
-        if dev_type == ffi::AVHWDeviceType_AV_HWDEVICE_TYPE_NONE {
+        if dev_type == ffi::AV_HWDEVICE_TYPE_NONE {
             return None;
         }
         let mut buf: *mut ffi::AVBufferRef = std::ptr::null_mut();
@@ -33,7 +33,7 @@ pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> 
 pub fn find_hw_encoder(
     codec_id: ffi::AVCodecID,
     pref: HwAccel,
-) -> (Option<AVCodec>, Option<*mut ffi::AVBufferRef>) {
+) -> (Option<AVCodecRef<'static>>, Option<*mut ffi::AVBufferRef>) {
     let encoders = encoder_candidates(codec_id);
 
     let filter = |name: &str| match pref {
@@ -48,7 +48,8 @@ pub fn find_hw_encoder(
 
     for (encoder_name, dev_types) in encoders.iter().copied() {
         if !filter(encoder_name) { continue; }
-        if let Some(encoder) = AVCodec::find_encoder_by_name(encoder_name) {
+        let cname = CString::new(encoder_name).unwrap();
+        if let Some(encoder) = AVCodec::find_encoder_by_name(cname.as_c_str()) {
             let mut device_ref: Option<*mut ffi::AVBufferRef> = None;
             for dev in dev_types {
                 if let Some(buf) = try_create_hw_device(dev) { device_ref = Some(buf); break; }
@@ -131,7 +132,8 @@ pub fn probe_hw_encoders(device_ok: &HashMap<&'static str, bool>) -> Vec<HwEncod
     ];
     let mut out = Vec::new();
     for (name, devs) in encs {
-        let present = AVCodec::find_encoder_by_name(name).is_some();
+        let cname = CString::new(*name).unwrap();
+        let present = AVCodec::find_encoder_by_name(cname.as_c_str()).is_some();
         let usable = present && devs.iter().any(|d| device_ok.get(d).copied().unwrap_or(false));
         out.push(HwEncoderEntry{
             name: name.to_string(),
@@ -161,10 +163,10 @@ pub fn print_probe() {
 
 fn media_type_to_str(t: ffi::AVMediaType) -> &'static str {
     match t {
-        ffi::AVMediaType_AVMEDIA_TYPE_VIDEO => "video",
-        ffi::AVMediaType_AVMEDIA_TYPE_AUDIO => "audio",
-        ffi::AVMediaType_AVMEDIA_TYPE_SUBTITLE => "subtitle",
-        ffi::AVMediaType_AVMEDIA_TYPE_DATA => "data",
+        ffi::AVMEDIA_TYPE_VIDEO => "video",
+        ffi::AVMEDIA_TYPE_AUDIO => "audio",
+        ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+        ffi::AVMEDIA_TYPE_DATA => "data",
         _ => "other",
     }
 }
@@ -226,7 +228,7 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
                 }
                 let has_hw = !hw_entries.is_empty();
                 if only_hw && !has_hw { continue; }
-                if (only_video && !is_video) { continue; }
+                if only_video && !is_video { continue; }
                 if has_hw { println!("  [hw: {}]", hw_entries.join(", ")); } else { println!(""); }
             }
         }
