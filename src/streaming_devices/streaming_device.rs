@@ -110,7 +110,7 @@ pub enum H264Profile {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamingDevice {
     #[allow(dead_code)]
     pub name: &'static str,

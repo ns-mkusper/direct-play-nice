@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn, Level};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -10,6 +10,7 @@ use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use std::path::PathBuf;
 use std::{
+    env,
     ffi::{CStr, CString},
     sync::atomic::{AtomicI64, Ordering},
 };
@@ -19,6 +20,34 @@ mod config;
 mod gpu;
 mod streaming_devices;
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
+
+fn describe_bitrate(bitrate: Option<i64>) -> String {
+    match bitrate {
+        Some(bps) => format!("{} bps", bps),
+        None => "match source".to_string(),
+    }
+}
+
+fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
+    match dimensions {
+        Some((w, h)) => format!("max {}x{}", w, h),
+        None => "match source".to_string(),
+    }
+}
+
+fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
+    match codec_id {
+        ffi::AV_CODEC_ID_H264 => "H.264",
+        ffi::AV_CODEC_ID_AAC => "AAC",
+        ffi::AV_CODEC_ID_HEVC => "HEVC",
+        ffi::AV_CODEC_ID_VP9 => "VP9",
+        _ => unsafe {
+            CStr::from_ptr(ffi::avcodec_get_name(codec_id))
+                .to_str()
+                .unwrap_or("unknown")
+        },
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum VideoQuality {
@@ -944,11 +973,20 @@ fn convert_video_file(
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
-    input_format_context.dump(0, input_file)?;
+    if log::log_enabled!(Level::Debug) {
+        input_format_context.dump(0, input_file)?;
+    }
 
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
+    info!(
+        "Target codecs resolved: video={}, audio={}",
+        describe_codec(target_video_codec),
+        describe_codec(target_audio_codec)
+    );
+
+    let mut logged_hw_choice = false;
 
     for stream in input_format_context.streams() {
         // TODO: ID streams either unsupported in output container type or without a supported decoder and skip them, producing a warning for each skipped.
@@ -985,9 +1023,14 @@ fn convert_video_file(
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
                     find_hw_encoder(target_video_codec, hw_accel);
-                let encoder = maybe_hw_encoder
-                    .or_else(|| AVCodec::find_encoder(target_video_codec))
-                    .expect("Could not find H264 encoder");
+                let (encoder, using_hw_encoder) = match maybe_hw_encoder {
+                    Some(enc) => (enc, true),
+                    None => (
+                        AVCodec::find_encoder(target_video_codec)
+                            .expect("Could not find H264 encoder"),
+                        false,
+                    ),
+                };
                 encode_context = AVCodecContext::new(&encoder);
                 // Attach hardware device if present (must be set before open())
                 if let Some(buf) = maybe_hw_dev {
@@ -998,6 +1041,36 @@ fn convert_video_file(
                 }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
+                if !logged_hw_choice {
+                    let encoder_name = encoder.name().to_string_lossy().into_owned();
+                    let is_hw = using_hw_encoder
+                        || encoder_name.contains("nvenc")
+                        || encoder_name.contains("qsv")
+                        || encoder_name.contains("amf")
+                        || encoder_name.contains("vaapi")
+                        || encoder_name.contains("videotoolbox")
+                        || encoder_name.contains("_mf");
+                    if is_hw {
+                        if maybe_hw_dev.is_some() {
+                            info!("Video encoder: hardware ({:?}, {})", hw_accel, encoder_name);
+                        } else {
+                            info!("Video encoder: hardware ({})", encoder_name);
+                        }
+                    } else if hw_accel == HwAccel::None {
+                        info!("Video encoder: software (hardware acceleration disabled)");
+                    } else if hw_accel == HwAccel::Auto {
+                        info!(
+                            "Video encoder: software fallback (no compatible hardware device detected)"
+                        );
+                    } else {
+                        info!(
+                            "Video encoder: software fallback (requested {:?} unavailable)",
+                            hw_accel
+                        );
+                    }
+                    logged_hw_choice = true;
+                }
+
                 set_video_codec_par(
                     &mut decode_context,
                     &mut encode_context,
@@ -1006,6 +1079,10 @@ fn convert_video_file(
                     min_h264_level,
                     quality_limits,
                     device_max_resolution,
+                );
+                info!(
+                    "Prepared video stream {} -> {}x{}",
+                    output_stream.index, encode_context.width, encode_context.height
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
@@ -1021,6 +1098,12 @@ fn convert_video_file(
                     &mut encode_context,
                     &mut output_stream,
                     quality_limits,
+                );
+                info!(
+                    "Prepared audio stream {} -> {} channels, {} Hz",
+                    output_stream.index,
+                    encode_context.ch_layout.nb_channels,
+                    encode_context.sample_rate
                 );
                 // Initialize the resampler to be able to convert audio sample formats.
                 resample_context =
@@ -1171,10 +1254,16 @@ fn convert_video_file(
 }
 
 fn main() -> Result<()> {
-    // FFMPEG TRACE LOGGING
-    // unsafe {
-    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32);
-    // }
+    if env::var_os("RUST_LOG").is_none() {
+        env::set_var("RUST_LOG", "info");
+    }
+    let _ = env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .try_init();
+
+    unsafe {
+        ffi::av_log_set_level(ffi::AV_LOG_WARNING as i32);
+    }
 
     let mut args = Args::parse();
 
@@ -1227,6 +1316,17 @@ fn main() -> Result<()> {
 
     // let config_streaming_devices = config::parse_config_from_toml(config_file).unwrap();
 
+    let input_display = args
+        .input_file
+        .as_ref()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unset>".to_string());
+    let output_display = args
+        .output_file
+        .as_ref()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unset>".to_string());
+
     let selections = args
         .streaming_devices
         .take()
@@ -1260,6 +1360,35 @@ fn main() -> Result<()> {
     let min_h264_level = StreamingDevice::get_min_h264_level(&streaming_devices)?;
     let min_fps = StreamingDevice::get_min_fps(&streaming_devices)?;
     let min_resolution = StreamingDevice::get_min_resolution(&streaming_devices)?;
+    let device_cap = resolution_to_dimensions(min_resolution);
+
+    let device_names = streaming_devices
+        .iter()
+        .map(|device| device.name)
+        .collect::<Vec<_>>();
+
+    info!("Converting '{}' -> '{}'", input_display, output_display);
+    info!(
+        "Target streaming devices ({}): {}",
+        device_names.len(),
+        device_names.join(", ")
+    );
+    info!("Hardware acceleration preference: {:?}", args.hw_accel);
+    info!(
+        "Video quality preset: {} ({}; bitrate {})",
+        args.video_quality,
+        describe_resolution(quality_limits.max_video_dimensions),
+        describe_bitrate(quality_limits.max_video_bitrate)
+    );
+    info!(
+        "Audio quality preset: {} (bitrate {})",
+        args.audio_quality,
+        describe_bitrate(quality_limits.max_audio_bitrate)
+    );
+    info!(
+        "Device capability ceiling: {}x{}, H.264 profile {:?}, level {:?}",
+        device_cap.0, device_cap.1, min_h264_profile, min_h264_level
+    );
 
     // TODO: Check if video file is already compatible and skip if it is
 
