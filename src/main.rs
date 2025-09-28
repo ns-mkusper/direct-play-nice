@@ -586,13 +586,19 @@ fn process_video_stream(
         }
     }
 
+    let mut warned_drain = false;
+
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
-            Ok(frame) => {
-                error!("Successfully processed frame!");
-                frame
-            }
+            Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
+                if !warned_drain {
+                    debug!(
+                        "Video decoder drained/flushed for stream {}",
+                        stream_processing_context.stream_index
+                    );
+                    warned_drain = true;
+                }
                 break;
             }
             Err(e) => {
@@ -675,11 +681,19 @@ fn process_audio_stream(
         }
     }
 
+    let mut warned_drain = false;
+
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
-                error!("Cannot read from drianed/flushed Decoder.");
+                if !warned_drain {
+                    debug!(
+                        "Audio decoder drained/flushed for stream {}",
+                        stream_processing_context.stream_index
+                    );
+                    warned_drain = true;
+                }
                 break;
             }
             Err(e) => {
@@ -1129,6 +1143,11 @@ fn convert_video_file(
                     &mut decode_context,
                     &mut encode_context,
                     &mut output_stream,
+                );
+                info!(
+                    "Prepared subtitle stream {} -> {}",
+                    output_stream.index,
+                    describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
                 );
             }
             // TODO: Handle metadata streams
