@@ -273,6 +273,104 @@ fn clamp_dimensions(
 
     (target_width, target_height)
 }
+
+fn default_video_bitrate(width: i32, height: i32) -> i64 {
+    let max_dim = width.max(height).max(1) as u32;
+    match max_dim {
+        d if d <= 640 => 1_200_000,
+        d if d <= 854 => 2_500_000,
+        d if d <= 1280 => 5_000_000,
+        d if d <= 1920 => 8_000_000,
+        d if d <= 2560 => 16_000_000,
+        _ => 35_000_000,
+    }
+}
+
+fn nearest_video_preset(width: i32, height: i32, bitrate: i64) -> &'static str {
+    let max_dim = width.max(height).max(1);
+    let bitrate = if bitrate > 0 {
+        bitrate
+    } else {
+        default_video_bitrate(width, height)
+    };
+    match max_dim {
+        d if d <= 360 => "360p",
+        d if d <= 480 => "480p",
+        d if d <= 720 => "720p",
+        d if d <= 1080 => "1080p",
+        d if d <= 1440 => "1440p",
+        _ => {
+            if bitrate >= 30_000_000 {
+                "2160p"
+            } else {
+                "1440p"
+            }
+        }
+    }
+}
+
+fn nearest_audio_preset(bitrate: i64) -> &'static str {
+    let bitrate = if bitrate > 0 { bitrate } else { 192_000 };
+    const PRESETS: &[(i64, &'static str)] = &[
+        (96_000, "96k"),
+        (128_000, "128k"),
+        (160_000, "160k"),
+        (192_000, "192k"),
+        (224_000, "224k"),
+        (256_000, "256k"),
+        (320_000, "320k"),
+    ];
+    let mut best = PRESETS[0];
+    let mut best_diff = (bitrate - PRESETS[0].0).abs();
+    for candidate in PRESETS.iter().copied() {
+        let diff = (bitrate - candidate.0).abs();
+        if diff < best_diff {
+            best = candidate;
+            best_diff = diff;
+        }
+    }
+    best.1
+}
+
+struct ProgressTracker {
+    duration_us: i64,
+    last_reported_percent: i64,
+}
+
+impl ProgressTracker {
+    fn new(duration_us: i64) -> Self {
+        Self {
+            duration_us: duration_us.max(1),
+            last_reported_percent: -1,
+        }
+    }
+
+    fn report(&mut self, pts: i64, time_base: ffi::AVRational) {
+        if pts == ffi::AV_NOPTS_VALUE {
+            return;
+        }
+        let current_us =
+            unsafe { ffi::av_rescale_q(pts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) };
+        if current_us < 0 {
+            return;
+        }
+        let percent = ((current_us * 100) / self.duration_us).clamp(0, 100);
+        if percent >= self.last_reported_percent + 5
+            || (percent == 100 && self.last_reported_percent < 100)
+        {
+            info!("Progress: {}%", percent);
+            self.last_reported_percent = percent;
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.last_reported_percent < 100 {
+            self.last_reported_percent = 100;
+            info!("Progress: 100%");
+        }
+    }
+}
+
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -565,6 +663,7 @@ fn process_video_stream(
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
+    mut progress: Option<&mut ProgressTracker>,
 ) -> Result<()> {
     packet.rescale_ts(
         input_stream.time_base,
@@ -592,12 +691,11 @@ fn process_video_stream(
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
-                if !warned_drain {
+                if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Video decoder drained/flushed for stream {}",
                         stream_processing_context.stream_index
                     );
-                    warned_drain = true;
                 }
                 break;
             }
@@ -606,6 +704,13 @@ fn process_video_stream(
                 break;
             }
         };
+
+        if let Some(progress) = progress.as_deref_mut() {
+            progress.report(
+                frame.best_effort_timestamp,
+                stream_processing_context.decode_context.time_base,
+            );
+        }
 
         let mut new_frame = AVFrame::new();
         new_frame.set_width(stream_processing_context.encode_context.width);
@@ -687,12 +792,11 @@ fn process_audio_stream(
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
-                if !warned_drain {
+                if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Audio decoder drained/flushed for stream {}",
                         stream_processing_context.stream_index
                     );
-                    warned_drain = true;
                 }
                 break;
             }
@@ -874,6 +978,7 @@ fn set_video_codec_par(
     h264_level: H264Level,
     quality_limits: &QualityLimits,
     device_max_resolution: Resolution,
+    source_bit_rate_hint: i64,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = resolution_to_dimensions(device_max_resolution);
@@ -896,11 +1001,26 @@ fn set_video_codec_par(
     encode_context.set_time_base(decode_context.time_base);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
-    if let Some(bit_rate) =
-        derive_target_bitrate(decode_context.bit_rate, quality_limits.max_video_bitrate)
+    let source_bit_rate = if decode_context.bit_rate > 0 {
+        decode_context.bit_rate
+    } else if source_bit_rate_hint > 0 {
+        source_bit_rate_hint
+    } else {
+        default_video_bitrate(encode_context.width, encode_context.height)
+    };
+
+    if let Some(bit_rate) = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate)
     {
         debug!("Video bitrate target set to {} bps", bit_rate);
         encode_context.set_bit_rate(bit_rate);
+        unsafe {
+            (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
+            (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
+            (*encode_context.as_mut_ptr()).rc_buffer_size =
+                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).bit_rate_tolerance =
+                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+        }
     } else {
         debug!("Video bitrate target not set; using encoder default");
     }
@@ -919,6 +1039,7 @@ fn set_audio_codec_par(
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
     quality_limits: &QualityLimits,
+    source_bit_rate_hint: i64,
 ) {
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
@@ -927,11 +1048,25 @@ fn set_audio_codec_par(
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
-    if let Some(bit_rate) =
-        derive_target_bitrate(decode_context.bit_rate, quality_limits.max_audio_bitrate)
+    let source_bit_rate = if decode_context.bit_rate > 0 {
+        decode_context.bit_rate
+    } else if source_bit_rate_hint > 0 {
+        source_bit_rate_hint
+    } else {
+        192_000
+    };
+    if let Some(bit_rate) = derive_target_bitrate(source_bit_rate, quality_limits.max_audio_bitrate)
     {
         debug!("Audio bitrate target set to {} bps", bit_rate);
         encode_context.set_bit_rate(bit_rate);
+        unsafe {
+            (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
+            (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
+            (*encode_context.as_mut_ptr()).rc_buffer_size =
+                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).bit_rate_tolerance =
+                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+        }
     } else {
         debug!("Audio bitrate target not set; using encoder default");
     }
@@ -984,6 +1119,8 @@ fn convert_video_file(
     _min_fps: u32,
     device_max_resolution: Resolution,
     quality_limits: &QualityLimits,
+    requested_video_quality: VideoQuality,
+    requested_audio_quality: AudioQuality,
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
@@ -994,13 +1131,20 @@ fn convert_video_file(
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
+    let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
+    if container_duration_us <= 0 {
+        container_duration_us = 1;
+    }
+    let mut progress_tracker = Some(ProgressTracker::new(container_duration_us));
+
     info!(
         "Target codecs resolved: video={}, audio={}",
         describe_codec(target_video_codec),
         describe_codec(target_audio_codec)
     );
 
-    let mut logged_hw_choice = false;
+    let mut logged_video_encoder = false;
+    let mut logged_audio_encoder = false;
 
     for stream in input_format_context.streams() {
         // TODO: ID streams either unsupported in output container type or without a supported decoder and skip them, producing a warning for each skipped.
@@ -1055,7 +1199,7 @@ fn convert_video_file(
                 }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
-                if !logged_hw_choice {
+                if !logged_video_encoder {
                     let encoder_name = encoder.name().to_string_lossy().into_owned();
                     let is_hw = using_hw_encoder
                         || encoder_name.contains("nvenc")
@@ -1064,25 +1208,21 @@ fn convert_video_file(
                         || encoder_name.contains("vaapi")
                         || encoder_name.contains("videotoolbox")
                         || encoder_name.contains("_mf");
-                    if is_hw {
+                    let summary = if is_hw {
                         if maybe_hw_dev.is_some() {
-                            info!("Video encoder: hardware ({:?}, {})", hw_accel, encoder_name);
+                            format!("hardware (preference {:?}, {})", hw_accel, encoder_name)
                         } else {
-                            info!("Video encoder: hardware ({})", encoder_name);
+                            format!("hardware ({})", encoder_name)
                         }
-                    } else if hw_accel == HwAccel::None {
-                        info!("Video encoder: software (hardware acceleration disabled)");
-                    } else if hw_accel == HwAccel::Auto {
-                        info!(
-                            "Video encoder: software fallback (no compatible hardware device detected)"
-                        );
+                    } else if matches!(hw_accel, HwAccel::None) {
+                        format!("software ({}, hardware disabled)", encoder_name)
+                    } else if matches!(hw_accel, HwAccel::Auto) {
+                        format!("software ({}; auto fallback)", encoder_name)
                     } else {
-                        info!(
-                            "Video encoder: software fallback (requested {:?} unavailable)",
-                            hw_accel
-                        );
-                    }
-                    logged_hw_choice = true;
+                        format!("software ({}; {:?} unavailable)", encoder_name, hw_accel)
+                    };
+                    info!("Video encoder selected: {}", summary);
+                    logged_video_encoder = true;
                 }
 
                 set_video_codec_par(
@@ -1093,10 +1233,38 @@ fn convert_video_file(
                     min_h264_level,
                     quality_limits,
                     device_max_resolution,
+                    input_stream_codecpar.bit_rate,
+                );
+                let src_par = stream.codecpar();
+                info!(
+                    "Video stream {}: {}x{} {} -> {}x{} {}{}",
+                    output_stream.index,
+                    src_par.width,
+                    src_par.height,
+                    unsafe {
+                        CStr::from_ptr(ffi::avcodec_get_name(src_par.codec_id))
+                            .to_str()
+                            .unwrap_or("unknown")
+                    },
+                    encode_context.width,
+                    encode_context.height,
+                    describe_codec(target_video_codec),
+                    if requested_video_quality == VideoQuality::MatchSource {
+                        format!(
+                            " (≈{} preset)",
+                            nearest_video_preset(
+                                encode_context.width,
+                                encode_context.height,
+                                encode_context.bit_rate
+                            )
+                        )
+                    } else {
+                        String::new()
+                    }
                 );
                 info!(
-                    "Prepared video stream {} -> {}x{}",
-                    output_stream.index, encode_context.width, encode_context.height
+                    "Video stream {} target bitrate: {} bps",
+                    output_stream.index, encode_context.bit_rate
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
@@ -1107,17 +1275,45 @@ fn convert_video_file(
                 encode_context = AVCodecContext::new(&encoder);
                 media_type = ffi::AVMEDIA_TYPE_AUDIO;
 
+                if !logged_audio_encoder {
+                    let encoder_name = encoder.name().to_string_lossy().into_owned();
+                    info!("Audio encoder selected: software ({})", encoder_name);
+                    logged_audio_encoder = true;
+                }
+
                 set_audio_codec_par(
                     &mut decode_context,
                     &mut encode_context,
                     &mut output_stream,
                     quality_limits,
+                    input_stream_codecpar.bit_rate,
+                );
+                let src_audio = stream.codecpar();
+                info!(
+                    "Audio stream {}: {} ch @ {} Hz {} -> {} ch @ {} Hz {}{}",
+                    output_stream.index,
+                    src_audio.channels,
+                    src_audio.sample_rate,
+                    unsafe {
+                        CStr::from_ptr(ffi::avcodec_get_name(src_audio.codec_id))
+                            .to_str()
+                            .unwrap_or("unknown")
+                    },
+                    encode_context.ch_layout.nb_channels,
+                    encode_context.sample_rate,
+                    describe_codec(target_audio_codec),
+                    if requested_audio_quality == AudioQuality::MatchSource {
+                        format!(
+                            " (≈{} preset)",
+                            nearest_audio_preset(encode_context.bit_rate)
+                        )
+                    } else {
+                        String::new()
+                    }
                 );
                 info!(
-                    "Prepared audio stream {} -> {} channels, {} Hz",
-                    output_stream.index,
-                    encode_context.ch_layout.nb_channels,
-                    encode_context.sample_rate
+                    "Audio stream {} target bitrate: {} bps",
+                    output_stream.index, encode_context.bit_rate
                 );
                 // Initialize the resampler to be able to convert audio sample formats.
                 resample_context =
@@ -1145,8 +1341,13 @@ fn convert_video_file(
                     &mut output_stream,
                 );
                 info!(
-                    "Prepared subtitle stream {} -> {}",
+                    "Subtitle stream {}: {} -> {}",
                     output_stream.index,
+                    unsafe {
+                        CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
+                            .to_str()
+                            .unwrap_or("unknown")
+                    },
                     describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
                 );
             }
@@ -1203,6 +1404,7 @@ fn convert_video_file(
                     input_stream,
                     &mut output_format_context,
                     &mut packet,
+                    progress_tracker.as_mut(),
                 )?;
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
@@ -1232,7 +1434,7 @@ fn convert_video_file(
     }
 
     // After processing all packets, flush each encoder
-    for mut context in stream_contexts {
+    for context in &mut stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 encode_and_write_frame(
@@ -1264,6 +1466,65 @@ fn convert_video_file(
                     unsupported_type
                 );
             }
+        }
+    }
+
+    if let Some(progress) = progress_tracker.as_mut() {
+        progress.finish();
+    }
+
+    for context in &stream_contexts {
+        match context.media_type {
+            ffi::AVMEDIA_TYPE_VIDEO => {
+                let preset = if requested_video_quality == VideoQuality::MatchSource {
+                    format!(
+                        " (≈{} preset)",
+                        nearest_video_preset(
+                            context.encode_context.width,
+                            context.encode_context.height,
+                            context.encode_context.bit_rate,
+                        )
+                    )
+                } else {
+                    String::new()
+                };
+                info!(
+                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps",
+                    context.stream_index,
+                    context.encode_context.width,
+                    context.encode_context.height,
+                    describe_codec(target_video_codec),
+                    preset,
+                    context.encode_context.bit_rate
+                );
+            }
+            ffi::AVMEDIA_TYPE_AUDIO => {
+                let preset = if requested_audio_quality == AudioQuality::MatchSource {
+                    format!(
+                        " (≈{} preset)",
+                        nearest_audio_preset(context.encode_context.bit_rate)
+                    )
+                } else {
+                    String::new()
+                };
+                info!(
+                    "Output audio stream {} summary: {} ch @ {} Hz {}{}, bitrate {} bps",
+                    context.stream_index,
+                    context.encode_context.ch_layout.nb_channels,
+                    context.encode_context.sample_rate,
+                    describe_codec(target_audio_codec),
+                    preset,
+                    context.encode_context.bit_rate
+                );
+            }
+            ffi::AVMEDIA_TYPE_SUBTITLE => {
+                info!(
+                    "Output subtitle stream {} summary: {}",
+                    context.stream_index,
+                    describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
+                );
+            }
+            _ => {}
         }
     }
 
@@ -1432,6 +1693,8 @@ fn main() -> Result<()> {
         min_fps,
         min_resolution,
         &quality_limits,
+        args.video_quality,
+        args.audio_quality,
         args.hw_accel,
     )
 }
