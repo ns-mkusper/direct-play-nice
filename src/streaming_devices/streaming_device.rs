@@ -7,7 +7,7 @@ use rusty_ffmpeg::ffi;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Resolution {
     Resolution480p,
     Resolution720p,
@@ -110,7 +110,7 @@ pub enum H264Profile {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamingDevice {
     #[allow(dead_code)]
     pub name: &'static str,

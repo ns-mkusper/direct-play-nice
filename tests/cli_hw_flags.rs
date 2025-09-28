@@ -31,12 +31,20 @@ fn gen_tiny_input(tmp: &TempDir) -> PathBuf {
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
-                "-pix_fmt", "yuv420p", "-c:v", "mpeg4",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
                 &video.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg video").success(),
+            .expect("run ffmpeg video")
+            .success(),
         "ffmpeg video generation failed"
     );
 
@@ -44,12 +52,18 @@ fn gen_tiny_input(tmp: &TempDir) -> PathBuf {
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100:duration=2",
-                "-c:a", "mp2",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=2",
+                "-c:a",
+                "mp2",
                 &audio.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg audio").success(),
+            .expect("run ffmpeg audio")
+            .success(),
         "ffmpeg audio generation failed"
     );
 
@@ -57,12 +71,20 @@ fn gen_tiny_input(tmp: &TempDir) -> PathBuf {
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-i", &video.to_string_lossy(), "-i", &audio.to_string_lossy(),
-                "-c:v", "copy", "-c:a", "copy",
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
                 &input.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg mux").success(),
+            .expect("run ffmpeg mux")
+            .success(),
         "ffmpeg mux failed"
     );
 
@@ -110,7 +132,8 @@ fn cli_hw_accel_none_and_auto_succeed() -> Result<(), Box<dyn std::error::Error>
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
         .arg(&out_none)
-        .arg("--hw-accel").arg("none");
+        .arg("--hw-accel")
+        .arg("none");
     cmd.assert().success().stdout(str::is_empty());
     assert!(out_none.exists(), "output file (none) was not created");
     assert_output_basic(&out_none);
@@ -122,11 +145,11 @@ fn cli_hw_accel_none_and_auto_succeed() -> Result<(), Box<dyn std::error::Error>
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
         .arg(&out_auto)
-        .arg("--hw-accel").arg("auto");
+        .arg("--hw-accel")
+        .arg("auto");
     cmd2.assert().success().stdout(str::is_empty());
     assert!(out_auto.exists(), "output file (auto) was not created");
     assert_output_basic(&out_auto);
 
     Ok(())
 }
-

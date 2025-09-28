@@ -12,6 +12,8 @@ This tool was created to convert video files to formats that satisfy Direct Play
 - Satisfies Direct Play requirements for [Plex](https://www.plex.tv/), [Jellyfin](https://jellyfin.org/), etc.
 - Can be used standalone or as a Custom Script Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts), [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc.
 - Allows for achieving [Direct Play](https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/) with all videos in a way seamless to the end user.
+- Offers intuitive quality presets (match-source, 360p through 2160p + audio caps) so you can keep output sizes in check for fast starts on Plex and other direct-play servers.
+- Targets every supported streaming device by default, or narrow the profile with `--streaming-devices`.
 
 ### Supported Streaming Devices
 
@@ -25,6 +27,8 @@ This tool was created to convert video files to formats that satisfy Direct Play
 |Chromecast with Google TV     |2020        |H.264, VP8, VP9, HEVC, Dolby Vision, HDR10, HDR10+|HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos|Up to 4K HDR      |
 |Chromecast with Google TV (HD)|2022        |H.264, VP8, VP9, HEVC, HDR10, HDR10+              |HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos|Up to 1080p HDR   |
 
+
+Each device above exposes a model identifier (e.g. `chromecast_ultra`). The CLI assumes every device by default; supply `--streaming-devices chromecast_ultra,chromecast_1st_gen` or `--streaming-devices all` to override.
 
 ## Usage
 
@@ -40,8 +44,12 @@ Arguments:
   <OUTPUT_FILE>  Our output direct-play-compatible video file
 
 Options:
-  -s, --streaming-devices <STREAMING_DEVICES>  List of StreamingDevice
+  -s, --streaming-devices <STREAMING_DEVICE>   Limit the device set (default: all supported)
   -c, --config-file <CONFIG_FILE>              Path to the configuration file
+      --video-quality <VIDEO_QUALITY>          Target video quality profile (defaults to match the source) [default: match-source] [possible values: match-source, 360p, 480p, 720p, 1080p, 1440p, 2160p]
+      --audio-quality <AUDIO_QUALITY>          Target audio quality profile (defaults to match the source) [default: match-source] [possible values: match-source, 320k, 256k, 224k, 192k, 160k, 128k, 96k]
+      --max-video-bitrate <MAX_VIDEO_BITRATE>  Maximum video bitrate (e.g. 8M, 4800k, 5.5mbps)
+      --max-audio-bitrate <MAX_AUDIO_BITRATE>  Maximum audio bitrate (e.g. 320k, 0.2M)
       --hw-accel <HW_ACCEL>                    Hardware acceleration: auto|none|nvenc|vaapi|qsv|videotoolbox|amf (default: auto)
       --probe-hw                               Print available HW devices/encoders and exit
       --probe-codecs                           Print all FFmpeg encoders/decoders and exit
@@ -57,6 +65,16 @@ Options:
 When running via Sonarr, Radarr, etc you can use this program to convert each downloaded video file to a Direct-Play-compatible format by adding it as a Custom Script Connection ( `Settings >> Connection >> Custom Script` )
 
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
+
+### Quality Controls
+
+By default the CLI preserves source quality for both video and audio. To shrink files ahead of Plex / Jellyfin direct play, mix and match:
+
+- `--video-quality match-source|360p|480p|720p|1080p|1440p|2160p` applies intuitive resolution caps and matching H.264 bitrate ceilings. For example, `--video-quality 720p` clamps to 1280×720 and ~5 Mbps, while `--video-quality 2160p` scales to 3840×2160 at ~35 Mbps.
+- `--audio-quality match-source|320k|256k|224k|192k|160k|128k|96k` sets AAC bitrate ceilings to well-known streaming tiers (e.g. `--audio-quality 192k` for a "standard" profile).
+- Familiar aliases such as `--video-quality 4k`, `--video-quality full-hd`, or `--audio-quality high` map onto the presets above.
+
+Need something custom? Use `--max-video-bitrate` and/or `--max-audio-bitrate` to override the presets with any value such as `4800k`, `6M`, or `12.5mbps`.
 
 ## Building
 
