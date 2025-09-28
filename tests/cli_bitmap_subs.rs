@@ -159,7 +159,9 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64) {
 
 fn probe_duration_ms(path: &PathBuf) -> u64 {
     let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(path.to_string_lossy().to_string()).unwrap().as_c_str(),
+        std::ffi::CString::new(path.to_string_lossy().to_string())
+            .unwrap()
+            .as_c_str(),
         None,
         &mut None,
     )
@@ -168,7 +170,8 @@ fn probe_duration_ms(path: &PathBuf) -> u64 {
 }
 
 #[test]
-fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn std::error::Error>> {
+fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn std::error::Error>>
+{
     ensure_ffmpeg_present();
 
     let tmp = TempDir::new()?;
@@ -224,15 +227,25 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
             }
             t if t == ffi::AVMEDIA_TYPE_SUBTITLE => {
                 saw_s = true;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_MOV_TEXT, "subs must be MOV_TEXT");
+                assert_eq!(
+                    par.codec_id,
+                    ffi::AV_CODEC_ID_MOV_TEXT,
+                    "subs must be MOV_TEXT"
+                );
             }
             _ => {}
         }
     }
 
-    assert!(saw_v && saw_a && saw_s, "missing one or more required streams");
+    assert!(
+        saw_v && saw_a && saw_s,
+        "missing one or more required streams"
+    );
 
-    assert!(width as u32 <= 1920 && height as u32 <= 1080, "resolution too high");
+    assert!(
+        width as u32 <= 1920 && height as u32 <= 1080,
+        "resolution too high"
+    );
     assert!(level <= 41, "H.264 level too high: {}", level);
     assert_eq!(pix_fmt, ffi::AV_PIX_FMT_YUV420P, "pix fmt must be yuv420p");
     if fps_den != 0 {
@@ -246,7 +259,12 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     } else {
         in_dur_ms - out_dur_ms
     };
-    assert!(diff <= 200, "duration drift too large: in={}ms out={}ms", in_dur_ms, out_dur_ms);
+    assert!(
+        diff <= 200,
+        "duration drift too large: in={}ms out={}ms",
+        in_dur_ms,
+        out_dur_ms
+    );
 
     Ok(())
 }

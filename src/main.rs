@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{value_parser, Parser};
-use log::{debug, error, warn};
+use clap::{value_parser, Parser, ValueEnum};
+use log::{debug, error, info, warn, Level};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -10,6 +10,7 @@ use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use std::path::PathBuf;
 use std::{
+    env,
     ffi::{CStr, CString},
     sync::atomic::{AtomicI64, Ordering},
 };
@@ -20,20 +21,298 @@ mod gpu;
 mod streaming_devices;
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
 
-// TODO: Make doc comments
+fn describe_bitrate(bitrate: Option<i64>) -> String {
+    match bitrate {
+        Some(bps) => format!("{} bps", bps),
+        None => "match source".to_string(),
+    }
+}
 
+fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
+    match dimensions {
+        Some((w, h)) => format!("max {}x{}", w, h),
+        None => "match source".to_string(),
+    }
+}
+
+fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
+    match codec_id {
+        ffi::AV_CODEC_ID_H264 => "H.264",
+        ffi::AV_CODEC_ID_AAC => "AAC",
+        ffi::AV_CODEC_ID_HEVC => "HEVC",
+        ffi::AV_CODEC_ID_VP9 => "VP9",
+        _ => unsafe {
+            CStr::from_ptr(ffi::avcodec_get_name(codec_id))
+                .to_str()
+                .unwrap_or("unknown")
+        },
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum VideoQuality {
+    /// Leave video resolution/bitrate untouched.
+    #[value(
+        name = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original",
+        alias = "input"
+    )]
+    MatchSource,
+    /// 360p (SD) profile – ~1.2 Mbps target bitrate.
+    #[value(name = "360p", alias = "sd", alias = "sd360", alias = "low")]
+    P360,
+    /// 480p (SD+) profile – ~2.5 Mbps target bitrate.
+    #[value(name = "480p", alias = "sd480", alias = "dvd", alias = "standard")]
+    P480,
+    /// 720p (HD) profile – ~5 Mbps target bitrate.
+    #[value(name = "720p", alias = "hd", alias = "hd-ready", alias = "1280x720")]
+    P720,
+    /// 1080p (Full HD) profile – ~8 Mbps target bitrate.
+    #[value(name = "1080p", alias = "full-hd", alias = "fhd", alias = "1920x1080")]
+    P1080,
+    /// 1440p (Quad HD) profile – ~16 Mbps target bitrate.
+    #[value(name = "1440p", alias = "qhd", alias = "2k", alias = "2560x1440")]
+    P1440,
+    /// 2160p (Ultra HD / 4K) profile – ~35 Mbps target bitrate.
+    #[value(name = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
+    P2160,
+}
+
+impl VideoQuality {
+    fn targets(self) -> (Option<(u32, u32)>, Option<i64>) {
+        match self {
+            VideoQuality::MatchSource => (None, None),
+            VideoQuality::P360 => (Some((640, 360)), Some(1_200_000)),
+            VideoQuality::P480 => (Some((854, 480)), Some(2_500_000)),
+            VideoQuality::P720 => (Some((1280, 720)), Some(5_000_000)),
+            VideoQuality::P1080 => (Some((1920, 1080)), Some(8_000_000)),
+            VideoQuality::P1440 => (Some((2560, 1440)), Some(16_000_000)),
+            VideoQuality::P2160 => (Some((3840, 2160)), Some(35_000_000)),
+        }
+    }
+}
+
+impl std::fmt::Display for VideoQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            VideoQuality::MatchSource => "match-source",
+            VideoQuality::P360 => "360p",
+            VideoQuality::P480 => "480p",
+            VideoQuality::P720 => "720p",
+            VideoQuality::P1080 => "1080p",
+            VideoQuality::P1440 => "1440p",
+            VideoQuality::P2160 => "2160p",
+        };
+        write!(f, "{}", label)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum AudioQuality {
+    /// Leave audio bitrate untouched.
+    #[value(
+        name = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original"
+    )]
+    MatchSource,
+    /// 320 kbps (very high) AAC target bitrate.
+    #[value(name = "320k", alias = "very-high", alias = "studio")]
+    K320,
+    /// 256 kbps (high) AAC target bitrate.
+    #[value(name = "256k", alias = "high", alias = "itunes")]
+    K256,
+    /// 224 kbps AAC target bitrate.
+    #[value(name = "224k", alias = "broadcast")]
+    K224,
+    /// 192 kbps (standard) AAC target bitrate.
+    #[value(name = "192k", alias = "standard", alias = "cd")]
+    K192,
+    /// 160 kbps AAC target bitrate.
+    #[value(name = "160k", alias = "medium-high")]
+    K160,
+    /// 128 kbps (medium) AAC target bitrate.
+    #[value(name = "128k", alias = "medium", alias = "default")]
+    K128,
+    /// 96 kbps (low) AAC target bitrate.
+    #[value(name = "96k", alias = "low", alias = "speech")]
+    K96,
+}
+
+impl AudioQuality {
+    fn bitrate(self) -> Option<i64> {
+        match self {
+            AudioQuality::MatchSource => None,
+            AudioQuality::K320 => Some(320_000),
+            AudioQuality::K256 => Some(256_000),
+            AudioQuality::K224 => Some(224_000),
+            AudioQuality::K192 => Some(192_000),
+            AudioQuality::K160 => Some(160_000),
+            AudioQuality::K128 => Some(128_000),
+            AudioQuality::K96 => Some(96_000),
+        }
+    }
+}
+
+impl std::fmt::Display for AudioQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            AudioQuality::MatchSource => "match-source",
+            AudioQuality::K320 => "320k",
+            AudioQuality::K256 => "256k",
+            AudioQuality::K224 => "224k",
+            AudioQuality::K192 => "192k",
+            AudioQuality::K160 => "160k",
+            AudioQuality::K128 => "128k",
+            AudioQuality::K96 => "96k",
+        };
+        write!(f, "{}", label)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct QualityLimits {
+    max_video_dimensions: Option<(u32, u32)>,
+    max_video_bitrate: Option<i64>,
+    max_audio_bitrate: Option<i64>,
+}
+
+impl QualityLimits {
+    fn apply_video_quality(&mut self, video_quality: VideoQuality) {
+        let (dimensions, bitrate) = video_quality.targets();
+        self.max_video_dimensions = dimensions;
+        self.max_video_bitrate = bitrate;
+    }
+
+    fn apply_audio_quality(&mut self, audio_quality: AudioQuality) {
+        self.max_audio_bitrate = audio_quality.bitrate();
+    }
+}
+
+fn derive_target_bitrate(source: i64, limit: Option<i64>) -> Option<i64> {
+    match (limit, source) {
+        (Some(limit), source_value) if limit > 0 => {
+            if source_value > 0 {
+                Some(std::cmp::min(source_value, limit))
+            } else {
+                Some(limit)
+            }
+        }
+        (None, source_value) if source_value > 0 => Some(source_value),
+        _ => None,
+    }
+}
+
+fn resolution_to_dimensions(resolution: Resolution) -> (u32, u32) {
+    match resolution {
+        Resolution::Resolution480p => (640, 480),
+        Resolution::Resolution720p => (1280, 720),
+        Resolution::Resolution1080p => (1920, 1080),
+        Resolution::Resolution1440p => (2560, 1440),
+        Resolution::Resolution2160p => (3840, 2160),
+    }
+}
+
+fn clamp_dimensions(
+    source_width: i32,
+    source_height: i32,
+    device_cap: (u32, u32),
+    quality_cap: Option<(u32, u32)>,
+) -> (i32, i32) {
+    if source_width <= 0 || source_height <= 0 {
+        return (source_width.max(1), source_height.max(1));
+    }
+
+    let mut max_width = device_cap.0.max(2);
+    let mut max_height = device_cap.1.max(2);
+
+    if let Some((quality_width, quality_height)) = quality_cap {
+        max_width = max_width.min(quality_width.max(2));
+        max_height = max_height.min(quality_height.max(2));
+    }
+
+    if (source_width as u32) <= max_width && (source_height as u32) <= max_height {
+        return (source_width, source_height);
+    }
+
+    let width_ratio = max_width as f64 / source_width as f64;
+    let height_ratio = max_height as f64 / source_height as f64;
+    let scale = width_ratio.min(height_ratio);
+
+    let mut target_width = (source_width as f64 * scale).round() as i32;
+    let mut target_height = (source_height as f64 * scale).round() as i32;
+
+    if target_width < 2 {
+        target_width = 2;
+    }
+    if target_height < 2 {
+        target_height = 2;
+    }
+
+    if source_width >= 2 {
+        target_width = target_width.min(source_width);
+    } else {
+        target_width = source_width;
+    }
+
+    if source_height >= 2 {
+        target_height = target_height.min(source_height);
+    } else {
+        target_height = source_height;
+    }
+
+    if target_width % 2 != 0 {
+        target_width = (target_width - 1).max(2);
+    }
+    if target_height % 2 != 0 {
+        target_height = (target_height - 1).max(2);
+    }
+
+    (target_width, target_height)
+}
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum StreamingDeviceSelection {
+    All,
+    Model(&'static streaming_devices::StreamingDevice),
+}
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// List of StreamingDevice
-    #[arg(short, long, value_enum, value_delimiter = ',', value_parser = |s: &_| Args::get_device_by_name(streaming_devices::STREAMING_DEVICES, s))]
-    streaming_devices: Option<Vec<&'static streaming_devices::StreamingDevice>>,
+    /// List of StreamingDevice models, or "all" (default) to target every supported device
+    #[arg(
+        short,
+        long,
+        value_delimiter = ',',
+        value_name = "STREAMING_DEVICE",
+        value_parser = Args::parse_device_selection
+    )]
+    streaming_devices: Option<Vec<StreamingDeviceSelection>>,
 
     /// Path to the configuration file
     #[arg(short, long, value_parser = value_parser!(PathBuf))]
     config_file: Option<PathBuf>,
+
+    /// Target video quality profile (defaults to match the source resolution/bitrate)
+    #[arg(long, value_enum, default_value_t = VideoQuality::MatchSource)]
+    video_quality: VideoQuality,
+
+    /// Target audio quality profile (defaults to match the source bitrate)
+    #[arg(long, value_enum, default_value_t = AudioQuality::MatchSource)]
+    audio_quality: AudioQuality,
+
+    /// Maximum video bitrate (e.g. 8M, 4800k, 5.5mbps)
+    #[arg(long, value_parser = Args::parse_bitrate)]
+    max_video_bitrate: Option<i64>,
+
+    /// Maximum audio bitrate (e.g. 320k, 0.2M)
+    #[arg(long, value_parser = Args::parse_bitrate)]
+    max_audio_bitrate: Option<i64>,
 
     /// Video file to convert (required unless probing)
     #[arg(
@@ -79,14 +358,92 @@ impl Args {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
 
-    fn get_device_by_name<'a>(
-        devices: &'a [StreamingDevice],
-        model: &str,
-    ) -> Result<&'a StreamingDevice, String> {
-        devices
+    fn parse_bitrate(input: &str) -> Result<i64, String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err("Bitrate value cannot be empty".to_string());
+        }
+
+        let lower = trimmed.to_ascii_lowercase().replace(' ', "");
+        let mut split_idx = lower.len();
+        for (idx, ch) in lower.char_indices() {
+            if !(ch.is_ascii_digit() || ch == '.' || ch == ',' || ch == '_') {
+                split_idx = idx;
+                break;
+            }
+        }
+
+        let (number_str, suffix) = lower.split_at(split_idx);
+        if number_str.is_empty() {
+            return Err(format!(
+                "Failed to parse bitrate '{}': missing number",
+                input
+            ));
+        }
+
+        let numeric = number_str.replace(',', "").replace('_', "");
+        let value: f64 = numeric
+            .parse()
+            .map_err(|_| format!("Failed to parse bitrate '{}': invalid number", input))?;
+
+        let mut normalized_suffix = suffix.trim().to_string();
+        for trailing in ["/s", "ps", "bps", "bits", "bit"] {
+            if normalized_suffix.ends_with(trailing) {
+                let new_len = normalized_suffix.len() - trailing.len();
+                normalized_suffix.truncate(new_len);
+            }
+        }
+        normalized_suffix = normalized_suffix.trim().to_string();
+
+        let multiplier = match normalized_suffix.as_str() {
+            "" | "b" => 1i64,
+            "k" | "kb" | "kbit" => 1_000i64,
+            "m" | "mb" | "mbit" => 1_000_000i64,
+            "g" | "gb" | "gbit" => 1_000_000_000i64,
+            other => {
+                return Err(format!(
+                    "Failed to parse bitrate '{}': unsupported suffix '{}'. Use plain numbers or k/m/g suffixes.",
+                    input, other
+                ));
+            }
+        };
+
+        let bits_per_second = (value * multiplier as f64).round() as i64;
+        if bits_per_second <= 0 {
+            return Err(format!(
+                "Failed to parse bitrate '{}': value must be positive",
+                input
+            ));
+        }
+
+        Ok(bits_per_second)
+    }
+
+    fn parse_device_selection(input: &str) -> Result<StreamingDeviceSelection, String> {
+        let normalized = input.trim();
+        if normalized.is_empty() {
+            return Err("Streaming device value cannot be empty".to_string());
+        }
+
+        if normalized.eq_ignore_ascii_case("all") {
+            return Ok(StreamingDeviceSelection::All);
+        }
+
+        streaming_devices::STREAMING_DEVICES
             .iter()
-            .find(|device| device.model == model)
-            .ok_or_else(|| format!("Provided streaming device model { } not found!", model))
+            .find(|device| device.model.eq_ignore_ascii_case(normalized))
+            .map(StreamingDeviceSelection::Model)
+            .ok_or_else(|| {
+                let available = streaming_devices::STREAMING_DEVICES
+                    .iter()
+                    .map(|device| device.model)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Provided streaming device model '{}' not found. Valid values: all, {}",
+                    input, available
+                )
+            })
     }
 }
 
@@ -229,13 +586,19 @@ fn process_video_stream(
         }
     }
 
+    let mut warned_drain = false;
+
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
-            Ok(frame) => {
-                error!("Successfully processed frame!");
-                frame
-            }
+            Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
+                if !warned_drain {
+                    debug!(
+                        "Video decoder drained/flushed for stream {}",
+                        stream_processing_context.stream_index
+                    );
+                    warned_drain = true;
+                }
                 break;
             }
             Err(e) => {
@@ -245,8 +608,8 @@ fn process_video_stream(
         };
 
         let mut new_frame = AVFrame::new();
-        new_frame.set_width(stream_processing_context.decode_context.width);
-        new_frame.set_height(stream_processing_context.decode_context.height);
+        new_frame.set_width(stream_processing_context.encode_context.width);
+        new_frame.set_height(stream_processing_context.encode_context.height);
         new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
         new_frame.alloc_buffer().context("Error allocating ")?;
 
@@ -318,11 +681,19 @@ fn process_audio_stream(
         }
     }
 
+    let mut warned_drain = false;
+
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
             Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
-                error!("Cannot read from drianed/flushed Decoder.");
+                if !warned_drain {
+                    debug!(
+                        "Audio decoder drained/flushed for stream {}",
+                        stream_processing_context.stream_index
+                    );
+                    warned_drain = true;
+                }
                 break;
             }
             Err(e) => {
@@ -501,14 +872,38 @@ fn set_video_codec_par(
     output_stream: &mut AVStreamMut,
     h264_profile: H264Profile, // TODO: handle cases somewhere when target video codec is NOT h264
     h264_level: H264Level,
+    quality_limits: &QualityLimits,
+    device_max_resolution: Resolution,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
-    encode_context.set_width(decode_context.width);
-    encode_context.set_height(decode_context.height);
+    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let (target_width, target_height) = clamp_dimensions(
+        decode_context.width,
+        decode_context.height,
+        device_cap,
+        quality_limits.max_video_dimensions,
+    );
+
+    if target_width != decode_context.width || target_height != decode_context.height {
+        debug!(
+            "Scaling video from {}x{} to {}x{}",
+            decode_context.width, decode_context.height, target_width, target_height
+        );
+    }
+
+    encode_context.set_width(target_width);
+    encode_context.set_height(target_height);
     encode_context.set_time_base(decode_context.time_base);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
-    encode_context.set_bit_rate(decode_context.bit_rate);
+    if let Some(bit_rate) =
+        derive_target_bitrate(decode_context.bit_rate, quality_limits.max_video_bitrate)
+    {
+        debug!("Video bitrate target set to {} bps", bit_rate);
+        encode_context.set_bit_rate(bit_rate);
+    } else {
+        debug!("Video bitrate target not set; using encoder default");
+    }
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // TODO: find a safe way to do this
@@ -523,6 +918,7 @@ fn set_audio_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
+    quality_limits: &QualityLimits,
 ) {
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
@@ -531,7 +927,14 @@ fn set_audio_codec_par(
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
-    encode_context.set_bit_rate(decode_context.bit_rate);
+    if let Some(bit_rate) =
+        derive_target_bitrate(decode_context.bit_rate, quality_limits.max_audio_bitrate)
+    {
+        debug!("Audio bitrate target set to {} bps", bit_rate);
+        encode_context.set_bit_rate(bit_rate);
+    } else {
+        debug!("Audio bitrate target not set; using encoder default");
+    }
 
     output_stream.set_codecpar(encode_context.extract_codecpar());
     output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
@@ -579,15 +982,25 @@ fn convert_video_file(
     min_h264_profile: H264Profile,
     min_h264_level: H264Level,
     _min_fps: u32,
-    _min_resolution: Resolution,
+    device_max_resolution: Resolution,
+    quality_limits: &QualityLimits,
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
-    input_format_context.dump(0, input_file)?;
+    if log::log_enabled!(Level::Debug) {
+        input_format_context.dump(0, input_file)?;
+    }
 
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
+    info!(
+        "Target codecs resolved: video={}, audio={}",
+        describe_codec(target_video_codec),
+        describe_codec(target_audio_codec)
+    );
+
+    let mut logged_hw_choice = false;
 
     for stream in input_format_context.streams() {
         // TODO: ID streams either unsupported in output container type or without a supported decoder and skip them, producing a warning for each skipped.
@@ -624,9 +1037,14 @@ fn convert_video_file(
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
                     find_hw_encoder(target_video_codec, hw_accel);
-                let encoder = maybe_hw_encoder
-                    .or_else(|| AVCodec::find_encoder(target_video_codec))
-                    .expect("Could not find H264 encoder");
+                let (encoder, using_hw_encoder) = match maybe_hw_encoder {
+                    Some(enc) => (enc, true),
+                    None => (
+                        AVCodec::find_encoder(target_video_codec)
+                            .expect("Could not find H264 encoder"),
+                        false,
+                    ),
+                };
                 encode_context = AVCodecContext::new(&encoder);
                 // Attach hardware device if present (must be set before open())
                 if let Some(buf) = maybe_hw_dev {
@@ -637,12 +1055,48 @@ fn convert_video_file(
                 }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
+                if !logged_hw_choice {
+                    let encoder_name = encoder.name().to_string_lossy().into_owned();
+                    let is_hw = using_hw_encoder
+                        || encoder_name.contains("nvenc")
+                        || encoder_name.contains("qsv")
+                        || encoder_name.contains("amf")
+                        || encoder_name.contains("vaapi")
+                        || encoder_name.contains("videotoolbox")
+                        || encoder_name.contains("_mf");
+                    if is_hw {
+                        if maybe_hw_dev.is_some() {
+                            info!("Video encoder: hardware ({:?}, {})", hw_accel, encoder_name);
+                        } else {
+                            info!("Video encoder: hardware ({})", encoder_name);
+                        }
+                    } else if hw_accel == HwAccel::None {
+                        info!("Video encoder: software (hardware acceleration disabled)");
+                    } else if hw_accel == HwAccel::Auto {
+                        info!(
+                            "Video encoder: software fallback (no compatible hardware device detected)"
+                        );
+                    } else {
+                        info!(
+                            "Video encoder: software fallback (requested {:?} unavailable)",
+                            hw_accel
+                        );
+                    }
+                    logged_hw_choice = true;
+                }
+
                 set_video_codec_par(
                     &mut decode_context,
                     &mut encode_context,
                     &mut output_stream,
                     min_h264_profile,
                     min_h264_level,
+                    quality_limits,
+                    device_max_resolution,
+                );
+                info!(
+                    "Prepared video stream {} -> {}x{}",
+                    output_stream.index, encode_context.width, encode_context.height
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
@@ -653,7 +1107,18 @@ fn convert_video_file(
                 encode_context = AVCodecContext::new(&encoder);
                 media_type = ffi::AVMEDIA_TYPE_AUDIO;
 
-                set_audio_codec_par(&mut decode_context, &mut encode_context, &mut output_stream);
+                set_audio_codec_par(
+                    &mut decode_context,
+                    &mut encode_context,
+                    &mut output_stream,
+                    quality_limits,
+                );
+                info!(
+                    "Prepared audio stream {} -> {} channels, {} Hz",
+                    output_stream.index,
+                    encode_context.ch_layout.nb_channels,
+                    encode_context.sample_rate
+                );
                 // Initialize the resampler to be able to convert audio sample formats.
                 resample_context =
                     init_audio_resampler(&mut decode_context, &mut encode_context).ok();
@@ -678,6 +1143,11 @@ fn convert_video_file(
                     &mut decode_context,
                     &mut encode_context,
                     &mut output_stream,
+                );
+                info!(
+                    "Prepared subtitle stream {} -> {}",
+                    output_stream.index,
+                    describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
                 );
             }
             // TODO: Handle metadata streams
@@ -803,12 +1273,18 @@ fn convert_video_file(
 }
 
 fn main() -> Result<()> {
-    // FFMPEG TRACE LOGGING
-    // unsafe {
-    //     ffi::av_log_set_level(ffi::AV_LOG_TRACE as i32);
-    // }
+    if env::var_os("RUST_LOG").is_none() {
+        env::set_var("RUST_LOG", "info");
+    }
+    let _ = env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .try_init();
 
-    let args = Args::parse();
+    unsafe {
+        ffi::av_log_set_level(ffi::AV_LOG_WARNING as i32);
+    }
+
+    let mut args = Args::parse();
 
     if args.probe_hw || args.probe_codecs {
         if args.probe_json {
@@ -829,35 +1305,109 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-
-    // CLI ARG validation
-    // TODO: Use clap integration for this?
-    if args.streaming_devices.is_none() && args.config_file.is_none() {
-        eprintln!("Error: At least one of --streaming-devices or --config-file is required.");
-        std::process::exit(1);
-    }
-
     // TODO: implement config file
     if args.config_file.is_some() {
         eprintln!("Error: The --config-file option is not implemented yet.");
         std::process::exit(1);
     }
 
+    let mut quality_limits = QualityLimits::default();
+    quality_limits.apply_video_quality(args.video_quality);
+    quality_limits.apply_audio_quality(args.audio_quality);
+    if let Some(video_cap) = args.max_video_bitrate {
+        quality_limits.max_video_bitrate = Some(video_cap);
+    }
+    if let Some(audio_cap) = args.max_audio_bitrate {
+        quality_limits.max_audio_bitrate = Some(audio_cap);
+    }
+
+    debug!(
+        "Video quality {}, audio quality {}, caps: resolution={:?}, video={:?} bps, audio={:?} bps",
+        args.video_quality,
+        args.audio_quality,
+        quality_limits.max_video_dimensions,
+        quality_limits.max_video_bitrate,
+        quality_limits.max_audio_bitrate
+    );
+
     // TODO: add reading of config file
     // let config_file = args.config_file.unwrap();
 
     // let config_streaming_devices = config::parse_config_from_toml(config_file).unwrap();
 
-    let cli_arg_streaming_devices = args.streaming_devices.unwrap();
+    let input_display = args
+        .input_file
+        .as_ref()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unset>".to_string());
+    let output_display = args
+        .output_file
+        .as_ref()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unset>".to_string());
 
-    let streaming_devices = &cli_arg_streaming_devices;
+    let selections = args
+        .streaming_devices
+        .take()
+        .unwrap_or_else(|| vec![StreamingDeviceSelection::All]);
 
-    let common_video_codec = StreamingDevice::get_common_video_codec(streaming_devices)?;
-    let common_audio_codec = StreamingDevice::get_common_audio_codec(streaming_devices)?;
-    let min_h264_profile = StreamingDevice::get_min_h264_profile(streaming_devices)?;
-    let min_h264_level = StreamingDevice::get_min_h264_level(streaming_devices)?;
-    let min_fps = StreamingDevice::get_min_fps(streaming_devices)?;
-    let min_resolution = StreamingDevice::get_min_resolution(streaming_devices)?;
+    let mut streaming_devices: Vec<&StreamingDevice> = if selections
+        .iter()
+        .any(|selection| matches!(selection, StreamingDeviceSelection::All))
+    {
+        streaming_devices::STREAMING_DEVICES.iter().collect()
+    } else {
+        selections
+            .into_iter()
+            .filter_map(|selection| match selection {
+                StreamingDeviceSelection::Model(device) => Some(device),
+                StreamingDeviceSelection::All => None,
+            })
+            .collect()
+    };
+
+    streaming_devices.sort_by_key(|device| device.model);
+    streaming_devices.dedup_by_key(|device| device.model);
+
+    if streaming_devices.is_empty() {
+        bail!("No streaming devices resolved from CLI arguments.");
+    }
+
+    let common_video_codec = StreamingDevice::get_common_video_codec(&streaming_devices)?;
+    let common_audio_codec = StreamingDevice::get_common_audio_codec(&streaming_devices)?;
+    let min_h264_profile = StreamingDevice::get_min_h264_profile(&streaming_devices)?;
+    let min_h264_level = StreamingDevice::get_min_h264_level(&streaming_devices)?;
+    let min_fps = StreamingDevice::get_min_fps(&streaming_devices)?;
+    let min_resolution = StreamingDevice::get_min_resolution(&streaming_devices)?;
+    let device_cap = resolution_to_dimensions(min_resolution);
+
+    let device_names = streaming_devices
+        .iter()
+        .map(|device| device.name)
+        .collect::<Vec<_>>();
+
+    info!("Converting '{}' -> '{}'", input_display, output_display);
+    info!(
+        "Target streaming devices ({}): {}",
+        device_names.len(),
+        device_names.join(", ")
+    );
+    info!("Hardware acceleration preference: {:?}", args.hw_accel);
+    info!(
+        "Video quality preset: {} ({}; bitrate {})",
+        args.video_quality,
+        describe_resolution(quality_limits.max_video_dimensions),
+        describe_bitrate(quality_limits.max_video_bitrate)
+    );
+    info!(
+        "Audio quality preset: {} (bitrate {})",
+        args.audio_quality,
+        describe_bitrate(quality_limits.max_audio_bitrate)
+    );
+    info!(
+        "Device capability ceiling: {}x{}, H.264 profile {:?}, level {:?}",
+        device_cap.0, device_cap.1, min_h264_profile, min_h264_level
+    );
 
     // TODO: Check if video file is already compatible and skip if it is
 
@@ -881,6 +1431,7 @@ fn main() -> Result<()> {
         min_h264_level,
         min_fps,
         min_resolution,
+        &quality_limits,
         args.hw_accel,
     )
 }
