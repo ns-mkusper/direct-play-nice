@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::{
     env,
     ffi::{CStr, CString},
+    os::raw::c_void,
     sync::atomic::{AtomicI64, Ordering},
 };
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
@@ -46,6 +47,18 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
                 .to_str()
                 .unwrap_or("unknown")
         },
+    }
+}
+
+unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
+    if let (Ok(k), Ok(v)) = (CString::new(key), CString::new(value)) {
+        ffi::av_opt_set(ctx as *mut c_void, k.as_ptr(), v.as_ptr(), 0);
+    }
+}
+
+unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) {
+    if let Ok(k) = CString::new(key) {
+        ffi::av_opt_set_int(ctx as *mut c_void, k.as_ptr(), value, 0);
     }
 }
 
@@ -979,6 +992,7 @@ fn set_video_codec_par(
     quality_limits: &QualityLimits,
     device_max_resolution: Resolution,
     source_bit_rate_hint: i64,
+    encoder_name: &str,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = resolution_to_dimensions(device_max_resolution);
@@ -1020,6 +1034,17 @@ fn set_video_codec_par(
                 (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
             (*encode_context.as_mut_ptr()).bit_rate_tolerance =
                 (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+            if encoder_name.contains("amf") {
+                set_codec_option_str(encode_context.as_mut_ptr(), "usage", "transcoding");
+                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr");
+                set_codec_option_i64(encode_context.as_mut_ptr(), "max_bitrate", bit_rate);
+                set_codec_option_i64(encode_context.as_mut_ptr(), "min_bitrate", bit_rate);
+                set_codec_option_i64(encode_context.as_mut_ptr(), "target_bitrate", bit_rate);
+            } else if encoder_name.contains("nvenc") {
+                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr_hq");
+                set_codec_option_i64(encode_context.as_mut_ptr(), "maxrate", bit_rate);
+                set_codec_option_i64(encode_context.as_mut_ptr(), "bufsize", bit_rate);
+            }
         }
     } else {
         debug!("Video bitrate target not set; using encoder default");
@@ -1199,8 +1224,10 @@ fn convert_video_file(
                 }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
+                let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
+
                 if !logged_video_encoder {
-                    let encoder_name = encoder.name().to_string_lossy().into_owned();
+                    let encoder_name = &encoder_name_owned;
                     let is_hw = using_hw_encoder
                         || encoder_name.contains("nvenc")
                         || encoder_name.contains("qsv")
@@ -1234,6 +1261,7 @@ fn convert_video_file(
                     quality_limits,
                     device_max_resolution,
                     input_stream_codecpar.bit_rate,
+                    &encoder_name_owned,
                 );
                 let src_par = stream.codecpar();
                 info!(
@@ -1251,7 +1279,7 @@ fn convert_video_file(
                     describe_codec(target_video_codec),
                     if requested_video_quality == VideoQuality::MatchSource {
                         format!(
-                            " (≈{} preset)",
+                            " (~{} approx)",
                             nearest_video_preset(
                                 encode_context.width,
                                 encode_context.height,
@@ -1304,7 +1332,7 @@ fn convert_video_file(
                     describe_codec(target_audio_codec),
                     if requested_audio_quality == AudioQuality::MatchSource {
                         format!(
-                            " (≈{} preset)",
+                            " (~{} approx)",
                             nearest_audio_preset(encode_context.bit_rate)
                         )
                     } else {
@@ -1478,7 +1506,7 @@ fn convert_video_file(
             ffi::AVMEDIA_TYPE_VIDEO => {
                 let preset = if requested_video_quality == VideoQuality::MatchSource {
                     format!(
-                        " (≈{} preset)",
+                        " (~{} approx)",
                         nearest_video_preset(
                             context.encode_context.width,
                             context.encode_context.height,
@@ -1501,7 +1529,7 @@ fn convert_video_file(
             ffi::AVMEDIA_TYPE_AUDIO => {
                 let preset = if requested_audio_quality == AudioQuality::MatchSource {
                     format!(
-                        " (≈{} preset)",
+                        " (~{} approx)",
                         nearest_audio_preset(context.encode_context.bit_rate)
                     )
                 } else {
