@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{value_parser, Parser, ValueEnum};
+use clap::{value_parser, Parser};
 use log::{debug, error, warn};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
@@ -35,13 +35,19 @@ struct Args {
     #[arg(short, long, value_parser = value_parser!(PathBuf))]
     config_file: Option<PathBuf>,
 
-    /// Video file to convert
-    #[arg(value_parser = Args::parse_cstring)]
-    input_file: CString,
+    /// Video file to convert (required unless probing)
+    #[arg(
+        value_parser = Args::parse_cstring,
+        required_unless_present_any = ["probe_hw", "probe_codecs"]
+    )]
+    input_file: Option<CString>,
 
-    /// Our output direct-play-compatible video file
-    #[arg(value_parser = Args::parse_cstring)]
-    output_file: CString,
+    /// Our output direct-play-compatible video file (required unless probing)
+    #[arg(
+        value_parser = Args::parse_cstring,
+        required_unless_present_any = ["probe_hw", "probe_codecs"]
+    )]
+    output_file: Option<CString>,
 
     /// Hardware acceleration preference (auto tries GPU encoders if available)
     #[arg(long, value_enum, default_value_t = HwAccel::Auto)]
@@ -572,8 +578,8 @@ fn convert_video_file(
     target_audio_codec: ffi::AVCodecID,
     min_h264_profile: H264Profile,
     min_h264_level: H264Level,
-    min_fps: u32,
-    min_resolution: Resolution,
+    _min_fps: u32,
+    _min_resolution: Resolution,
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
@@ -855,9 +861,20 @@ fn main() -> Result<()> {
 
     // TODO: Check if video file is already compatible and skip if it is
 
+    let input_file = args
+        .input_file
+        .as_ref()
+        .map(|s| s.as_c_str())
+        .expect("INPUT_FILE is required unless using --probe-* flags");
+    let output_file = args
+        .output_file
+        .as_ref()
+        .map(|s| s.as_c_str())
+        .expect("OUTPUT_FILE is required unless using --probe-* flags");
+
     convert_video_file(
-        &args.input_file,
-        &args.output_file,
+        input_file,
+        output_file,
         common_video_codec,
         common_audio_codec,
         min_h264_profile,
