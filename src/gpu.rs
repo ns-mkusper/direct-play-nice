@@ -63,11 +63,16 @@ pub fn find_hw_encoder(
         let cname = CString::new(encoder_name).unwrap();
         if let Some(encoder) = AVCodec::find_encoder_by_name(cname.as_c_str()) {
             let mut device_ref: Option<*mut ffi::AVBufferRef> = None;
+            let mut success = dev_types.is_empty();
             for dev in dev_types {
                 if let Some(buf) = try_create_hw_device(dev) {
                     device_ref = Some(buf);
+                    success = true;
                     break;
                 }
+            }
+            if !success {
+                continue;
             }
             return (Some(encoder), device_ref);
         }
@@ -109,18 +114,18 @@ const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])]
 #[cfg(all(not(target_os = "macos"), target_os = "windows"))]
 const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])] {
     &[
-        ("h264_nvenc", &["cuda"]),
         ("h264_amf", &["d3d11va", "dxva2"]),
         ("h264_mf", &[]),
+        ("h264_nvenc", &["cuda"]),
         ("h264_qsv", &["qsv"]),
     ]
 }
 #[cfg(all(not(target_os = "macos"), target_os = "windows"))]
 const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])] {
     &[
-        ("hevc_nvenc", &["cuda"]),
         ("hevc_amf", &["d3d11va", "dxva2"]),
         ("hevc_mf", &[]),
+        ("hevc_nvenc", &["cuda"]),
         ("hevc_qsv", &["qsv"]),
     ]
 }
