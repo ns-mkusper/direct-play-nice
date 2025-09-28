@@ -6,8 +6,6 @@
 
 use assert_cmd::prelude::*;
 use predicates::str;
-use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;

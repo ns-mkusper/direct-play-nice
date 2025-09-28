@@ -20,8 +20,6 @@ mod gpu;
 mod streaming_devices;
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
 
-// TODO: Make doc comments
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum VideoQuality {
     /// Leave video resolution/bitrate untouched.
@@ -246,7 +244,8 @@ fn clamp_dimensions(
 
     (target_width, target_height)
 }
-
+// TODO: switch to enum to allow for different modes
+// see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum StreamingDeviceSelection {
     All,
@@ -574,8 +573,8 @@ fn process_video_stream(
         };
 
         let mut new_frame = AVFrame::new();
-        new_frame.set_width(stream_processing_context.decode_context.width);
-        new_frame.set_height(stream_processing_context.decode_context.height);
+        new_frame.set_width(stream_processing_context.encode_context.width);
+        new_frame.set_height(stream_processing_context.encode_context.height);
         new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
         new_frame.alloc_buffer().context("Error allocating ")?;
 
@@ -1198,7 +1197,6 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-
     // TODO: implement config file
     if args.config_file.is_some() {
         eprintln!("Error: The --config-file option is not implemented yet.");
