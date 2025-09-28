@@ -68,8 +68,19 @@ github-build-setup = "../templates/build-setup.yml"
 
 [package.metadata.vcpkg]
 dependencies = [
-  { name = "ffmpeg", features = ["x264", "vpx", "freetype", "fontconfig"] },
-  { name = "x264", features = ["asm", "core", "default-features"] },
+  { name = "ffmpeg", features = [
+    "x264",
+    "vpx",
+    "freetype",
+    "fontconfig",
+    "nvcodec",
+    "amf",
+  ] },
+  { name = "x264", features = [
+    "asm",
+    "core",
+    "default-features",
+  ] },
 ]
 git = "https://github.com/microsoft/vcpkg"
 rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
@@ -78,13 +89,17 @@ rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
 triplet = "x64-windows-static"
 dependencies = [
   { name = "ffmpeg", features = [
-      "x264",
-      "vpx",
-      "freetype",
-      "fontconfig",
-      "nvcodec",
-      "qsv",
-      "amf"
-    ] },
-  { name = "x264", features = ["asm", "core", "default-features"] },
+    "x264",
+    "vpx",
+    "freetype",
+    "fontconfig",
+    "nvcodec",
+    "qsv",
+    "amf",
+  ] },
+  { name = "x264", features = [
+    "asm",
+    "core",
+    "default-features",
+  ] },
 ]
