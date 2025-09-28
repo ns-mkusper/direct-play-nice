@@ -1244,12 +1244,24 @@ fn convert_video_file(
             continue;
         }
 
-        let mut output_stream = output_format_context.new_stream();
+        // Skip attached picture (cover art) streams; treat them like metadata.
+        let disposition_flags = unsafe { (*stream.as_ptr()).disposition as i32 };
+        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
+            info!(
+                "Skipping attached-picture stream {} ({}).",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
+                        .to_string_lossy()
+                }
+            );
+            continue;
+        }
 
         let input_stream_codecpar = stream.codecpar();
         let input_codec_id = input_stream_codecpar.codec_id;
         let decoder = AVCodec::find_decoder(input_codec_id)
-            .with_context(|| anyhow!("Decoder not found for stream {}.", output_stream.index))?;
+            .with_context(|| anyhow!("Decoder not found for stream {}.", stream.index))?;
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
         decode_context.set_time_base(stream.time_base); // TODO: needed?
@@ -1264,26 +1276,30 @@ fn convert_video_file(
         let mut resample_context: Option<SwrContext> = None;
         let mut hw_device_ctx_ptr: Option<*mut ffi::AVBufferRef> = None;
 
+        let is_video_stream = decode_context.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
+        if is_video_stream && stream.index as usize != primary_index {
+            match uv_policy {
+                UnsupportedVideoPolicy::Ignore => {
+                    warn!(
+                        "Ignoring extra video stream (index {}) due to policy 'ignore'",
+                        stream.index
+                    );
+                    continue;
+                }
+                UnsupportedVideoPolicy::Fail => {
+                    bail!(
+                        "Encountered extra video stream (index {}). Rerun with --unsupported-video-policy=convert or ignore.",
+                        stream.index
+                    );
+                }
+                UnsupportedVideoPolicy::Convert => { /* continue */ }
+            }
+        }
+
+        let mut output_stream = output_format_context.new_stream();
+
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
-                if stream.index as usize != primary_index {
-                    match uv_policy {
-                        UnsupportedVideoPolicy::Ignore => {
-                            warn!(
-                                "Ignoring extra video stream (index {}) due to policy 'ignore'",
-                                stream.index
-                            );
-                            continue;
-                        }
-                        UnsupportedVideoPolicy::Fail => {
-                            bail!(
-                                "Encountered extra video stream (index {}). Rerun with --unsupported-video-policy=convert or ignore.",
-                                stream.index
-                            );
-                        }
-                        UnsupportedVideoPolicy::Convert => { /* continue */ }
-                    }
-                }
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
@@ -1513,8 +1529,11 @@ fn convert_video_file(
             .iter_mut()
             .find(|context| context.stream_index == packet.stream_index)
         else {
-            // TODO: handle missing matching streams
-            break;
+            debug!(
+                "Skipping packet for stream {} with no processing context (likely attachment).",
+                packet.stream_index
+            );
+            continue;
         };
 
         let input_stream: &rsmpeg::avformat::AVStreamRef<'_> =
@@ -1685,14 +1704,22 @@ fn select_primary_video_stream_index(
         let cp = st.codecpar();
         let (w, h) = (cp.width as u64, cp.height as u64);
         let area = w.saturating_mul(h);
-        let br = if cp.bit_rate > 0 { cp.bit_rate as u64 } else { 0 };
+        let br = if cp.bit_rate > 0 {
+            cp.bit_rate as u64
+        } else {
+            0
+        };
         let fps_milli: u64 = st
             .guess_framerate()
             .map(|tb| {
                 let num = tb.num as i128;
                 let den = if tb.den == 0 { 1 } else { tb.den } as i128;
                 let v = (num * 1000) / den;
-                if v < 0 { 0 } else { v as u64 }
+                if v < 0 {
+                    0
+                } else {
+                    v as u64
+                }
             })
             .unwrap_or(0);
         let score: u128 = match criteria {
@@ -1758,23 +1785,14 @@ fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
                     .unwrap_or_else(|| "?".into());
                 println!(
                     "res={}x{} fps={} bitrate={} time_base={}/{}",
-                    w,
-                    h,
-                    fps,
-                    cp.bit_rate,
-                    tb.num,
-                    tb.den
+                    w, h, fps, cp.bit_rate, tb.num, tb.den
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 let ch = cp.ch_layout.nb_channels;
                 println!(
                     "channels={} sample_rate={} bitrate={} time_base={}/{}",
-                    ch,
-                    cp.sample_rate,
-                    cp.bit_rate,
-                    tb.num,
-                    tb.den
+                    ch, cp.sample_rate, cp.bit_rate, tb.num, tb.den
                 );
             }
             ffi::AVMEDIA_TYPE_SUBTITLE => {
@@ -1786,10 +1804,7 @@ fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
         }
         println!(
             "  disposition: default={} forced={} hearing_impaired={} visual_impaired={}",
-            disp_default,
-            disp_forced,
-            disp_hi,
-            disp_vi
+            disp_default, disp_forced, disp_hi, disp_vi
         );
     }
     Ok(())
@@ -1802,14 +1817,22 @@ struct JsonStreamInfo {
     kind: String,
     codec: String,
     time_base: (i32, i32),
-    #[serde(skip_serializing_if = "Option::is_none")] width: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")] height: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")] fps: Option<(i32, i32)>,
-    #[serde(skip_serializing_if = "Option::is_none")] bitrate: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")] channels: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")] sample_rate: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")] language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fps: Option<(i32, i32)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bitrate: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channels: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_rate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
     disposition: JsonDisposition,
 }
 
@@ -1892,7 +1915,11 @@ fn gather_streams_info_json(input_file: &CStr, filter: StreamsFilter) -> Result<
             width,
             height,
             fps,
-            bitrate: if cp.bit_rate > 0 { Some(cp.bit_rate) } else { None },
+            bitrate: if cp.bit_rate > 0 {
+                Some(cp.bit_rate)
+            } else {
+                None
+            },
             channels,
             sample_rate,
             language,
@@ -1907,7 +1934,11 @@ fn gather_streams_info_json(input_file: &CStr, filter: StreamsFilter) -> Result<
     }
     Ok(JsonProbe {
         input: input_file.to_string_lossy().into_owned(),
-        duration_ms: if duration_us > 0 { Some(duration_us / 1000) } else { None },
+        duration_ms: if duration_us > 0 {
+            Some(duration_us / 1000)
+        } else {
+            None
+        },
         streams: out,
     })
 }

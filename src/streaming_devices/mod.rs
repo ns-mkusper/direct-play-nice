@@ -3,21 +3,6 @@ pub(crate) mod streaming_device;
 use rsmpeg::ffi::{self};
 pub use streaming_device::{H264Level, H264Profile, Resolution, StreamingDevice};
 
-/// Pseudo device selector to allow `-s all` on the CLI.
-/// This is not included in `STREAMING_DEVICES` and should be expanded to
-/// the full list by the CLI layer before computing intersections.
-pub const ALL_SELECTOR: StreamingDevice = StreamingDevice {
-    name: "All Devices (selector)",
-    model: "all",
-    maker: "<selector>",
-    video_codec: [None, None, None, None, None],
-    audio_codec: [None, None, None, None, None],
-    max_h264_profile: H264Profile::High,
-    max_h264_level: H264Level::Level5_2,
-    max_fps: 120,
-    max_resolution: Resolution::Resolution2160p,
-};
-
 /// All supported `StreamingDevices`
 pub const STREAMING_DEVICES: &[StreamingDevice; 3] = &[
     // Google Cast

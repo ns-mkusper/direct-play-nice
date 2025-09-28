@@ -115,6 +115,7 @@ Options:
 ```
 
 Notes:
+
 - In probe modes (`--probe-hw`, `--probe-codecs`, `--probe-streams`), the
   positional `<INPUT_FILE> <OUTPUT_FILE>` are not required (except
   `--probe-streams`, which requires `<INPUT_FILE>`).

@@ -45,37 +45,68 @@ fn gen_problem_input(tmp: &TempDir) -> (PathBuf, u64) {
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y","-f","lavfi","-i","testsrc=size=160x120:rate=25:duration=2",
-                "-pix_fmt","yuv444p","-c:v","mpeg4",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv444p",
+                "-c:v",
+                "mpeg4",
                 &video.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg video").success(),
+            .expect("run ffmpeg video")
+            .success(),
         "ffmpeg video generation failed"
     );
 
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y","-f","lavfi","-i","sine=frequency=1000:sample_rate=44100:duration=2",
-                "-c:a","mp2",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=2",
+                "-c:a",
+                "mp2",
                 &audio.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg audio").success(),
+            .expect("run ffmpeg audio")
+            .success(),
         "ffmpeg audio generation failed"
     );
 
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y","-i",&video.to_string_lossy(),"-i",&audio.to_string_lossy(),"-i",&subs.to_string_lossy(),
-                "-c:v","copy","-c:a","copy","-c:s","srt",
-                "-map","0:v:0","-map","1:a:0","-map","2:0",
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-i",
+                &subs.to_string_lossy(),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:s",
+                "srt",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:0",
                 &input.to_string_lossy(),
             ])
             .status()
-            .expect("run ffmpeg mux").success(),
+            .expect("run ffmpeg mux")
+            .success(),
         "ffmpeg mux failed"
     );
 
@@ -133,4 +164,3 @@ fn cli_all_devices_selector_converts_to_direct_play() -> Result<(), Box<dyn std:
 
     Ok(())
 }
-
