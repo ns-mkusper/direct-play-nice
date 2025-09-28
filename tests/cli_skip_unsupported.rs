@@ -25,7 +25,9 @@ fn ensure_ffmpeg_present() {
 
 fn probe_duration_ms(path: &PathBuf) -> u64 {
     let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(path.to_string_lossy().to_string()).unwrap().as_c_str(),
+        std::ffi::CString::new(path.to_string_lossy().to_string())
+            .unwrap()
+            .as_c_str(),
         None,
         &mut None,
     )
@@ -49,21 +51,35 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
-                "-pix_fmt", "yuv420p", "-c:v", "mpeg4",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
                 &video.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg video generation failed"
     );
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100:duration=2",
-                "-c:a", "mp2",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=2",
+                "-c:a",
+                "mp2",
                 &audio.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg audio generation failed"
     );
 
@@ -72,14 +88,22 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
         Command::new("ffmpeg")
             .args([
                 "-y",
-                "-i", &video.to_string_lossy(),
-                "-i", &audio.to_string_lossy(),
-                "-attach", &attach.to_string_lossy(),
-                "-metadata:s:t", "mimetype=text/plain",
-                "-c:v", "copy", "-c:a", "copy",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-attach",
+                &attach.to_string_lossy(),
+                "-metadata:s:t",
+                "mimetype=text/plain",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
                 &input.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg mux with attachment failed"
     );
 
@@ -103,19 +127,37 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
         None,
         &mut None,
     )?;
-    let mut saw_v = false; let mut saw_a = false;
+    let mut saw_v = false;
+    let mut saw_a = false;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO { saw_v = true; }
-        if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO { saw_a = true; }
+        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+            saw_v = true;
+        }
+        if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO {
+            saw_a = true;
+        }
         // ensure no attachments made it into output
-        assert_ne!(par.codec_type, ffi::AVMEDIA_TYPE_ATTACHMENT, "attachment leaked to output");
+        assert_ne!(
+            par.codec_type,
+            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            "attachment leaked to output"
+        );
     }
     assert!(saw_v && saw_a, "missing A/V streams in output");
 
     let out_ms = probe_duration_ms(&output);
-    let diff = if out_ms > in_ms { out_ms - in_ms } else { in_ms - out_ms };
-    assert!(diff <= 200, "duration drift too large: in={}ms out={}ms", in_ms, out_ms);
+    let diff = if out_ms > in_ms {
+        out_ms - in_ms
+    } else {
+        in_ms - out_ms
+    };
+    assert!(
+        diff <= 200,
+        "duration drift too large: in={}ms out={}ms",
+        in_ms,
+        out_ms
+    );
     Ok(())
 }
 
@@ -133,33 +175,55 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2",
-                "-pix_fmt", "yuv420p", "-c:v", "libx264", "-t", "2",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-t",
+                "2",
                 &video.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg video generation failed"
     );
     // AAC audio
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100:duration=2",
-                "-c:a", "aac",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=2",
+                "-c:a",
+                "aac",
                 &audio.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg audio generation failed"
     );
     // Small PNG cover
     assert!(
         Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "color=c=red:s=64x64:d=0.1",
-                "-frames:v", "1",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:d=0.1",
+                "-frames:v",
+                "1",
                 &cover.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg cover generation failed"
     );
 
@@ -168,15 +232,30 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
         Command::new("ffmpeg")
             .args([
                 "-y",
-                "-i", &video.to_string_lossy(),
-                "-i", &audio.to_string_lossy(),
-                "-i", &cover.to_string_lossy(),
-                "-map", "0:v:0", "-map", "1:a:0", "-map", "2:v:0",
-                "-c:v:0", "copy", "-c:a", "copy", "-c:v:1", "mjpeg",
-                "-disposition:v:1", "attached_pic",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-i",
+                &cover.to_string_lossy(),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:v:0",
+                "-c:v:0",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:v:1",
+                "mjpeg",
+                "-disposition:v:1",
+                "attached_pic",
                 &input.to_string_lossy(),
             ])
-            .status()?.success(),
+            .status()?
+            .success(),
         "ffmpeg mux with attached picture failed"
     );
 
@@ -199,8 +278,11 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
     )?;
     for st in octx.streams() {
         let par = st.codecpar();
-        assert_ne!(par.codec_type, ffi::AVMEDIA_TYPE_ATTACHMENT, "attachment leaked to output");
+        assert_ne!(
+            par.codec_type,
+            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            "attachment leaked to output"
+        );
     }
     Ok(())
 }
-
