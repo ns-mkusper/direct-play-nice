@@ -42,6 +42,12 @@ Arguments:
 Options:
   -s, --streaming-devices <STREAMING_DEVICES>  List of StreamingDevice
   -c, --config-file <CONFIG_FILE>              Path to the configuration file
+      --hw-accel <HW_ACCEL>                    Hardware acceleration: auto|none|nvenc|vaapi|qsv|videotoolbox|amf (default: auto)
+      --probe-hw                               Print available HW devices/encoders and exit
+      --probe-codecs                           Print all FFmpeg encoders/decoders and exit
+      --only-video                             Probe filter: only show video codecs
+      --only-hw                                Probe filter: only show hardware-capable codecs
+      --probe-json                             Output probe results as JSON
   -h, --help                                   Print help
   -V, --version                                Print version
 ```
@@ -89,8 +95,6 @@ if [ -z "${VCPKG_ROOT}" ] && [ -f "$(pwd)/target/vcpkg/.vcpkg-root" ]; then
 fi
 ```
 Then run `direnv allow` once in the repo.
-```
-```
 
 ## Contributions / Support
 
