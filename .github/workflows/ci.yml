@@ -5,6 +5,23 @@ on:
     branches:
       - "**"
     types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**/*.md'
+      - 'README.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
+      - 'media/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.svg'
+      - '.editorconfig'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.prettier*'
+      - '.vscode/**'
+      - '.idea/**'
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +32,7 @@ concurrency:
 
 jobs:
   test:
+    if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
     name: Test (Linux)
     runs-on: ubuntu-latest
     permissions:

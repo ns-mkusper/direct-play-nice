@@ -7,7 +7,7 @@
 //! be empty or marked unavailable, which is fine.
 
 use assert_cmd::prelude::*;
-use predicates::prelude::*;
+// use predicates::prelude::*; // not currently used
 use std::process::Command;
 
 #[test]
