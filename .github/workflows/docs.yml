@@ -1,0 +1,41 @@
+name: Docs
+
+on:
+  pull_request:
+    branches:
+      - "**"
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'media/**'
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown:
+    name: Markdown Lint + Links
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            **/*.md
+
+      - name: Check links in Markdown
+        uses: lycheeverse/lychee-action@v1
+        with:
+          # Check all Markdown files, skip build dirs
+          args: >-
+            --no-progress --verbose --max-concurrency 4
+            --exclude-path target
+            **/*.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

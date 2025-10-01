@@ -1,8 +1,7 @@
 [package]
 name = "direct_play_nice"
 description = "CLI program that converts video files to direct-play-compatible formats."
-license = "GPLv3"
-license-files = "LICENSE"
+license = "GPL-3.0-only"
 documentation = "https://github.com/ns-mkusper/direct-play-nice"
 homepage = "https://github.com/ns-mkusper/direct-play-nice"
 repository = "https://github.com/ns-mkusper/direct-play-nice"
