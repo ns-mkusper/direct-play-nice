@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
-use log::{debug, error, info, warn, Level};
+use log::{debug, error, info, trace, warn, Level};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -52,14 +52,193 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
 }
 
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
-    if let (Ok(k), Ok(v)) = (CString::new(key), CString::new(value)) {
-        ffi::av_opt_set(ctx as *mut c_void, k.as_ptr(), v.as_ptr(), 0);
+    if ctx.is_null() {
+        warn!(
+            "Failed to set codec option {}='{}': encoder context is null",
+            key, value
+        );
+        return;
+    }
+    match (CString::new(key), CString::new(value)) {
+        (Ok(k), Ok(v)) => {
+            let mut last_err = None;
+            for target in [ctx as *mut c_void, (*ctx).priv_data] {
+                if target.is_null() {
+                    continue;
+                }
+                let ret = ffi::av_opt_set(target, k.as_ptr(), v.as_ptr(), 0);
+                if ret == 0 {
+                    trace!("Codec option {}='{}' set", key, value);
+                    return;
+                }
+                last_err = Some(ret);
+                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
+                    break;
+                }
+            }
+            if let Some(err) = last_err {
+                warn!(
+                    "Failed to set codec option {}='{}': {}",
+                    key,
+                    value,
+                    av_error_to_string(err)
+                );
+            }
+        }
+        _ => warn!(
+            "Failed to set codec option {}='{}': invalid CString",
+            key, value
+        ),
     }
 }
 
 unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) {
-    if let Ok(k) = CString::new(key) {
-        ffi::av_opt_set_int(ctx as *mut c_void, k.as_ptr(), value, 0);
+    if ctx.is_null() {
+        warn!(
+            "Failed to set codec option {}={} (int): encoder context is null",
+            key, value
+        );
+        return;
+    }
+    match CString::new(key) {
+        Ok(k) => {
+            let mut last_err = None;
+            for target in [ctx as *mut c_void, (*ctx).priv_data] {
+                if target.is_null() {
+                    continue;
+                }
+                let ret = ffi::av_opt_set_int(target, k.as_ptr(), value, 0);
+                if ret == 0 {
+                    trace!("Codec option {}={} (int) set", key, value);
+                    return;
+                }
+                last_err = Some(ret);
+                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
+                    break;
+                }
+            }
+            if let Some(err) = last_err {
+                warn!(
+                    "Failed to set codec option {}={} (int): {}",
+                    key,
+                    value,
+                    av_error_to_string(err)
+                );
+            }
+        }
+        Err(_) => warn!(
+            "Failed to set codec option {}={} (int): invalid CString",
+            key, value
+        ),
+    }
+}
+
+fn av_error_to_string(err: i32) -> String {
+    let mut buf = [0i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
+    unsafe {
+        if ffi::av_strerror(err, buf.as_mut_ptr(), buf.len()) == 0 {
+            CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+        } else {
+            format!("ffmpeg error {}", err)
+        }
+    }
+}
+
+fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
+    unsafe {
+        let ptr = ffi::av_get_pix_fmt_name(fmt);
+        if ptr.is_null() {
+            format!("pix_fmt({})", fmt)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
+    unsafe {
+        let raw = ctx.as_ptr();
+        if raw.is_null() {
+            return;
+        }
+        let pix_fmt = pix_fmt_name((*raw).pix_fmt);
+        let has_hw_device = !(*raw).hw_device_ctx.is_null();
+        let has_hw_frames = !(*raw).hw_frames_ctx.is_null();
+        debug!(
+            "Encoder {} [{}]: bit_rate={} rc_max_rate={} rc_min_rate={} rc_buffer_size={} rc_initial_buffer_occupancy={} tolerance={} gop={} max_b_frames={} qmin={} qmax={} pix_fmt={} hw_device={} hw_frames={}",
+            encoder_name,
+            stage,
+            (*raw).bit_rate,
+            (*raw).rc_max_rate,
+            (*raw).rc_min_rate,
+            (*raw).rc_buffer_size,
+            (*raw).rc_initial_buffer_occupancy,
+            (*raw).bit_rate_tolerance,
+            (*raw).gop_size,
+            (*raw).max_b_frames,
+            (*raw).qmin,
+            (*raw).qmax,
+            pix_fmt,
+            has_hw_device,
+            has_hw_frames
+        );
+    }
+}
+
+fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(num) = trimmed.parse::<i32>() {
+        return Some(num);
+    }
+    let level = match trimmed.to_ascii_lowercase().as_str() {
+        "quiet" => ffi::AV_LOG_QUIET as i32,
+        "panic" => ffi::AV_LOG_PANIC as i32,
+        "fatal" => ffi::AV_LOG_FATAL as i32,
+        "error" => ffi::AV_LOG_ERROR as i32,
+        "warning" | "warn" => ffi::AV_LOG_WARNING as i32,
+        "info" => ffi::AV_LOG_INFO as i32,
+        "verbose" => ffi::AV_LOG_VERBOSE as i32,
+        "debug" => ffi::AV_LOG_DEBUG as i32,
+        "trace" => ffi::AV_LOG_TRACE as i32,
+        _ => return None,
+    };
+    Some(level)
+}
+
+fn ffmpeg_log_level_name(level: i32) -> &'static str {
+    match level {
+        x if x <= ffi::AV_LOG_QUIET as i32 => "quiet",
+        x if x <= ffi::AV_LOG_PANIC as i32 => "panic",
+        x if x <= ffi::AV_LOG_FATAL as i32 => "fatal",
+        x if x <= ffi::AV_LOG_ERROR as i32 => "error",
+        x if x <= ffi::AV_LOG_WARNING as i32 => "warning",
+        x if x <= ffi::AV_LOG_INFO as i32 => "info",
+        x if x <= ffi::AV_LOG_VERBOSE as i32 => "verbose",
+        x if x <= ffi::AV_LOG_DEBUG as i32 => "debug",
+        _ => "trace",
+    }
+}
+
+fn configure_ffmpeg_logging() {
+    let default_level = ffi::AV_LOG_WARNING as i32;
+    let requested = env::var("FFMPEG_LOG_LEVEL").ok();
+    let level = requested
+        .as_deref()
+        .and_then(parse_ffmpeg_log_level)
+        .unwrap_or(default_level);
+    unsafe {
+        ffi::av_log_set_level(level);
+    }
+    debug!(
+        "FFmpeg log level set to {} (value={})",
+        ffmpeg_log_level_name(level),
+        level
+    );
+    if requested.is_none() {
+        trace!("FFMPEG_LOG_LEVEL not set; defaulting to warning");
     }
 }
 
@@ -69,6 +248,10 @@ fn apply_hw_encoder_quality(
     target_bitrate: Option<i64>,
 ) {
     unsafe {
+        debug!(
+            "Applying hardware encoder tuning for {} (target_bitrate={:?})",
+            encoder_name, target_bitrate
+        );
         if encoder_name.contains("amf") {
             let vbv_bits = target_bitrate.unwrap_or_default().saturating_mul(2);
             set_codec_option_str(ctx, "usage", "high_quality");
@@ -85,13 +268,13 @@ fn apply_hw_encoder_quality(
                     set_codec_option_i64(ctx, "maxrate", bit_rate);
                     set_codec_option_i64(ctx, "minrate", bit_rate);
                     set_codec_option_i64(ctx, "bufsize", vbv_bits);
-                    set_codec_option_i64(ctx, "max_qp_i", 30);
-                    set_codec_option_i64(ctx, "max_qp_p", 32);
                     set_codec_option_str(ctx, "frame_skipping", "0");
                 }
                 None => {
-                    set_codec_option_str(ctx, "rc", "vbr_peak");
-                    set_codec_option_i64(ctx, "bufsize", vbv_bits.max(4_000_000));
+                    set_codec_option_str(ctx, "rc", "cqp");
+                    set_codec_option_i64(ctx, "qp_i", 20);
+                    set_codec_option_i64(ctx, "qp_p", 22);
+                    set_codec_option_i64(ctx, "qp_b", 24);
                 }
             }
         } else if encoder_name.contains("nvenc") {
@@ -108,7 +291,8 @@ fn apply_hw_encoder_quality(
                     set_codec_option_i64(ctx, "rc-lookahead", 20);
                 }
                 None => {
-                    set_codec_option_str(ctx, "rc", "vbr_hq");
+                    set_codec_option_str(ctx, "rc", "vbr");
+                    set_codec_option_i64(ctx, "cq", 21);
                 }
             }
         }
@@ -1144,9 +1328,8 @@ fn set_video_codec_par(
     } else {
         debug!("Video bitrate target not set; using encoder default");
     }
-    unsafe {
-        apply_hw_encoder_quality(encode_context.as_mut_ptr(), encoder_name, target_bit_rate);
-    }
+    apply_hw_encoder_quality(encode_context.as_mut_ptr(), encoder_name, target_bit_rate);
+    log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // TODO: find a safe way to do this
@@ -1198,6 +1381,7 @@ fn set_audio_codec_par(
 
     output_stream.set_codecpar(encode_context.extract_codecpar());
     output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
+    log_encoder_state("audio setup", encode_context, "aac");
 }
 
 fn set_subtitle_codec_par(
@@ -1998,9 +2182,7 @@ fn main() -> Result<()> {
         .format_timestamp(None)
         .try_init();
 
-    unsafe {
-        ffi::av_log_set_level(ffi::AV_LOG_WARNING as i32);
-    }
+    configure_ffmpeg_logging();
 
     let mut args = Args::parse();
 
