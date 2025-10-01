@@ -1084,9 +1084,11 @@ fn set_video_codec_par(
             (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_buffer_size =
-                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy =
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
             (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+                (bit_rate / 4).clamp(1, i32::MAX as i64) as i32;
             if encoder_name.contains("amf") {
                 set_codec_option_str(encode_context.as_mut_ptr(), "usage", "transcoding");
                 set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr");
@@ -1141,9 +1143,11 @@ fn set_audio_codec_par(
             (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_buffer_size =
-                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy =
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
             (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+                (bit_rate / 4).clamp(1, i32::MAX as i64) as i32;
         }
     } else {
         debug!("Audio bitrate target not set; using encoder default");
