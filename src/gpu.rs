@@ -1,10 +1,9 @@
 use clap::ValueEnum;
 use rsmpeg::avcodec::{AVCodec, AVCodecRef};
 use rsmpeg::ffi::{self};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
-
-use serde::Serialize;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
 pub enum HwAccel {
@@ -115,7 +114,6 @@ const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])]
 const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])] {
     &[
         ("h264_amf", &["d3d11va", "dxva2"]),
-        ("h264_mf", &[]),
         ("h264_nvenc", &["cuda"]),
         ("h264_qsv", &["qsv"]),
     ]
@@ -124,7 +122,6 @@ const fn h264_candidates() -> &'static [(&'static str, &'static [&'static str])]
 const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])] {
     &[
         ("hevc_amf", &["d3d11va", "dxva2"]),
-        ("hevc_mf", &[]),
         ("hevc_nvenc", &["cuda"]),
         ("hevc_qsv", &["qsv"]),
     ]
