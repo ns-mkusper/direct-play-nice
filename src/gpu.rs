@@ -1,5 +1,4 @@
 use clap::ValueEnum;
-use log::warn;
 use rsmpeg::avcodec::{AVCodec, AVCodecRef};
 use rsmpeg::ffi::{self};
 use serde::Serialize;
@@ -58,13 +57,6 @@ pub fn find_hw_encoder(
 
     for (encoder_name, dev_types) in encoders.iter().copied() {
         if !filter(encoder_name) {
-            continue;
-        }
-        if pref == HwAccel::Auto && encoder_name.contains("_amf") {
-            warn!(
-                "Skipping hardware encoder {} because AMD AMF currently fails to honor bitrate targets; falling back",
-                encoder_name
-            );
             continue;
         }
         let cname = CString::new(encoder_name).unwrap();

@@ -63,6 +63,58 @@ unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: 
     }
 }
 
+fn apply_hw_encoder_quality(
+    ctx: *mut ffi::AVCodecContext,
+    encoder_name: &str,
+    target_bitrate: Option<i64>,
+) {
+    unsafe {
+        if encoder_name.contains("amf") {
+            let vbv_bits = target_bitrate.unwrap_or_default().saturating_mul(2);
+            set_codec_option_str(ctx, "usage", "high_quality");
+            set_codec_option_str(ctx, "quality", "quality");
+            set_codec_option_str(ctx, "enforce_hrd", "1");
+            set_codec_option_str(ctx, "vbaq", "1");
+            set_codec_option_str(ctx, "high_motion_quality_boost_enable", "1");
+            set_codec_option_str(ctx, "preencode", "1");
+            set_codec_option_str(ctx, "preanalysis", "1");
+            match target_bitrate {
+                Some(bit_rate) => {
+                    set_codec_option_str(ctx, "rc", "cbr");
+                    set_codec_option_i64(ctx, "b", bit_rate);
+                    set_codec_option_i64(ctx, "maxrate", bit_rate);
+                    set_codec_option_i64(ctx, "minrate", bit_rate);
+                    set_codec_option_i64(ctx, "bufsize", vbv_bits);
+                    set_codec_option_i64(ctx, "max_qp_i", 30);
+                    set_codec_option_i64(ctx, "max_qp_p", 32);
+                    set_codec_option_str(ctx, "frame_skipping", "0");
+                }
+                None => {
+                    set_codec_option_str(ctx, "rc", "vbr_peak");
+                    set_codec_option_i64(ctx, "bufsize", vbv_bits.max(4_000_000));
+                }
+            }
+        } else if encoder_name.contains("nvenc") {
+            set_codec_option_str(ctx, "preset", "slow");
+            set_codec_option_str(ctx, "tune", "hq");
+            match target_bitrate {
+                Some(bit_rate) => {
+                    set_codec_option_str(ctx, "rc", "cbr_hq");
+                    let buffering = bit_rate.saturating_mul(2);
+                    set_codec_option_i64(ctx, "maxrate", bit_rate);
+                    set_codec_option_i64(ctx, "minrate", bit_rate);
+                    set_codec_option_i64(ctx, "bufsize", buffering);
+                    set_codec_option_i64(ctx, "vbv_bufsize", buffering);
+                    set_codec_option_i64(ctx, "rc-lookahead", 20);
+                }
+                None => {
+                    set_codec_option_str(ctx, "rc", "vbr_hq");
+                }
+            }
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum VideoQuality {
     /// Leave video resolution/bitrate untouched.
@@ -1076,33 +1128,24 @@ fn set_video_codec_par(
         default_video_bitrate(encode_context.width, encode_context.height)
     };
 
-    if let Some(bit_rate) = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate)
-    {
+    let target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
+    if let Some(bit_rate) = target_bit_rate {
         debug!("Video bitrate target set to {} bps", bit_rate);
         encode_context.set_bit_rate(bit_rate);
         unsafe {
+            let vbv = bit_rate.saturating_mul(2).clamp(1, i32::MAX as i64) as i32;
             (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
-            (*encode_context.as_mut_ptr()).rc_buffer_size =
-                bit_rate.clamp(1, i32::MAX as i64) as i32;
-            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy =
-                bit_rate.clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).rc_buffer_size = vbv;
+            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy = vbv;
             (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 4).clamp(1, i32::MAX as i64) as i32;
-            if encoder_name.contains("amf") {
-                set_codec_option_str(encode_context.as_mut_ptr(), "usage", "transcoding");
-                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr");
-                set_codec_option_i64(encode_context.as_mut_ptr(), "max_bitrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "min_bitrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "target_bitrate", bit_rate);
-            } else if encoder_name.contains("nvenc") {
-                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr_hq");
-                set_codec_option_i64(encode_context.as_mut_ptr(), "maxrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "bufsize", bit_rate);
-            }
+                (bit_rate / 8).max(1).clamp(1, i32::MAX as i64) as i32;
         }
     } else {
         debug!("Video bitrate target not set; using encoder default");
+    }
+    unsafe {
+        apply_hw_encoder_quality(encode_context.as_mut_ptr(), encoder_name, target_bit_rate);
     }
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
