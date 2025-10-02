@@ -114,8 +114,6 @@ fn gen_problem_input(tmp: &TempDir) -> (PathBuf, u64) {
         std::ffi::CString::new(input.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )
     .unwrap();
     let dur_ms = (ictx.duration as i64 / 1000).max(0) as u64;
@@ -141,8 +139,6 @@ fn cli_all_devices_selector_converts_to_direct_play() -> Result<(), Box<dyn std:
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )?;
 
     let mut saw_v = false;

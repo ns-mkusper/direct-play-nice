@@ -100,13 +100,13 @@ impl TryFrom<i32> for H264Level {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum H264Profile {
-    Baseline = ffi::FF_PROFILE_H264_BASELINE as isize,
-    Main = ffi::FF_PROFILE_H264_MAIN as isize,
-    Extended = ffi::FF_PROFILE_H264_EXTENDED as isize,
-    High = ffi::FF_PROFILE_H264_HIGH as isize,
-    High10 = ffi::FF_PROFILE_H264_HIGH_10 as isize,
-    High422 = ffi::FF_PROFILE_H264_HIGH_422 as isize,
-    High444 = ffi::FF_PROFILE_H264_HIGH_444 as isize,
+    Baseline = ffi::AV_PROFILE_H264_BASELINE as isize,
+    Main = ffi::AV_PROFILE_H264_MAIN as isize,
+    Extended = ffi::AV_PROFILE_H264_EXTENDED as isize,
+    High = ffi::AV_PROFILE_H264_HIGH as isize,
+    High10 = ffi::AV_PROFILE_H264_HIGH_10 as isize,
+    High422 = ffi::AV_PROFILE_H264_HIGH_422 as isize,
+    High444 = ffi::AV_PROFILE_H264_HIGH_444 as isize,
 }
 
 #[allow(dead_code)]

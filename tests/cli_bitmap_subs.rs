@@ -149,8 +149,6 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64) {
         std::ffi::CString::new(input.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )
     .unwrap();
     let dur_ms = (ictx.duration as i64 / 1000).max(0) as u64;
@@ -162,8 +160,6 @@ fn probe_duration_ms(path: &PathBuf) -> u64 {
         std::ffi::CString::new(path.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )
     .unwrap();
     (ictx.duration as i64 / 1000).max(0) as u64
@@ -193,8 +189,6 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )?;
 
     let mut saw_v = false;

@@ -111,8 +111,6 @@ fn probe_duration_ms(path: &PathBuf) -> u64 {
         std::ffi::CString::new(path.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )
     .unwrap();
     // duration in AV_TIME_BASE (microseconds)
@@ -144,8 +142,6 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )?;
 
     let mut saw_v = false;

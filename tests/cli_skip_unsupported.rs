@@ -26,8 +26,6 @@ fn probe_duration_ms(path: &PathBuf) -> u64 {
         std::ffi::CString::new(path.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )
     .unwrap();
     (ictx.duration as i64 / 1000).max(0) as u64
@@ -122,8 +120,6 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )?;
     let mut saw_v = false;
     let mut saw_a = false;
@@ -271,8 +267,6 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
         std::ffi::CString::new(output.to_string_lossy().to_string())
             .unwrap()
             .as_c_str(),
-        None,
-        &mut None,
     )?;
     for st in octx.streams() {
         let par = st.codecpar();

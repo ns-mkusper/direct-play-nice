@@ -1121,8 +1121,9 @@ fn set_audio_codec_par(
 ) {
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
+    let nb_channels = decode_context.ch_layout().nb_channels;
     encode_context
-        .set_ch_layout(AVChannelLayout::from_nb_channels(decode_context.channels).into_inner());
+        .set_ch_layout(AVChannelLayout::from_nb_channels(nb_channels).into_inner());
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
@@ -1204,12 +1205,12 @@ fn convert_video_file(
     requested_audio_quality: AudioQuality,
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
-    let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let mut input_format_context = AVFormatContextInput::open(input_file)?;
     if log::log_enabled!(Level::Debug) {
         input_format_context.dump(0, input_file)?;
     }
 
-    let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
+    let mut output_format_context = AVFormatContextOutput::create(output_file)?;
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
@@ -1423,7 +1424,7 @@ fn convert_video_file(
                 info!(
                     "Audio stream {}: {} ch @ {} Hz {} -> {} ch @ {} Hz {}{}",
                     output_stream.index,
-                    src_audio.channels,
+                    src_audio.ch_layout().nb_channels,
                     src_audio.sample_rate,
                     unsafe {
                         CStr::from_ptr(ffi::avcodec_get_name(src_audio.codec_id))
@@ -1736,7 +1737,7 @@ fn select_primary_video_stream_index(
 }
 
 fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
-    let ictx = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let ictx = AVFormatContextInput::open(input_file)?;
     println!("Input: {}", input_file.to_string_lossy());
     let duration_us = ictx.duration;
     if duration_us > 0 {
@@ -1852,7 +1853,7 @@ struct JsonDisposition {
 }
 
 fn gather_streams_info_json(input_file: &CStr, filter: StreamsFilter) -> Result<JsonProbe> {
-    let ictx = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let ictx = AVFormatContextInput::open(input_file)?;
     let duration_us = ictx.duration;
     let mut out: Vec<JsonStreamInfo> = Vec::new();
     for st in ictx.streams() {
