@@ -246,14 +246,19 @@ fn apply_hw_encoder_quality(
     ctx: *mut ffi::AVCodecContext,
     encoder_name: &str,
     target_bitrate: Option<i64>,
+    is_constant_quality_mode: bool,
 ) {
     unsafe {
         debug!(
-            "Applying hardware encoder tuning for {} (target_bitrate={:?})",
-            encoder_name, target_bitrate
+            "Applying hardware encoder tuning for {} (target_bitrate={:?}, CQ_mode={})",
+            encoder_name, target_bitrate, is_constant_quality_mode
         );
         if encoder_name.contains("amf") {
-            let vbv_bits = target_bitrate.unwrap_or_default().saturating_mul(2);
+            let derived_bitrate = target_bitrate.unwrap_or_default();
+            // Use a very high ceiling (100 Mbps) to ensure the CQP setting is not throttled.
+            let large_vbv_bits = 100_000_000i64;
+
+            // General quality boosts
             set_codec_option_str(ctx, "usage", "high_quality");
             set_codec_option_str(ctx, "quality", "quality");
             set_codec_option_str(ctx, "enforce_hrd", "1");
@@ -261,39 +266,45 @@ fn apply_hw_encoder_quality(
             set_codec_option_str(ctx, "high_motion_quality_boost_enable", "1");
             set_codec_option_str(ctx, "preencode", "1");
             set_codec_option_str(ctx, "preanalysis", "1");
-            match target_bitrate {
-                Some(bit_rate) => {
-                    set_codec_option_str(ctx, "rc", "cbr");
-                    set_codec_option_i64(ctx, "b", bit_rate);
-                    set_codec_option_i64(ctx, "maxrate", bit_rate);
-                    set_codec_option_i64(ctx, "minrate", bit_rate);
-                    set_codec_option_i64(ctx, "bufsize", vbv_bits);
-                    set_codec_option_str(ctx, "frame_skipping", "0");
-                }
-                None => {
-                    set_codec_option_str(ctx, "rc", "cqp");
-                    set_codec_option_i64(ctx, "qp_i", 20);
-                    set_codec_option_i64(ctx, "qp_p", 22);
-                    set_codec_option_i64(ctx, "qp_b", 24);
-                }
+
+            if is_constant_quality_mode {
+                // FIX: Force CQP (Constant Quantization Parameter) mode.
+                set_codec_option_str(ctx, "rc", "cqp");
+
+                // Set high-quality QP values (lower is better, 20 is a good high-quality default).
+                set_codec_option_i64(ctx, "qp_i", 20);
+                set_codec_option_i64(ctx, "qp_p", 22);
+                set_codec_option_i64(ctx, "qp_b", 24);
+
+                // Set maxrate/bufsize high to ensure CQP isn't artificially capped.
+                set_codec_option_i64(ctx, "maxrate", large_vbv_bits);
+                set_codec_option_i64(ctx, "bufsize", large_vbv_bits);
+            } else if let Some(bit_rate) = target_bitrate {
+                // CBR/Constrained VBR mode for fixed bitrate presets
+                set_codec_option_str(ctx, "rc", "cbr");
+                set_codec_option_i64(ctx, "b", bit_rate);
+                set_codec_option_i64(ctx, "maxrate", bit_rate);
+                set_codec_option_i64(ctx, "minrate", bit_rate);
+                set_codec_option_i64(ctx, "bufsize", derived_bitrate.saturating_mul(2));
+                set_codec_option_str(ctx, "frame_skipping", "0");
             }
         } else if encoder_name.contains("nvenc") {
             set_codec_option_str(ctx, "preset", "slow");
             set_codec_option_str(ctx, "tune", "hq");
-            match target_bitrate {
-                Some(bit_rate) => {
-                    set_codec_option_str(ctx, "rc", "cbr_hq");
-                    let buffering = bit_rate.saturating_mul(2);
-                    set_codec_option_i64(ctx, "maxrate", bit_rate);
-                    set_codec_option_i64(ctx, "minrate", bit_rate);
-                    set_codec_option_i64(ctx, "bufsize", buffering);
-                    set_codec_option_i64(ctx, "vbv_bufsize", buffering);
-                    set_codec_option_i64(ctx, "rc-lookahead", 20);
-                }
-                None => {
-                    set_codec_option_str(ctx, "rc", "vbr");
-                    set_codec_option_i64(ctx, "cq", 21);
-                }
+
+            if is_constant_quality_mode {
+                // FIX: Use VBR with a Constant Quality (CQ) factor for match-source quality.
+                set_codec_option_str(ctx, "rc", "vbr");
+                set_codec_option_i64(ctx, "cq", 21);
+            } else if let Some(bit_rate) = target_bitrate {
+                // CBR/Constrained VBR mode for fixed bitrate presets
+                set_codec_option_str(ctx, "rc", "cbr_hq");
+                let buffering = bit_rate.saturating_mul(2);
+                set_codec_option_i64(ctx, "maxrate", bit_rate);
+                set_codec_option_i64(ctx, "minrate", bit_rate);
+                set_codec_option_i64(ctx, "bufsize", buffering);
+                set_codec_option_i64(ctx, "vbv_bufsize", buffering);
+                set_codec_option_i64(ctx, "rc-lookahead", 20);
             }
         }
     }
@@ -1282,6 +1293,7 @@ fn set_video_codec_par(
     device_max_resolution: Resolution,
     source_bit_rate_hint: i64,
     encoder_name: &str,
+    is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = resolution_to_dimensions(device_max_resolution);
@@ -1304,31 +1316,54 @@ fn set_video_codec_par(
     encode_context.set_time_base(decode_context.time_base);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
-    let source_bit_rate = if decode_context.bit_rate > 0 {
-        decode_context.bit_rate
-    } else if source_bit_rate_hint > 0 {
-        source_bit_rate_hint
-    } else {
-        default_video_bitrate(encode_context.width, encode_context.height)
-    };
 
-    let target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
-    if let Some(bit_rate) = target_bit_rate {
-        debug!("Video bitrate target set to {} bps", bit_rate);
-        encode_context.set_bit_rate(bit_rate);
-        unsafe {
-            let vbv = bit_rate.saturating_mul(2).clamp(1, i32::MAX as i64) as i32;
-            (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
-            (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
-            (*encode_context.as_mut_ptr()).rc_buffer_size = vbv;
-            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy = vbv;
-            (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 8).max(1).clamp(1, i32::MAX as i64) as i32;
+    // START FIX: CONDITIONAL BITRATE SETTING
+    let mut target_bit_rate: Option<i64> = None;
+
+    if !is_constant_quality_mode {
+        // Calculate the target bitrate only if we are in a fixed-bitrate mode
+        let source_bit_rate = if decode_context.bit_rate > 0 {
+            decode_context.bit_rate
+        } else if source_bit_rate_hint > 0 {
+            source_bit_rate_hint
+        } else {
+            default_video_bitrate(encode_context.width, encode_context.height)
+        };
+
+        target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
+
+        if let Some(bit_rate) = target_bit_rate {
+            debug!(
+                "Video bitrate target set to {} bps (Fixed Bitrate Mode)",
+                bit_rate
+            );
+            encode_context.set_bit_rate(bit_rate);
+            unsafe {
+                let vbv = bit_rate.saturating_mul(2).clamp(1, i32::MAX as i64) as i32;
+                (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_buffer_size = vbv;
+                (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy = vbv;
+                (*encode_context.as_mut_ptr()).bit_rate_tolerance =
+                    (bit_rate / 8).max(1).clamp(1, i32::MAX as i64) as i32;
+            }
+        } else {
+            debug!("Video bitrate target not set; using encoder default");
         }
     } else {
-        debug!("Video bitrate target not set; using encoder default");
+        // In Constant Quality Mode, explicitly tell the FFmpeg context to ignore bitrate constraint
+        // The hardware tuning function (below) will enforce the quality/QP.
+        debug!("Video encoding set to Constant Quality (CQ/CQP) mode. Ignoring bitrate limits.");
+        encode_context.set_bit_rate(0);
     }
-    apply_hw_encoder_quality(encode_context.as_mut_ptr(), encoder_name, target_bit_rate);
+    // END FIX: CONDITIONAL BITRATE SETTING
+
+    apply_hw_encoder_quality(
+        encode_context.as_mut_ptr(),
+        encoder_name,
+        target_bit_rate,
+        is_constant_quality_mode, // <-- PASS NEW PARAMETER
+    );
     log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
@@ -1454,6 +1489,10 @@ fn convert_video_file(
         describe_codec(target_video_codec),
         describe_codec(target_audio_codec)
     );
+
+    // START FIX: Determine Constant Quality Mode
+    let is_constant_quality_mode = requested_video_quality == VideoQuality::MatchSource;
+    // END FIX: Determine Constant Quality Mode
 
     let mut logged_video_encoder = false;
     let mut logged_audio_encoder = false;
@@ -1591,6 +1630,7 @@ fn convert_video_file(
                     device_max_resolution,
                     input_stream_codecpar.bit_rate,
                     &encoder_name_owned,
+                    is_constant_quality_mode, // <-- PASS NEW PARAMETER
                 );
                 let src_par = stream.codecpar();
                 info!(
