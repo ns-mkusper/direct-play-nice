@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
-use log::{debug, error, info, warn, Level};
+use log::{debug, error, info, trace, warn, Level};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -52,14 +52,261 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
 }
 
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
-    if let (Ok(k), Ok(v)) = (CString::new(key), CString::new(value)) {
-        ffi::av_opt_set(ctx as *mut c_void, k.as_ptr(), v.as_ptr(), 0);
+    if ctx.is_null() {
+        warn!(
+            "Failed to set codec option {}='{}': encoder context is null",
+            key, value
+        );
+        return;
+    }
+    match (CString::new(key), CString::new(value)) {
+        (Ok(k), Ok(v)) => {
+            let mut last_err = None;
+            for target in [ctx as *mut c_void, (*ctx).priv_data] {
+                if target.is_null() {
+                    continue;
+                }
+                let ret = ffi::av_opt_set(target, k.as_ptr(), v.as_ptr(), 0);
+                if ret == 0 {
+                    trace!("Codec option {}='{}' set", key, value);
+                    return;
+                }
+                last_err = Some(ret);
+                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
+                    break;
+                }
+            }
+            if let Some(err) = last_err {
+                warn!(
+                    "Failed to set codec option {}='{}': {}",
+                    key,
+                    value,
+                    av_error_to_string(err)
+                );
+            }
+        }
+        _ => warn!(
+            "Failed to set codec option {}='{}': invalid CString",
+            key, value
+        ),
     }
 }
 
 unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) {
-    if let Ok(k) = CString::new(key) {
-        ffi::av_opt_set_int(ctx as *mut c_void, k.as_ptr(), value, 0);
+    if ctx.is_null() {
+        warn!(
+            "Failed to set codec option {}={} (int): encoder context is null",
+            key, value
+        );
+        return;
+    }
+    match CString::new(key) {
+        Ok(k) => {
+            let mut last_err = None;
+            for target in [ctx as *mut c_void, (*ctx).priv_data] {
+                if target.is_null() {
+                    continue;
+                }
+                let ret = ffi::av_opt_set_int(target, k.as_ptr(), value, 0);
+                if ret == 0 {
+                    trace!("Codec option {}={} (int) set", key, value);
+                    return;
+                }
+                last_err = Some(ret);
+                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
+                    break;
+                }
+            }
+            if let Some(err) = last_err {
+                warn!(
+                    "Failed to set codec option {}={} (int): {}",
+                    key,
+                    value,
+                    av_error_to_string(err)
+                );
+            }
+        }
+        Err(_) => warn!(
+            "Failed to set codec option {}={} (int): invalid CString",
+            key, value
+        ),
+    }
+}
+
+fn av_error_to_string(err: i32) -> String {
+    let mut buf = [0i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
+    unsafe {
+        if ffi::av_strerror(err, buf.as_mut_ptr(), buf.len()) == 0 {
+            CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+        } else {
+            format!("ffmpeg error {}", err)
+        }
+    }
+}
+
+fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
+    unsafe {
+        let ptr = ffi::av_get_pix_fmt_name(fmt);
+        if ptr.is_null() {
+            format!("pix_fmt({})", fmt)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
+    unsafe {
+        let raw = ctx.as_ptr();
+        if raw.is_null() {
+            return;
+        }
+        let pix_fmt = pix_fmt_name((*raw).pix_fmt);
+        let has_hw_device = !(*raw).hw_device_ctx.is_null();
+        let has_hw_frames = !(*raw).hw_frames_ctx.is_null();
+        debug!(
+            "Encoder {} [{}]: bit_rate={} rc_max_rate={} rc_min_rate={} rc_buffer_size={} rc_initial_buffer_occupancy={} tolerance={} gop={} max_b_frames={} qmin={} qmax={} pix_fmt={} hw_device={} hw_frames={}",
+            encoder_name,
+            stage,
+            (*raw).bit_rate,
+            (*raw).rc_max_rate,
+            (*raw).rc_min_rate,
+            (*raw).rc_buffer_size,
+            (*raw).rc_initial_buffer_occupancy,
+            (*raw).bit_rate_tolerance,
+            (*raw).gop_size,
+            (*raw).max_b_frames,
+            (*raw).qmin,
+            (*raw).qmax,
+            pix_fmt,
+            has_hw_device,
+            has_hw_frames
+        );
+    }
+}
+
+fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(num) = trimmed.parse::<i32>() {
+        return Some(num);
+    }
+    let level = match trimmed.to_ascii_lowercase().as_str() {
+        "quiet" => ffi::AV_LOG_QUIET as i32,
+        "panic" => ffi::AV_LOG_PANIC as i32,
+        "fatal" => ffi::AV_LOG_FATAL as i32,
+        "error" => ffi::AV_LOG_ERROR as i32,
+        "warning" | "warn" => ffi::AV_LOG_WARNING as i32,
+        "info" => ffi::AV_LOG_INFO as i32,
+        "verbose" => ffi::AV_LOG_VERBOSE as i32,
+        "debug" => ffi::AV_LOG_DEBUG as i32,
+        "trace" => ffi::AV_LOG_TRACE as i32,
+        _ => return None,
+    };
+    Some(level)
+}
+
+fn ffmpeg_log_level_name(level: i32) -> &'static str {
+    match level {
+        x if x <= ffi::AV_LOG_QUIET as i32 => "quiet",
+        x if x <= ffi::AV_LOG_PANIC as i32 => "panic",
+        x if x <= ffi::AV_LOG_FATAL as i32 => "fatal",
+        x if x <= ffi::AV_LOG_ERROR as i32 => "error",
+        x if x <= ffi::AV_LOG_WARNING as i32 => "warning",
+        x if x <= ffi::AV_LOG_INFO as i32 => "info",
+        x if x <= ffi::AV_LOG_VERBOSE as i32 => "verbose",
+        x if x <= ffi::AV_LOG_DEBUG as i32 => "debug",
+        _ => "trace",
+    }
+}
+
+fn configure_ffmpeg_logging() {
+    let default_level = ffi::AV_LOG_WARNING as i32;
+    let requested = env::var("FFMPEG_LOG_LEVEL").ok();
+    let level = requested
+        .as_deref()
+        .and_then(parse_ffmpeg_log_level)
+        .unwrap_or(default_level);
+    unsafe {
+        ffi::av_log_set_level(level);
+    }
+    debug!(
+        "FFmpeg log level set to {} (value={})",
+        ffmpeg_log_level_name(level),
+        level
+    );
+    if requested.is_none() {
+        trace!("FFMPEG_LOG_LEVEL not set; defaulting to warning");
+    }
+}
+
+fn apply_hw_encoder_quality(
+    ctx: *mut ffi::AVCodecContext,
+    encoder_name: &str,
+    target_bitrate: Option<i64>,
+    is_constant_quality_mode: bool,
+) {
+    unsafe {
+        debug!(
+            "Applying hardware encoder tuning for {} (target_bitrate={:?}, CQ_mode={})",
+            encoder_name, target_bitrate, is_constant_quality_mode
+        );
+        if encoder_name.contains("amf") {
+            let derived_bitrate = target_bitrate.unwrap_or_default();
+            // Use a very high ceiling (100 Mbps) to ensure the CQP setting is not throttled.
+            let large_vbv_bits = 100_000_000i64;
+
+            // General quality boosts
+            set_codec_option_str(ctx, "usage", "high_quality");
+            set_codec_option_str(ctx, "quality", "quality");
+            set_codec_option_str(ctx, "enforce_hrd", "1");
+            set_codec_option_str(ctx, "vbaq", "1");
+            set_codec_option_str(ctx, "high_motion_quality_boost_enable", "1");
+            set_codec_option_str(ctx, "preencode", "1");
+            set_codec_option_str(ctx, "preanalysis", "1");
+
+            if is_constant_quality_mode {
+                // FIX: Force CQP (Constant Quantization Parameter) mode.
+                set_codec_option_str(ctx, "rc", "cqp");
+
+                // Set high-quality QP values (lower is better, 20 is a good high-quality default).
+                set_codec_option_i64(ctx, "qp_i", 20);
+                set_codec_option_i64(ctx, "qp_p", 22);
+                set_codec_option_i64(ctx, "qp_b", 24);
+
+                // Set maxrate/bufsize high to ensure CQP isn't artificially capped.
+                set_codec_option_i64(ctx, "maxrate", large_vbv_bits);
+                set_codec_option_i64(ctx, "bufsize", large_vbv_bits);
+            } else if let Some(bit_rate) = target_bitrate {
+                // CBR/Constrained VBR mode for fixed bitrate presets
+                set_codec_option_str(ctx, "rc", "cbr");
+                set_codec_option_i64(ctx, "b", bit_rate);
+                set_codec_option_i64(ctx, "maxrate", bit_rate);
+                set_codec_option_i64(ctx, "minrate", bit_rate);
+                set_codec_option_i64(ctx, "bufsize", derived_bitrate.saturating_mul(2));
+                set_codec_option_str(ctx, "frame_skipping", "0");
+            }
+        } else if encoder_name.contains("nvenc") {
+            set_codec_option_str(ctx, "preset", "slow");
+            set_codec_option_str(ctx, "tune", "hq");
+
+            if is_constant_quality_mode {
+                // FIX: Use VBR with a Constant Quality (CQ) factor for match-source quality.
+                set_codec_option_str(ctx, "rc", "vbr");
+                set_codec_option_i64(ctx, "cq", 21);
+            } else if let Some(bit_rate) = target_bitrate {
+                // CBR/Constrained VBR mode for fixed bitrate presets
+                set_codec_option_str(ctx, "rc", "cbr_hq");
+                let buffering = bit_rate.saturating_mul(2);
+                set_codec_option_i64(ctx, "maxrate", bit_rate);
+                set_codec_option_i64(ctx, "minrate", bit_rate);
+                set_codec_option_i64(ctx, "bufsize", buffering);
+                set_codec_option_i64(ctx, "vbv_bufsize", buffering);
+                set_codec_option_i64(ctx, "rc-lookahead", 20);
+            }
+        }
     }
 }
 
@@ -1046,6 +1293,7 @@ fn set_video_codec_par(
     device_max_resolution: Resolution,
     source_bit_rate_hint: i64,
     encoder_name: &str,
+    is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = resolution_to_dimensions(device_max_resolution);
@@ -1068,40 +1316,55 @@ fn set_video_codec_par(
     encode_context.set_time_base(decode_context.time_base);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
-    let source_bit_rate = if decode_context.bit_rate > 0 {
-        decode_context.bit_rate
-    } else if source_bit_rate_hint > 0 {
-        source_bit_rate_hint
-    } else {
-        default_video_bitrate(encode_context.width, encode_context.height)
-    };
 
-    if let Some(bit_rate) = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate)
-    {
-        debug!("Video bitrate target set to {} bps", bit_rate);
-        encode_context.set_bit_rate(bit_rate);
-        unsafe {
-            (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
-            (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
-            (*encode_context.as_mut_ptr()).rc_buffer_size =
-                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
-            (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
-            if encoder_name.contains("amf") {
-                set_codec_option_str(encode_context.as_mut_ptr(), "usage", "transcoding");
-                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr");
-                set_codec_option_i64(encode_context.as_mut_ptr(), "max_bitrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "min_bitrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "target_bitrate", bit_rate);
-            } else if encoder_name.contains("nvenc") {
-                set_codec_option_str(encode_context.as_mut_ptr(), "rc", "cbr_hq");
-                set_codec_option_i64(encode_context.as_mut_ptr(), "maxrate", bit_rate);
-                set_codec_option_i64(encode_context.as_mut_ptr(), "bufsize", bit_rate);
+    // START FIX: CONDITIONAL BITRATE SETTING
+    let mut target_bit_rate: Option<i64> = None;
+
+    if !is_constant_quality_mode {
+        // Calculate the target bitrate only if we are in a fixed-bitrate mode
+        let source_bit_rate = if decode_context.bit_rate > 0 {
+            decode_context.bit_rate
+        } else if source_bit_rate_hint > 0 {
+            source_bit_rate_hint
+        } else {
+            default_video_bitrate(encode_context.width, encode_context.height)
+        };
+
+        target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
+
+        if let Some(bit_rate) = target_bit_rate {
+            debug!(
+                "Video bitrate target set to {} bps (Fixed Bitrate Mode)",
+                bit_rate
+            );
+            encode_context.set_bit_rate(bit_rate);
+            unsafe {
+                let vbv = bit_rate.saturating_mul(2).clamp(1, i32::MAX as i64) as i32;
+                (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_buffer_size = vbv;
+                (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy = vbv;
+                (*encode_context.as_mut_ptr()).bit_rate_tolerance =
+                    (bit_rate / 8).max(1).clamp(1, i32::MAX as i64) as i32;
             }
+        } else {
+            debug!("Video bitrate target not set; using encoder default");
         }
     } else {
-        debug!("Video bitrate target not set; using encoder default");
+        // In Constant Quality Mode, explicitly tell the FFmpeg context to ignore bitrate constraint
+        // The hardware tuning function (below) will enforce the quality/QP.
+        debug!("Video encoding set to Constant Quality (CQ/CQP) mode. Ignoring bitrate limits.");
+        encode_context.set_bit_rate(0);
     }
+    // END FIX: CONDITIONAL BITRATE SETTING
+
+    apply_hw_encoder_quality(
+        encode_context.as_mut_ptr(),
+        encoder_name,
+        target_bit_rate,
+        is_constant_quality_mode, // <-- PASS NEW PARAMETER
+    );
+    log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // TODO: find a safe way to do this
@@ -1141,9 +1404,11 @@ fn set_audio_codec_par(
             (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
             (*encode_context.as_mut_ptr()).rc_buffer_size =
-                (bit_rate / 8).clamp(1, i32::MAX as i64) as i32;
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
+            (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy =
+                bit_rate.clamp(1, i32::MAX as i64) as i32;
             (*encode_context.as_mut_ptr()).bit_rate_tolerance =
-                (bit_rate / 2).clamp(1, i32::MAX as i64) as i32;
+                (bit_rate / 4).clamp(1, i32::MAX as i64) as i32;
         }
     } else {
         debug!("Audio bitrate target not set; using encoder default");
@@ -1151,6 +1416,7 @@ fn set_audio_codec_par(
 
     output_stream.set_codecpar(encode_context.extract_codecpar());
     output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
+    log_encoder_state("audio setup", encode_context, "aac");
 }
 
 fn set_subtitle_codec_par(
@@ -1223,6 +1489,10 @@ fn convert_video_file(
         describe_codec(target_video_codec),
         describe_codec(target_audio_codec)
     );
+
+    // START FIX: Determine Constant Quality Mode
+    let is_constant_quality_mode = requested_video_quality == VideoQuality::MatchSource;
+    // END FIX: Determine Constant Quality Mode
 
     let mut logged_video_encoder = false;
     let mut logged_audio_encoder = false;
@@ -1360,6 +1630,7 @@ fn convert_video_file(
                     device_max_resolution,
                     input_stream_codecpar.bit_rate,
                     &encoder_name_owned,
+                    is_constant_quality_mode, // <-- PASS NEW PARAMETER
                 );
                 let src_par = stream.codecpar();
                 info!(
@@ -1951,9 +2222,7 @@ fn main() -> Result<()> {
         .format_timestamp(None)
         .try_init();
 
-    unsafe {
-        ffi::av_log_set_level(ffi::AV_LOG_WARNING as i32);
-    }
+    configure_ffmpeg_logging();
 
     let mut args = Args::parse();
 
