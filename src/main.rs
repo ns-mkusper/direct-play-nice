@@ -9,6 +9,7 @@ use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use serde::Serialize;
+use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
 use std::path::PathBuf;
 use std::{
     env,
@@ -20,6 +21,7 @@ use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 
 mod config;
 mod gpu;
+mod servarr;
 mod streaming_devices;
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
 
@@ -702,17 +704,11 @@ struct Args {
     max_audio_bitrate: Option<i64>,
 
     /// Video file to convert (required unless probing)
-    #[arg(
-        value_parser = Args::parse_cstring,
-        required_unless_present_any = ["probe_hw", "probe_codecs"]
-    )]
+    #[arg(value_parser = Args::parse_cstring)]
     input_file: Option<CString>,
 
     /// Our output direct-play-compatible video file (required unless probing)
-    #[arg(
-        value_parser = Args::parse_cstring,
-        required_unless_present_any = ["probe_hw", "probe_codecs"]
-    )]
+    #[arg(value_parser = Args::parse_cstring)]
     output_file: Option<CString>,
 
     /// Policy for unsupported/extra video streams: convert|ignore|fail
@@ -762,6 +758,14 @@ struct Args {
     /// Filter streams for --probe-streams: all|video|audio|subtitle
     #[arg(long = "streams-filter", value_enum, default_value_t = StreamsFilter::All)]
     streams_filter: StreamsFilter,
+
+    /// File extension to use when replacing Sonarr/Radarr media (default: mp4). Use 'match-input' to keep the original extension.
+    #[arg(
+        long = "servarr-output-extension",
+        value_name = "EXTENSION",
+        default_value = "mp4"
+    )]
+    servarr_output_extension: String,
 }
 
 impl Args {
@@ -2226,6 +2230,25 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
+    let servarr_view = ServeArrArgsView {
+        has_input: args.input_file.is_some(),
+        has_output: args.output_file.is_some(),
+        desired_extension: &args.servarr_output_extension,
+    };
+
+    let servarr_preparation = servarr::prepare_from_env(servarr_view)?;
+    let servarr_plan = match servarr_preparation {
+        IntegrationPreparation::None => None,
+        IntegrationPreparation::Skip { reason } => {
+            info!("{}", reason);
+            return Ok(());
+        }
+        IntegrationPreparation::Replace(plan) => {
+            plan.assign_to_args(&mut args.input_file, &mut args.output_file);
+            Some(plan)
+        }
+    };
+
     // Stream probing early exit
     if args.probe_streams {
         match args.output {
@@ -2273,6 +2296,12 @@ fn main() -> Result<()> {
     if args.config_file.is_some() {
         eprintln!("Error: The --config-file option is not implemented yet.");
         std::process::exit(1);
+    }
+
+    if args.input_file.is_none() || args.output_file.is_none() {
+        bail!(
+            "<INPUT_FILE> and <OUTPUT_FILE> are required unless you use --probe-* flags or run inside a Sonarr/Radarr Download event."
+        );
     }
 
     let mut quality_limits = QualityLimits::default();
@@ -2386,7 +2415,7 @@ fn main() -> Result<()> {
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
 
-    convert_video_file(
+    let conversion_result = convert_video_file(
         input_file,
         output_file,
         common_video_codec,
@@ -2402,5 +2431,19 @@ fn main() -> Result<()> {
         args.video_quality,
         args.audio_quality,
         args.hw_accel,
-    )
+    );
+
+    match (servarr_plan, conversion_result) {
+        (Some(plan), Ok(())) => plan.finalize_success(),
+        (Some(plan), Err(err)) => {
+            if let Err(cleanup_err) = plan.abort_on_failure() {
+                warn!(
+                    "Failed to clean up after {:?} integration error: {}",
+                    plan.kind, cleanup_err
+                );
+            }
+            Err(err)
+        }
+        (None, result) => result,
+    }
 }

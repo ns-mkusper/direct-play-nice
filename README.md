@@ -162,7 +162,34 @@ direct_play_nice --probe-streams --output json input.mkv
 
 When running via Sonarr, Radarr, etc you can use this program to convert each
 downloaded video file to a Direct-Play-compatible format by adding it as a
-Custom Script Connection ( `Settings >> Connection >> Custom Script` )
+Custom Script Connection (`Settings >> Connect >> Custom Script`).
+
+The binary now auto-detects Sonarr/Radarr custom-script invocations:
+
+- `sonarr_eventtype=Download` or `radarr_eventtype=Download` triggers an
+  in-place transcode of the file referenced by the corresponding
+  `$sonarr_episodefile_path` / `$radarr_moviefile_path` environment variable.
+- All other event types (e.g. `Test`, `Grab`, `Rename`, etc.) exit cleanly
+  without requiring any CLI arguments.
+- By default the script promotes the converted output to an `.mp4` beside the
+  original file (which is removed once the conversion completes). Override this
+  by passing `--servarr-output-extension match-input` to keep the original
+  container or any custom extension (e.g. `--servarr-output-extension mkv`).
+
+Example Sonarr command:
+
+```
+/path/to/direct_play_nice --video-quality match-source --audio-quality match-source
+```
+
+Example Radarr command keeping the source container:
+
+```
+/path/to/direct_play_nice --servarr-output-extension match-input
+```
+
+> Tip: Sonarr/Radarr will see the new filename on their next library scan. If
+> you convert to `.mp4`, Plex/Jellyfin can immediately direct play the result.
 
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
