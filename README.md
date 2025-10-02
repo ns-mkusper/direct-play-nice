@@ -178,13 +178,13 @@ The binary now auto-detects Sonarr/Radarr custom-script invocations:
 
 Example Sonarr command:
 
-```
+```bash
 /path/to/direct_play_nice --video-quality match-source --audio-quality match-source
 ```
 
 Example Radarr command keeping the source container:
 
-```
+```bash
 /path/to/direct_play_nice --servarr-output-extension match-input
 ```
 
