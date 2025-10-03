@@ -1,4 +1,4 @@
-use log::debug;
+use log::info;
 use std::env;
 
 const SONARR_PREFIX: &str = "sonarr_";
@@ -25,6 +25,6 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
         } else {
             value
         };
-        debug!("ENV {} = {}", key, display_value);
+        info!("ENV {} = {}", key, display_value);
     }
 }

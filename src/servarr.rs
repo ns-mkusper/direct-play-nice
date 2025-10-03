@@ -280,8 +280,8 @@ fn prepare_download(
     let input_cstring = path_to_cstring(&input_path)?;
     let temp_output_cstring = path_to_cstring(&temp_output_path)?;
 
-    let display_name = env::var(kind.title_var()).ok();
-    let is_upgrade = env::var(kind.is_upgrade_var()).ok().and_then(parse_boolish);
+    let display_name = get_env_ignore_case(kind.title_var());
+    let is_upgrade = get_env_ignore_case(kind.is_upgrade_var()).and_then(parse_boolish);
 
     let plan = ReplacePlan {
         kind,
@@ -388,15 +388,15 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
-    match env::var(kind.episode_path_var()) {
-        Ok(path) if !path.trim().is_empty() => return Ok(PathBuf::from(path)),
+    match get_env_ignore_case(kind.episode_path_var()) {
+        Some(path) if !path.trim().is_empty() => return Ok(PathBuf::from(path)),
         _ => {}
     }
 
     match kind {
         IntegrationKind::Sonarr => {
-            let series = env::var("sonarr_series_path").ok();
-            let relative = env::var("sonarr_episodefile_relativepath").ok();
+            let series = get_env_ignore_case("sonarr_series_path");
+            let relative = get_env_ignore_case("sonarr_episodefile_relativepath");
             if let (Some(series), Some(rel)) = (series.as_deref(), relative.as_deref()) {
                 if !series.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(series).join(rel);
@@ -410,7 +410,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
 
             if let (Some(series), Some(source)) = (
                 series.as_deref(),
-                env::var("sonarr_episodefile_sourcepath").ok().as_deref(),
+                get_env_ignore_case("sonarr_episodefile_sourcepath").as_deref(),
             ) {
                 if !series.trim().is_empty() && !source.trim().is_empty() {
                     if let Some(file_name) = Path::new(source).file_name() {
@@ -424,7 +424,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let Some(source) = env::var("sonarr_episodefile_sourcepath").ok() {
+            if let Some(source) = get_env_ignore_case("sonarr_episodefile_sourcepath") {
                 if !source.trim().is_empty() {
                     debug!("Sonarr fallback path resolved via source path: {}", source);
                     return Ok(PathBuf::from(source));
@@ -436,8 +436,8 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
             ))
         }
         IntegrationKind::Radarr => {
-            let movie = env::var("radarr_movie_path").ok();
-            let relative = env::var("radarr_moviefile_relativepath").ok();
+            let movie = get_env_ignore_case("radarr_movie_path");
+            let relative = get_env_ignore_case("radarr_moviefile_relativepath");
             if let (Some(movie), Some(rel)) = (movie.as_deref(), relative.as_deref()) {
                 if !movie.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(movie).join(rel);
@@ -451,7 +451,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
 
             if let (Some(movie), Some(source)) = (
                 movie.as_deref(),
-                env::var("radarr_moviefile_sourcepath").ok().as_deref(),
+                get_env_ignore_case("radarr_moviefile_sourcepath").as_deref(),
             ) {
                 if !movie.trim().is_empty() && !source.trim().is_empty() {
                     if let Some(file_name) = Path::new(source).file_name() {
@@ -465,7 +465,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let Some(source) = env::var("radarr_moviefile_sourcepath").ok() {
+            if let Some(source) = get_env_ignore_case("radarr_moviefile_sourcepath") {
                 if !source.trim().is_empty() {
                     debug!("Radarr fallback path resolved via source path: {}", source);
                     return Ok(PathBuf::from(source));
@@ -492,6 +492,20 @@ fn parse_boolish(value: String) -> Option<bool> {
         "false" | "0" | "no" | "n" => Some(false),
         _ => None,
     }
+}
+
+fn get_env_ignore_case(key: &str) -> Option<String> {
+    if let Ok(val) = env::var(key) {
+        return Some(val);
+    }
+
+    let target = key.to_ascii_lowercase();
+    for (k, v) in env::vars() {
+        if k.to_ascii_lowercase() == target {
+            return Some(v);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
