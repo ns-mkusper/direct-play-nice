@@ -2272,6 +2272,7 @@ fn main() -> Result<()> {
     }
     let _ = env_logger::Builder::from_default_env()
         .format_timestamp(None)
+        .target(env_logger::Target::Stdout)
         .try_init();
 
     configure_ffmpeg_logging();

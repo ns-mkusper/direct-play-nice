@@ -128,6 +128,12 @@ Notes:
 - Use `--delete-source` if you want the original input removed after a successful conversion (ignored during Sonarr/Radarr runs because the tool already swaps the file in place).
 - The binary self-throttles: no more than two conversions run at once across all
   processes. Additional invocations wait until a slot is free.
+- Tune concurrency via environment variables: set `DIRECT_PLAY_NICE_MAX_JOBS`
+  for a global cap, or `DIRECT_PLAY_NICE_JOBS_PER_GPU` to control how many
+  simultaneous encodes run on each detected NVIDIA GPU (default: two per GPU).
+  Machines without NVIDIA GPUs fall back to a single shared queue; set
+  `DIRECT_PLAY_NICE_MAX_JOBS` manually if you want more parallelism on AMD or
+  CPU-only hosts.
 
 #### Device model strings for `-s`
 
