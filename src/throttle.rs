@@ -12,7 +12,6 @@ use std::time::Duration;
 
 const SLOT_PREFIX: &str = "direct-play-nice-slot";
 const RETRY_SLEEP: Duration = Duration::from_millis(750);
-const DEFAULT_MAX_CONVERSIONS: usize = 2;
 const DEFAULT_JOBS_PER_GPU: usize = 2;
 
 const MAX_JOBS_ENV: &str = "DIRECT_PLAY_NICE_MAX_JOBS";
@@ -73,9 +72,9 @@ impl SlotGuard {
                 let prev = PrevGpuEnv::capture();
                 self.prev_env = Some(prev);
 
-                let idx_str = index.to_string();
                 #[cfg(not(target_os = "windows"))]
                 {
+                    let idx_str = index.to_string();
                     std::env::set_var("ROCR_VISIBLE_DEVICES", &idx_str);
                     std::env::set_var("HIP_VISIBLE_DEVICES", &idx_str);
                     std::env::set_var("GPU_DEVICE_IDENTIFIER", identifier);
@@ -151,7 +150,12 @@ pub fn acquire_slot() -> Result<SlotGuard> {
                     guard.apply_gpu_affinity();
                     return Ok(guard);
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
+                Err(err)
+                    if err.kind() == ErrorKind::WouldBlock
+                        || matches!(err.raw_os_error(), Some(32 | 33)) =>
+                {
+                    continue;
+                }
                 Err(err) => {
                     return Err(err)
                         .with_context(|| format!("Failed to lock '{}'.", spec.path.display()));
