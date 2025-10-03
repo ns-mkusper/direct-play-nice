@@ -1000,11 +1000,6 @@ fn process_video_stream(
         stream_processing_context.decode_context.time_base,
     );
 
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Error opening video encoding context")?;
-
     match stream_processing_context
         .decode_context
         .send_packet(Some(packet))
@@ -1096,11 +1091,6 @@ fn process_audio_stream(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
     );
-
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Error opening audio encoding context")?;
 
     let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
         panic!("Failed to get Audio FIFO buffer!");
@@ -1196,11 +1186,6 @@ fn process_subtitle_stream(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
     );
-
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Could not open subitle encoder context")?;
 
     match stream_processing_context
         .decode_context
@@ -1399,7 +1384,7 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
 }
 
 fn set_audio_codec_par(
@@ -1441,7 +1426,7 @@ fn set_audio_codec_par(
         debug!("Audio bitrate target not set; using encoder default");
     }
 
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
     output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
     log_encoder_state("audio setup", encode_context, "aac");
 }
@@ -1476,7 +1461,7 @@ fn set_subtitle_codec_par(
         }
     }
 
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
 }
 
 /// Takes input video files and outputs direct-play-compatible video files
@@ -1814,6 +1799,19 @@ fn convert_video_file(
                 continue;
             }
         }
+
+        let media_label = match media_type {
+            ffi::AVMEDIA_TYPE_VIDEO => "video",
+            ffi::AVMEDIA_TYPE_AUDIO => "audio",
+            ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+            _ => "stream",
+        };
+
+        encode_context
+            .open(None)
+            .with_context(|| format!("Error opening {} encoder", media_label))?;
+
+        output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
             decode_context,
