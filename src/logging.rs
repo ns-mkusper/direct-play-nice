@@ -25,7 +25,6 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
     let entries = relevant_env(kind);
     let header = format!("ServeArr env snapshot ({} entries):", entries.len());
     info!("{}", header);
-    println!("{}", header);
     for (key, value) in entries {
         let lower = key.to_ascii_lowercase();
         let display_value = if lower.ends_with("_path") || lower.contains("_path_") {
@@ -37,6 +36,5 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
         };
         let line = format!("  {} = {}", key, display_value);
         info!("{}", line);
-        println!("{}", line);
     }
 }
