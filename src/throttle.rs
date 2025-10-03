@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use log::{debug, info, warn};
+use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -20,14 +21,20 @@ const LOCK_DIR_ENV: &str = "DIRECT_PLAY_NICE_LOCK_DIR";
 
 #[derive(Clone)]
 struct SlotSpec {
-    gpu_index: Option<usize>,
+    gpu: Option<GpuKind>,
     path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+enum GpuKind {
+    Nvidia { index: usize },
+    Amd { index: usize, identifier: String },
 }
 
 pub struct SlotGuard {
     file: File,
     path: PathBuf,
-    gpu_index: Option<usize>,
+    gpu: Option<GpuKind>,
     prev_env: Option<PrevGpuEnv>,
 }
 
@@ -51,15 +58,31 @@ impl Drop for SlotGuard {
 
 impl SlotGuard {
     fn apply_gpu_affinity(&mut self) {
-        if let Some(index) = self.gpu_index {
-            let prev = PrevGpuEnv::capture();
-            self.prev_env = Some(prev);
+        match &self.gpu {
+            Some(GpuKind::Nvidia { index }) => {
+                let prev = PrevGpuEnv::capture();
+                self.prev_env = Some(prev);
 
-            let idx_str = index.to_string();
-            std::env::set_var("CUDA_VISIBLE_DEVICES", &idx_str);
-            std::env::set_var("GPU_DEVICE_ORDINAL", &idx_str);
-            std::env::set_var("NV_GPU", &idx_str);
-            info!("Pinned conversion to GPU {}", index);
+                let idx_str = index.to_string();
+                std::env::set_var("CUDA_VISIBLE_DEVICES", &idx_str);
+                std::env::set_var("GPU_DEVICE_ORDINAL", &idx_str);
+                std::env::set_var("NV_GPU", &idx_str);
+                info!("Pinned conversion to NVIDIA GPU {}", index);
+            }
+            Some(GpuKind::Amd { index, identifier }) => {
+                let prev = PrevGpuEnv::capture();
+                self.prev_env = Some(prev);
+
+                let idx_str = index.to_string();
+                #[cfg(not(target_os = "windows"))]
+                {
+                    std::env::set_var("ROCR_VISIBLE_DEVICES", &idx_str);
+                    std::env::set_var("HIP_VISIBLE_DEVICES", &idx_str);
+                    std::env::set_var("GPU_DEVICE_IDENTIFIER", identifier);
+                }
+                info!("Pinned conversion to AMD GPU {} ({})", index, identifier);
+            }
+            None => {}
         }
     }
 }
@@ -68,6 +91,9 @@ struct PrevGpuEnv {
     cuda_visible: Option<Option<String>>,
     gpu_device_ordinal: Option<Option<String>>,
     nv_gpu: Option<Option<String>>,
+    rocr_visible: Option<Option<String>>,
+    hip_visible: Option<Option<String>>,
+    gpu_identifier: Option<Option<String>>,
 }
 
 impl PrevGpuEnv {
@@ -76,6 +102,9 @@ impl PrevGpuEnv {
             cuda_visible: Some(std::env::var("CUDA_VISIBLE_DEVICES").ok()),
             gpu_device_ordinal: Some(std::env::var("GPU_DEVICE_ORDINAL").ok()),
             nv_gpu: Some(std::env::var("NV_GPU").ok()),
+            rocr_visible: Some(std::env::var("ROCR_VISIBLE_DEVICES").ok()),
+            hip_visible: Some(std::env::var("HIP_VISIBLE_DEVICES").ok()),
+            gpu_identifier: Some(std::env::var("GPU_DEVICE_IDENTIFIER").ok()),
         }
     }
 
@@ -83,6 +112,9 @@ impl PrevGpuEnv {
         restore_env("CUDA_VISIBLE_DEVICES", self.cuda_visible);
         restore_env("GPU_DEVICE_ORDINAL", self.gpu_device_ordinal);
         restore_env("NV_GPU", self.nv_gpu);
+        restore_env("ROCR_VISIBLE_DEVICES", self.rocr_visible);
+        restore_env("HIP_VISIBLE_DEVICES", self.hip_visible);
+        restore_env("GPU_DEVICE_IDENTIFIER", self.gpu_identifier);
     }
 }
 
@@ -113,7 +145,7 @@ pub fn acquire_slot() -> Result<SlotGuard> {
                     let mut guard = SlotGuard {
                         file,
                         path: spec.path.clone(),
-                        gpu_index: spec.gpu_index,
+                        gpu: spec.gpu.clone(),
                         prev_env: None,
                     };
                     guard.apply_gpu_affinity();
@@ -150,46 +182,50 @@ fn build_slot_specs() -> Vec<SlotSpec> {
         );
     }
 
-    let gpu_indexes = detect_gpu_indexes();
+    let gpus = detect_gpus();
     if let Some(max_jobs) = max_jobs_override() {
-        return build_override_slots(&base_dir, &gpu_indexes, max_jobs);
+        return build_override_slots(&base_dir, &gpus, max_jobs);
     }
 
-    if !gpu_indexes.is_empty() {
+    if !gpus.is_empty() {
         let jobs = jobs_per_gpu();
-        return build_gpu_slots(&base_dir, &gpu_indexes, jobs);
+        return build_gpu_slots(&base_dir, &gpus, jobs);
     }
 
     vec![SlotSpec {
-        gpu_index: None,
+        gpu: None,
         path: base_dir.join(format!("{}-cpu.lock", SLOT_PREFIX)),
     }]
 }
 
-fn build_override_slots(base: &Path, gpus: &[usize], max_jobs: usize) -> Vec<SlotSpec> {
+fn build_override_slots(base: &Path, gpus: &[GpuKind], max_jobs: usize) -> Vec<SlotSpec> {
     let mut specs = Vec::new();
     let total = max_jobs.max(1);
 
     for idx in 0..total {
-        let gpu_index = if !gpus.is_empty() {
-            Some(gpus[idx % gpus.len()])
+        let gpu = if !gpus.is_empty() {
+            Some(gpus[idx % gpus.len()].clone())
         } else {
             None
         };
         let path = base.join(format!("{}-override-{}.lock", SLOT_PREFIX, idx));
-        specs.push(SlotSpec { gpu_index, path });
+        specs.push(SlotSpec { gpu, path });
     }
     specs
 }
 
-fn build_gpu_slots(base: &Path, gpus: &[usize], jobs_per_gpu: usize) -> Vec<SlotSpec> {
+fn build_gpu_slots(base: &Path, gpus: &[GpuKind], jobs_per_gpu: usize) -> Vec<SlotSpec> {
     let jobs = jobs_per_gpu.max(1);
     let mut specs = Vec::new();
     for gpu in gpus {
         for slot in 0..jobs {
-            let path = base.join(format!("{}-gpu{}-slot{}.lock", SLOT_PREFIX, gpu, slot));
+            let label = match gpu {
+                GpuKind::Nvidia { index } => format!("nv{}", index),
+                GpuKind::Amd { index, .. } => format!("amd{}", index),
+            };
+            let path = base.join(format!("{}-{}-slot{}.lock", SLOT_PREFIX, label, slot));
             specs.push(SlotSpec {
-                gpu_index: Some(*gpu),
+                gpu: Some(gpu.clone()),
                 path,
             });
         }
@@ -197,7 +233,7 @@ fn build_gpu_slots(base: &Path, gpus: &[usize], jobs_per_gpu: usize) -> Vec<Slot
     if specs.is_empty() {
         warn!("GPU detection returned no slots; falling back to CPU queue.");
         specs.push(SlotSpec {
-            gpu_index: None,
+            gpu: None,
             path: base.join(format!("{}-cpu.lock", SLOT_PREFIX)),
         });
     }
@@ -247,7 +283,14 @@ fn jobs_per_gpu() -> usize {
     DEFAULT_JOBS_PER_GPU
 }
 
-fn detect_gpu_indexes() -> Vec<usize> {
+fn detect_gpus() -> Vec<GpuKind> {
+    let mut gpus = detect_nvidia_gpus();
+    let amd = detect_amd_gpus();
+    gpus.extend(amd);
+    gpus
+}
+
+fn detect_nvidia_gpus() -> Vec<GpuKind> {
     let output = match Command::new("nvidia-smi")
         .arg("--query-gpu=index")
         .arg("--format=csv,noheader")
@@ -268,10 +311,111 @@ fn detect_gpu_indexes() -> Vec<usize> {
     indexes.dedup();
     if !indexes.is_empty() {
         info!(
-            "Detected NVIDIA GPUs with indexes {:?}; defaulting to {} concurrent encode jobs per GPU.",
-            indexes,
-            DEFAULT_JOBS_PER_GPU
+            "Detected NVIDIA GPUs with indexes {:?}; defaulting to {} jobs per GPU.",
+            indexes, DEFAULT_JOBS_PER_GPU
         );
     }
+
     indexes
+        .into_iter()
+        .map(|idx| GpuKind::Nvidia { index: idx })
+        .collect()
+}
+
+fn detect_amd_gpus() -> Vec<GpuKind> {
+    if cfg!(target_os = "windows") {
+        detect_amd_gpus_windows()
+    } else {
+        detect_amd_gpus_unix()
+    }
+}
+
+fn detect_amd_gpus_unix() -> Vec<GpuKind> {
+    let output = match Command::new("rocm-smi")
+        .arg("--showid")
+        .arg("--json")
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return Vec::new(),
+    };
+
+    let json = match serde_json::from_slice::<Value>(&output.stdout) {
+        Ok(val) => val,
+        Err(err) => {
+            warn!("Failed to parse rocm-smi output: {}", err);
+            return Vec::new();
+        }
+    };
+
+    let mut gpus = Vec::new();
+    if let Some(map) = json.as_object() {
+        for (key, value) in map {
+            if let Some(obj) = value.as_object() {
+                if let Some(id_val) = obj.get("GPU ID").and_then(|v| v.as_str()) {
+                    if let Ok(index) = key.trim_start_matches("GPU").trim().parse::<usize>() {
+                        info!("Detected AMD GPU {} with ID {}", index, id_val);
+                        gpus.push(GpuKind::Amd {
+                            index,
+                            identifier: id_val.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    gpus
+}
+
+fn detect_amd_gpus_windows() -> Vec<GpuKind> {
+    let output = match Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Where-Object { $_.AdapterCompatibility -like '*AMD*' } | Select-Object Name,PNPDeviceID | ConvertTo-Json",
+        ])
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return Vec::new(),
+    };
+
+    let data = String::from_utf8_lossy(&output.stdout);
+    if data.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let json: Value = match serde_json::from_str(&data) {
+        Ok(val) => val,
+        Err(err) => {
+            warn!("Failed to parse PowerShell GPU JSON: {}", err);
+            return Vec::new();
+        }
+    };
+
+    let mut gpus = Vec::new();
+    let entries = match json {
+        serde_json::Value::Array(arr) => arr,
+        serde_json::Value::Object(_) => vec![json],
+        _ => return Vec::new(),
+    };
+
+    for (idx, entry) in entries.into_iter().enumerate() {
+        if let Some(obj) = entry.as_object() {
+            let name = obj
+                .get("Name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("AMD GPU");
+            let pnp = obj
+                .get("PNPDeviceID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            info!("Detected AMD GPU {} ({})", idx, name);
+            gpus.push(GpuKind::Amd {
+                index: idx,
+                identifier: format!("{}|{}", name, pnp),
+            });
+        }
+    }
+    gpus
 }

@@ -130,8 +130,10 @@ Notes:
   processes. Additional invocations wait until a slot is free.
 - Tune concurrency via environment variables: set `DIRECT_PLAY_NICE_MAX_JOBS`
   for a global cap, or `DIRECT_PLAY_NICE_JOBS_PER_GPU` to control how many
-  simultaneous encodes run on each detected NVIDIA GPU (default: two per GPU).
-  Machines without NVIDIA GPUs fall back to a single shared queue; set
+  simultaneous encodes run on each detected GPU (default: two per NVIDIA/AMD
+  device; NVIDIA is detected via `nvidia-smi`, AMD via `rocm-smi` on Linux or
+  PowerShell on Windows). Machines without supported detection fall back to a
+  single shared queue; set
   `DIRECT_PLAY_NICE_MAX_JOBS` manually if you want more parallelism on AMD or
   CPU-only hosts.
 
