@@ -13,6 +13,7 @@ use serde::Serialize;
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
 use std::path::{Path, PathBuf};
 use std::{
+    convert::TryFrom,
     env,
     ffi::{CStr, CString},
     os::raw::c_void,
@@ -1464,6 +1465,136 @@ fn set_subtitle_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
+struct DirectPlayAssessment {
+    compatible: bool,
+    reasons: Vec<String>,
+}
+
+fn assess_direct_play_compatibility(
+    input_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    min_h264_profile: H264Profile,
+    min_h264_level: H264Level,
+    max_fps: u32,
+    device_cap: (u32, u32),
+    primary_video_stream_index: Option<usize>,
+    primary_criteria: PrimaryVideoCriteria,
+) -> Result<DirectPlayAssessment> {
+    let ictx = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let primary_idx =
+        select_primary_video_stream_index(&ictx, primary_video_stream_index, primary_criteria)?;
+
+    let streams = ictx.streams();
+    let video_stream = streams.get(primary_idx).ok_or_else(|| {
+        anyhow!(
+            "Primary video stream index {} out of range while checking direct-play compatibility",
+            primary_idx
+        )
+    })?;
+
+    let mut reasons = Vec::new();
+    let video_par = video_stream.codecpar();
+
+    if video_par.codec_id != target_video_codec {
+        reasons.push(format!(
+            "video codec {} is not compatible with required {}",
+            describe_codec(video_par.codec_id),
+            describe_codec(target_video_codec)
+        ));
+    }
+
+    if video_par.width <= 0 || video_par.height <= 0 {
+        reasons.push("video resolution unknown".to_string());
+    } else if (video_par.width as u32) > device_cap.0 || (video_par.height as u32) > device_cap.1 {
+        reasons.push(format!(
+            "video resolution {}x{} exceeds device limit {}x{}",
+            video_par.width, video_par.height, device_cap.0, device_cap.1
+        ));
+    }
+
+    if max_fps > 0 {
+        match estimate_stream_fps(video_stream) {
+            Some(fps) => {
+                if fps > max_fps as f64 + 0.5 {
+                    reasons.push(format!(
+                        "video frame rate {:.2} fps exceeds device limit {} fps",
+                        fps, max_fps
+                    ));
+                }
+            }
+            None => reasons.push("video frame rate unknown; cannot confirm compatibility".into()),
+        }
+    }
+
+    if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        match H264Profile::try_from(video_par.profile) {
+            Ok(profile) => {
+                if profile > min_h264_profile {
+                    reasons.push(format!(
+                        "H.264 profile {:?} exceeds device limit {:?}",
+                        profile, min_h264_profile
+                    ));
+                }
+            }
+            Err(_) => reasons.push("H.264 profile unknown; cannot confirm compatibility".into()),
+        }
+
+        match H264Level::try_from(video_par.level) {
+            Ok(level) => {
+                if level > min_h264_level {
+                    reasons.push(format!(
+                        "H.264 level {:?} exceeds device limit {:?}",
+                        level, min_h264_level
+                    ));
+                }
+            }
+            Err(_) => reasons.push("H.264 level unknown; cannot confirm compatibility".into()),
+        }
+    }
+
+    let mut audio_ok = false;
+    for stream in &streams {
+        let codecpar = stream.codecpar();
+        if codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO {
+            continue;
+        }
+        if codecpar.codec_id == target_audio_codec {
+            audio_ok = true;
+            break;
+        }
+    }
+
+    if !audio_ok {
+        reasons.push(format!(
+            "no audio stream with compatible codec {} found",
+            describe_codec(target_audio_codec)
+        ));
+    }
+
+    Ok(DirectPlayAssessment {
+        compatible: reasons.is_empty(),
+        reasons,
+    })
+}
+
+fn estimate_stream_fps(stream: &AVStreamRef) -> Option<f64> {
+    if let Some(rational) = stream.guess_framerate() {
+        rational_to_f64(rational)
+    } else {
+        let avg = unsafe { (*stream.as_ptr()).avg_frame_rate };
+        rational_to_f64(avg)
+    }
+}
+
+fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
+    if rational.num <= 0 || rational.den <= 0 {
+        None
+    } else {
+        Some(rational.num as f64 / rational.den as f64)
+    }
+}
+
 /// Takes input video files and outputs direct-play-compatible video files
 fn convert_video_file(
     input_file: &CStr,
@@ -2451,8 +2582,6 @@ fn main() -> Result<()> {
         device_cap.0, device_cap.1, min_h264_profile, min_h264_level
     );
 
-    // TODO: Check if video file is already compatible and skip if it is
-
     let input_file = args
         .input_file
         .as_ref()
@@ -2463,6 +2592,37 @@ fn main() -> Result<()> {
         .as_ref()
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
+
+    match assess_direct_play_compatibility(
+        input_file,
+        common_video_codec,
+        common_audio_codec,
+        min_h264_profile,
+        min_h264_level,
+        min_fps,
+        device_cap,
+        args.primary_video_stream_index,
+        args.primary_video_criteria,
+    ) {
+        Ok(assessment) => {
+            if assessment.compatible {
+                info!(
+                    "Input is already direct-play compatible for the requested devices; skipping conversion."
+                );
+                return Ok(());
+            }
+            info!("Transcoding required to satisfy requested device constraints.");
+            for reason in assessment.reasons {
+                info!("  - {}", reason);
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Unable to determine direct-play compatibility automatically; proceeding with conversion: {}",
+                err
+            );
+        }
+    }
 
     let _conversion_slot = acquire_slot()?;
 

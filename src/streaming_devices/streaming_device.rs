@@ -1,6 +1,6 @@
 //! Streaming devices and their direct-play specs
 
-use std::{clone::Clone, cmp::Ordering};
+use std::{clone::Clone, cmp::Ordering, convert::TryFrom};
 
 use anyhow::{anyhow, bail, Error};
 use rusty_ffmpeg::ffi;
@@ -140,6 +140,23 @@ pub struct StreamingDevice {
     pub maker: &'static str,
     pub audio_codec: [Option<ffi::AVCodecID>; 5],
     pub video_codec: [Option<ffi::AVCodecID>; 5],
+}
+
+impl TryFrom<i32> for H264Profile {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            x if x == ffi::FF_PROFILE_H264_BASELINE => Ok(H264Profile::Baseline),
+            x if x == ffi::FF_PROFILE_H264_MAIN => Ok(H264Profile::Main),
+            x if x == ffi::FF_PROFILE_H264_EXTENDED => Ok(H264Profile::Extended),
+            x if x == ffi::FF_PROFILE_H264_HIGH => Ok(H264Profile::High),
+            x if x == ffi::FF_PROFILE_H264_HIGH_10 => Ok(H264Profile::High10),
+            x if x == ffi::FF_PROFILE_H264_HIGH_422 => Ok(H264Profile::High422),
+            x if x == ffi::FF_PROFILE_H264_HIGH_444 => Ok(H264Profile::High444),
+            _ => Err("Invalid H.264 profile value"),
+        }
+    }
 }
 
 impl StreamingDevice {
