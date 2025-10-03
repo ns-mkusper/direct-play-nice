@@ -227,6 +227,8 @@ fn prepare_download(
     event_type: String,
     view: ArgsView<'_>,
 ) -> Result<IntegrationPreparation> {
+    crate::logging::log_relevant_env(kind);
+
     if view.has_input && view.has_output {
         // User supplied explicit paths; allow normal CLI behaviour.
         info!(
