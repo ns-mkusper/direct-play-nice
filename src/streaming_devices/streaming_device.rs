@@ -109,6 +109,23 @@ pub enum H264Profile {
     High444 = ffi::FF_PROFILE_H264_HIGH_444 as isize,
 }
 
+impl TryFrom<i32> for H264Profile {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            x if x == ffi::FF_PROFILE_H264_BASELINE as i32 => Ok(H264Profile::Baseline),
+            x if x == ffi::FF_PROFILE_H264_MAIN as i32 => Ok(H264Profile::Main),
+            x if x == ffi::FF_PROFILE_H264_EXTENDED as i32 => Ok(H264Profile::Extended),
+            x if x == ffi::FF_PROFILE_H264_HIGH as i32 => Ok(H264Profile::High),
+            x if x == ffi::FF_PROFILE_H264_HIGH_10 as i32 => Ok(H264Profile::High10),
+            x if x == ffi::FF_PROFILE_H264_HIGH_422 as i32 => Ok(H264Profile::High422),
+            x if x == ffi::FF_PROFILE_H264_HIGH_444 as i32 => Ok(H264Profile::High444),
+            _ => Err("Invalid H.264 profile value"),
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamingDevice {

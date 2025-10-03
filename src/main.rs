@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
 use log::{debug, error, info, trace, warn, Level};
+use logging::log_relevant_env;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -9,7 +10,8 @@ use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use serde::Serialize;
-use std::path::PathBuf;
+use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
+use std::path::{Path, PathBuf};
 use std::{
     env,
     ffi::{CStr, CString},
@@ -20,8 +22,13 @@ use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 
 mod config;
 mod gpu;
+mod logging;
+mod servarr;
 mod streaming_devices;
+mod throttle;
+
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
+use throttle::acquire_slot;
 
 fn describe_bitrate(bitrate: Option<i64>) -> String {
     match bitrate {
@@ -702,17 +709,11 @@ struct Args {
     max_audio_bitrate: Option<i64>,
 
     /// Video file to convert (required unless probing)
-    #[arg(
-        value_parser = Args::parse_cstring,
-        required_unless_present_any = ["probe_hw", "probe_codecs"]
-    )]
+    #[arg(value_parser = Args::parse_cstring)]
     input_file: Option<CString>,
 
     /// Our output direct-play-compatible video file (required unless probing)
-    #[arg(
-        value_parser = Args::parse_cstring,
-        required_unless_present_any = ["probe_hw", "probe_codecs"]
-    )]
+    #[arg(value_parser = Args::parse_cstring)]
     output_file: Option<CString>,
 
     /// Policy for unsupported/extra video streams: convert|ignore|fail
@@ -762,6 +763,22 @@ struct Args {
     /// Filter streams for --probe-streams: all|video|audio|subtitle
     #[arg(long = "streams-filter", value_enum, default_value_t = StreamsFilter::All)]
     streams_filter: StreamsFilter,
+
+    /// File extension to use when replacing Sonarr/Radarr media (default: mp4). Use 'match-input' to keep the original extension.
+    #[arg(
+        long = "servarr-output-extension",
+        value_name = "EXTENSION",
+        default_value = "mp4"
+    )]
+    servarr_output_extension: String,
+
+    /// Suffix to append before the extension when replacing Sonarr/Radarr media (e.g. '.fixed')
+    #[arg(long = "servarr-output-suffix", default_value = "")]
+    servarr_output_suffix: String,
+
+    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations)
+    #[arg(long, default_value_t = false)]
+    delete_source: bool,
 }
 
 impl Args {
@@ -983,11 +1000,6 @@ fn process_video_stream(
         stream_processing_context.decode_context.time_base,
     );
 
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Error opening video encoding context")?;
-
     match stream_processing_context
         .decode_context
         .send_packet(Some(packet))
@@ -1079,11 +1091,6 @@ fn process_audio_stream(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
     );
-
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Error opening audio encoding context")?;
 
     let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
         panic!("Failed to get Audio FIFO buffer!");
@@ -1180,11 +1187,6 @@ fn process_subtitle_stream(
         stream_processing_context.decode_context.time_base,
     );
 
-    stream_processing_context
-        .encode_context
-        .open(None)
-        .context("Could not open subitle encoder context")?;
-
     match stream_processing_context
         .decode_context
         .decode_subtitle(Some(packet))
@@ -1242,6 +1244,16 @@ fn process_subtitle_stream(
     }
 
     Ok(())
+}
+
+fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
+    matches!(
+        codec_id,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AV_CODEC_ID_XSUB
+    )
 }
 
 fn load_encode_and_write(
@@ -1372,7 +1384,7 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
 }
 
 fn set_audio_codec_par(
@@ -1414,7 +1426,7 @@ fn set_audio_codec_par(
         debug!("Audio bitrate target not set; using encoder default");
     }
 
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
     output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
     log_encoder_state("audio setup", encode_context, "aac");
 }
@@ -1449,7 +1461,7 @@ fn set_subtitle_codec_par(
         }
     }
 
-    output_stream.set_codecpar(encode_context.extract_codecpar());
+    // Codec parameters are extracted after the encoder is opened.
 }
 
 /// Takes input video files and outputs direct-play-compatible video files
@@ -1476,6 +1488,16 @@ fn convert_video_file(
     }
 
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
+
+    let output_path_str = output_file
+        .to_str()
+        .map_err(|_| anyhow!("Output path is not valid UTF-8"))?;
+    let output_path = Path::new(output_path_str);
+    let output_extension = output_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    let target_is_mp4 = matches!(output_extension.as_deref(), Some("mp4") | Some("m4v"));
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
@@ -1564,6 +1586,21 @@ fn convert_video_file(
                 }
                 UnsupportedVideoPolicy::Convert => { /* continue */ }
             }
+        }
+
+        if decode_context.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
+            && target_is_mp4
+            && is_image_based_subtitle(decode_context.codec_id)
+        {
+            warn!(
+                "Skipping subtitle stream {} (codec {}) for MP4 output; image-based subtitles are not supported.",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(decode_context.codec_id))
+                        .to_string_lossy()
+                }
+            );
+            continue;
         }
 
         let mut output_stream = output_format_context.new_stream();
@@ -1762,6 +1799,19 @@ fn convert_video_file(
                 continue;
             }
         }
+
+        let media_label = match media_type {
+            ffi::AVMEDIA_TYPE_VIDEO => "video",
+            ffi::AVMEDIA_TYPE_AUDIO => "audio",
+            ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+            _ => "stream",
+        };
+
+        encode_context
+            .open(None)
+            .with_context(|| format!("Error opening {} encoder", media_label))?;
+
+        output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
             decode_context,
@@ -2220,11 +2270,33 @@ fn main() -> Result<()> {
     }
     let _ = env_logger::Builder::from_default_env()
         .format_timestamp(None)
+        .target(env_logger::Target::Stderr)
         .try_init();
 
     configure_ffmpeg_logging();
 
     let mut args = Args::parse();
+
+    let servarr_view = ServeArrArgsView {
+        has_input: args.input_file.is_some(),
+        has_output: args.output_file.is_some(),
+        desired_extension: &args.servarr_output_extension,
+        desired_suffix: &args.servarr_output_suffix,
+    };
+
+    let servarr_preparation = servarr::prepare_from_env(servarr_view)?;
+    let servarr_plan = match servarr_preparation {
+        IntegrationPreparation::None => None,
+        IntegrationPreparation::Skip { reason } => {
+            info!("{}", reason);
+            return Ok(());
+        }
+        IntegrationPreparation::Replace(plan) => {
+            log_relevant_env(plan.kind);
+            plan.assign_to_args(&mut args.input_file, &mut args.output_file);
+            Some(plan)
+        }
+    };
 
     // Stream probing early exit
     if args.probe_streams {
@@ -2273,6 +2345,12 @@ fn main() -> Result<()> {
     if args.config_file.is_some() {
         eprintln!("Error: The --config-file option is not implemented yet.");
         std::process::exit(1);
+    }
+
+    if args.input_file.is_none() || args.output_file.is_none() {
+        bail!(
+            "<INPUT_FILE> and <OUTPUT_FILE> are required unless you use --probe-* flags or run inside a Sonarr/Radarr Download event."
+        );
     }
 
     let mut quality_limits = QualityLimits::default();
@@ -2386,7 +2464,9 @@ fn main() -> Result<()> {
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
 
-    convert_video_file(
+    let _conversion_slot = acquire_slot()?;
+
+    let conversion_result = convert_video_file(
         input_file,
         output_file,
         common_video_codec,
@@ -2402,5 +2482,47 @@ fn main() -> Result<()> {
         args.video_quality,
         args.audio_quality,
         args.hw_accel,
-    )
+    );
+
+    match (servarr_plan, conversion_result) {
+        (Some(plan), Ok(())) => plan.finalize_success(),
+        (Some(plan), Err(err)) => {
+            if let Err(cleanup_err) = plan.abort_on_failure() {
+                warn!(
+                    "Failed to clean up after {:?} integration error: {}",
+                    plan.kind, cleanup_err
+                );
+            }
+            Err(err)
+        }
+        (None, Ok(())) => {
+            if args.delete_source {
+                if let (Some(input_cstr), Some(output_cstr)) =
+                    (args.input_file.as_ref(), args.output_file.as_ref())
+                {
+                    let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
+                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    if input_path != output_path {
+                        match std::fs::remove_file(&input_path) {
+                            Ok(_) => info!(
+                                "Deleted source file '{}' after successful conversion",
+                                input_path.display()
+                            ),
+                            Err(err) => warn!(
+                                "Failed to delete source file '{}': {}",
+                                input_path.display(),
+                                err
+                            ),
+                        }
+                    } else {
+                        warn!(
+                            "Skipping --delete-source because input and output paths are identical"
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        (None, Err(err)) => Err(err),
+    }
 }
