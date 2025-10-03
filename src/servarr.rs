@@ -390,6 +390,8 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
+    let env_snapshot = crate::logging::collect_relevant_env(kind);
+
     match get_env_ignore_case(kind.episode_path_var()) {
         Some(path) if !path.trim().is_empty() => return Ok(PathBuf::from(path)),
         _ => {}
@@ -399,6 +401,8 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
         IntegrationKind::Sonarr => {
             let series = get_env_ignore_case("sonarr_series_path");
             let relative = get_env_ignore_case("sonarr_episodefile_relativepath");
+            let source_folder = get_env_ignore_case("sonarr_episodefile_sourcefolder");
+            let source_path = get_env_ignore_case("sonarr_episodefile_sourcepath");
             if let (Some(series), Some(rel)) = (series.as_deref(), relative.as_deref()) {
                 if !series.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(series).join(rel);
@@ -410,10 +414,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let (Some(series), Some(source)) = (
-                series.as_deref(),
-                get_env_ignore_case("sonarr_episodefile_sourcepath").as_deref(),
-            ) {
+            if let (Some(series), Some(source)) = (series.as_deref(), source_path.as_deref()) {
                 if !series.trim().is_empty() && !source.trim().is_empty() {
                     if let Some(file_name) = Path::new(source).file_name() {
                         let joined = Path::new(series).join(file_name);
@@ -426,7 +427,32 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let Some(source) = get_env_ignore_case("sonarr_episodefile_sourcepath") {
+            if let (Some(folder), Some(rel)) = (source_folder.as_deref(), relative.as_deref()) {
+                if !folder.trim().is_empty() && !rel.trim().is_empty() {
+                    let joined = Path::new(folder).join(rel);
+                    debug!(
+                        "Sonarr fallback path resolved via source folder/relative: {} + {}",
+                        folder, rel
+                    );
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(source)) = (source_folder.as_deref(), source_path.as_deref())
+            {
+                if !folder.trim().is_empty() && !source.trim().is_empty() {
+                    if let Some(file_name) = Path::new(source).file_name() {
+                        let joined = Path::new(folder).join(file_name);
+                        debug!(
+                            "Sonarr fallback path resolved via source folder/file: {} + {:?}",
+                            folder, file_name
+                        );
+                        return Ok(joined);
+                    }
+                }
+            }
+
+            if let Some(source) = source_path {
                 if !source.trim().is_empty() {
                     debug!("Sonarr fallback path resolved via source path: {}", source);
                     return Ok(PathBuf::from(source));
@@ -434,12 +460,15 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
             }
 
             Err(anyhow!(
-                "sonarr_episodefile_path and fallback variables are unavailable"
+                "sonarr_episodefile_path and fallback variables are unavailable. Observed env: {}",
+                format_env_snapshot(&env_snapshot)
             ))
         }
         IntegrationKind::Radarr => {
             let movie = get_env_ignore_case("radarr_movie_path");
             let relative = get_env_ignore_case("radarr_moviefile_relativepath");
+            let source_folder = get_env_ignore_case("radarr_moviefile_sourcefolder");
+            let source_path = get_env_ignore_case("radarr_moviefile_sourcepath");
             if let (Some(movie), Some(rel)) = (movie.as_deref(), relative.as_deref()) {
                 if !movie.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(movie).join(rel);
@@ -451,10 +480,7 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let (Some(movie), Some(source)) = (
-                movie.as_deref(),
-                get_env_ignore_case("radarr_moviefile_sourcepath").as_deref(),
-            ) {
+            if let (Some(movie), Some(source)) = (movie.as_deref(), source_path.as_deref()) {
                 if !movie.trim().is_empty() && !source.trim().is_empty() {
                     if let Some(file_name) = Path::new(source).file_name() {
                         let joined = Path::new(movie).join(file_name);
@@ -467,7 +493,32 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 }
             }
 
-            if let Some(source) = get_env_ignore_case("radarr_moviefile_sourcepath") {
+            if let (Some(folder), Some(rel)) = (source_folder.as_deref(), relative.as_deref()) {
+                if !folder.trim().is_empty() && !rel.trim().is_empty() {
+                    let joined = Path::new(folder).join(rel);
+                    debug!(
+                        "Radarr fallback path resolved via source folder/relative: {} + {}",
+                        folder, rel
+                    );
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(source)) = (source_folder.as_deref(), source_path.as_deref())
+            {
+                if !folder.trim().is_empty() && !source.trim().is_empty() {
+                    if let Some(file_name) = Path::new(source).file_name() {
+                        let joined = Path::new(folder).join(file_name);
+                        debug!(
+                            "Radarr fallback path resolved via source folder/file: {} + {:?}",
+                            folder, file_name
+                        );
+                        return Ok(joined);
+                    }
+                }
+            }
+
+            if let Some(source) = source_path {
                 if !source.trim().is_empty() {
                     debug!("Radarr fallback path resolved via source path: {}", source);
                     return Ok(PathBuf::from(source));
@@ -475,7 +526,8 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
             }
 
             Err(anyhow!(
-                "radarr_moviefile_path and fallback variables are unavailable"
+                "radarr_moviefile_path and fallback variables are unavailable. Observed env: {}",
+                format_env_snapshot(&env_snapshot)
             ))
         }
     }
@@ -508,6 +560,18 @@ fn get_env_ignore_case(key: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn format_env_snapshot(entries: &[(String, String)]) -> String {
+    if entries.is_empty() {
+        return "<none>".to_string();
+    }
+
+    entries
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
