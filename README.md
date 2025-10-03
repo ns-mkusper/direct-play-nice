@@ -125,7 +125,9 @@ Notes:
   how Sonarr/Radarr replacements are named. When run from Sonarr, the CLI
   defaults to creating `Episode.fixed.<ext>` (with the extension derived from
   the conversion output).
-- Use `--delete-source` if you want the original input removed after a successful conversion (ignored during Sonarr/Radarr runs because the tool already swaps the file in place).
+- Use `--delete-source` if you want the original input removed after a
+  successful conversion (ignored during Sonarr/Radarr runs because the tool
+  already swaps the file in place).
 - The binary self-throttles: no more than two conversions run at once across all
   processes. Additional invocations wait until a slot is free.
 - Tune concurrency via environment variables: set `DIRECT_PLAY_NICE_MAX_JOBS`
