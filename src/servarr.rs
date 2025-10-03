@@ -392,17 +392,31 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
     let env_snapshot = crate::logging::collect_relevant_env(kind);
 
-    match get_env_ignore_case(kind.episode_path_var()) {
-        Some(path) if !path.trim().is_empty() => return Ok(PathBuf::from(path)),
-        _ => {}
+    if let Some(path) = match kind {
+        IntegrationKind::Sonarr => {
+            get_env_path(&["sonarr_episodefile_path", "sonarr_episodefile_paths"])
+        }
+        IntegrationKind::Radarr => {
+            get_env_path(&["radarr_moviefile_path", "radarr_moviefile_paths"])
+        }
+    } {
+        return Ok(PathBuf::from(path));
     }
 
     match kind {
         IntegrationKind::Sonarr => {
-            let series = get_env_ignore_case("sonarr_series_path");
-            let relative = get_env_ignore_case("sonarr_episodefile_relativepath");
-            let source_folder = get_env_ignore_case("sonarr_episodefile_sourcefolder");
-            let source_path = get_env_ignore_case("sonarr_episodefile_sourcepath");
+            let series = first_non_empty(&[
+                "sonarr_series_path",
+                "sonarr_destinationfolder",
+                "sonarr_destinationpath",
+            ]);
+            let relative = first_non_empty(&[
+                "sonarr_episodefile_relativepath",
+                "sonarr_episodefile_relativepaths",
+            ]);
+            let source_folder =
+                first_non_empty(&["sonarr_episodefile_sourcefolder", "sonarr_sourcefolder"]);
+            let source_path = get_env_path(&["sonarr_episodefile_sourcepath", "sonarr_sourcepath"]);
             if let (Some(series), Some(rel)) = (series.as_deref(), relative.as_deref()) {
                 if !series.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(series).join(rel);
@@ -465,10 +479,18 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
             ))
         }
         IntegrationKind::Radarr => {
-            let movie = get_env_ignore_case("radarr_movie_path");
-            let relative = get_env_ignore_case("radarr_moviefile_relativepath");
-            let source_folder = get_env_ignore_case("radarr_moviefile_sourcefolder");
-            let source_path = get_env_ignore_case("radarr_moviefile_sourcepath");
+            let movie = first_non_empty(&[
+                "radarr_movie_path",
+                "radarr_destinationfolder",
+                "radarr_destinationpath",
+            ]);
+            let relative = first_non_empty(&[
+                "radarr_moviefile_relativepath",
+                "radarr_moviefile_relativepaths",
+            ]);
+            let source_folder =
+                first_non_empty(&["radarr_moviefile_sourcefolder", "radarr_sourcefolder"]);
+            let source_path = get_env_path(&["radarr_moviefile_sourcepath", "radarr_sourcepath"]);
             if let (Some(movie), Some(rel)) = (movie.as_deref(), relative.as_deref()) {
                 if !movie.trim().is_empty() && !rel.trim().is_empty() {
                     let joined = Path::new(movie).join(rel);
@@ -574,6 +596,34 @@ fn format_env_snapshot(entries: &[(String, String)]) -> String {
         .join(", ")
 }
 
+fn first_non_empty(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(val) = get_env_ignore_case(key) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn get_env_path(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(val) = get_env_ignore_case(key) {
+            let trimmed = val.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let first = trimmed.split('|').next().unwrap().trim();
+            if !first.is_empty() {
+                return Some(first.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +671,7 @@ mod tests {
     fn resolve_media_path_uses_sonarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
+        env::remove_var("sonarr_episodefile_paths");
         env::set_var("sonarr_series_path", "/tmp/show");
         env::set_var("sonarr_episodefile_relativepath", "Season 1/episode.mkv");
 
@@ -649,9 +700,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_media_path_uses_sonarr_episodefile_paths() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("sonarr_episodefile_path");
+        env::set_var("sonarr_episodefile_paths", "/tmp/show/Season 1/episode.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/show/Season 1/episode.mkv"));
+
+        env::remove_var("sonarr_episodefile_paths");
+    }
+
+    #[test]
     fn resolve_media_path_uses_radarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
+        env::remove_var("radarr_moviefile_paths");
         env::set_var("radarr_movie_path", "/tmp/movie");
         env::set_var("radarr_moviefile_relativepath", "movie.mkv");
 
@@ -674,6 +738,18 @@ mod tests {
         assert_eq!(resolved, PathBuf::from("/tmp/source/movie.mkv"));
 
         env::remove_var("radarr_moviefile_sourcepath");
+    }
+
+    #[test]
+    fn resolve_media_path_uses_radarr_moviefile_paths() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("radarr_moviefile_path");
+        env::set_var("radarr_moviefile_paths", "/tmp/movie/movie.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/movie/movie.mkv"));
+
+        env::remove_var("radarr_moviefile_paths");
     }
 
     #[test]
