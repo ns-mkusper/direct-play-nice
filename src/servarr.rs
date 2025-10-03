@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -128,7 +128,6 @@ impl ReplacePlan {
             )
         })?;
 
-        // Clean up the backup copy (best effort)
         match fs::remove_file(&self.backup_path) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -178,6 +177,7 @@ pub struct ArgsView<'a> {
     pub has_input: bool,
     pub has_output: bool,
     pub desired_extension: &'a str,
+    pub desired_suffix: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -247,14 +247,13 @@ fn prepare_download(
         return Ok(IntegrationPreparation::None);
     }
 
-    let source_path = env::var(kind.episode_path_var()).with_context(|| {
+    let input_path = resolve_media_path(kind).with_context(|| {
         format!(
             "{} integration requires ${} to be set for Download events.",
             kind.label(),
             kind.episode_path_var()
         )
     })?;
-    let input_path = PathBuf::from(source_path);
 
     if !input_path.exists() {
         bail!(
@@ -264,7 +263,17 @@ fn prepare_download(
         );
     }
 
-    let final_output_path = resolve_output_path(&input_path, view.desired_extension)?;
+    let effective_suffix = if view.desired_suffix.trim().is_empty() {
+        match kind {
+            IntegrationKind::Sonarr => ".fixed",
+            IntegrationKind::Radarr => "",
+        }
+    } else {
+        view.desired_suffix
+    };
+
+    let final_output_path =
+        resolve_output_path(&input_path, view.desired_extension, effective_suffix)?;
     let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
     let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
 
@@ -291,20 +300,70 @@ fn prepare_download(
     Ok(IntegrationPreparation::Replace(plan))
 }
 
-fn resolve_output_path(input_path: &Path, desired: &str) -> Result<PathBuf> {
-    if desired.eq_ignore_ascii_case("match-input") || desired.eq_ignore_ascii_case("same") {
-        return Ok(input_path.to_path_buf());
+fn resolve_output_path(
+    input_path: &Path,
+    desired_ext: &str,
+    desired_suffix: &str,
+) -> Result<PathBuf> {
+    let parent = input_path.parent();
+    let stem = input_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "Input file name is not valid UTF-8: {}",
+                input_path.display()
+            )
+        })?;
+
+    let suffix = normalize_suffix(desired_suffix);
+
+    let final_extension = if desired_ext.eq_ignore_ascii_case("match-input")
+        || desired_ext.eq_ignore_ascii_case("same")
+    {
+        input_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    } else {
+        let trimmed = desired_ext.trim().trim_start_matches('.');
+        if trimmed.is_empty() {
+            bail!(
+                "Invalid --servarr-output-extension '{}': must not be empty.",
+                desired_ext
+            );
+        }
+        trimmed.to_string()
+    };
+
+    let mut filename = String::from(stem);
+    if let Some(sfx) = suffix.as_ref() {
+        filename.push_str(sfx);
+    }
+    if !final_extension.is_empty() {
+        filename.push('.');
+        filename.push_str(&final_extension);
     }
 
-    let trimmed = desired.trim().trim_start_matches('.');
+    let new_path = match parent {
+        Some(dir) => dir.join(filename),
+        None => PathBuf::from(filename),
+    };
+
+    Ok(new_path)
+}
+
+fn normalize_suffix(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
     if trimmed.is_empty() {
-        bail!(
-            "Invalid --servarr-output-extension '{}': must not be empty.",
-            desired
-        );
+        return None;
     }
-
-    Ok(input_path.with_extension(trimmed))
+    if trimmed.starts_with('.') {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!(".{}", trimmed))
+    }
 }
 
 fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -328,6 +387,50 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     }
 }
 
+fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
+    match env::var(kind.episode_path_var()) {
+        Ok(path) if !path.trim().is_empty() => return Ok(PathBuf::from(path)),
+        _ => {}
+    }
+
+    match kind {
+        IntegrationKind::Sonarr => {
+            let series = env::var("sonarr_series_path").ok();
+            let relative = env::var("sonarr_episodefile_relativepath").ok();
+            match (series, relative) {
+                (Some(series), Some(rel)) if !series.is_empty() && !rel.is_empty() => {
+                    let joined = Path::new(&series).join(&rel);
+                    debug!(
+                        "Sonarr fallback path resolved via series/relative: {} + {}",
+                        series, rel
+                    );
+                    Ok(joined)
+                }
+                _ => Err(anyhow!(
+                    "sonarr_episodefile_path and fallback variables are unavailable"
+                )),
+            }
+        }
+        IntegrationKind::Radarr => {
+            let movie = env::var("radarr_movie_path").ok();
+            let relative = env::var("radarr_moviefile_relativepath").ok();
+            match (movie, relative) {
+                (Some(movie), Some(rel)) if !movie.is_empty() && !rel.is_empty() => {
+                    let joined = Path::new(&movie).join(&rel);
+                    debug!(
+                        "Radarr fallback path resolved via movie/relative: {} + {}",
+                        movie, rel
+                    );
+                    Ok(joined)
+                }
+                _ => Err(anyhow!(
+                    "radarr_moviefile_path and fallback variables are unavailable"
+                )),
+            }
+        }
+    }
+}
+
 fn path_to_cstring(path: &Path) -> Result<CString> {
     let path_str = path
         .to_str()
@@ -346,6 +449,10 @@ fn parse_boolish(value: String) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn append_suffix_preserves_extension() {
@@ -357,14 +464,123 @@ mod tests {
     #[test]
     fn resolve_output_path_match_input() {
         let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "match-input").unwrap();
+        let resolved = resolve_output_path(&base, "match-input", "").unwrap();
         assert_eq!(resolved, base);
     }
 
     #[test]
     fn resolve_output_path_custom_extension() {
         let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "mp4").unwrap();
+        let resolved = resolve_output_path(&base, "mp4", "").unwrap();
         assert_eq!(resolved, PathBuf::from("Movie.mp4"));
+    }
+
+    #[test]
+    fn resolve_output_path_with_suffix_and_extension() {
+        let base = PathBuf::from("Movie.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed").unwrap();
+        assert_eq!(resolved, PathBuf::from("Movie.fixed.mp4"));
+    }
+
+    #[test]
+    fn resolve_output_path_with_suffix_and_match_input() {
+        let base = PathBuf::from("Episode.mkv");
+        let resolved = resolve_output_path(&base, "match-input", "fixed").unwrap();
+        assert_eq!(resolved, PathBuf::from("Episode.fixed.mkv"));
+    }
+
+    #[test]
+    fn resolve_media_path_uses_sonarr_fallback() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("sonarr_episodefile_path");
+        env::set_var("sonarr_series_path", "/tmp/show");
+        env::set_var("sonarr_episodefile_relativepath", "Season 1/episode.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(
+            resolved,
+            Path::new("/tmp/show").join("Season 1/episode.mkv")
+        );
+
+        env::remove_var("sonarr_episodefile_relativepath");
+        env::remove_var("sonarr_series_path");
+    }
+
+    #[test]
+    fn resolve_media_path_uses_radarr_fallback() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("radarr_moviefile_path");
+        env::set_var("radarr_movie_path", "/tmp/movie");
+        env::set_var("radarr_moviefile_relativepath", "movie.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        assert_eq!(resolved, Path::new("/tmp/movie").join("movie.mkv"));
+
+        env::remove_var("radarr_moviefile_relativepath");
+        env::remove_var("radarr_movie_path");
+    }
+
+    #[test]
+    fn sonarr_default_suffix_is_fixed() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let input = tmp.path().join("Episode.mkv");
+        std::fs::write(&input, b"dummy").unwrap();
+
+        env::set_var("sonarr_eventtype", "Download");
+        env::set_var("sonarr_episodefile_path", &input);
+
+        let view = ArgsView {
+            has_input: false,
+            has_output: false,
+            desired_extension: "mp4",
+            desired_suffix: "",
+        };
+
+        let prep = prepare_from_env(view).unwrap();
+        let IntegrationPreparation::Replace(plan) = prep else {
+            panic!("expected replace plan");
+        };
+        let file_name = plan
+            .final_output_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        assert_eq!(file_name, "Episode.fixed.mp4");
+
+        env::remove_var("sonarr_eventtype");
+        env::remove_var("sonarr_episodefile_path");
+    }
+
+    #[test]
+    fn radarr_default_suffix_is_empty() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let input = tmp.path().join("Movie.mkv");
+        std::fs::write(&input, b"dummy").unwrap();
+
+        env::set_var("radarr_eventtype", "Download");
+        env::set_var("radarr_moviefile_path", &input);
+
+        let view = ArgsView {
+            has_input: false,
+            has_output: false,
+            desired_extension: "mp4",
+            desired_suffix: "",
+        };
+
+        let prep = prepare_from_env(view).unwrap();
+        let IntegrationPreparation::Replace(plan) = prep else {
+            panic!("expected replace plan");
+        };
+        let file_name = plan
+            .final_output_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        assert_eq!(file_name, "Movie.mp4");
+
+        env::remove_var("radarr_eventtype");
+        env::remove_var("radarr_moviefile_path");
     }
 }

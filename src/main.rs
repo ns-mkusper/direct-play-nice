@@ -23,7 +23,10 @@ mod config;
 mod gpu;
 mod servarr;
 mod streaming_devices;
+mod throttle;
+
 use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
+use throttle::acquire_slot;
 
 fn describe_bitrate(bitrate: Option<i64>) -> String {
     match bitrate {
@@ -766,6 +769,14 @@ struct Args {
         default_value = "mp4"
     )]
     servarr_output_extension: String,
+
+    /// Suffix to append before the extension when replacing Sonarr/Radarr media (e.g. '.fixed')
+    #[arg(long = "servarr-output-suffix", default_value = "")]
+    servarr_output_suffix: String,
+
+    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations)
+    #[arg(long, default_value_t = false)]
+    delete_source: bool,
 }
 
 impl Args {
@@ -2234,6 +2245,7 @@ fn main() -> Result<()> {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
+        desired_suffix: &args.servarr_output_suffix,
     };
 
     let servarr_preparation = servarr::prepare_from_env(servarr_view)?;
@@ -2415,6 +2427,8 @@ fn main() -> Result<()> {
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
 
+    let _conversion_slot = acquire_slot()?;
+
     let conversion_result = convert_video_file(
         input_file,
         output_file,
@@ -2444,6 +2458,34 @@ fn main() -> Result<()> {
             }
             Err(err)
         }
-        (None, result) => result,
+        (None, Ok(())) => {
+            if args.delete_source {
+                if let (Some(input_cstr), Some(output_cstr)) =
+                    (args.input_file.as_ref(), args.output_file.as_ref())
+                {
+                    let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
+                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    if input_path != output_path {
+                        match std::fs::remove_file(&input_path) {
+                            Ok(_) => info!(
+                                "Deleted source file '{}' after successful conversion",
+                                input_path.display()
+                            ),
+                            Err(err) => warn!(
+                                "Failed to delete source file '{}': {}",
+                                input_path.display(),
+                                err
+                            ),
+                        }
+                    } else {
+                        warn!(
+                            "Skipping --delete-source because input and output paths are identical"
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        (None, Err(err)) => Err(err),
     }
 }

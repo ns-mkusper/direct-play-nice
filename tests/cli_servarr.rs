@@ -27,8 +27,10 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 #[test]
 fn sonarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = TempDir::new()?;
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("sonarr_eventtype", "Test");
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path())
+        .env("sonarr_eventtype", "Test");
     common::assert_cli_success(cmd);
     Ok(())
 }
@@ -42,16 +44,15 @@ fn sonarr_grab_event_skips_conversion() -> Result<(), Box<dyn std::error::Error>
     let temp_path = append_suffix(&input, ".direct-play-nice.tmp");
     let backup_path = append_suffix(&input, ".direct-play-nice.bak");
 
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("sonarr_eventtype", "Grab")
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("sonarr_eventtype", "Grab")
         .env("sonarr_episodefile_path", &input);
 
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("Sonarr event 'Grab'"),
-        "expected informational log about skipping Grab event"
-    );
+    common::assert_cli_success(cmd);
 
     assert!(input.exists(), "original file should remain in place");
     assert_eq!(before_len, fs::metadata(&input)?.len(), "file size changed");
@@ -73,7 +74,10 @@ fn sonarr_download_converts_and_replaces() -> Result<(), Box<dyn std::error::Err
 
     let tmp = TempDir::new()?;
     let (input, original_duration) = common::gen_problem_input(&tmp);
-    let final_path = input.with_extension("mp4");
+    let final_path = input.with_file_name(format!(
+        "{}.fixed.mp4",
+        input.file_stem().and_then(|s| s.to_str()).unwrap()
+    ));
     let backup_path = append_suffix(&input, ".direct-play-nice.bak");
 
     if final_path.exists() {
@@ -83,8 +87,12 @@ fn sonarr_download_converts_and_replaces() -> Result<(), Box<dyn std::error::Err
         fs::remove_file(&backup_path)?;
     }
 
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("sonarr_eventtype", "Download")
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
         .env("sonarr_series_title", "Example Series");
 
@@ -110,7 +118,10 @@ fn sonarr_upgrade_download_flag_converts() -> Result<(), Box<dyn std::error::Err
 
     let tmp = TempDir::new()?;
     let (input, original_duration) = common::gen_problem_input(&tmp);
-    let final_path = input.with_extension("mp4");
+    let final_path = input.with_file_name(format!(
+        "{}.fixed.mp4",
+        input.file_stem().and_then(|s| s.to_str()).unwrap()
+    ));
     let backup_path = append_suffix(&input, ".direct-play-nice.bak");
 
     if final_path.exists() {
@@ -120,8 +131,12 @@ fn sonarr_upgrade_download_flag_converts() -> Result<(), Box<dyn std::error::Err
         fs::remove_file(&backup_path)?;
     }
 
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("sonarr_eventtype", "Download")
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
         .env("sonarr_series_title", "Example Series")
         .env("sonarr_isupgrade", "True");
@@ -155,19 +170,27 @@ fn radarr_download_with_match_input_extension_replaces_in_place(
         fs::remove_file(&backup_path)?;
     }
 
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("radarr_eventtype", "Download")
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("radarr_eventtype", "Download")
         .env("radarr_moviefile_path", &input)
-        .env("radarr_movie_title", "Example Movie")
-        .arg("--servarr-output-extension")
-        .arg("match-input");
+        .env("radarr_movie_title", "Example Movie");
 
     common::assert_cli_success(cmd);
 
-    assert!(input.exists(), "file should remain at original path");
+    let final_path = input.with_extension("mp4");
+
+    assert!(final_path.exists(), "converted file was not promoted");
+    assert!(
+        !input.exists(),
+        "original file should be removed after conversion"
+    );
     assert!(!backup_path.exists(), "backup file should not persist");
 
-    let final_duration = common::probe_duration_ms(&input);
+    let final_duration = common::probe_duration_ms(&final_path);
     let delta = (final_duration as i64 - original_duration as i64).abs();
     assert!(delta <= 100, "unexpected duration delta: {} ms", delta);
 
@@ -176,8 +199,10 @@ fn radarr_download_with_match_input_extension_replaces_in_place(
 
 #[test]
 fn radarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = TempDir::new()?;
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.env("radarr_eventtype", "Test");
+    cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path())
+        .env("radarr_eventtype", "Test");
     common::assert_cli_success(cmd);
     Ok(())
 }

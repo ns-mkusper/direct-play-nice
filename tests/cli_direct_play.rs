@@ -102,7 +102,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     }
 
     // Duration close to input (within 200ms)
-    let out_dur_ms = probe_duration_ms(&output);
+    let out_dur_ms = common::probe_duration_ms(&output);
     let diff = if out_dur_ms > in_dur_ms {
         out_dur_ms - in_dur_ms
     } else {

@@ -121,6 +121,13 @@ Notes:
   `--probe-streams`, which requires `<INPUT_FILE>`).
 - `-s all` has the same effect as omitting `-s`: the tool computes a
   direct-play profile compatible across all known devices.
+- Combine `--servarr-output-extension` and `--servarr-output-suffix` to control
+  how Sonarr/Radarr replacements are named. When run from Sonarr, the CLI
+  defaults to creating `Episode.fixed.<ext>` (with the extension derived from
+  the conversion output).
+- Use `--delete-source` if you want the original input removed after a successful conversion (ignored during Sonarr/Radarr runs because the tool already swaps the file in place).
+- The binary self-throttles: no more than two conversions run at once across all
+  processes. Additional invocations wait until a slot is free.
 
 #### Device model strings for `-s`
 
@@ -186,6 +193,13 @@ Example Radarr command keeping the source container:
 
 ```bash
 /path/to/direct_play_nice --servarr-output-extension match-input
+```
+
+Example Sonarr command that keeps all defaults (resulting in
+`Episode.fixed.mp4` after conversion):
+
+```bash
+/path/to/direct_play_nice
 ```
 
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
