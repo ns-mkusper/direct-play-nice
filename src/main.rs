@@ -1298,7 +1298,7 @@ fn load_encode_and_write(
 fn set_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    _output_stream: &mut AVStreamMut,
+    output_stream: &mut AVStreamMut,
     h264_profile: H264Profile, // TODO: handle cases somewhere when target video codec is NOT h264
     h264_level: H264Level,
     quality_limits: &QualityLimits,
@@ -1390,7 +1390,7 @@ fn set_video_codec_par(
 fn set_audio_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    _output_stream: &mut AVStreamMut,
+    output_stream: &mut AVStreamMut,
     quality_limits: &QualityLimits,
     source_bit_rate_hint: i64,
 ) {
@@ -1434,7 +1434,7 @@ fn set_audio_codec_par(
 fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    _output_stream: &mut AVStreamMut,
+    output_stream: &mut AVStreamMut,
 ) {
     // Set subtitle encoder parameters based on the input subtitle stream
     encode_context.set_time_base(decode_context.time_base);
