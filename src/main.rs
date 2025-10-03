@@ -1595,6 +1595,28 @@ fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
     }
 }
 
+#[cfg(test)]
+mod direct_play_tests {
+    use super::*;
+
+    #[test]
+    fn rational_to_f64_handles_valid_fraction() {
+        let val = rational_to_f64(ffi::AVRational {
+            num: 60000,
+            den: 1001,
+        })
+        .expect("should convert");
+        // 59.94 fps typical NTSC
+        assert!((val - 59.94).abs() < 0.01);
+    }
+
+    #[test]
+    fn rational_to_f64_rejects_non_positive() {
+        assert!(rational_to_f64(ffi::AVRational { num: 0, den: 1 }).is_none());
+        assert!(rational_to_f64(ffi::AVRational { num: 1, den: 0 }).is_none());
+    }
+}
+
 /// Takes input video files and outputs direct-play-compatible video files
 fn convert_video_file(
     input_file: &CStr,

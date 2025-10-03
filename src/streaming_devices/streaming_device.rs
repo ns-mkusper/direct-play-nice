@@ -262,3 +262,25 @@ impl StreamingDevice {
         Ok(Resolution::from_resolution(min_res.0, min_res.1))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_profile_try_from_accepts_known_profiles() {
+        assert_eq!(
+            H264Profile::try_from(ffi::FF_PROFILE_H264_BASELINE).expect("baseline should map"),
+            H264Profile::Baseline
+        );
+        assert_eq!(
+            H264Profile::try_from(ffi::FF_PROFILE_H264_HIGH).expect("high should map"),
+            H264Profile::High
+        );
+    }
+
+    #[test]
+    fn h264_profile_try_from_rejects_unknown_value() {
+        assert!(H264Profile::try_from(-1).is_err());
+    }
+}
