@@ -1496,6 +1496,18 @@ fn assess_direct_play_compatibility(
     let mut reasons = Vec::new();
     let video_par = video_stream.codecpar();
 
+    for stream in streams {
+        let disposition_flags = unsafe { (*stream.as_ptr()).disposition as i32 };
+        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
+            reasons.push("input contains an attached picture stream".to_string());
+            break;
+        }
+        if stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+            reasons.push("input contains an attachment stream".to_string());
+            break;
+        }
+    }
+
     if video_par.codec_id != target_video_codec {
         reasons.push(format!(
             "video codec {} is not compatible with required {}",
@@ -1554,7 +1566,7 @@ fn assess_direct_play_compatibility(
     }
 
     let mut audio_ok = false;
-    for stream in &streams {
+    for stream in streams {
         let codecpar = stream.codecpar();
         if codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO {
             continue;

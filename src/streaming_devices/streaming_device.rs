@@ -142,20 +142,12 @@ pub struct StreamingDevice {
     pub video_codec: [Option<ffi::AVCodecID>; 5],
 }
 
-impl TryFrom<i32> for H264Profile {
+impl TryFrom<u32> for H264Profile {
     type Error = &'static str;
 
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            x if x == ffi::FF_PROFILE_H264_BASELINE => Ok(H264Profile::Baseline),
-            x if x == ffi::FF_PROFILE_H264_MAIN => Ok(H264Profile::Main),
-            x if x == ffi::FF_PROFILE_H264_EXTENDED => Ok(H264Profile::Extended),
-            x if x == ffi::FF_PROFILE_H264_HIGH => Ok(H264Profile::High),
-            x if x == ffi::FF_PROFILE_H264_HIGH_10 => Ok(H264Profile::High10),
-            x if x == ffi::FF_PROFILE_H264_HIGH_422 => Ok(H264Profile::High422),
-            x if x == ffi::FF_PROFILE_H264_HIGH_444 => Ok(H264Profile::High444),
-            _ => Err("Invalid H.264 profile value"),
-        }
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        let value = i32::try_from(value).map_err(|_| "Invalid H.264 profile value")?;
+        H264Profile::try_from(value)
     }
 }
 
