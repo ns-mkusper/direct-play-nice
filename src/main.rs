@@ -11,7 +11,7 @@ use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use serde::Serialize;
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     env,
     ffi::{CStr, CString},
@@ -1261,6 +1261,16 @@ fn process_subtitle_stream(
     Ok(())
 }
 
+fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
+    matches!(
+        codec_id,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AV_CODEC_ID_XSUB
+    )
+}
+
 fn load_encode_and_write(
     fifo: &mut AVAudioFifo,
     output_format_context: &mut AVFormatContextOutput,
@@ -1494,6 +1504,16 @@ fn convert_video_file(
 
     let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
 
+    let output_path_str = output_file
+        .to_str()
+        .map_err(|_| anyhow!("Output path is not valid UTF-8"))?;
+    let output_path = Path::new(output_path_str);
+    let output_extension = output_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    let target_is_mp4 = matches!(output_extension.as_deref(), Some("mp4") | Some("m4v"));
+
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
     if container_duration_us <= 0 {
@@ -1581,6 +1601,21 @@ fn convert_video_file(
                 }
                 UnsupportedVideoPolicy::Convert => { /* continue */ }
             }
+        }
+
+        if decode_context.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
+            && target_is_mp4
+            && is_image_based_subtitle(decode_context.codec_id)
+        {
+            warn!(
+                "Skipping subtitle stream {} (codec {}) for MP4 output; image-based subtitles are not supported.",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(decode_context.codec_id))
+                        .to_string_lossy()
+                }
+            );
+            continue;
         }
 
         let mut output_stream = output_format_context.new_stream();
