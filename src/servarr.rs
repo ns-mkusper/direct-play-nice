@@ -397,36 +397,84 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
         IntegrationKind::Sonarr => {
             let series = env::var("sonarr_series_path").ok();
             let relative = env::var("sonarr_episodefile_relativepath").ok();
-            match (series, relative) {
-                (Some(series), Some(rel)) if !series.is_empty() && !rel.is_empty() => {
-                    let joined = Path::new(&series).join(&rel);
+            if let (Some(series), Some(rel)) = (series.as_deref(), relative.as_deref()) {
+                if !series.trim().is_empty() && !rel.trim().is_empty() {
+                    let joined = Path::new(series).join(rel);
                     debug!(
                         "Sonarr fallback path resolved via series/relative: {} + {}",
                         series, rel
                     );
-                    Ok(joined)
+                    return Ok(joined);
                 }
-                _ => Err(anyhow!(
-                    "sonarr_episodefile_path and fallback variables are unavailable"
-                )),
             }
+
+            if let (Some(series), Some(source)) = (
+                series.as_deref(),
+                env::var("sonarr_episodefile_sourcepath").ok().as_deref(),
+            ) {
+                if !series.trim().is_empty() && !source.trim().is_empty() {
+                    if let Some(file_name) = Path::new(source).file_name() {
+                        let joined = Path::new(series).join(file_name);
+                        debug!(
+                            "Sonarr fallback path resolved via series/source file: {} + {:?}",
+                            series, file_name
+                        );
+                        return Ok(joined);
+                    }
+                }
+            }
+
+            if let Some(source) = env::var("sonarr_episodefile_sourcepath").ok() {
+                if !source.trim().is_empty() {
+                    debug!("Sonarr fallback path resolved via source path: {}", source);
+                    return Ok(PathBuf::from(source));
+                }
+            }
+
+            Err(anyhow!(
+                "sonarr_episodefile_path and fallback variables are unavailable"
+            ))
         }
         IntegrationKind::Radarr => {
             let movie = env::var("radarr_movie_path").ok();
             let relative = env::var("radarr_moviefile_relativepath").ok();
-            match (movie, relative) {
-                (Some(movie), Some(rel)) if !movie.is_empty() && !rel.is_empty() => {
-                    let joined = Path::new(&movie).join(&rel);
+            if let (Some(movie), Some(rel)) = (movie.as_deref(), relative.as_deref()) {
+                if !movie.trim().is_empty() && !rel.trim().is_empty() {
+                    let joined = Path::new(movie).join(rel);
                     debug!(
                         "Radarr fallback path resolved via movie/relative: {} + {}",
                         movie, rel
                     );
-                    Ok(joined)
+                    return Ok(joined);
                 }
-                _ => Err(anyhow!(
-                    "radarr_moviefile_path and fallback variables are unavailable"
-                )),
             }
+
+            if let (Some(movie), Some(source)) = (
+                movie.as_deref(),
+                env::var("radarr_moviefile_sourcepath").ok().as_deref(),
+            ) {
+                if !movie.trim().is_empty() && !source.trim().is_empty() {
+                    if let Some(file_name) = Path::new(source).file_name() {
+                        let joined = Path::new(movie).join(file_name);
+                        debug!(
+                            "Radarr fallback path resolved via movie/source file: {} + {:?}",
+                            movie, file_name
+                        );
+                        return Ok(joined);
+                    }
+                }
+            }
+
+            if let Some(source) = env::var("radarr_moviefile_sourcepath").ok() {
+                if !source.trim().is_empty() {
+                    debug!("Radarr fallback path resolved via source path: {}", source);
+                    return Ok(PathBuf::from(source));
+                }
+            }
+
+            Err(anyhow!(
+                "radarr_moviefile_path and fallback variables are unavailable"
+            ))
         }
     }
 }
@@ -507,6 +555,20 @@ mod tests {
     }
 
     #[test]
+    fn resolve_media_path_uses_sonarr_source_only() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("sonarr_episodefile_path");
+        env::remove_var("sonarr_episodefile_relativepath");
+        env::remove_var("sonarr_series_path");
+        env::set_var("sonarr_episodefile_sourcepath", "/tmp/source/episode.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/source/episode.mkv"));
+
+        env::remove_var("sonarr_episodefile_sourcepath");
+    }
+
+    #[test]
     fn resolve_media_path_uses_radarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
@@ -518,6 +580,20 @@ mod tests {
 
         env::remove_var("radarr_moviefile_relativepath");
         env::remove_var("radarr_movie_path");
+    }
+
+    #[test]
+    fn resolve_media_path_uses_radarr_source_only() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("radarr_moviefile_path");
+        env::remove_var("radarr_moviefile_relativepath");
+        env::remove_var("radarr_movie_path");
+        env::set_var("radarr_moviefile_sourcepath", "/tmp/source/movie.mkv");
+
+        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/source/movie.mkv"));
+
+        env::remove_var("radarr_moviefile_sourcepath");
     }
 
     #[test]

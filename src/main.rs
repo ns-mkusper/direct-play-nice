@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
 use log::{debug, error, info, trace, warn, Level};
+use logging::log_relevant_env;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
@@ -21,6 +22,7 @@ use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 
 mod config;
 mod gpu;
+mod logging;
 mod servarr;
 mod streaming_devices;
 mod throttle;
@@ -2256,6 +2258,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         IntegrationPreparation::Replace(plan) => {
+            log_relevant_env(plan.kind);
             plan.assign_to_args(&mut args.input_file, &mut args.output_file);
             Some(plan)
         }
