@@ -1537,10 +1537,7 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
-    if encoder_name_lower.contains("nvenc")
-        || encoder_name_lower.contains("amf")
-        || encoder_name_lower.contains("qsv")
-    {
+    if encoder_name_lower.contains("x264") {
         unsafe {
             set_codec_option_str(
                 encode_context.as_mut_ptr(),
