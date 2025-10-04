@@ -6,6 +6,7 @@
 
 use assert_cmd::prelude::*;
 use predicates::str;
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -22,14 +23,8 @@ fn ensure_ffmpeg_present() {
 }
 
 fn probe_duration_ms(path: &PathBuf) -> u64 {
-    let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(path.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )
-    .unwrap();
+    let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
+    let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
     (ictx.duration as i64 / 1000).max(0) as u64
 }
 
@@ -118,13 +113,8 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
 
     // Validate
     assert!(output.exists(), "output file was not created");
-    let octx = AVFormatContextInput::open(
-        std::ffi::CString::new(output.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )?;
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
     let mut saw_v = false;
     let mut saw_a = false;
     for st in octx.streams() {
@@ -267,13 +257,8 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
 
     assert!(output.exists(), "output file was not created");
     // Minimal validation that we have a playable A/V MP4 and no attachments
-    let octx = AVFormatContextInput::open(
-        std::ffi::CString::new(output.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )?;
+    let final_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(final_cstr.as_c_str())?;
     for st in octx.streams() {
         let par = st.codecpar();
         assert_ne!(

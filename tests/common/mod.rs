@@ -1,5 +1,6 @@
 use predicates::str;
 use rsmpeg::avformat::AVFormatContextInput;
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -96,14 +97,8 @@ pub fn gen_problem_input(tmp: &TempDir) -> (PathBuf, u64) {
 }
 
 pub fn probe_duration_ms(path: &PathBuf) -> u64 {
-    let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(path.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )
-    .unwrap();
+    let input_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
+    let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
     (ictx.duration as i64 / 1000).max(0) as u64
 }
 

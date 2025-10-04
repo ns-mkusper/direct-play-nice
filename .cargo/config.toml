@@ -23,6 +23,7 @@ rustflags = [
 
 [env]
 RUST_LOG = "info"
+VCPKG_ROOT = "/opt/vcpkg"
 
 # On Linux, dynamic FFmpeg libs from vcpkg may be under installed/x64-linux/lib.
 # Uncomment to help the test runner locate them at runtime.

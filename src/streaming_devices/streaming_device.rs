@@ -100,13 +100,13 @@ impl TryFrom<i32> for H264Level {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum H264Profile {
-    Baseline = ffi::FF_PROFILE_H264_BASELINE as isize,
-    Main = ffi::FF_PROFILE_H264_MAIN as isize,
-    Extended = ffi::FF_PROFILE_H264_EXTENDED as isize,
-    High = ffi::FF_PROFILE_H264_HIGH as isize,
-    High10 = ffi::FF_PROFILE_H264_HIGH_10 as isize,
-    High422 = ffi::FF_PROFILE_H264_HIGH_422 as isize,
-    High444 = ffi::FF_PROFILE_H264_HIGH_444 as isize,
+    Baseline = ffi::AV_PROFILE_H264_BASELINE as isize,
+    Main = ffi::AV_PROFILE_H264_MAIN as isize,
+    Extended = ffi::AV_PROFILE_H264_EXTENDED as isize,
+    High = ffi::AV_PROFILE_H264_HIGH as isize,
+    High10 = ffi::AV_PROFILE_H264_HIGH_10 as isize,
+    High422 = ffi::AV_PROFILE_H264_HIGH_422 as isize,
+    High444 = ffi::AV_PROFILE_H264_HIGH_444 as isize,
 }
 
 impl TryFrom<i32> for H264Profile {
@@ -114,13 +114,13 @@ impl TryFrom<i32> for H264Profile {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            x if x == ffi::FF_PROFILE_H264_BASELINE as i32 => Ok(H264Profile::Baseline),
-            x if x == ffi::FF_PROFILE_H264_MAIN as i32 => Ok(H264Profile::Main),
-            x if x == ffi::FF_PROFILE_H264_EXTENDED as i32 => Ok(H264Profile::Extended),
-            x if x == ffi::FF_PROFILE_H264_HIGH as i32 => Ok(H264Profile::High),
-            x if x == ffi::FF_PROFILE_H264_HIGH_10 as i32 => Ok(H264Profile::High10),
-            x if x == ffi::FF_PROFILE_H264_HIGH_422 as i32 => Ok(H264Profile::High422),
-            x if x == ffi::FF_PROFILE_H264_HIGH_444 as i32 => Ok(H264Profile::High444),
+            x if x == ffi::AV_PROFILE_H264_BASELINE as i32 => Ok(H264Profile::Baseline),
+            x if x == ffi::AV_PROFILE_H264_MAIN as i32 => Ok(H264Profile::Main),
+            x if x == ffi::AV_PROFILE_H264_EXTENDED as i32 => Ok(H264Profile::Extended),
+            x if x == ffi::AV_PROFILE_H264_HIGH as i32 => Ok(H264Profile::High),
+            x if x == ffi::AV_PROFILE_H264_HIGH_10 as i32 => Ok(H264Profile::High10),
+            x if x == ffi::AV_PROFILE_H264_HIGH_422 as i32 => Ok(H264Profile::High422),
+            x if x == ffi::AV_PROFILE_H264_HIGH_444 as i32 => Ok(H264Profile::High444),
             _ => Err("Invalid H.264 profile value"),
         }
     }
