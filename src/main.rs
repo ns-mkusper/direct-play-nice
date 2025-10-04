@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
+use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
@@ -55,6 +56,86 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
                 .to_str()
                 .unwrap_or("unknown")
         },
+    }
+}
+
+fn describe_h264_profile(profile: i32) -> String {
+    H264Profile::try_from(profile)
+        .map(|p| format!("{:?}", p))
+        .unwrap_or_else(|_| format!("profile({})", profile))
+}
+
+fn describe_h264_level(level: i32) -> String {
+    H264Level::try_from(level)
+        .map(|l| l.ffmpeg_name().to_string())
+        .unwrap_or_else(|_| format!("level({})", level))
+}
+
+fn enforce_h264_constraints(
+    encode_context: &mut AVCodecContext,
+    target_profile: H264Profile,
+    target_level: H264Level,
+    encoder_name: &str,
+) {
+    let encoder_name_lower = encoder_name.to_ascii_lowercase();
+    unsafe {
+        let ctx_ptr = encode_context.as_mut_ptr();
+        if encoder_name_lower.contains("x264") {
+            set_codec_option_str(ctx_ptr, "profile", target_profile.ffmpeg_name());
+            set_codec_option_str(ctx_ptr, "level", target_level.ffmpeg_name());
+        }
+        (*ctx_ptr).profile = target_profile as i32;
+        (*ctx_ptr).level = target_level as i32;
+    }
+
+    let actual_profile = encode_context.profile;
+    let actual_level = encode_context.level;
+    if actual_profile == 0 {
+        debug!(
+            "Video encoder {} reported unknown H.264 profile after init",
+            encoder_name
+        );
+    } else if actual_profile > target_profile as i32 {
+        warn!(
+            "Video encoder {} elevated profile to {} (target was {})",
+            encoder_name,
+            describe_h264_profile(actual_profile),
+            describe_h264_profile(target_profile as i32)
+        );
+    }
+
+    if actual_level == 0 {
+        debug!(
+            "Video encoder {} reported unknown H.264 level after init",
+            encoder_name
+        );
+    } else if actual_level > target_level as i32 {
+        warn!(
+            "Video encoder {} elevated level to {} (target was {})",
+            encoder_name,
+            describe_h264_level(actual_level),
+            describe_h264_level(target_level as i32)
+        );
+    } else {
+        debug!(
+            "Video encoder {} locked to profile {} level {}",
+            encoder_name,
+            describe_h264_profile(actual_profile),
+            describe_h264_level(actual_level)
+        );
+    }
+}
+
+fn should_apply_profile_option(encoder_name: &str) -> bool {
+    encoder_name.to_ascii_lowercase().contains("x264")
+}
+
+fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
+    let lower = encoder_name.to_ascii_lowercase();
+    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
+        level.ffmpeg_name().to_string()
+    } else {
+        (level as i32).to_string()
     }
 }
 
@@ -346,6 +427,81 @@ enum VideoQuality {
     /// 2160p (Ultra HD / 4K) profile – ~35 Mbps target bitrate.
     #[value(name = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
     P2160,
+}
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+
+    #[test]
+    fn profile_option_only_applies_to_x264() {
+        assert!(should_apply_profile_option("libx264"));
+        assert!(should_apply_profile_option("LIBX264"));
+        assert!(!should_apply_profile_option("h264_nvenc"));
+        assert!(!should_apply_profile_option("amf_h264"));
+    }
+
+    #[test]
+    fn level_option_values_match_encoder_type() {
+        assert_eq!(
+            level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
+            "4.1"
+        );
+        assert_eq!(
+            level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
+            "5.1"
+        );
+        assert_eq!(
+            level_option_value_for_encoder("libx264", H264Level::Level4_1),
+            "41"
+        );
+    }
+
+    #[test]
+    fn parse_new_device_models() {
+        let models = streaming_devices::STREAMING_DEVICES
+            .iter()
+            .map(|d| d.model)
+            .collect::<Vec<_>>();
+        for required in [
+            "chromecast_3rd_gen",
+            "chromecast_google_tv",
+            "google_tv_streamer",
+            "nest_hub",
+            "nest_hub_max",
+        ] {
+            assert!(
+                models.contains(&required),
+                "STREAMING_DEVICES missing {}",
+                required
+            );
+        }
+    }
+
+    #[test]
+    fn min_level_respects_strictest_device() {
+        use streaming_devices::StreamingDevice;
+        let devices = streaming_devices::STREAMING_DEVICES;
+        let third_gen = devices
+            .iter()
+            .find(|d| d.model == "chromecast_3rd_gen")
+            .unwrap();
+        let nest_hub = devices.iter().find(|d| d.model == "nest_hub").unwrap();
+        let combo = vec![third_gen, nest_hub];
+        let min_level = StreamingDevice::get_min_h264_level(&combo).unwrap();
+        assert_eq!(min_level, H264Level::Level4_1);
+    }
+
+    #[test]
+    fn parse_device_selection_accepts_new_models() {
+        let selection = Args::parse_device_selection("google_tv_streamer").unwrap();
+        match selection {
+            StreamingDeviceSelection::Model(device) => {
+                assert_eq!(device.model, "google_tv_streamer");
+            }
+            _ => panic!("Expected model selection"),
+        }
+    }
 }
 
 impl VideoQuality {
@@ -888,6 +1044,8 @@ pub struct StreamProcessingContext {
     frame_buffer: Option<AVAudioFifo>, // TODO: Support video stream buffers too?
     resample_context: Option<SwrContext>,
     pts: AtomicI64,
+    last_written_dts: Option<i64>,
+    skip_stream: bool,
     #[allow(dead_code)]
     hw_device_ctx: Option<*mut ffi::AVBufferRef>,
 }
@@ -898,6 +1056,8 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("stream_index", &self.stream_index)
             .field("media_type", &self.media_type)
             .field("pts", &self.pts)
+            .field("last_written_dts", &self.last_written_dts)
+            .field("skip_stream", &self.skip_stream)
             .finish()
     }
 }
@@ -1182,6 +1342,14 @@ fn process_subtitle_stream(
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
+    if stream_processing_context.skip_stream {
+        trace!(
+            "Subtitle stream {} already skipped; dropping packet.",
+            stream_processing_context.stream_index
+        );
+        return Ok(());
+    }
+
     packet.rescale_ts(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
@@ -1192,13 +1360,17 @@ fn process_subtitle_stream(
         .decode_subtitle(Some(packet))
     {
         Ok(sub) => {
-            if let Some(s) = sub {
+            if let Some(subtitle) = sub {
+                debug!(
+                    "Subtitle stream {} raw packet pts={} dts={} duration={}",
+                    stream_processing_context.stream_index, packet.pts, packet.dts, packet.duration
+                );
                 // TODO: Find the max size of subtitle data in a single packet
                 const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
                 let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
                 stream_processing_context
                     .encode_context
-                    .encode_subtitle(&s, &mut subtitle_buffer)?;
+                    .encode_subtitle(&subtitle, &mut subtitle_buffer)?;
 
                 let encoded_size = subtitle_buffer
                     .iter()
@@ -1206,28 +1378,96 @@ fn process_subtitle_stream(
                     .map(|pos| pos + 1)
                     .unwrap_or(0);
 
+                if encoded_size == 0 {
+                    return Ok(());
+                }
+
                 // Create a new packet for the encoded subtitle
                 let mut encoded_packet = AVPacket::new();
                 unsafe {
-                    (*encoded_packet.as_mut_ptr()).data = subtitle_buffer.as_mut_ptr();
-                    (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
+                    ffi::av_new_packet(encoded_packet.as_mut_ptr(), encoded_size as i32);
+                    std::ptr::copy_nonoverlapping(
+                        subtitle_buffer.as_ptr(),
+                        (*encoded_packet.as_mut_ptr()).data,
+                        encoded_size,
+                    );
                 }
+
+                let mut pts = if subtitle.pts != ffi::AV_NOPTS_VALUE {
+                    subtitle.pts
+                } else {
+                    packet.pts
+                };
+                let mut dts = if packet.dts != ffi::AV_NOPTS_VALUE {
+                    packet.dts
+                } else {
+                    pts
+                };
+
+                if pts == ffi::AV_NOPTS_VALUE {
+                    pts = stream_processing_context
+                        .last_written_dts
+                        .map(|prev| prev + 1)
+                        .unwrap_or(0);
+                }
+
+                if dts == ffi::AV_NOPTS_VALUE {
+                    dts = pts;
+                }
+
                 encoded_packet.set_stream_index(stream_processing_context.stream_index);
-                encoded_packet.set_pts(packet.pts);
-                encoded_packet.set_dts(packet.dts);
+                encoded_packet.set_pts(pts);
+                encoded_packet.set_dts(dts);
                 encoded_packet.set_duration(packet.duration);
                 encoded_packet.set_flags(packet.flags);
 
+                let output_time_base = output_format_context.streams()
+                    [stream_processing_context.stream_index as usize]
+                    .time_base;
                 encoded_packet.rescale_ts(
                     stream_processing_context.decode_context.time_base,
-                    output_format_context.streams()
-                        [stream_processing_context.stream_index as usize]
-                        .time_base,
+                    output_time_base,
                 );
 
-                output_format_context
-                    .interleaved_write_frame(&mut encoded_packet)
-                    .context("Could not write subtitle packet")?;
+                let packet_dts = encoded_packet.dts;
+                if let Some(prev_dts) = stream_processing_context.last_written_dts {
+                    if packet_dts <= prev_dts {
+                        let adjusted = prev_dts + 1;
+                        encoded_packet.set_dts(adjusted);
+                        if encoded_packet.pts < adjusted {
+                            encoded_packet.set_pts(adjusted);
+                        }
+                        debug!(
+                            "Subtitle stream {} adjusted DTS from {} to {}",
+                            stream_processing_context.stream_index, packet_dts, adjusted
+                        );
+                    }
+                }
+
+                stream_processing_context.last_written_dts = Some(encoded_packet.dts);
+                debug!(
+                    "Subtitle stream {} final pts={} dts={} duration={} (tb={}/{})",
+                    stream_processing_context.stream_index,
+                    encoded_packet.pts,
+                    encoded_packet.dts,
+                    encoded_packet.duration,
+                    output_time_base.num,
+                    output_time_base.den
+                );
+
+                match output_format_context.interleaved_write_frame(&mut encoded_packet) {
+                    Ok(()) => {}
+                    Err(rsmpeg::error::RsmpegError::AVError(code)) if code == -EINVAL => {
+                        warn!(
+                            "Subtitle stream {} produced invalid timestamps; skipping rest of stream.",
+                            stream_processing_context.stream_index
+                        );
+                        stream_processing_context.skip_stream = true;
+                    }
+                    Err(e) => {
+                        return Err(e).context("Could not write subtitle packet");
+                    }
+                }
             }
         }
         Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
@@ -1384,6 +1624,21 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
+    if should_apply_profile_option(encoder_name) {
+        unsafe {
+            set_codec_option_str(
+                encode_context.as_mut_ptr(),
+                "profile",
+                h264_profile.ffmpeg_name(),
+            );
+        }
+    }
+
+    let level_option_value = level_option_value_for_encoder(encoder_name, h264_level);
+
+    unsafe {
+        set_codec_option_str(encode_context.as_mut_ptr(), "level", &level_option_value);
+    }
     // Codec parameters are extracted after the encoder is opened.
 }
 
@@ -1397,8 +1652,7 @@ fn set_audio_codec_par(
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
     let decode_channels = decode_context.ch_layout.nb_channels;
-    encode_context
-        .set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
+    encode_context.set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
@@ -1533,7 +1787,21 @@ fn convert_video_file(
         let input_codec_type = stream.codecpar().codec_type;
         // TODO: implement support for attachments
         if input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
-            warn!("Warning: Input file contains attachment streams, which may not be handled correctly. Skipping...");
+            warn!(
+                "Skipping attachment stream {} ({}).",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
+                        .to_string_lossy()
+                }
+            );
+            continue;
+        }
+
+        if input_codec_type == ffi::AVMEDIA_TYPE_DATA {
+            warn!("Skipping data stream {} ({}).", stream.index, unsafe {
+                CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id)).to_string_lossy()
+            });
             continue;
         }
 
@@ -1553,21 +1821,59 @@ fn convert_video_file(
 
         let input_stream_codecpar = stream.codecpar();
         let input_codec_id = input_stream_codecpar.codec_id;
-        let decoder = AVCodec::find_decoder(input_codec_id)
-            .with_context(|| anyhow!("Decoder not found for stream {}.", stream.index))?;
+        let codec_name = unsafe {
+            CStr::from_ptr(ffi::avcodec_get_name(input_codec_id))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let decoder = match AVCodec::find_decoder(input_codec_id) {
+            Some(dec) => dec,
+            None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
+                warn!(
+                    "Skipping subtitle stream {} (codec {}): decoder not available.",
+                    stream.index, codec_name
+                );
+                continue;
+            }
+            None => {
+                bail!(
+                    "Decoder not found for stream {} (codec {}).",
+                    stream.index,
+                    codec_name
+                );
+            }
+        };
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
         decode_context.set_time_base(stream.time_base); // TODO: needed?
         if let Some(framerate) = stream.guess_framerate() {
             decode_context.set_framerate(framerate);
         }
-        decode_context.open(None)?;
+        if let Err(err) = decode_context.open(None) {
+            if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+                warn!(
+                    "Skipping subtitle stream {} (codec {}): failed to open decoder ({}).",
+                    stream.index, codec_name, err
+                );
+                continue;
+            } else {
+                return Err(anyhow!(
+                    "Error opening decoder for stream {} (codec {}): {}",
+                    stream.index,
+                    codec_name,
+                    err
+                ));
+            }
+        }
 
         let mut encode_context: AVCodecContext;
         let media_type: ffi::AVMediaType;
         let mut frame_buffer: Option<AVAudioFifo> = None;
         let mut resample_context: Option<SwrContext> = None;
         let mut hw_device_ctx_ptr: Option<*mut ffi::AVBufferRef> = None;
+        let mut encoder_name_for_video: Option<String> = None;
+        let mut target_h264_profile: Option<H264Profile> = None;
+        let mut target_h264_level: Option<H264Level> = None;
 
         let is_video_stream = decode_context.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
         if is_video_stream && stream.index as usize != primary_index {
@@ -1631,6 +1937,9 @@ fn convert_video_file(
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
+                encoder_name_for_video = Some(encoder_name_owned.clone());
+                target_h264_profile = Some(min_h264_profile);
+                target_h264_level = Some(min_h264_level);
 
                 if !logged_video_encoder {
                     let encoder_name = &encoder_name_owned;
@@ -1813,6 +2122,16 @@ fn convert_video_file(
             .open(None)
             .with_context(|| format!("Error opening {} encoder", media_label))?;
 
+        if media_type == ffi::AVMEDIA_TYPE_VIDEO {
+            if let (Some(profile), Some(level), Some(encoder_name)) = (
+                target_h264_profile,
+                target_h264_level,
+                encoder_name_for_video.as_deref(),
+            ) {
+                enforce_h264_constraints(&mut encode_context, profile, level, encoder_name);
+            }
+        }
+
         output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
@@ -1823,6 +2142,8 @@ fn convert_video_file(
             frame_buffer,
             resample_context,
             pts: AtomicI64::new(0),
+            last_written_dts: None,
+            skip_stream: false,
             hw_device_ctx: hw_device_ctx_ptr,
         };
 
@@ -1953,13 +2274,15 @@ fn convert_video_file(
                     String::new()
                 };
                 info!(
-                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps",
+                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
                     context.stream_index,
                     context.encode_context.width,
                     context.encode_context.height,
                     describe_codec(target_video_codec),
                     preset,
-                    context.encode_context.bit_rate
+                    context.encode_context.bit_rate,
+                    describe_h264_profile(context.encode_context.profile),
+                    describe_h264_level(context.encode_context.level)
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
