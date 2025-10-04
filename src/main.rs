@@ -888,6 +888,7 @@ pub struct StreamProcessingContext {
     frame_buffer: Option<AVAudioFifo>, // TODO: Support video stream buffers too?
     resample_context: Option<SwrContext>,
     pts: AtomicI64,
+    last_written_dts: Option<i64>,
     #[allow(dead_code)]
     hw_device_ctx: Option<*mut ffi::AVBufferRef>,
 }
@@ -898,6 +899,7 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("stream_index", &self.stream_index)
             .field("media_type", &self.media_type)
             .field("pts", &self.pts)
+            .field("last_written_dts", &self.last_written_dts)
             .finish()
     }
 }
@@ -1192,13 +1194,13 @@ fn process_subtitle_stream(
         .decode_subtitle(Some(packet))
     {
         Ok(sub) => {
-            if let Some(s) = sub {
+            if let Some(subtitle) = sub {
                 // TODO: Find the max size of subtitle data in a single packet
                 const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
                 let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
                 stream_processing_context
                     .encode_context
-                    .encode_subtitle(&s, &mut subtitle_buffer)?;
+                    .encode_subtitle(&subtitle, &mut subtitle_buffer)?;
 
                 let encoded_size = subtitle_buffer
                     .iter()
@@ -1206,15 +1208,46 @@ fn process_subtitle_stream(
                     .map(|pos| pos + 1)
                     .unwrap_or(0);
 
+                if encoded_size == 0 {
+                    return Ok(());
+                }
+
                 // Create a new packet for the encoded subtitle
                 let mut encoded_packet = AVPacket::new();
                 unsafe {
-                    (*encoded_packet.as_mut_ptr()).data = subtitle_buffer.as_mut_ptr();
-                    (*encoded_packet.as_mut_ptr()).size = encoded_size as i32;
+                    ffi::av_new_packet(encoded_packet.as_mut_ptr(), encoded_size as i32);
+                    std::ptr::copy_nonoverlapping(
+                        subtitle_buffer.as_ptr(),
+                        (*encoded_packet.as_mut_ptr()).data,
+                        encoded_size,
+                    );
                 }
+
+                let mut pts = if subtitle.pts != ffi::AV_NOPTS_VALUE {
+                    subtitle.pts
+                } else {
+                    packet.pts
+                };
+                let mut dts = if packet.dts != ffi::AV_NOPTS_VALUE {
+                    packet.dts
+                } else {
+                    pts
+                };
+
+                if pts == ffi::AV_NOPTS_VALUE {
+                    pts = stream_processing_context
+                        .last_written_dts
+                        .map(|prev| prev + 1)
+                        .unwrap_or(0);
+                }
+
+                if dts == ffi::AV_NOPTS_VALUE {
+                    dts = pts;
+                }
+
                 encoded_packet.set_stream_index(stream_processing_context.stream_index);
-                encoded_packet.set_pts(packet.pts);
-                encoded_packet.set_dts(packet.dts);
+                encoded_packet.set_pts(pts);
+                encoded_packet.set_dts(dts);
                 encoded_packet.set_duration(packet.duration);
                 encoded_packet.set_flags(packet.flags);
 
@@ -1224,6 +1257,19 @@ fn process_subtitle_stream(
                         [stream_processing_context.stream_index as usize]
                         .time_base,
                 );
+
+                let packet_dts = encoded_packet.dts;
+                if let Some(prev_dts) = stream_processing_context.last_written_dts {
+                    if packet_dts <= prev_dts {
+                        let adjusted = prev_dts + 1;
+                        encoded_packet.set_dts(adjusted);
+                        if encoded_packet.pts < adjusted {
+                            encoded_packet.set_pts(adjusted);
+                        }
+                    }
+                }
+
+                stream_processing_context.last_written_dts = Some(encoded_packet.dts);
 
                 output_format_context
                     .interleaved_write_frame(&mut encoded_packet)
@@ -1876,6 +1922,7 @@ fn convert_video_file(
             frame_buffer,
             resample_context,
             pts: AtomicI64::new(0),
+            last_written_dts: None,
             hw_device_ctx: hw_device_ctx_ptr,
         };
 
