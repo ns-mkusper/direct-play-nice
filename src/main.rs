@@ -1533,7 +1533,26 @@ fn convert_video_file(
         let input_codec_type = stream.codecpar().codec_type;
         // TODO: implement support for attachments
         if input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
-            warn!("Warning: Input file contains attachment streams, which may not be handled correctly. Skipping...");
+            warn!(
+                "Skipping attachment stream {} ({}).",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
+                        .to_string_lossy()
+                }
+            );
+            continue;
+        }
+
+        if input_codec_type == ffi::AVMEDIA_TYPE_DATA {
+            warn!(
+                "Skipping data stream {} ({}).",
+                stream.index,
+                unsafe {
+                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
+                        .to_string_lossy()
+                }
+            );
             continue;
         }
 
@@ -1553,15 +1572,49 @@ fn convert_video_file(
 
         let input_stream_codecpar = stream.codecpar();
         let input_codec_id = input_stream_codecpar.codec_id;
-        let decoder = AVCodec::find_decoder(input_codec_id)
-            .with_context(|| anyhow!("Decoder not found for stream {}.", stream.index))?;
+        let codec_name = unsafe {
+            CStr::from_ptr(ffi::avcodec_get_name(input_codec_id))
+                .to_string_lossy()
+                .into_owned()
+        };
+        let decoder = match AVCodec::find_decoder(input_codec_id) {
+            Some(dec) => dec,
+            None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
+                warn!(
+                    "Skipping subtitle stream {} (codec {}): decoder not available.",
+                    stream.index, codec_name
+                );
+                continue;
+            }
+            None => {
+                bail!(
+                    "Decoder not found for stream {} (codec {}).",
+                    stream.index, codec_name
+                );
+            }
+        };
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
         decode_context.set_time_base(stream.time_base); // TODO: needed?
         if let Some(framerate) = stream.guess_framerate() {
             decode_context.set_framerate(framerate);
         }
-        decode_context.open(None)?;
+        if let Err(err) = decode_context.open(None) {
+            if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+                warn!(
+                    "Skipping subtitle stream {} (codec {}): failed to open decoder ({}).",
+                    stream.index, codec_name, err
+                );
+                continue;
+            } else {
+                return Err(anyhow!(
+                    "Error opening decoder for stream {} (codec {}): {}",
+                    stream.index,
+                    codec_name,
+                    err
+                ));
+            }
+        }
 
         let mut encode_context: AVCodecContext;
         let media_type: ffi::AVMediaType;
