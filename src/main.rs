@@ -59,6 +59,73 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
+fn describe_h264_profile(profile: i32) -> String {
+    H264Profile::try_from(profile)
+        .map(|p| format!("{:?}", p))
+        .unwrap_or_else(|_| format!("profile({})", profile))
+}
+
+fn describe_h264_level(level: i32) -> String {
+    H264Level::try_from(level)
+        .map(|l| l.ffmpeg_name().to_string())
+        .unwrap_or_else(|_| format!("level({})", level))
+}
+
+fn enforce_h264_constraints(
+    encode_context: &mut AVCodecContext,
+    target_profile: H264Profile,
+    target_level: H264Level,
+    encoder_name: &str,
+) {
+    let encoder_name_lower = encoder_name.to_ascii_lowercase();
+    unsafe {
+        let ctx_ptr = encode_context.as_mut_ptr();
+        if encoder_name_lower.contains("x264") {
+            set_codec_option_str(ctx_ptr, "profile", target_profile.ffmpeg_name());
+            set_codec_option_str(ctx_ptr, "level", target_level.ffmpeg_name());
+        }
+        (*ctx_ptr).profile = target_profile as i32;
+        (*ctx_ptr).level = target_level as i32;
+    }
+
+    let actual_profile = encode_context.profile;
+    let actual_level = encode_context.level;
+    if actual_profile == 0 {
+        debug!(
+            "Video encoder {} reported unknown H.264 profile after init",
+            encoder_name
+        );
+    } else if actual_profile > target_profile as i32 {
+        warn!(
+            "Video encoder {} elevated profile to {} (target was {})",
+            encoder_name,
+            describe_h264_profile(actual_profile),
+            describe_h264_profile(target_profile as i32)
+        );
+    }
+
+    if actual_level == 0 {
+        debug!(
+            "Video encoder {} reported unknown H.264 level after init",
+            encoder_name
+        );
+    } else if actual_level > target_level as i32 {
+        warn!(
+            "Video encoder {} elevated level to {} (target was {})",
+            encoder_name,
+            describe_h264_level(actual_level),
+            describe_h264_level(target_level as i32)
+        );
+    } else {
+        debug!(
+            "Video encoder {} locked to profile {} level {}",
+            encoder_name,
+            describe_h264_profile(actual_profile),
+            describe_h264_level(actual_level)
+        );
+    }
+}
+
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
     if ctx.is_null() {
         warn!(
@@ -1393,6 +1460,7 @@ fn set_video_codec_par(
     is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
+    let encoder_name_lower = encoder_name.to_ascii_lowercase();
     let device_cap = resolution_to_dimensions(device_max_resolution);
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
@@ -1468,6 +1536,31 @@ fn set_video_codec_par(
     unsafe {
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
+    }
+    if encoder_name_lower.contains("nvenc")
+        || encoder_name_lower.contains("amf")
+        || encoder_name_lower.contains("qsv")
+    {
+        unsafe {
+            set_codec_option_str(
+                encode_context.as_mut_ptr(),
+                "profile",
+                h264_profile.ffmpeg_name(),
+            );
+        }
+    }
+
+    let level_option_value = if encoder_name_lower.contains("nvenc")
+        || encoder_name_lower.contains("amf")
+        || encoder_name_lower.contains("qsv")
+    {
+        h264_level.ffmpeg_name().to_string()
+    } else {
+        (h264_level as i32).to_string()
+    };
+
+    unsafe {
+        set_codec_option_str(encode_context.as_mut_ptr(), "level", &level_option_value);
     }
     // Codec parameters are extracted after the encoder is opened.
 }
@@ -1946,6 +2039,15 @@ fn convert_video_file(
             .open(None)
             .with_context(|| format!("Error opening {} encoder", media_label))?;
 
+        if media_type == ffi::AVMEDIA_TYPE_VIDEO {
+            enforce_h264_constraints(
+                &mut encode_context,
+                h264_profile,
+                h264_level,
+                &encoder_name_owned,
+            );
+        }
+
         output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
@@ -2088,13 +2190,15 @@ fn convert_video_file(
                     String::new()
                 };
                 info!(
-                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps",
+                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
                     context.stream_index,
                     context.encode_context.width,
                     context.encode_context.height,
                     describe_codec(target_video_codec),
                     preset,
-                    context.encode_context.bit_rate
+                    context.encode_context.bit_rate,
+                    describe_h264_profile(context.encode_context.profile),
+                    describe_h264_level(context.encode_context.level)
                 );
             }
             ffi::AVMEDIA_TYPE_AUDIO => {

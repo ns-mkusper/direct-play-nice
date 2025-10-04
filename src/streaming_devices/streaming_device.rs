@@ -97,6 +97,29 @@ impl TryFrom<i32> for H264Level {
     }
 }
 
+impl H264Level {
+    pub fn ffmpeg_name(&self) -> &'static str {
+        match self {
+            H264Level::Level1 => "1",
+            H264Level::Level1_1 => "1.1",
+            H264Level::Level1_2 => "1.2",
+            H264Level::Level1_3 => "1.3",
+            H264Level::Level2 => "2",
+            H264Level::Level2_1 => "2.1",
+            H264Level::Level2_2 => "2.2",
+            H264Level::Level3 => "3",
+            H264Level::Level3_1 => "3.1",
+            H264Level::Level3_2 => "3.2",
+            H264Level::Level4 => "4",
+            H264Level::Level4_1 => "4.1",
+            H264Level::Level4_2 => "4.2",
+            H264Level::Level5 => "5",
+            H264Level::Level5_1 => "5.1",
+            H264Level::Level5_2 => "5.2",
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum H264Profile {
@@ -122,6 +145,20 @@ impl TryFrom<i32> for H264Profile {
             x if x == ffi::AV_PROFILE_H264_HIGH_422 as i32 => Ok(H264Profile::High422),
             x if x == ffi::AV_PROFILE_H264_HIGH_444 as i32 => Ok(H264Profile::High444),
             _ => Err("Invalid H.264 profile value"),
+        }
+    }
+}
+
+impl H264Profile {
+    pub fn ffmpeg_name(&self) -> &'static str {
+        match self {
+            H264Profile::Baseline => "baseline",
+            H264Profile::Main => "main",
+            H264Profile::Extended => "extended",
+            H264Profile::High => "high",
+            H264Profile::High10 => "high10",
+            H264Profile::High422 => "high422",
+            H264Profile::High444 => "high444",
         }
     }
 }
