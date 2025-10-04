@@ -1794,6 +1794,9 @@ fn convert_video_file(
         let mut frame_buffer: Option<AVAudioFifo> = None;
         let mut resample_context: Option<SwrContext> = None;
         let mut hw_device_ctx_ptr: Option<*mut ffi::AVBufferRef> = None;
+        let mut encoder_name_for_video: Option<String> = None;
+        let mut target_h264_profile: Option<H264Profile> = None;
+        let mut target_h264_level: Option<H264Level> = None;
 
         let is_video_stream = decode_context.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
         if is_video_stream && stream.index as usize != primary_index {
@@ -1857,6 +1860,9 @@ fn convert_video_file(
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
+                encoder_name_for_video = Some(encoder_name_owned.clone());
+                target_h264_profile = Some(min_h264_profile);
+                target_h264_level = Some(min_h264_level);
 
                 if !logged_video_encoder {
                     let encoder_name = &encoder_name_owned;
@@ -2040,12 +2046,13 @@ fn convert_video_file(
             .with_context(|| format!("Error opening {} encoder", media_label))?;
 
         if media_type == ffi::AVMEDIA_TYPE_VIDEO {
-            enforce_h264_constraints(
-                &mut encode_context,
-                h264_profile,
-                h264_level,
-                &encoder_name_owned,
-            );
+            if let (Some(profile), Some(level), Some(encoder_name)) = (
+                target_h264_profile,
+                target_h264_level,
+                encoder_name_for_video.as_deref(),
+            ) {
+                enforce_h264_constraints(&mut encode_context, profile, level, encoder_name);
+            }
         }
 
         output_stream.set_codecpar(encode_context.extract_codecpar());
