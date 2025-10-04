@@ -23,6 +23,8 @@ rustflags = [
 
 [env]
 RUST_LOG = "info"
+
+[target.'cfg(unix)'.env]
 VCPKG_ROOT = "/opt/vcpkg"
 
 # On Linux, dynamic FFmpeg libs from vcpkg may be under installed/x64-linux/lib.
@@ -36,3 +38,4 @@ VCPKG_ROOT = "/opt/vcpkg"
 # Default triplet for vcpkg-rs on Windows; CI/local can override by exporting
 # VCPKGRS_TRIPLET to a different value (e.g., x64-windows-static-md).
 VCPKGRS_TRIPLET = "x64-windows-static"
+VCPKG_ROOT = "C\\\\src\\\\vcpkg"

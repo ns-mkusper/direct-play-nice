@@ -248,14 +248,30 @@ cargo build
 ```
 
 After running `cargo vcpkg build` once, point `VCPKG_ROOT` at the shared
-installation so builds and CI reuse the same FFmpeg toolchain:
+installation so builds and CI reuse the same FFmpeg toolchain (this repo
+defaults to `/opt/vcpkg` on Unix and `C:\\src\\vcpkg` on Windows):
 
 ```bash
 export VCPKG_ROOT=/opt/vcpkg
 ```
 
-The repo defaults to `/opt/vcpkg`; override this environment variable if your
-setup differs.
+The repo defaults to `/opt/vcpkg` on Unix-like platforms and `C:\\src\\vcpkg` on
+Windows; override this environment variable if your setup differs. Our
+`Cargo.toml` pins vcpkg to commit `21012a516c9e5fa547baf212f2d937cd8d15dcb5`
+which includes FFmpeg 8—if you reuse an existing checkout, make sure it is
+checked out to that revision:
+
+```powershell
+# Windows PowerShell
+git -C $env:VCPKG_ROOT fetch https://github.com/cqundefine/vcpkg.git
+git -C $env:VCPKG_ROOT checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
+```
+
+```bash
+# macOS/Linux
+git -C "$VCPKG_ROOT" fetch https://github.com/cqundefine/vcpkg.git
+git -C "$VCPKG_ROOT" checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
+```
 
 ## Tests
 

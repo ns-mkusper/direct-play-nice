@@ -66,12 +66,16 @@ github-build-setup = "../templates/build-setup.yml"
 [package.metadata.vcpkg]
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec]",
-  "x264[asm,core,default-features]",
+  "x264[asm,core]",
 ]
+# fork includes update to ffmpeg8
+# see: https://github.com/microsoft/vcpkg/pull/47107
+git = "https://github.com/cqundefine/vcpkg"
+rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static"
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,qsv,amf]",
-  "x264[asm,core,default-features]",
+  "x264[asm,core]",
 ]
