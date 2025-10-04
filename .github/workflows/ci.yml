@@ -64,7 +64,7 @@ jobs:
       - name: Test sccache and set wrapper
         id: sccache-check
         run: |
-          RUSTC_WRAPPER=sccache cargo install cargo-vcpkg
+          RUSTC_WRAPPER=sccache cargo install cargo-vcpkg --version 0.1.9
         continue-on-error: true
 
       - name: Set job-level RUSTC_WRAPPER
@@ -73,15 +73,16 @@ jobs:
       - if: steps.sccache-check.outcome == 'failure'
         run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
 
-      - name: Read pinned vcpkg revision from Cargo.toml
-        id: vcpkg_rev
+      - name: Read pinned vcpkg source from Cargo.toml
+        id: vcpkg_meta
         shell: bash
         run: |
           set -euo pipefail
+          GIT=$(sed -n 's/^git\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
           REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ -z "$REV" ]; then
-            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
-          fi
+          if [ -z "$GIT" ]; then GIT="https://github.com/microsoft/vcpkg"; fi
+          if [ -z "$REV" ]; then REV="master"; fi
+          echo "git=$GIT" >> "$GITHUB_OUTPUT"
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo build artifacts
@@ -95,7 +96,7 @@ jobs:
           VCPKG_MAX_CONCURRENCY: 2
           CMAKE_BUILD_PARALLEL_LEVEL: 2
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-        run: cargo vcpkg --verbose build
+        run: cargo vcpkg --verbose build --git "${{ steps.vcpkg_meta.outputs.git }}" --rev "${{ steps.vcpkg_meta.outputs.rev }}"
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
@@ -131,6 +132,18 @@ jobs:
       VCPKGRS_TRIPLET: x64-windows-static
     steps:
       - uses: actions/checkout@v3
+      - name: Read pinned vcpkg source from Cargo.toml
+        id: vcpkg_meta
+        shell: pwsh
+        run: |
+          $gitMatch = Select-String -Path Cargo.toml -Pattern 'git\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $revMatch = Select-String -Path Cargo.toml -Pattern 'rev\s*=\s*"([^"]+)"' | Select-Object -First 1
+          $git = if ($gitMatch) { $gitMatch.Matches[0].Groups[1].Value } else { '' }
+          $rev = if ($revMatch) { $revMatch.Matches[0].Groups[1].Value } else { '' }
+          if ([string]::IsNullOrEmpty($git)) { $git = 'https://github.com/microsoft/vcpkg' }
+          if ([string]::IsNullOrEmpty($rev)) { $rev = 'master' }
+          "git=$git" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "rev=$rev" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -147,7 +160,7 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           try {
-            cargo install cargo-vcpkg
+            cargo install cargo-vcpkg --version 0.1.9
             echo "RUSTC_WRAPPER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } catch {
             echo "RUSTC_WRAPPER=" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -167,7 +180,7 @@ jobs:
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
           VCPKG_MAX_CONCURRENCY: 2
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-        run: cargo vcpkg --verbose build
+        run: cargo vcpkg --verbose build --git "${{ steps.vcpkg_meta.outputs.git }}" --rev "${{ steps.vcpkg_meta.outputs.rev }}"
 
       - name: Compile tests (no run)
         env:
