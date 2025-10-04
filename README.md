@@ -247,36 +247,56 @@ cargo vcpkg build
 cargo build
 ```
 
-After running `cargo vcpkg build` once, you can either point to that local vcpkg
-with `VCPKG_ROOT` or rely on your global vcpkg. This repo does not force a vcpkg
-path in `.cargo/config.toml` so your global `VCPKG_ROOT` (from shell/CI) is
-respected.
+After running `cargo vcpkg build` once, point `VCPKG_ROOT` at the shared
+installation so builds and CI reuse the same FFmpeg toolchain (this repo
+defaults to `/opt/vcpkg` on Unix and `C:\\src\\vcpkg` on Windows):
+
+```bash
+export VCPKG_ROOT=/opt/vcpkg
+```
+
+The repo defaults to `/opt/vcpkg` on Unix-like platforms and `C:\\src\\vcpkg` on
+Windows; override this environment variable if your setup differs. Our
+`Cargo.toml` pins vcpkg to commit `21012a516c9e5fa547baf212f2d937cd8d15dcb5`
+which includes FFmpeg 8—if you reuse an existing checkout, make sure it is
+checked out to that revision:
+
+```powershell
+# Windows PowerShell
+git -C $env:VCPKG_ROOT fetch https://github.com/cqundefine/vcpkg.git
+git -C $env:VCPKG_ROOT checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
+```
+
+```bash
+# macOS/Linux
+git -C "$VCPKG_ROOT" fetch https://github.com/cqundefine/vcpkg.git
+git -C "$VCPKG_ROOT" checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
+```
 
 ## Tests
 
 ```bash
-# If you use a global vcpkg, ensure VCPKG_ROOT is set in your shell/CI
-# export VCPKG_ROOT=/path/to/vcpkg
+# Builds assume `/opt/vcpkg`; override VCPKG_ROOT if you keep vcpkg elsewhere.
+# export VCPKG_ROOT=/opt/vcpkg
 cargo test
 ```
 
 End‑to‑end conversion tests that synthesize media require the `ffmpeg` CLI and
 are marked `#[ignore]`. To run them explicitly:
 
-````bash
-VCPKG_ROOT=/path/to/vcpkg cargo test -- --ignored
+```bash
+VCPKG_ROOT=/opt/vcpkg cargo test -- --ignored
+```
 
 ### Optional: direnv
 
-If you use `direnv`, you can let local builds auto‑discover a project vcpkg checkout:
+If you use `direnv`, add the following to `.envrc` so shells pick up the shared
+vcpkg install:
 
 ```sh
-# .envrc (example)
-export RUST_LOG=WARN
-if [ -z "${VCPKG_ROOT}" ] && [ -f "$(pwd)/target/vcpkg/.vcpkg-root" ]; then
-  export VCPKG_ROOT="$(pwd)/target/vcpkg"
-fi
-````
+export VCPKG_ROOT=/opt/vcpkg
+export RUST_LOG=${RUST_LOG:-WARN}
+```
 
 Then run `direnv allow` once in the repo.
 

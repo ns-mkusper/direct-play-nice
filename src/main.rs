@@ -1298,7 +1298,7 @@ fn load_encode_and_write(
 fn set_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    output_stream: &mut AVStreamMut,
+    _output_stream: &mut AVStreamMut,
     h264_profile: H264Profile, // TODO: handle cases somewhere when target video codec is NOT h264
     h264_level: H264Level,
     quality_limits: &QualityLimits,
@@ -1390,14 +1390,15 @@ fn set_video_codec_par(
 fn set_audio_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    output_stream: &mut AVStreamMut,
+    _output_stream: &mut AVStreamMut,
     quality_limits: &QualityLimits,
     source_bit_rate_hint: i64,
 ) {
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
+    let decode_channels = decode_context.ch_layout.nb_channels;
     encode_context
-        .set_ch_layout(AVChannelLayout::from_nb_channels(decode_context.channels).into_inner());
+        .set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
@@ -1427,14 +1428,14 @@ fn set_audio_codec_par(
     }
 
     // Codec parameters are extracted after the encoder is opened.
-    output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
+    _output_stream.set_time_base(ra(1, decode_context.sample_rate)); // use high-precision time base
     log_encoder_state("audio setup", encode_context, "aac");
 }
 
 fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    output_stream: &mut AVStreamMut,
+    _output_stream: &mut AVStreamMut,
 ) {
     // Set subtitle encoder parameters based on the input subtitle stream
     encode_context.set_time_base(decode_context.time_base);
@@ -1482,12 +1483,12 @@ fn convert_video_file(
     requested_audio_quality: AudioQuality,
     hw_accel: HwAccel,
 ) -> Result<(), anyhow::Error> {
-    let mut input_format_context = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let mut input_format_context = AVFormatContextInput::open(input_file)?;
     if log::log_enabled!(Level::Debug) {
         input_format_context.dump(0, input_file)?;
     }
 
-    let mut output_format_context = AVFormatContextOutput::create(output_file, None)?;
+    let mut output_format_context = AVFormatContextOutput::create(output_file)?;
 
     let output_path_str = output_file
         .to_str()
@@ -1728,10 +1729,11 @@ fn convert_video_file(
                     input_stream_codecpar.bit_rate,
                 );
                 let src_audio = stream.codecpar();
+                let src_audio_channels = src_audio.ch_layout().nb_channels;
                 info!(
                     "Audio stream {}: {} ch @ {} Hz {} -> {} ch @ {} Hz {}{}",
                     output_stream.index,
-                    src_audio.channels,
+                    src_audio_channels,
                     src_audio.sample_rate,
                     unsafe {
                         CStr::from_ptr(ffi::avcodec_get_name(src_audio.codec_id))
@@ -2057,7 +2059,7 @@ fn select_primary_video_stream_index(
 }
 
 fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
-    let ictx = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let ictx = AVFormatContextInput::open(input_file)?;
     println!("Input: {}", input_file.to_string_lossy());
     let duration_us = ictx.duration;
     if duration_us > 0 {
@@ -2173,7 +2175,7 @@ struct JsonDisposition {
 }
 
 fn gather_streams_info_json(input_file: &CStr, filter: StreamsFilter) -> Result<JsonProbe> {
-    let ictx = AVFormatContextInput::open(input_file, None, &mut None)?;
+    let ictx = AVFormatContextInput::open(input_file)?;
     let duration_us = ictx.duration;
     let mut out: Vec<JsonStreamInfo> = Vec::new();
     for st in ictx.streams() {

@@ -8,6 +8,7 @@ mod common;
 use assert_cmd::prelude::*;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
+use std::ffi::CString;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -32,13 +33,8 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     assert!(output.exists(), "output file was not created");
 
     // Validate via rsmpeg
-    let octx = AVFormatContextInput::open(
-        std::ffi::CString::new(output.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )?;
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
 
     let mut saw_v = false;
     let mut saw_a = false;

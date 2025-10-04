@@ -6,6 +6,7 @@
 
 use assert_cmd::prelude::*;
 use predicates::str;
+use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -145,27 +146,15 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64) {
         );
     }
 
-    let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(input.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )
-    .unwrap();
+    let input_cstr = CString::new(input.to_string_lossy().to_string()).unwrap();
+    let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
     let dur_ms = (ictx.duration as i64 / 1000).max(0) as u64;
     (input, dur_ms)
 }
 
 fn probe_duration_ms(path: &PathBuf) -> u64 {
-    let ictx = AVFormatContextInput::open(
-        std::ffi::CString::new(path.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )
-    .unwrap();
+    let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
+    let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
     (ictx.duration as i64 / 1000).max(0) as u64
 }
 
@@ -189,13 +178,8 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     assert!(output.exists(), "output file was not created");
 
     // Validate via rsmpeg
-    let octx = AVFormatContextInput::open(
-        std::ffi::CString::new(output.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )?;
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
 
     let mut saw_v = false;
     let mut saw_a = false;

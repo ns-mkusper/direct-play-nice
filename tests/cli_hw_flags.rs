@@ -6,6 +6,7 @@
 
 use assert_cmd::prelude::*;
 use predicates::str;
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -92,14 +93,8 @@ fn gen_tiny_input(tmp: &TempDir) -> PathBuf {
 }
 
 fn assert_output_basic(output: &PathBuf) {
-    let octx = AVFormatContextInput::open(
-        std::ffi::CString::new(output.to_string_lossy().to_string())
-            .unwrap()
-            .as_c_str(),
-        None,
-        &mut None,
-    )
-    .expect("open output");
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str()).expect("open output");
 
     let mut saw_v = false;
     let mut saw_a = false;

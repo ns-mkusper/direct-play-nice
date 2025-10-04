@@ -16,12 +16,12 @@ cstr = "0.2.12"
 env_logger = "0.11.3"
 log = "0.4.22"
 serde_json = "1.0"
-# TODO: upgrade to ffmpeg7 once in vcpkg
-# see: https://github.com/microsoft/vcpkg/pull/38011
-rsmpeg = { version = "0.15.1", default-features = false, features = [
-  "ffmpeg6",
+# rsmpeg/rusty_ffmpeg track FFmpeg 8 as of 0.18/0.16.
+rsmpeg = { version = "0.18.0+ffmpeg.8.0", default-features = false, features = [
+  "ffmpeg8",
+  "link_vcpkg_ffmpeg",
 ] }
-rusty_ffmpeg = { version = "0.14.1", features = ["link_vcpkg_ffmpeg"] }
+rusty_ffmpeg = { version = "0.16.7+ffmpeg.8", features = ["link_vcpkg_ffmpeg"] }
 serde = { version = "1.0.204", features = ["derive"] }
 strum = "0.26.3"
 strum_macros = "0.26.4"
@@ -34,9 +34,6 @@ fs2 = "0.4"
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.10"
-
-[patch.crates-io]
-rusty_ffmpeg = { git = "https://github.com/CCExtractor/rusty_ffmpeg.git", rev = "4011018dacd67e0651c5118d9f698e37bd80ac68" }
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -69,14 +66,16 @@ github-build-setup = "../templates/build-setup.yml"
 [package.metadata.vcpkg]
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec]",
-  "x264[asm,core,default-features]",
+  "x264[asm,core]",
 ]
-git = "https://github.com/microsoft/vcpkg"
-rev = "c4467cb686f92671f0172aa8299a77d908175b4e"
+# fork includes update to ffmpeg8
+# see: https://github.com/microsoft/vcpkg/pull/47107
+git = "https://github.com/cqundefine/vcpkg"
+rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static"
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,qsv,amf]",
-  "x264[asm,core,default-features]",
+  "x264[asm,core]",
 ]
