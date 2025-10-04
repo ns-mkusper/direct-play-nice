@@ -150,6 +150,105 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn cli_skips_mkv_font_attachment_streams() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let dir = tmp.path();
+    let video = dir.join("vf.mkv");
+    let audio = dir.join("af.mp2");
+    let font = dir.join("fakefont.ttf");
+    let input = dir.join("input_with_font.mkv");
+
+    // Minimal fake font payload (extension and mimetype drive codec detection).
+    std::fs::write(&font, vec![0u8; 1024])?;
+
+    // Generate short video/audio assets if needed.
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
+                &video.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg video generation failed"
+    );
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=2",
+                "-c:a",
+                "mp2",
+                &audio.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg audio generation failed"
+    );
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-attach",
+                &font.to_string_lossy(),
+                "-metadata:s:t",
+                "mimetype=application/x-truetype-font",
+                "-metadata:s:t",
+                "filename=fakefont.ttf",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                &input.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg mux with font attachment failed"
+    );
+
+    let output = dir.join("out_font.mp4");
+
+    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    cmd.arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg(&input)
+        .arg(&output);
+    cmd.assert().success().stdout(str::is_empty());
+
+    assert!(output.exists(), "output file was not created");
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
+    for st in octx.streams() {
+        let par = st.codecpar();
+        assert_ne!(
+            par.codec_type,
+            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            "font attachment leaked to output"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Error>> {
     ensure_ffmpeg_present();
     let tmp = TempDir::new()?;
