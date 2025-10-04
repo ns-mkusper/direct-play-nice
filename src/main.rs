@@ -126,6 +126,19 @@ fn enforce_h264_constraints(
     }
 }
 
+fn should_apply_profile_option(encoder_name: &str) -> bool {
+    encoder_name.to_ascii_lowercase().contains("x264")
+}
+
+fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
+    let lower = encoder_name.to_ascii_lowercase();
+    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
+        level.ffmpeg_name().to_string()
+    } else {
+        (level as i32).to_string()
+    }
+}
+
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
     if ctx.is_null() {
         warn!(
@@ -414,6 +427,81 @@ enum VideoQuality {
     /// 2160p (Ultra HD / 4K) profile – ~35 Mbps target bitrate.
     #[value(name = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
     P2160,
+}
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+
+    #[test]
+    fn profile_option_only_applies_to_x264() {
+        assert!(should_apply_profile_option("libx264"));
+        assert!(should_apply_profile_option("LIBX264"));
+        assert!(!should_apply_profile_option("h264_nvenc"));
+        assert!(!should_apply_profile_option("amf_h264"));
+    }
+
+    #[test]
+    fn level_option_values_match_encoder_type() {
+        assert_eq!(
+            level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
+            "4.1"
+        );
+        assert_eq!(
+            level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
+            "5.1"
+        );
+        assert_eq!(
+            level_option_value_for_encoder("libx264", H264Level::Level4_1),
+            "41"
+        );
+    }
+
+    #[test]
+    fn parse_new_device_models() {
+        let models = streaming_devices::STREAMING_DEVICES
+            .iter()
+            .map(|d| d.model)
+            .collect::<Vec<_>>();
+        for required in [
+            "chromecast_3rd_gen",
+            "chromecast_google_tv",
+            "google_tv_streamer",
+            "nest_hub",
+            "nest_hub_max",
+        ] {
+            assert!(
+                models.contains(&required),
+                "STREAMING_DEVICES missing {}",
+                required
+            );
+        }
+    }
+
+    #[test]
+    fn min_level_respects_strictest_device() {
+        use streaming_devices::StreamingDevice;
+        let devices = streaming_devices::STREAMING_DEVICES;
+        let third_gen = devices
+            .iter()
+            .find(|d| d.model == "chromecast_3rd_gen")
+            .unwrap();
+        let nest_hub = devices.iter().find(|d| d.model == "nest_hub").unwrap();
+        let combo = vec![third_gen, nest_hub];
+        let min_level = StreamingDevice::get_min_h264_level(&combo).unwrap();
+        assert_eq!(min_level, H264Level::Level4_1);
+    }
+
+    #[test]
+    fn parse_device_selection_accepts_new_models() {
+        let selection = Args::parse_device_selection("google_tv_streamer").unwrap();
+        match selection {
+            StreamingDeviceSelection::Model(device) => {
+                assert_eq!(device.model, "google_tv_streamer");
+            }
+            _ => panic!("Expected model selection"),
+        }
+    }
 }
 
 impl VideoQuality {
@@ -1460,7 +1548,6 @@ fn set_video_codec_par(
     is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
-    let encoder_name_lower = encoder_name.to_ascii_lowercase();
     let device_cap = resolution_to_dimensions(device_max_resolution);
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
@@ -1537,7 +1624,7 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
-    if encoder_name_lower.contains("x264") {
+    if should_apply_profile_option(encoder_name) {
         unsafe {
             set_codec_option_str(
                 encode_context.as_mut_ptr(),
@@ -1547,14 +1634,7 @@ fn set_video_codec_par(
         }
     }
 
-    let level_option_value = if encoder_name_lower.contains("nvenc")
-        || encoder_name_lower.contains("amf")
-        || encoder_name_lower.contains("qsv")
-    {
-        h264_level.ffmpeg_name().to_string()
-    } else {
-        (h264_level as i32).to_string()
-    };
+    let level_option_value = level_option_value_for_encoder(encoder_name, h264_level);
 
     unsafe {
         set_codec_option_str(encode_context.as_mut_ptr(), "level", &level_option_value);
