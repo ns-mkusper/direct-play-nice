@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{value_parser, Parser, ValueEnum};
+use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
@@ -889,6 +890,7 @@ pub struct StreamProcessingContext {
     resample_context: Option<SwrContext>,
     pts: AtomicI64,
     last_written_dts: Option<i64>,
+    skip_stream: bool,
     #[allow(dead_code)]
     hw_device_ctx: Option<*mut ffi::AVBufferRef>,
 }
@@ -900,6 +902,7 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("media_type", &self.media_type)
             .field("pts", &self.pts)
             .field("last_written_dts", &self.last_written_dts)
+            .field("skip_stream", &self.skip_stream)
             .finish()
     }
 }
@@ -1184,6 +1187,14 @@ fn process_subtitle_stream(
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
 ) -> Result<()> {
+    if stream_processing_context.skip_stream {
+        trace!(
+            "Subtitle stream {} already skipped; dropping packet.",
+            stream_processing_context.stream_index
+        );
+        return Ok(());
+    }
+
     packet.rescale_ts(
         input_stream.time_base,
         stream_processing_context.decode_context.time_base,
@@ -1195,6 +1206,10 @@ fn process_subtitle_stream(
     {
         Ok(sub) => {
             if let Some(subtitle) = sub {
+                debug!(
+                    "Subtitle stream {} raw packet pts={} dts={} duration={}",
+                    stream_processing_context.stream_index, packet.pts, packet.dts, packet.duration
+                );
                 // TODO: Find the max size of subtitle data in a single packet
                 const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
                 let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
@@ -1251,11 +1266,12 @@ fn process_subtitle_stream(
                 encoded_packet.set_duration(packet.duration);
                 encoded_packet.set_flags(packet.flags);
 
+                let output_time_base = output_format_context.streams()
+                    [stream_processing_context.stream_index as usize]
+                    .time_base;
                 encoded_packet.rescale_ts(
                     stream_processing_context.decode_context.time_base,
-                    output_format_context.streams()
-                        [stream_processing_context.stream_index as usize]
-                        .time_base,
+                    output_time_base,
                 );
 
                 let packet_dts = encoded_packet.dts;
@@ -1266,14 +1282,37 @@ fn process_subtitle_stream(
                         if encoded_packet.pts < adjusted {
                             encoded_packet.set_pts(adjusted);
                         }
+                        debug!(
+                            "Subtitle stream {} adjusted DTS from {} to {}",
+                            stream_processing_context.stream_index, packet_dts, adjusted
+                        );
                     }
                 }
 
                 stream_processing_context.last_written_dts = Some(encoded_packet.dts);
+                debug!(
+                    "Subtitle stream {} final pts={} dts={} duration={} (tb={}/{})",
+                    stream_processing_context.stream_index,
+                    encoded_packet.pts,
+                    encoded_packet.dts,
+                    encoded_packet.duration,
+                    output_time_base.num,
+                    output_time_base.den
+                );
 
-                output_format_context
-                    .interleaved_write_frame(&mut encoded_packet)
-                    .context("Could not write subtitle packet")?;
+                match output_format_context.interleaved_write_frame(&mut encoded_packet) {
+                    Ok(()) => {}
+                    Err(rsmpeg::error::RsmpegError::AVError(code)) if code == -EINVAL => {
+                        warn!(
+                            "Subtitle stream {} produced invalid timestamps; skipping rest of stream.",
+                            stream_processing_context.stream_index
+                        );
+                        stream_processing_context.skip_stream = true;
+                    }
+                    Err(e) => {
+                        return Err(e).context("Could not write subtitle packet");
+                    }
+                }
             }
         }
         Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
@@ -1443,8 +1482,7 @@ fn set_audio_codec_par(
     // TODO: Read input to determine output audio codec params
     let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC).expect("Could not find AAC encoder");
     let decode_channels = decode_context.ch_layout.nb_channels;
-    encode_context
-        .set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
+    encode_context.set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
     // The input file's sample rate is used to avoid a sample rate conversion.
     encode_context.set_sample_rate(decode_context.sample_rate);
     encode_context.set_sample_fmt(encoder.sample_fmts().unwrap()[0]); // TODO: Are we actually getting the sample rate we want?
@@ -1591,14 +1629,9 @@ fn convert_video_file(
         }
 
         if input_codec_type == ffi::AVMEDIA_TYPE_DATA {
-            warn!(
-                "Skipping data stream {} ({}).",
-                stream.index,
-                unsafe {
-                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
-                        .to_string_lossy()
-                }
-            );
+            warn!("Skipping data stream {} ({}).", stream.index, unsafe {
+                CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id)).to_string_lossy()
+            });
             continue;
         }
 
@@ -1635,7 +1668,8 @@ fn convert_video_file(
             None => {
                 bail!(
                     "Decoder not found for stream {} (codec {}).",
-                    stream.index, codec_name
+                    stream.index,
+                    codec_name
                 );
             }
         };
@@ -1923,6 +1957,7 @@ fn convert_video_file(
             resample_context,
             pts: AtomicI64::new(0),
             last_written_dts: None,
+            skip_stream: false,
             hw_device_ctx: hw_device_ctx_ptr,
         };
 

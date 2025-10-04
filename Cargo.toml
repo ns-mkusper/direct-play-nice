@@ -29,6 +29,7 @@ syslog = "6.1.1"
 toml = "0.8.16"
 vcpkg = "0.2.15"
 fs2 = "0.4"
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"
