@@ -1,6 +1,6 @@
 //! Streaming devices and their direct-play specs
 
-use std::{clone::Clone, cmp::Ordering};
+use std::{clone::Clone, cmp::Ordering, convert::TryFrom};
 
 use anyhow::{anyhow, bail, Error};
 use rusty_ffmpeg::ffi;
@@ -179,6 +179,15 @@ pub struct StreamingDevice {
     pub video_codec: [Option<ffi::AVCodecID>; 5],
 }
 
+impl TryFrom<u32> for H264Profile {
+    type Error = &'static str;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        let value = i32::try_from(value).map_err(|_| "Invalid H.264 profile value")?;
+        H264Profile::try_from(value)
+    }
+}
+
 impl StreamingDevice {
     /// Finds the intersection of video codecs among all `StreamingDevice`'s
     pub fn get_common_video_codec(
@@ -280,5 +289,27 @@ impl StreamingDevice {
         }
 
         Ok(Resolution::from_resolution(min_res.0, min_res.1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_profile_try_from_accepts_known_profiles() {
+        assert_eq!(
+            H264Profile::try_from(ffi::AV_PROFILE_H264_BASELINE).expect("baseline should map"),
+            H264Profile::Baseline
+        );
+        assert_eq!(
+            H264Profile::try_from(ffi::AV_PROFILE_H264_HIGH).expect("high should map"),
+            H264Profile::High
+        );
+    }
+
+    #[test]
+    fn h264_profile_try_from_rejects_unknown_value() {
+        assert!(H264Profile::try_from(-1).is_err());
     }
 }

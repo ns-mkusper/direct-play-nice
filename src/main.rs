@@ -14,6 +14,7 @@ use serde::Serialize;
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
 use std::path::{Path, PathBuf};
 use std::{
+    convert::TryFrom,
     env,
     ffi::{CStr, CString},
     os::raw::c_void,
@@ -1719,6 +1720,235 @@ fn set_subtitle_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
+struct DirectPlayAssessment {
+    compatible: bool,
+    reasons: Vec<String>,
+}
+
+fn assess_direct_play_compatibility(
+    input_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    min_h264_profile: H264Profile,
+    min_h264_level: H264Level,
+    max_fps: u32,
+    device_cap: (u32, u32),
+    quality_limits: &QualityLimits,
+    primary_video_stream_index: Option<usize>,
+    primary_criteria: PrimaryVideoCriteria,
+) -> Result<DirectPlayAssessment> {
+    let ictx = AVFormatContextInput::open(input_file)?;
+    let primary_idx =
+        select_primary_video_stream_index(&ictx, primary_video_stream_index, primary_criteria)?;
+
+    let streams: Vec<_> = ictx.streams().into_iter().collect();
+    let video_stream = streams.get(primary_idx).ok_or_else(|| {
+        anyhow!(
+            "Primary video stream index {} out of range while checking direct-play compatibility",
+            primary_idx
+        )
+    })?;
+
+    let mut reasons = Vec::new();
+    let video_par = video_stream.codecpar();
+
+    for stream in &streams {
+        let disposition_flags = unsafe { (*stream.as_ptr()).disposition as i32 };
+        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
+            reasons.push("input contains an attached picture stream".to_string());
+            break;
+        }
+        if stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+            reasons.push("input contains an attachment stream".to_string());
+            break;
+        }
+    }
+
+    if video_par.codec_id != target_video_codec {
+        reasons.push(format!(
+            "video codec {} is not compatible with required {}",
+            describe_codec(video_par.codec_id),
+            describe_codec(target_video_codec)
+        ));
+    }
+
+    if video_par.width <= 0 || video_par.height <= 0 {
+        reasons.push("video resolution unknown".to_string());
+    } else if (video_par.width as u32) > device_cap.0 || (video_par.height as u32) > device_cap.1 {
+        reasons.push(format!(
+            "video resolution {}x{} exceeds device limit {}x{}",
+            video_par.width, video_par.height, device_cap.0, device_cap.1
+        ));
+    }
+
+    if let Some((quality_w, quality_h)) = quality_limits.max_video_dimensions {
+        if video_par.width > 0
+            && video_par.height > 0
+            && ((video_par.width as u32) > quality_w || (video_par.height as u32) > quality_h)
+        {
+            reasons.push(format!(
+                "video resolution {}x{} exceeds requested quality limit {}x{}",
+                video_par.width, video_par.height, quality_w, quality_h
+            ));
+        }
+    }
+
+    if let Some(max_video_bitrate) = quality_limits.max_video_bitrate {
+        let mut video_bit_rate = video_par.bit_rate;
+        if video_bit_rate <= 0 {
+            video_bit_rate = unsafe { (*(*video_stream.as_ptr()).codecpar).bit_rate };
+        }
+        if video_bit_rate <= 0 {
+            reasons.push(
+                "video bitrate unknown; cannot confirm compliance with requested quality limit"
+                    .into(),
+            );
+        } else if video_bit_rate > max_video_bitrate {
+            reasons.push(format!(
+                "video bitrate {} bps exceeds requested limit {} bps",
+                video_bit_rate, max_video_bitrate
+            ));
+        }
+    }
+
+    if max_fps > 0 {
+        match estimate_stream_fps(video_stream) {
+            Some(fps) => {
+                if fps > max_fps as f64 + 0.5 {
+                    reasons.push(format!(
+                        "video frame rate {:.2} fps exceeds device limit {} fps",
+                        fps, max_fps
+                    ));
+                }
+            }
+            None => reasons.push("video frame rate unknown; cannot confirm compatibility".into()),
+        }
+    }
+
+    if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        match H264Profile::try_from(video_par.profile) {
+            Ok(profile) => {
+                if profile > min_h264_profile {
+                    reasons.push(format!(
+                        "H.264 profile {:?} exceeds device limit {:?}",
+                        profile, min_h264_profile
+                    ));
+                }
+            }
+            Err(_) => reasons.push("H.264 profile unknown; cannot confirm compatibility".into()),
+        }
+
+        match H264Level::try_from(video_par.level) {
+            Ok(level) => {
+                if level > min_h264_level {
+                    reasons.push(format!(
+                        "H.264 level {:?} exceeds device limit {:?}",
+                        level, min_h264_level
+                    ));
+                }
+            }
+            Err(_) => reasons.push("H.264 level unknown; cannot confirm compatibility".into()),
+        }
+    }
+
+    let mut audio_ok = false;
+    let mut audio_quality_reason: Option<String> = None;
+    for stream in &streams {
+        let codecpar = stream.codecpar();
+        if codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO {
+            continue;
+        }
+        if codecpar.codec_id != target_audio_codec {
+            continue;
+        }
+
+        if let Some(max_audio_bitrate) = quality_limits.max_audio_bitrate {
+            let mut audio_bit_rate = codecpar.bit_rate;
+            if audio_bit_rate <= 0 {
+                audio_bit_rate = unsafe { (*(*stream.as_ptr()).codecpar).bit_rate };
+            }
+
+            if audio_bit_rate <= 0 {
+                if audio_quality_reason.is_none() {
+                    audio_quality_reason = Some(
+                        "audio bitrate unknown; cannot confirm compliance with requested quality limit"
+                            .into(),
+                    );
+                }
+                continue;
+            }
+
+            if audio_bit_rate > max_audio_bitrate {
+                if audio_quality_reason.is_none() {
+                    audio_quality_reason = Some(format!(
+                        "audio bitrate {} bps exceeds requested limit {} bps",
+                        audio_bit_rate, max_audio_bitrate
+                    ));
+                }
+                continue;
+            }
+        }
+
+        audio_ok = true;
+        break;
+    }
+
+    if !audio_ok {
+        if let Some(reason) = audio_quality_reason {
+            reasons.push(reason);
+        } else {
+            reasons.push(format!(
+                "no audio stream with compatible codec {} found",
+                describe_codec(target_audio_codec)
+            ));
+        }
+    }
+
+    Ok(DirectPlayAssessment {
+        compatible: reasons.is_empty(),
+        reasons,
+    })
+}
+
+fn estimate_stream_fps(stream: &AVStreamRef) -> Option<f64> {
+    if let Some(rational) = stream.guess_framerate() {
+        rational_to_f64(rational)
+    } else {
+        let avg = unsafe { (*stream.as_ptr()).avg_frame_rate };
+        rational_to_f64(avg)
+    }
+}
+
+fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
+    if rational.num <= 0 || rational.den <= 0 {
+        None
+    } else {
+        Some(rational.num as f64 / rational.den as f64)
+    }
+}
+
+#[cfg(test)]
+mod direct_play_tests {
+    use super::*;
+
+    #[test]
+    fn rational_to_f64_handles_valid_fraction() {
+        let val = rational_to_f64(ffi::AVRational {
+            num: 60000,
+            den: 1001,
+        })
+        .expect("should convert");
+        // 59.94 fps typical NTSC
+        assert!((val - 59.94).abs() < 0.01);
+    }
+
+    #[test]
+    fn rational_to_f64_rejects_non_positive() {
+        assert!(rational_to_f64(ffi::AVRational { num: 0, den: 1 }).is_none());
+        assert!(rational_to_f64(ffi::AVRational { num: 1, den: 0 }).is_none());
+    }
+}
+
 /// Takes input video files and outputs direct-play-compatible video files
 fn convert_video_file(
     input_file: &CStr,
@@ -2776,8 +3006,6 @@ fn main() -> Result<()> {
         device_cap.0, device_cap.1, min_h264_profile, min_h264_level
     );
 
-    // TODO: Check if video file is already compatible and skip if it is
-
     let input_file = args
         .input_file
         .as_ref()
@@ -2789,6 +3017,37 @@ fn main() -> Result<()> {
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
 
+    match assess_direct_play_compatibility(
+        input_file,
+        common_video_codec,
+        common_audio_codec,
+        min_h264_profile,
+        min_h264_level,
+        min_fps,
+        device_cap,
+        &quality_limits,
+        args.primary_video_stream_index,
+        args.primary_video_criteria,
+    ) {
+        Ok(assessment) => {
+            if assessment.compatible {
+                info!(
+                    "Input is already direct-play compatible for the requested devices; skipping conversion."
+                );
+                return Ok(());
+            }
+            info!("Transcoding required to satisfy requested device constraints.");
+            for reason in assessment.reasons {
+                info!("  - {}", reason);
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Unable to determine direct-play compatibility automatically; proceeding with conversion: {}",
+                err
+            );
+        }
+    }
     let _conversion_slot = acquire_slot()?;
 
     let conversion_result = convert_video_file(
