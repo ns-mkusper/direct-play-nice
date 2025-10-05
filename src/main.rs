@@ -3030,7 +3030,21 @@ fn set_h264_video_codec_par(
     encode_context.set_height(target_height);
     configure_video_timing(decode_context, encode_context, output_stream, input_stream);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
-    encode_context.set_max_b_frames(decode_context.max_b_frames);
+    let mut max_b_frames = decode_context.max_b_frames;
+
+    // NVENC cannot handle more than 4 consecutive B-frames; clamp to avoid "Function not implemented" errors
+    if encoder_name.to_ascii_lowercase().contains("nvenc") {
+        let clamped = max_b_frames.min(4);
+        if clamped != max_b_frames {
+            debug!(
+                "Clamping NVENC max B-frames from {} to {} to satisfy encoder limits",
+                max_b_frames, clamped
+            );
+        }
+        max_b_frames = clamped;
+    }
+
+    encode_context.set_max_b_frames(max_b_frames);
 
     // START FIX: CONDITIONAL BITRATE SETTING
     let mut target_bit_rate: Option<i64> = None;
