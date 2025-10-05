@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{value_parser, Parser, ValueEnum};
+use clap::{parser::ValueSource, ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum, value_parser};
 use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
@@ -18,6 +18,7 @@ use std::{
     env,
     ffi::{CStr, CString},
     os::raw::c_void,
+    str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
 };
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
@@ -845,7 +846,7 @@ struct Args {
     )]
     streaming_devices: Option<Vec<StreamingDeviceSelection>>,
 
-    /// Path to the configuration file
+    /// Path to the configuration file (auto-discovery checks $DIRECT_PLAY_NICE_CONFIG, XDG/HOME configs, the working/executable directory, then /etc)
     #[arg(short, long, value_parser = value_parser!(PathBuf))]
     config_file: Option<PathBuf>,
 
@@ -943,7 +944,7 @@ impl Args {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
 
-    fn parse_bitrate(input: &str) -> Result<i64, String> {
+    pub(crate) fn parse_bitrate(input: &str) -> Result<i64, String> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Err("Bitrate value cannot be empty".to_string());
@@ -1004,7 +1005,7 @@ impl Args {
         Ok(bits_per_second)
     }
 
-    fn parse_device_selection(input: &str) -> Result<StreamingDeviceSelection, String> {
+    pub(crate) fn parse_device_selection(input: &str) -> Result<StreamingDeviceSelection, String> {
         let normalized = input.trim();
         if normalized.is_empty() {
             return Err("Streaming device value cannot be empty".to_string());
@@ -1029,6 +1030,226 @@ impl Args {
                     input, available
                 )
             })
+    }
+}
+
+fn apply_config_overrides(
+    args: &mut Args,
+    matches: &ArgMatches,
+    cfg: &config::FileConfig,
+) -> Result<()> {
+    let path = &cfg.path;
+
+    if can_override(matches, "streaming-devices") {
+        if let Some(raw) = config_lookup(cfg, &["streaming_devices", "streaming-devices"]) {
+            let selections = raw
+                .split(|ch| matches!(ch, ',' | '\n' | ' ' | '\t'))
+                .map(|token| token.trim())
+                .filter(|token| !token.is_empty())
+                .map(Args::parse_device_selection)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| anyhow!(
+                    "Config {} streaming_devices error: {}",
+                    path.display(),
+                    err
+                ))?;
+
+            if !selections.is_empty() {
+                args.streaming_devices = Some(selections);
+            }
+        }
+    }
+
+    if can_override(matches, "video-quality") {
+        if let Some(raw) = config_lookup(cfg, &["video_quality", "video-quality"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                let parsed = VideoQuality::from_str(value, true).map_err(|_| {
+                    anyhow!(
+                        "Config {} video_quality has invalid value '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.video_quality = parsed;
+            }
+        }
+    }
+
+    if can_override(matches, "audio-quality") {
+        if let Some(raw) = config_lookup(cfg, &["audio_quality", "audio-quality"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                let parsed = AudioQuality::from_str(value, true).map_err(|_| {
+                    anyhow!(
+                        "Config {} audio_quality has invalid value '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.audio_quality = parsed;
+            }
+        }
+    }
+
+    if can_override(matches, "max-video-bitrate") {
+        if let Some(raw) = config_lookup(cfg, &["max_video_bitrate", "max-video-bitrate"]) {
+            let value = raw.trim();
+            if value.is_empty()
+                || matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "match-source" | "source" | "auto" | "none"
+                )
+            {
+                args.max_video_bitrate = None;
+            } else {
+                let parsed = Args::parse_bitrate(value).map_err(|err| {
+                    anyhow!(
+                        "Config {} max_video_bitrate error: {}",
+                        path.display(),
+                        err
+                    )
+                })?;
+                args.max_video_bitrate = Some(parsed);
+            }
+        }
+    }
+
+    if can_override(matches, "max-audio-bitrate") {
+        if let Some(raw) = config_lookup(cfg, &["max_audio_bitrate", "max-audio-bitrate"]) {
+            let value = raw.trim();
+            if value.is_empty()
+                || matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "match-source" | "source" | "auto" | "none"
+                )
+            {
+                args.max_audio_bitrate = None;
+            } else {
+                let parsed = Args::parse_bitrate(value).map_err(|err| {
+                    anyhow!(
+                        "Config {} max_audio_bitrate error: {}",
+                        path.display(),
+                        err
+                    )
+                })?;
+                args.max_audio_bitrate = Some(parsed);
+            }
+        }
+    }
+
+    if can_override(matches, "hw-accel") {
+        if let Some(raw) = config_lookup(cfg, &["hw_accel", "hw-accel"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                let parsed = HwAccel::from_str(value, true).map_err(|_| {
+                    anyhow!(
+                        "Config {} hw_accel has invalid value '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.hw_accel = parsed;
+            }
+        }
+    }
+
+    if can_override(matches, "unsupported-video-policy") {
+        if let Some(raw) = config_lookup(cfg, &["unsupported_video_policy", "unsupported-video-policy"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                let parsed = UnsupportedVideoPolicy::from_str(value, true).map_err(|_| {
+                    anyhow!(
+                        "Config {} unsupported_video_policy has invalid value '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.unsupported_video_policy = parsed;
+            }
+        }
+    }
+
+    if can_override(matches, "primary-video-stream-index") {
+        if let Some(raw) = config_lookup(cfg, &["primary_video_stream_index", "primary-video-stream-index"]) {
+            let value = raw.trim();
+            if value.is_empty() {
+                args.primary_video_stream_index = None;
+            } else {
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    anyhow!(
+                        "Config {} primary_video_stream_index must be a non-negative integer, got '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.primary_video_stream_index = Some(parsed);
+            }
+        }
+    }
+
+    if can_override(matches, "primary-video-criteria") {
+        if let Some(raw) = config_lookup(cfg, &["primary_video_criteria", "primary-video-criteria"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                let parsed = PrimaryVideoCriteria::from_str(value, true).map_err(|_| {
+                    anyhow!(
+                        "Config {} primary_video_criteria has invalid value '{}'",
+                        path.display(),
+                        value
+                    )
+                })?;
+                args.primary_video_criteria = parsed;
+            }
+        }
+    }
+
+    if can_override(matches, "servarr-output-extension") {
+        if let Some(raw) = config_lookup(cfg, &["servarr_output_extension", "servarr-output-extension"]) {
+            let value = raw.trim();
+            if !value.is_empty() {
+                args.servarr_output_extension = value.to_string();
+            }
+        }
+    }
+
+    if can_override(matches, "servarr-output-suffix") {
+        if let Some(raw) = config_lookup(cfg, &["servarr_output_suffix", "servarr-output-suffix"]) {
+            args.servarr_output_suffix = raw.to_string();
+        }
+    }
+
+    if can_override(matches, "delete-source") {
+        if let Some(raw) = config_lookup(cfg, &["delete_source", "delete-source"]) {
+            if let Some(value) = parse_boolish_flag(raw) {
+                args.delete_source = value;
+            } else {
+                return Err(anyhow!(
+                    "Config {} delete_source must be true/false/1/0/yes/no",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn can_override(matches: &ArgMatches, id: &str) -> bool {
+    matches
+        .value_source(id)
+        .map_or(true, |source| matches!(source, ValueSource::DefaultValue))
+}
+
+fn config_lookup<'a>(cfg: &'a config::FileConfig, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| cfg.get(key))
+}
+
+fn parse_boolish_flag(input: &str) -> Option<bool> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "y" => Some(true),
+        "false" | "0" | "no" | "n" => Some(false),
+        _ => None,
     }
 }
 
@@ -2830,7 +3051,30 @@ fn main() -> Result<()> {
 
     configure_ffmpeg_logging();
 
-    let mut args = Args::parse();
+    let matches = Args::command().get_matches();
+    let mut args = match Args::from_arg_matches(&matches) {
+        Ok(parsed) => parsed,
+        Err(err) => err.exit(),
+    };
+
+    let config_override = matches.get_one::<PathBuf>("config-file").cloned();
+    let file_config = config::load_config(config_override.as_deref())?;
+    if config_override.is_some() && file_config.is_none() {
+        bail!(
+            "Configuration file '{}' was not found",
+            config_override
+                .as_ref()
+                .expect("checked above")
+                .display()
+        );
+    }
+
+    if let Some(ref cfg) = file_config {
+        apply_config_overrides(&mut args, &matches, cfg)?;
+        if args.config_file.is_none() {
+            args.config_file = Some(cfg.path.clone());
+        }
+    }
 
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
@@ -2896,12 +3140,6 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    // TODO: implement config file
-    if args.config_file.is_some() {
-        eprintln!("Error: The --config-file option is not implemented yet.");
-        std::process::exit(1);
-    }
-
     if args.input_file.is_none() || args.output_file.is_none() {
         bail!(
             "<INPUT_FILE> and <OUTPUT_FILE> are required unless you use --probe-* flags or run inside a Sonarr/Radarr Download event."
