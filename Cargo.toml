@@ -64,6 +64,9 @@ install-updater = false
 # see: https://opensource.axo.dev/cargo-dist/book/ci/customizing.html#customizing-build-setup
 github-build-setup = "../templates/build-setup.yml"
 
+[workspace.metadata.dist.github-custom-runners]
+global = "ubuntu-22.04"
+
 [package.metadata.vcpkg]
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec]",
