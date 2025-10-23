@@ -2845,7 +2845,29 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
+    let loaded_config = config::load(args.config_file.as_deref())?;
+    if let Some((_, source)) = &loaded_config {
+        match source {
+            config::ConfigSource::Cli(path) => {
+                info!("Loaded configuration from '{}'.", path.display());
+            }
+            config::ConfigSource::Env(path) => {
+                info!(
+                    "Loaded configuration from '{}' (via {}).",
+                    path.display(),
+                    config::CONFIG_ENV_VAR
+                );
+            }
+            config::ConfigSource::Default(path) => {
+                info!("Loaded configuration from '{}'.", path.display());
+            }
+        }
+    }
+    let config = loaded_config.map(|(cfg, _)| cfg);
+    let config_plex = config.as_ref().and_then(|cfg| cfg.plex.as_ref());
+
     let plex_refresher = plex::PlexRefresher::from_sources(
+        config_plex,
         args.plex_refresh,
         args.plex_url.as_deref(),
         args.plex_token.as_deref(),
@@ -2915,12 +2937,6 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    // TODO: implement config file
-    if args.config_file.is_some() {
-        eprintln!("Error: The --config-file option is not implemented yet.");
-        std::process::exit(1);
-    }
-
     if args.input_file.is_none() || args.output_file.is_none() {
         bail!(
             "<INPUT_FILE> and <OUTPUT_FILE> are required unless you use --probe-* flags or run inside a Sonarr/Radarr Download event."

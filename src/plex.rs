@@ -1,3 +1,4 @@
+use crate::config::PlexSettings;
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use roxmltree::Document;
@@ -22,22 +23,36 @@ pub struct PlexRefresher {
 
 impl PlexRefresher {
     pub fn from_sources(
+        config: Option<&PlexSettings>,
         cli_flag: bool,
         cli_url: Option<&str>,
         cli_token: Option<&str>,
     ) -> Result<Option<Self>> {
+        let config_flag = config.and_then(|cfg| cfg.refresh);
         let env_flag = env::var("DIRECT_PLAY_NICE_PLEX_REFRESH")
             .ok()
             .and_then(parse_boolish);
-        let mut refresh_enabled = cli_flag || env_flag.unwrap_or(false);
+        let mut refresh_enabled = cli_flag;
+        if !refresh_enabled {
+            if let Some(flag) = config_flag {
+                refresh_enabled = flag;
+            }
+        }
+        if !refresh_enabled {
+            if let Some(flag) = env_flag {
+                refresh_enabled = flag;
+            }
+        }
 
         let base_url = cli_url
             .map(str::to_string)
+            .or_else(|| config.and_then(|cfg| cfg.url.clone()))
             .or_else(|| env::var("DIRECT_PLAY_NICE_PLEX_URL").ok())
             .or_else(|| env::var("PLEX_URL").ok());
 
         let token = cli_token
             .map(str::to_string)
+            .or_else(|| config.and_then(|cfg| cfg.token.clone()))
             .or_else(|| env::var("DIRECT_PLAY_NICE_PLEX_TOKEN").ok())
             .or_else(|| env::var("PLEX_TOKEN").ok());
 
@@ -130,6 +145,10 @@ impl PlexRefresher {
 
     fn refresh_section(&self, section: &PlexSection, dir_for_query: &str) -> Result<()> {
         let url = format!("{}/library/sections/{}/refresh", self.base_url, section.id);
+        info!(
+            "Requesting Plex refresh at {} for path '{}'.",
+            url, dir_for_query
+        );
         let response = self
             .agent
             .get(&url)
@@ -148,6 +167,7 @@ impl PlexRefresher {
 
     fn fetch_sections(&self) -> Result<Vec<PlexSection>> {
         let url = format!("{}/library/sections", self.base_url);
+        info!("Querying Plex library sections from {}.", url);
         let response = self
             .agent
             .get(&url)
@@ -193,6 +213,10 @@ impl PlexRefresher {
         if sections.is_empty() {
             warn!("No Plex library sections discovered at {}.", url);
         }
+        info!(
+            "Plex library section query returned {} section(s).",
+            sections.len()
+        );
 
         Ok(sections)
     }
@@ -266,5 +290,40 @@ mod tests {
     #[test]
     fn parse_boolish_unknown() {
         assert_eq!(parse_boolish("maybe".to_string()), None);
+    }
+
+    #[test]
+    fn refresher_uses_config_defaults() {
+        let mut plex_cfg = PlexSettings::default();
+        plex_cfg.refresh = Some(true);
+        plex_cfg.url = Some("http://localhost:3777".to_string());
+        plex_cfg.token = Some("token-from-config".to_string());
+
+        let refresher = PlexRefresher::from_sources(Some(&plex_cfg), false, None, None)
+            .unwrap()
+            .expect("refresher should be enabled");
+
+        assert_eq!(refresher.base_url, "http://localhost:3777");
+        assert_eq!(refresher.token, "token-from-config");
+    }
+
+    #[test]
+    fn cli_overrides_config() {
+        let mut plex_cfg = PlexSettings::default();
+        plex_cfg.refresh = Some(true);
+        plex_cfg.url = Some("http://localhost:3777".to_string());
+        plex_cfg.token = Some("token-from-config".to_string());
+
+        let refresher = PlexRefresher::from_sources(
+            Some(&plex_cfg),
+            false,
+            Some("http://override:32400"),
+            Some("override-token"),
+        )
+        .unwrap()
+        .expect("refresher should be enabled");
+
+        assert_eq!(refresher.base_url, "http://override:32400");
+        assert_eq!(refresher.token, "override-token");
     }
 }

@@ -230,10 +230,24 @@ optionally a custom server URL) via CLI flags or environment variables:
   Plex base URL (defaults to `http://127.0.0.1:32400`).
 - Set `DIRECT_PLAY_NICE_PLEX_REFRESH=true` in the environment to make automatic
   refreshes the default for CLI runs.
+- Prefer to store long-lived settings in `config.toml` under
+  `$XDG_CONFIG_HOME/direct-play-nice` (fallback `~/.config/direct-play-nice`) or point at a custom file with either
+  `--config-file` or the `DIRECT_PLAY_NICE_CONFIG` environment variable.
+- Need a Plex token? Follow Plex’s official guide on locating your `X-Plex-Token`:
+  https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
 
 The tool looks up the Plex library section that contains the converted file and
 invokes the server’s refresh endpoint for that directory, eliminating the need
 to manually move files in and out of the library.
+
+Example `~/.config/direct-play-nice/config.toml`:
+
+```toml
+[plex]
+refresh = true
+url = "http://localhost:32400"
+token = "PLEX-TOKEN-HERE"
+```
 
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
