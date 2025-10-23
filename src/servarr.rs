@@ -103,7 +103,7 @@ impl ReplacePlan {
         }
     }
 
-    pub fn finalize_success(self) -> Result<()> {
+    pub fn finalize_success(self) -> Result<PathBuf> {
         use std::fs;
 
         // Move the original file aside
@@ -141,7 +141,7 @@ impl ReplacePlan {
             }
         }
 
-        Ok(())
+        Ok(self.final_output_path)
     }
 
     pub fn abort_on_failure(&self) -> Result<()> {

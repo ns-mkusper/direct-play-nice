@@ -25,6 +25,7 @@ use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 mod config;
 mod gpu;
 mod logging;
+mod plex;
 mod servarr;
 mod streaming_devices;
 mod throttle;
@@ -936,6 +937,18 @@ struct Args {
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations)
     #[arg(long, default_value_t = false)]
     delete_source: bool,
+
+    /// Trigger a Plex library refresh for the output directory after a successful conversion
+    #[arg(long = "plex-refresh", default_value_t = false)]
+    plex_refresh: bool,
+
+    /// Base URL for the Plex server when using --plex-refresh (defaults to http://127.0.0.1:32400)
+    #[arg(long = "plex-url")]
+    plex_url: Option<String>,
+
+    /// Plex API token used with --plex-refresh
+    #[arg(long = "plex-token")]
+    plex_token: Option<String>,
 }
 
 impl Args {
@@ -2832,6 +2845,12 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
+    let plex_refresher = plex::PlexRefresher::from_sources(
+        args.plex_refresh,
+        args.plex_url.as_deref(),
+        args.plex_token.as_deref(),
+    )?;
+
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
@@ -3069,7 +3088,19 @@ fn main() -> Result<()> {
     );
 
     match (servarr_plan, conversion_result) {
-        (Some(plan), Ok(())) => plan.finalize_success(),
+        (Some(plan), Ok(())) => {
+            let final_path = plan.finalize_success()?;
+            if let Some(ref refresher) = plex_refresher {
+                if let Err(err) = refresher.refresh_path(&final_path) {
+                    warn!(
+                        "Plex refresh failed for '{}': {}",
+                        final_path.display(),
+                        err
+                    );
+                }
+            }
+            Ok(())
+        }
         (Some(plan), Err(err)) => {
             if let Err(cleanup_err) = plan.abort_on_failure() {
                 warn!(
@@ -3101,6 +3132,18 @@ fn main() -> Result<()> {
                     } else {
                         warn!(
                             "Skipping --delete-source because input and output paths are identical"
+                        );
+                    }
+                }
+            }
+            if let Some(ref refresher) = plex_refresher {
+                if let Some(output_cstr) = args.output_file.as_ref() {
+                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    if let Err(err) = refresher.refresh_path(&output_path) {
+                        warn!(
+                            "Plex refresh failed for '{}': {}",
+                            output_path.display(),
+                            err
                         );
                     }
                 }

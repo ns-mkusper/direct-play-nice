@@ -215,6 +215,26 @@ Example Sonarr command that keeps all defaults (resulting in
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
 > you convert to `.mp4`, Plex/Jellyfin can immediately direct play the result.
 
+### Plex Refresh
+
+Avoid the “Plex dance” by letting `direct_play_nice` trigger a targeted Plex
+library refresh after a successful conversion. Supply a Plex token (and
+optionally a custom server URL) via CLI flags or environment variables:
+
+- `--plex-refresh` enables the behaviour for the current invocation. It is also
+  activated automatically when both a Plex URL and token are provided through
+  environment variables.
+- `--plex-token <TOKEN>` or `DIRECT_PLAY_NICE_PLEX_TOKEN` / `PLEX_TOKEN`
+  authenticate the refresh request.
+- `--plex-url <http://host:port>` or `DIRECT_PLAY_NICE_PLEX_URL` override the
+  Plex base URL (defaults to `http://127.0.0.1:32400`).
+- Set `DIRECT_PLAY_NICE_PLEX_REFRESH=true` in the environment to make automatic
+  refreshes the default for CLI runs.
+
+The tool looks up the Plex library section that contains the converted file and
+invokes the server’s refresh endpoint for that directory, eliminating the need
+to manually move files in and out of the library.
+
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
 ### Quality Controls
