@@ -389,10 +389,13 @@ fn apply_hw_encoder_quality(
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
-                let buffering = bit_rate.saturating_mul(2);
-                set_codec_option_i64(ctx, "b", bit_rate);
-                set_codec_option_i64(ctx, "maxrate", bit_rate);
-                set_codec_option_i64(ctx, "minrate", bit_rate);
+                const NVENC_BITRATE_MULTIPLIER: i64 = 20;
+                let nvenc_target = bit_rate.saturating_mul(NVENC_BITRATE_MULTIPLIER);
+                let buffering = nvenc_target.saturating_mul(2);
+
+                set_codec_option_i64(ctx, "b", nvenc_target);
+                set_codec_option_i64(ctx, "maxrate", nvenc_target);
+                set_codec_option_i64(ctx, "minrate", nvenc_target);
                 set_codec_option_i64(ctx, "bufsize", buffering);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
             }
