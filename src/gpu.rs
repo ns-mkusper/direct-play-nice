@@ -1,11 +1,11 @@
 use clap::ValueEnum;
 use rsmpeg::avcodec::{AVCodec, AVCodecRef};
 use rsmpeg::ffi::{self};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 pub enum HwAccel {
     Auto,
     None,

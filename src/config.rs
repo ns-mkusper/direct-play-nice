@@ -1,3 +1,5 @@
+use crate::gpu::HwAccel;
+use crate::{AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoQuality};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::env;
@@ -9,12 +11,25 @@ const DEFAULT_FILE_NAME: &str = "config.toml";
 pub const CONFIG_ENV_VAR: &str = "DIRECT_PLAY_NICE_CONFIG";
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct Config {
-    #[serde(default)]
+    pub streaming_devices: Option<String>,
+    pub video_quality: Option<VideoQuality>,
+    pub audio_quality: Option<AudioQuality>,
+    pub max_video_bitrate: Option<String>,
+    pub max_audio_bitrate: Option<String>,
+    pub hw_accel: Option<HwAccel>,
+    pub unsupported_video_policy: Option<UnsupportedVideoPolicy>,
+    pub primary_video_stream_index: Option<usize>,
+    pub primary_video_criteria: Option<PrimaryVideoCriteria>,
+    pub servarr_output_extension: Option<String>,
+    pub servarr_output_suffix: Option<String>,
+    pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct PlexSettings {
     pub refresh: Option<bool>,
     pub url: Option<String>,

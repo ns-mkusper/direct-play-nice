@@ -240,14 +240,27 @@ The tool looks up the Plex library section that contains the converted file and
 invokes the server’s refresh endpoint for that directory, eliminating the need
 to manually move files in and out of the library.
 
-Example `~/.config/direct-play-nice/config.toml`:
+Example `~/.config/direct-play-nice/config.toml` (remember to quote strings):
 
 ```toml
+streaming_devices = ["all"]
+video_quality = "match-source"
+audio_quality = "match-source"
+max_video_bitrate = "2M"
+max_audio_bitrate = "160k"
+hw_accel = "auto"
+unsupported_video_policy = "ignore"
+servarr_output_extension = "mp4"
+servarr_output_suffix = ".fixed"
+delete_source = false
+
 [plex]
 refresh = true
 url = "http://localhost:32400"
 token = "PLEX-TOKEN-HERE"
 ```
+
+Only the `[plex]` section is consumed today; the top-level keys mirror CLI flags so you can keep preferred defaults documented alongside your Plex credentials.
 
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
