@@ -388,13 +388,12 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "cq", 21);
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
-                set_codec_option_str(ctx, "rc", "cbr_hq");
+                set_codec_option_str(ctx, "rc", "cbr");
                 let buffering = bit_rate.saturating_mul(2);
                 set_codec_option_i64(ctx, "b", bit_rate);
                 set_codec_option_i64(ctx, "maxrate", bit_rate);
                 set_codec_option_i64(ctx, "minrate", bit_rate);
                 set_codec_option_i64(ctx, "bufsize", buffering);
-                set_codec_option_i64(ctx, "vbv_bufsize", buffering);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
             }
         }
