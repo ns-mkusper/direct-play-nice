@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HwAccel {
     Auto,
     None,

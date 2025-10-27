@@ -13,7 +13,7 @@ pub const CONFIG_ENV_VAR: &str = "DIRECT_PLAY_NICE_CONFIG";
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
-    pub streaming_devices: Option<String>,
+    pub streaming_devices: Option<StreamingDevicesSetting>,
     pub video_quality: Option<VideoQuality>,
     pub audio_quality: Option<AudioQuality>,
     pub max_video_bitrate: Option<String>,
@@ -34,6 +34,13 @@ pub struct PlexSettings {
     pub refresh: Option<bool>,
     pub url: Option<String>,
     pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum StreamingDevicesSetting {
+    Single(String),
+    List(Vec<String>),
 }
 
 pub enum ConfigSource {

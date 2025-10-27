@@ -411,24 +411,42 @@ pub enum VideoQuality {
         alias = "original",
         alias = "input"
     )]
+    #[serde(
+        rename = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original",
+        alias = "input"
+    )]
     MatchSource,
     /// 360p (SD) profile – ~1.2 Mbps target bitrate.
     #[value(name = "360p", alias = "sd", alias = "sd360", alias = "low")]
+    #[serde(rename = "360p", alias = "sd", alias = "sd360", alias = "low")]
     P360,
     /// 480p (SD+) profile – ~2.5 Mbps target bitrate.
     #[value(name = "480p", alias = "sd480", alias = "dvd", alias = "standard")]
+    #[serde(rename = "480p", alias = "sd480", alias = "dvd", alias = "standard")]
     P480,
     /// 720p (HD) profile – ~5 Mbps target bitrate.
     #[value(name = "720p", alias = "hd", alias = "hd-ready", alias = "1280x720")]
+    #[serde(rename = "720p", alias = "hd", alias = "hd-ready", alias = "1280x720")]
     P720,
     /// 1080p (Full HD) profile – ~8 Mbps target bitrate.
     #[value(name = "1080p", alias = "full-hd", alias = "fhd", alias = "1920x1080")]
+    #[serde(
+        rename = "1080p",
+        alias = "full-hd",
+        alias = "fhd",
+        alias = "1920x1080"
+    )]
     P1080,
     /// 1440p (Quad HD) profile – ~16 Mbps target bitrate.
     #[value(name = "1440p", alias = "qhd", alias = "2k", alias = "2560x1440")]
+    #[serde(rename = "1440p", alias = "qhd", alias = "2k", alias = "2560x1440")]
     P1440,
     /// 2160p (Ultra HD / 4K) profile – ~35 Mbps target bitrate.
     #[value(name = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
+    #[serde(rename = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
     P2160,
 }
 
@@ -545,27 +563,40 @@ pub enum AudioQuality {
         alias = "auto",
         alias = "original"
     )]
+    #[serde(
+        rename = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original"
+    )]
     MatchSource,
     /// 320 kbps (very high) AAC target bitrate.
     #[value(name = "320k", alias = "very-high", alias = "studio")]
+    #[serde(rename = "320k", alias = "very-high", alias = "studio")]
     K320,
     /// 256 kbps (high) AAC target bitrate.
     #[value(name = "256k", alias = "high", alias = "itunes")]
+    #[serde(rename = "256k", alias = "high", alias = "itunes")]
     K256,
     /// 224 kbps AAC target bitrate.
     #[value(name = "224k", alias = "broadcast")]
+    #[serde(rename = "224k", alias = "broadcast")]
     K224,
     /// 192 kbps (standard) AAC target bitrate.
     #[value(name = "192k", alias = "standard", alias = "cd")]
+    #[serde(rename = "192k", alias = "standard", alias = "cd")]
     K192,
     /// 160 kbps AAC target bitrate.
     #[value(name = "160k", alias = "medium-high")]
+    #[serde(rename = "160k", alias = "medium-high")]
     K160,
     /// 128 kbps (medium) AAC target bitrate.
     #[value(name = "128k", alias = "medium", alias = "default")]
+    #[serde(rename = "128k", alias = "medium", alias = "default")]
     K128,
     /// 96 kbps (low) AAC target bitrate.
     #[value(name = "96k", alias = "low", alias = "speech")]
+    #[serde(rename = "96k", alias = "low", alias = "speech")]
     K96,
 }
 
@@ -620,6 +651,7 @@ impl QualityLimits {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum UnsupportedVideoPolicy {
     Convert,
     Ignore,
@@ -627,6 +659,7 @@ pub enum UnsupportedVideoPolicy {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
@@ -1165,12 +1198,26 @@ fn encode_and_write_frame(
 
 fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
     if args.streaming_devices.is_none() {
-        if let Some(devices) = cfg.streaming_devices.as_deref() {
-            let selections: std::result::Result<Vec<_>, _> = devices
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(Args::parse_device_selection)
+        if let Some(devices) = cfg.streaming_devices.as_ref() {
+            let raw_values: Vec<String> = match devices {
+                config::StreamingDevicesSetting::Single(value) => value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+                config::StreamingDevicesSetting::List(values) => values
+                    .iter()
+                    .flat_map(|value| value.split(','))
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+            };
+
+            let selections: std::result::Result<Vec<_>, _> = raw_values
+                .iter()
+                .map(|entry| Args::parse_device_selection(entry))
                 .collect();
             match selections {
                 Ok(list) if !list.is_empty() => args.streaming_devices = Some(list),
