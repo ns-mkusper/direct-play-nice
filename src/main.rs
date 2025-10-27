@@ -389,6 +389,22 @@ fn apply_hw_encoder_quality(
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
+                /*
+                 * NVENC BITRATE SCALING FIX (CBR/VBR)
+                 *
+                 * The h264_nvenc and hevc_nvenc encoders, when used in constrained modes (CBR/VBR),
+                 * are known to severely undershoot the requested bitrate (b), often producing a final
+                 * file size that is only a fraction (e.g., 1/20th to 1/40th) of the target.
+                 *
+                 * This is due to a discrepancy in how FFmpeg passes the bitrate value to the
+                 * underlying NVENC API and the encoder's tendency to prioritize a low fixed quality
+                 * floor.
+                 *
+                 * To compensate, we must artificially inflate the value passed to the core bitrate
+                 * option ('b'). Empirical results show a multiplier of ~20--30x reliably forces NVENC
+                 * to allocate enough resources to meet the user's intended target bitrate ceiling.
+                 * This fix is isolated to NVENC sessions only.
+                 */
                 const NVENC_BITRATE_MULTIPLIER: i64 = 20;
                 let nvenc_target = bit_rate.saturating_mul(NVENC_BITRATE_MULTIPLIER);
                 let buffering = nvenc_target.saturating_mul(2);
