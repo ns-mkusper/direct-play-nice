@@ -30,6 +30,8 @@ toml = "0.8.16"
 vcpkg = "0.2.15"
 fs2 = "0.4"
 libc = "0.2"
+roxmltree = "0.20.0"
+ureq = { version = "2.9.7", features = ["tls"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

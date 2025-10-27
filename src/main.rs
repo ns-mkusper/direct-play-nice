@@ -10,8 +10,8 @@ use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
-use serde::Serialize;
-use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation};
+use serde::{Deserialize, Serialize};
+use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
 use std::path::{Path, PathBuf};
 use std::{
     convert::TryFrom,
@@ -25,6 +25,7 @@ use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 mod config;
 mod gpu;
 mod logging;
+mod plex;
 mod servarr;
 mod streaming_devices;
 mod throttle;
@@ -387,20 +388,39 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "cq", 21);
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
-                set_codec_option_str(ctx, "rc", "cbr_hq");
-                let buffering = bit_rate.saturating_mul(2);
-                set_codec_option_i64(ctx, "maxrate", bit_rate);
-                set_codec_option_i64(ctx, "minrate", bit_rate);
+                set_codec_option_str(ctx, "rc", "cbr");
+                /*
+                 * NVENC BITRATE SCALING FIX (CBR/VBR)
+                 *
+                 * The h264_nvenc and hevc_nvenc encoders, when used in constrained modes (CBR/VBR),
+                 * are known to severely undershoot the requested bitrate (b), often producing a final
+                 * file size that is only a fraction (e.g., 1/20th to 1/40th) of the target.
+                 *
+                 * This is due to a discrepancy in how FFmpeg passes the bitrate value to the
+                 * underlying NVENC API and the encoder's tendency to prioritize a low fixed quality
+                 * floor.
+                 *
+                 * To compensate, we must artificially inflate the value passed to the core bitrate
+                 * option ('b'). Empirical results show a multiplier of ~20--30x reliably forces NVENC
+                 * to allocate enough resources to meet the user's intended target bitrate ceiling.
+                 * This fix is isolated to NVENC sessions only.
+                 */
+                const NVENC_BITRATE_MULTIPLIER: i64 = 20;
+                let nvenc_target = bit_rate.saturating_mul(NVENC_BITRATE_MULTIPLIER);
+                let buffering = nvenc_target.saturating_mul(2);
+
+                set_codec_option_i64(ctx, "b", nvenc_target);
+                set_codec_option_i64(ctx, "maxrate", nvenc_target);
+                set_codec_option_i64(ctx, "minrate", nvenc_target);
                 set_codec_option_i64(ctx, "bufsize", buffering);
-                set_codec_option_i64(ctx, "vbv_bufsize", buffering);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
             }
         }
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum VideoQuality {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+pub enum VideoQuality {
     /// Leave video resolution/bitrate untouched.
     #[value(
         name = "match-source",
@@ -409,24 +429,42 @@ enum VideoQuality {
         alias = "original",
         alias = "input"
     )]
+    #[serde(
+        rename = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original",
+        alias = "input"
+    )]
     MatchSource,
     /// 360p (SD) profile – ~1.2 Mbps target bitrate.
     #[value(name = "360p", alias = "sd", alias = "sd360", alias = "low")]
+    #[serde(rename = "360p", alias = "sd", alias = "sd360", alias = "low")]
     P360,
     /// 480p (SD+) profile – ~2.5 Mbps target bitrate.
     #[value(name = "480p", alias = "sd480", alias = "dvd", alias = "standard")]
+    #[serde(rename = "480p", alias = "sd480", alias = "dvd", alias = "standard")]
     P480,
     /// 720p (HD) profile – ~5 Mbps target bitrate.
     #[value(name = "720p", alias = "hd", alias = "hd-ready", alias = "1280x720")]
+    #[serde(rename = "720p", alias = "hd", alias = "hd-ready", alias = "1280x720")]
     P720,
     /// 1080p (Full HD) profile – ~8 Mbps target bitrate.
     #[value(name = "1080p", alias = "full-hd", alias = "fhd", alias = "1920x1080")]
+    #[serde(
+        rename = "1080p",
+        alias = "full-hd",
+        alias = "fhd",
+        alias = "1920x1080"
+    )]
     P1080,
     /// 1440p (Quad HD) profile – ~16 Mbps target bitrate.
     #[value(name = "1440p", alias = "qhd", alias = "2k", alias = "2560x1440")]
+    #[serde(rename = "1440p", alias = "qhd", alias = "2k", alias = "2560x1440")]
     P1440,
     /// 2160p (Ultra HD / 4K) profile – ~35 Mbps target bitrate.
     #[value(name = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
+    #[serde(rename = "2160p", alias = "uhd", alias = "4k", alias = "3840x2160")]
     P2160,
 }
 
@@ -534,8 +572,8 @@ impl std::fmt::Display for VideoQuality {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-enum AudioQuality {
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+pub enum AudioQuality {
     /// Leave audio bitrate untouched.
     #[value(
         name = "match-source",
@@ -543,27 +581,40 @@ enum AudioQuality {
         alias = "auto",
         alias = "original"
     )]
+    #[serde(
+        rename = "match-source",
+        alias = "source",
+        alias = "auto",
+        alias = "original"
+    )]
     MatchSource,
     /// 320 kbps (very high) AAC target bitrate.
     #[value(name = "320k", alias = "very-high", alias = "studio")]
+    #[serde(rename = "320k", alias = "very-high", alias = "studio")]
     K320,
     /// 256 kbps (high) AAC target bitrate.
     #[value(name = "256k", alias = "high", alias = "itunes")]
+    #[serde(rename = "256k", alias = "high", alias = "itunes")]
     K256,
     /// 224 kbps AAC target bitrate.
     #[value(name = "224k", alias = "broadcast")]
+    #[serde(rename = "224k", alias = "broadcast")]
     K224,
     /// 192 kbps (standard) AAC target bitrate.
     #[value(name = "192k", alias = "standard", alias = "cd")]
+    #[serde(rename = "192k", alias = "standard", alias = "cd")]
     K192,
     /// 160 kbps AAC target bitrate.
     #[value(name = "160k", alias = "medium-high")]
+    #[serde(rename = "160k", alias = "medium-high")]
     K160,
     /// 128 kbps (medium) AAC target bitrate.
     #[value(name = "128k", alias = "medium", alias = "default")]
+    #[serde(rename = "128k", alias = "medium", alias = "default")]
     K128,
     /// 96 kbps (low) AAC target bitrate.
     #[value(name = "96k", alias = "low", alias = "speech")]
+    #[serde(rename = "96k", alias = "low", alias = "speech")]
     K96,
 }
 
@@ -617,15 +668,17 @@ impl QualityLimits {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
-enum UnsupportedVideoPolicy {
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnsupportedVideoPolicy {
     Convert,
     Ignore,
     Fail,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
-enum PrimaryVideoCriteria {
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
     Fps,
@@ -832,7 +885,7 @@ enum StreamingDeviceSelection {
     Model(&'static streaming_devices::StreamingDevice),
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// List of StreamingDevice models, or "all" (default) to target every supported device
@@ -936,6 +989,18 @@ struct Args {
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations)
     #[arg(long, default_value_t = false)]
     delete_source: bool,
+
+    /// Trigger a Plex library refresh for the output directory after a successful conversion
+    #[arg(long = "plex-refresh", default_value_t = false)]
+    plex_refresh: bool,
+
+    /// Base URL for the Plex server when using --plex-refresh (defaults to http://127.0.0.1:32400)
+    #[arg(long = "plex-url")]
+    plex_url: Option<String>,
+
+    /// Plex API token used with --plex-refresh
+    #[arg(long = "plex-token")]
+    plex_token: Option<String>,
 }
 
 impl Args {
@@ -1147,6 +1212,102 @@ fn encode_and_write_frame(
     }
 
     Ok(())
+}
+
+fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
+    if args.streaming_devices.is_none() {
+        if let Some(devices) = cfg.streaming_devices.as_ref() {
+            let raw_values: Vec<String> = match devices {
+                config::StreamingDevicesSetting::Single(value) => value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+                config::StreamingDevicesSetting::List(values) => values
+                    .iter()
+                    .flat_map(|value| value.split(','))
+                    .map(str::trim)
+                    .filter(|entry| !entry.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+            };
+
+            let selections: std::result::Result<Vec<_>, _> = raw_values
+                .iter()
+                .map(|entry| Args::parse_device_selection(entry))
+                .collect();
+            match selections {
+                Ok(list) if !list.is_empty() => args.streaming_devices = Some(list),
+                Ok(_) => {}
+                Err(err) => warn!("Failed to parse config streaming_devices: {}", err),
+            }
+        }
+    }
+
+    if args.max_video_bitrate.is_none() {
+        if let Some(bitrate) = cfg.max_video_bitrate.as_deref() {
+            match Args::parse_bitrate(bitrate) {
+                Ok(bps) => args.max_video_bitrate = Some(bps),
+                Err(err) => warn!(
+                    "Failed to parse config max_video_bitrate='{}': {}",
+                    bitrate, err
+                ),
+            }
+        }
+    }
+
+    if args.max_audio_bitrate.is_none() {
+        if let Some(bitrate) = cfg.max_audio_bitrate.as_deref() {
+            match Args::parse_bitrate(bitrate) {
+                Ok(bps) => args.max_audio_bitrate = Some(bps),
+                Err(err) => warn!(
+                    "Failed to parse config max_audio_bitrate='{}': {}",
+                    bitrate, err
+                ),
+            }
+        }
+    }
+
+    if let Some(video_quality) = cfg.video_quality {
+        args.video_quality = video_quality;
+    }
+
+    if let Some(audio_quality) = cfg.audio_quality {
+        args.audio_quality = audio_quality;
+    }
+
+    if let Some(hw_accel) = cfg.hw_accel {
+        args.hw_accel = hw_accel;
+    }
+
+    if let Some(policy) = cfg.unsupported_video_policy {
+        args.unsupported_video_policy = policy;
+    }
+
+    if cfg.primary_video_stream_index.is_some() {
+        args.primary_video_stream_index = cfg.primary_video_stream_index;
+    }
+
+    if let Some(criteria) = cfg.primary_video_criteria {
+        args.primary_video_criteria = criteria;
+    }
+
+    if let Some(ext) = cfg.servarr_output_extension.as_ref() {
+        args.servarr_output_extension = ext.clone();
+    }
+
+    if let Some(suffix) = cfg.servarr_output_suffix.as_ref() {
+        args.servarr_output_suffix = suffix.clone();
+    }
+
+    if let Some(delete_source) = cfg.delete_source {
+        args.delete_source = delete_source;
+    }
+
+    if cfg.plex.is_some() {
+        debug!("Plex config overrides detected in configuration file.");
+    }
 }
 
 fn process_video_stream(
@@ -2832,6 +2993,38 @@ fn main() -> Result<()> {
 
     let mut args = Args::parse();
 
+    let loaded_config = config::load(args.config_file.as_deref())?;
+    if let Some((_, source)) = &loaded_config {
+        match source {
+            config::ConfigSource::Cli(path) => {
+                info!("Loaded configuration from '{}'.", path.display());
+            }
+            config::ConfigSource::Env(path) => {
+                info!(
+                    "Loaded configuration from '{}' (via {}).",
+                    path.display(),
+                    config::CONFIG_ENV_VAR
+                );
+            }
+            config::ConfigSource::Default(path) => {
+                info!("Loaded configuration from '{}'.", path.display());
+            }
+        }
+    }
+    if let Some((cfg, _)) = &loaded_config {
+        apply_config_overrides(&mut args, cfg);
+    }
+    let config_plex = loaded_config
+        .as_ref()
+        .and_then(|(cfg, _)| cfg.plex.as_ref());
+
+    let plex_refresher = plex::PlexRefresher::from_sources(
+        config_plex,
+        args.plex_refresh,
+        args.plex_url.as_deref(),
+        args.plex_token.as_deref(),
+    )?;
+
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
@@ -2840,18 +3033,22 @@ fn main() -> Result<()> {
     };
 
     let servarr_preparation = servarr::prepare_from_env(servarr_view)?;
-    let servarr_plan = match servarr_preparation {
-        IntegrationPreparation::None => None,
-        IntegrationPreparation::Skip { reason } => {
-            info!("{}", reason);
-            return Ok(());
-        }
+    if let IntegrationPreparation::Skip { reason } = &servarr_preparation {
+        info!("{}", reason);
+        return Ok(());
+    }
+
+    match &servarr_preparation {
         IntegrationPreparation::Replace(plan) => {
             log_relevant_env(plan.kind);
-            plan.assign_to_args(&mut args.input_file, &mut args.output_file);
-            Some(plan)
         }
-    };
+        IntegrationPreparation::Batch(plans) => {
+            if let Some(first) = plans.first() {
+                log_relevant_env(first.kind);
+            }
+        }
+        _ => {}
+    }
 
     // Stream probing early exit
     if args.probe_streams {
@@ -2896,10 +3093,30 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    // TODO: implement config file
-    if args.config_file.is_some() {
-        eprintln!("Error: The --config-file option is not implemented yet.");
-        std::process::exit(1);
+    let base_args = args.clone();
+    let run_queue: Vec<Option<ReplacePlan>> = match servarr_preparation {
+        IntegrationPreparation::None => vec![None],
+        IntegrationPreparation::Replace(plan) => vec![Some(plan)],
+        IntegrationPreparation::Batch(plans) => plans.into_iter().map(Some).collect(),
+        IntegrationPreparation::Skip { .. } => unreachable!(),
+    };
+
+    for plan in run_queue {
+        run_conversion(&base_args, plan, &plex_refresher)?;
+    }
+
+    Ok(())
+}
+
+fn run_conversion(
+    base_args: &Args,
+    plan: Option<ReplacePlan>,
+    plex_refresher: &Option<plex::PlexRefresher>,
+) -> Result<()> {
+    let mut args = base_args.clone();
+
+    if let Some(ref plan_ref) = plan {
+        plan_ref.assign_to_args(&mut args.input_file, &mut args.output_file);
     }
 
     if args.input_file.is_none() || args.output_file.is_none() {
@@ -2926,11 +3143,6 @@ fn main() -> Result<()> {
         quality_limits.max_video_bitrate,
         quality_limits.max_audio_bitrate
     );
-
-    // TODO: add reading of config file
-    // let config_file = args.config_file.unwrap();
-
-    // let config_streaming_devices = config::parse_config_from_toml(config_file).unwrap();
 
     let input_display = args
         .input_file
@@ -3068,8 +3280,20 @@ fn main() -> Result<()> {
         args.hw_accel,
     );
 
-    match (servarr_plan, conversion_result) {
-        (Some(plan), Ok(())) => plan.finalize_success(),
+    match (plan, conversion_result) {
+        (Some(plan), Ok(())) => {
+            let final_path = plan.finalize_success()?;
+            if let Some(ref refresher) = plex_refresher {
+                if let Err(err) = refresher.refresh_path(&final_path) {
+                    warn!(
+                        "Plex refresh failed for '{}': {}",
+                        final_path.display(),
+                        err
+                    );
+                }
+            }
+            Ok(())
+        }
         (Some(plan), Err(err)) => {
             if let Err(cleanup_err) = plan.abort_on_failure() {
                 warn!(
@@ -3101,6 +3325,18 @@ fn main() -> Result<()> {
                     } else {
                         warn!(
                             "Skipping --delete-source because input and output paths are identical"
+                        );
+                    }
+                }
+            }
+            if let Some(ref refresher) = plex_refresher {
+                if let Some(output_cstr) = args.output_file.as_ref() {
+                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    if let Err(err) = refresher.refresh_path(&output_path) {
+                        warn!(
+                            "Plex refresh failed for '{}': {}",
+                            output_path.display(),
+                            err
                         );
                     }
                 }
