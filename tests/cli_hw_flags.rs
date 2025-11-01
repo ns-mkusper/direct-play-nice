@@ -7,6 +7,7 @@
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -145,6 +146,44 @@ fn cli_hw_accel_none_and_auto_succeed() -> Result<(), Box<dyn std::error::Error>
     cmd2.assert().success().stdout(str::is_empty());
     assert!(out_auto.exists(), "output file (auto) was not created");
     assert_output_basic(&out_auto);
+
+    Ok(())
+}
+
+#[test]
+fn cli_hw_accel_overrides_config() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let input = gen_tiny_input(&tmp);
+    let config_path = tmp.path().join("config.toml");
+    fs::write(&config_path, "hw_accel = \"nvenc\"\n")?;
+
+    let output = tmp.path().join("out_override.mp4");
+    let assert = Command::cargo_bin("direct_play_nice")?
+        .arg("--config-file")
+        .arg(&config_path)
+        .arg("-s")
+        .arg("chromecast_1st_gen")
+        .arg(&input)
+        .arg(&output)
+        .arg("--hw-accel")
+        .arg("none")
+        .arg("--delete-source=false")
+        .output()?;
+    assert!(
+        assert.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&assert.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&assert.stderr);
+    assert!(
+        stderr.contains("Hardware acceleration preference: None"),
+        "expected CLI hw-accel override to be respected, stderr was:\n{}",
+        stderr
+    );
+    assert!(output.exists(), "output file (override) was not created");
+    assert_output_basic(&output);
 
     Ok(())
 }

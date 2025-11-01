@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{value_parser, Parser, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{value_parser, ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
@@ -19,6 +20,7 @@ use std::{
     fs,
     os::raw::c_void,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicI64, Ordering},
 };
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
@@ -176,6 +178,49 @@ fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
     }
 }
 
+fn probe_with_ffprobe(path: &Path) -> Option<(H264Profile, H264Level)> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=profile,level")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let profile_str = lines.next()?;
+    let level_str = lines.next()?;
+
+    let profile = match profile_str.to_ascii_lowercase().as_str() {
+        "baseline" => H264Profile::Baseline,
+        "main" => H264Profile::Main,
+        "extended" => H264Profile::Extended,
+        "high" => H264Profile::High,
+        "high10" | "high 10" | "high_10" => H264Profile::High10,
+        "high422" | "high 4:2:2" | "high_422" => H264Profile::High422,
+        "high444" | "high 4:4:4" | "high_444" => H264Profile::High444,
+        _ => return None,
+    };
+
+    let level_value: i32 = level_str.parse().ok()?;
+    let level = H264Level::try_from(level_value).ok()?;
+
+    Some((profile, level))
+}
+
 #[derive(Debug)]
 struct HwProfileLevelMismatch {
     encoder: String,
@@ -235,25 +280,53 @@ fn verify_output_h264_profile_level(
     used_hw_encoder: bool,
 ) -> Result<()> {
     let display_path = output_path.display().to_string();
-    let input_ctx = AVFormatContextInput::open(output_file)
-        .with_context(|| format!("Opening '{}' to verify H.264 profile/level", display_path))?;
-
-    let mut actual_profile: Option<H264Profile> = None;
-    let mut actual_level: Option<H264Level> = None;
-
-    for stream in input_ctx.streams() {
-        if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
-            continue;
+    let (actual_profile_ffprobe, actual_level_ffprobe) = match probe_with_ffprobe(output_path) {
+        Some(values) => {
+            debug!(
+                "ffprobe reported H.264 profile {:?} level {:?} for '{}'",
+                values.0, values.1, display_path
+            );
+            (Some(values.0), Some(values.1))
         }
-        if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
-            break;
+        None => {
+            let input_ctx = AVFormatContextInput::open(output_file).with_context(|| {
+                format!("Opening '{}' to verify H.264 profile/level", display_path)
+            })?;
+
+            let mut profile: Option<H264Profile> = None;
+            let mut level: Option<H264Level> = None;
+
+            for stream in input_ctx.streams() {
+                if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+                    continue;
+                }
+                if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
+                    break;
+                }
+                profile = H264Profile::try_from(stream.codecpar().profile).ok();
+                level = H264Level::try_from(stream.codecpar().level).ok();
+                break;
+            }
+            (profile, level)
         }
-        actual_profile = H264Profile::try_from(stream.codecpar().profile).ok();
-        actual_level = H264Level::try_from(stream.codecpar().level).ok();
-        break;
+    };
+    let actual_profile = actual_profile_ffprobe;
+    let actual_level = actual_level_ffprobe;
+
+    if actual_profile.is_none() || actual_level.is_none() {
+        debug!(
+            "H.264 profile/level read as {:?}/{:?} for '{}'",
+            actual_profile, actual_level, display_path
+        );
     }
 
     if actual_profile == Some(expected_profile) && actual_level == Some(expected_level) {
+        debug!(
+            "Verified H.264 profile {:?} level {:?} for '{}'",
+            actual_profile.unwrap(),
+            actual_level.unwrap(),
+            display_path
+        );
         return Ok(());
     }
 
@@ -303,6 +376,12 @@ fn check_h264_profile_level_constraints(
         }
         Err(_) => reasons.push("H.264 level unknown; cannot confirm compatibility".into()),
     }
+}
+
+fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
+    matches
+        .value_source(id)
+        .is_some_and(|src| matches!(src, ValueSource::CommandLine))
 }
 
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) -> bool {
@@ -1129,19 +1208,29 @@ struct Args {
     config_file: Option<PathBuf>,
 
     /// Target video quality profile (defaults to match the source resolution/bitrate)
-    #[arg(long, value_enum, default_value_t = VideoQuality::MatchSource)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = VideoQuality::MatchSource,
+        id = "video_quality"
+    )]
     video_quality: VideoQuality,
 
     /// Target audio quality profile (defaults to match the source bitrate)
-    #[arg(long, value_enum, default_value_t = AudioQuality::MatchSource)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = AudioQuality::MatchSource,
+        id = "audio_quality"
+    )]
     audio_quality: AudioQuality,
 
     /// Maximum video bitrate (e.g. 8M, 4800k, 5.5mbps)
-    #[arg(long, value_parser = Args::parse_bitrate)]
+    #[arg(long, value_parser = Args::parse_bitrate, id = "max_video_bitrate")]
     max_video_bitrate: Option<i64>,
 
     /// Maximum audio bitrate (e.g. 320k, 0.2M)
-    #[arg(long, value_parser = Args::parse_bitrate)]
+    #[arg(long, value_parser = Args::parse_bitrate, id = "max_audio_bitrate")]
     max_audio_bitrate: Option<i64>,
 
     /// Video file to convert (required unless probing)
@@ -1153,19 +1242,29 @@ struct Args {
     output_file: Option<CString>,
 
     /// Policy for unsupported/extra video streams: convert|ignore|fail
-    #[arg(long = "unsupported-video-policy", value_enum, default_value_t = UnsupportedVideoPolicy::Ignore)]
+    #[arg(
+        long = "unsupported-video-policy",
+        value_enum,
+        default_value_t = UnsupportedVideoPolicy::Ignore,
+        id = "unsupported_video_policy"
+    )]
     unsupported_video_policy: UnsupportedVideoPolicy,
 
     /// Override the auto-selected primary video stream by index (0-based)
-    #[arg(long = "primary-video-stream-index")]
+    #[arg(long = "primary-video-stream-index", id = "primary_video_stream_index")]
     primary_video_stream_index: Option<usize>,
 
     /// Criteria for auto-selecting the primary video stream
-    #[arg(long = "primary-video-criteria", value_enum, default_value_t = PrimaryVideoCriteria::Resolution)]
+    #[arg(
+        long = "primary-video-criteria",
+        value_enum,
+        default_value_t = PrimaryVideoCriteria::Resolution,
+        id = "primary_video_criteria"
+    )]
     primary_video_criteria: PrimaryVideoCriteria,
 
     /// Hardware acceleration preference (auto tries GPU encoders if available)
-    #[arg(long, value_enum, default_value_t = HwAccel::Auto)]
+    #[arg(long, value_enum, default_value_t = HwAccel::Auto, id = "hw_accel")]
     hw_accel: HwAccel,
 
     /// Print detailed info about all streams in the input and exit
@@ -1204,12 +1303,17 @@ struct Args {
     #[arg(
         long = "servarr-output-extension",
         value_name = "EXTENSION",
-        default_value = "mp4"
+        default_value = "mp4",
+        id = "servarr_output_extension"
     )]
     servarr_output_extension: String,
 
     /// Suffix to append before the extension when replacing Sonarr/Radarr media (e.g. '.fixed')
-    #[arg(long = "servarr-output-suffix", default_value = "")]
+    #[arg(
+        long = "servarr-output-suffix",
+        default_value = "",
+        id = "servarr_output_suffix"
+    )]
     servarr_output_suffix: String,
 
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
@@ -1218,7 +1322,8 @@ struct Args {
         value_name = "BOOL",
         num_args = 0..=1,
         default_missing_value = "true",
-        value_parser = clap::builder::BoolishValueParser::new()
+        value_parser = clap::builder::BoolishValueParser::new(),
+        id = "delete_source"
     )]
     delete_source: Option<bool>,
 
@@ -1446,7 +1551,7 @@ fn encode_and_write_frame(
     Ok(())
 }
 
-fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
+fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMatches) {
     if args.streaming_devices.is_none() {
         if let Some(devices) = cfg.streaming_devices.as_ref() {
             let raw_values: Vec<String> = match devices {
@@ -1477,7 +1582,7 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
         }
     }
 
-    if args.max_video_bitrate.is_none() {
+    if args.max_video_bitrate.is_none() && !cli_value_provided(matches, "max_video_bitrate") {
         if let Some(bitrate) = cfg.max_video_bitrate.as_deref() {
             match Args::parse_bitrate(bitrate) {
                 Ok(bps) => args.max_video_bitrate = Some(bps),
@@ -1489,7 +1594,7 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
         }
     }
 
-    if args.max_audio_bitrate.is_none() {
+    if args.max_audio_bitrate.is_none() && !cli_value_provided(matches, "max_audio_bitrate") {
         if let Some(bitrate) = cfg.max_audio_bitrate.as_deref() {
             match Args::parse_bitrate(bitrate) {
                 Ok(bps) => args.max_audio_bitrate = Some(bps),
@@ -1501,36 +1606,52 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
         }
     }
 
-    if let Some(video_quality) = cfg.video_quality {
-        args.video_quality = video_quality;
+    if !cli_value_provided(matches, "video_quality") {
+        if let Some(video_quality) = cfg.video_quality {
+            args.video_quality = video_quality;
+        }
     }
 
-    if let Some(audio_quality) = cfg.audio_quality {
-        args.audio_quality = audio_quality;
+    if !cli_value_provided(matches, "audio_quality") {
+        if let Some(audio_quality) = cfg.audio_quality {
+            args.audio_quality = audio_quality;
+        }
     }
 
-    if let Some(hw_accel) = cfg.hw_accel {
-        args.hw_accel = hw_accel;
+    if !cli_value_provided(matches, "hw_accel") {
+        if let Some(hw_accel) = cfg.hw_accel {
+            args.hw_accel = hw_accel;
+        }
     }
 
-    if let Some(policy) = cfg.unsupported_video_policy {
-        args.unsupported_video_policy = policy;
+    if !cli_value_provided(matches, "unsupported_video_policy") {
+        if let Some(policy) = cfg.unsupported_video_policy {
+            args.unsupported_video_policy = policy;
+        }
     }
 
-    if cfg.primary_video_stream_index.is_some() {
-        args.primary_video_stream_index = cfg.primary_video_stream_index;
+    if !cli_value_provided(matches, "primary_video_stream_index") {
+        if cfg.primary_video_stream_index.is_some() {
+            args.primary_video_stream_index = cfg.primary_video_stream_index;
+        }
     }
 
-    if let Some(criteria) = cfg.primary_video_criteria {
-        args.primary_video_criteria = criteria;
+    if !cli_value_provided(matches, "primary_video_criteria") {
+        if let Some(criteria) = cfg.primary_video_criteria {
+            args.primary_video_criteria = criteria;
+        }
     }
 
-    if let Some(ext) = cfg.servarr_output_extension.as_ref() {
-        args.servarr_output_extension = ext.clone();
+    if !cli_value_provided(matches, "servarr_output_extension") {
+        if let Some(ext) = cfg.servarr_output_extension.as_ref() {
+            args.servarr_output_extension = ext.clone();
+        }
     }
 
-    if let Some(suffix) = cfg.servarr_output_suffix.as_ref() {
-        args.servarr_output_suffix = suffix.clone();
+    if !cli_value_provided(matches, "servarr_output_suffix") {
+        if let Some(suffix) = cfg.servarr_output_suffix.as_ref() {
+            args.servarr_output_suffix = suffix.clone();
+        }
     }
 
     if args.delete_source.is_none() {
@@ -3239,7 +3360,8 @@ fn main() -> Result<()> {
 
     configure_ffmpeg_logging();
 
-    let mut args = Args::parse();
+    let mut matches = Args::command().get_matches();
+    let mut args = Args::from_arg_matches_mut(&mut matches).expect("Failed to parse CLI arguments");
 
     let loaded_config = config::load(args.config_file.as_deref())?;
     if let Some((_, source)) = &loaded_config {
@@ -3260,7 +3382,7 @@ fn main() -> Result<()> {
         }
     }
     if let Some((cfg, _)) = &loaded_config {
-        apply_config_overrides(&mut args, cfg);
+        apply_config_overrides(&mut args, cfg, &matches);
     }
     let config_plex = loaded_config
         .as_ref()
