@@ -1181,35 +1181,31 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "bufsize", nvenc_buffer);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
 
-                unsafe {
-                    (*ctx).rc_max_rate = nvenc_rate;
-                    (*ctx).rc_min_rate = nvenc_rate;
-                    let buf_i32 = nvenc_buffer.clamp(1, i32::MAX as i64) as i32;
-                    (*ctx).rc_buffer_size = buf_i32;
-                    (*ctx).rc_initial_buffer_occupancy = buf_i32;
-                }
+                (*ctx).rc_max_rate = nvenc_rate;
+                (*ctx).rc_min_rate = nvenc_rate;
+                let buf_i32 = nvenc_buffer.clamp(1, i32::MAX as i64) as i32;
+                (*ctx).rc_buffer_size = buf_i32;
+                (*ctx).rc_initial_buffer_occupancy = buf_i32;
 
                 if let Some(level_caps) = max_dpb_mbs {
-                    unsafe {
-                        let width = (*ctx).width.max(1);
-                        let height = (*ctx).height.max(1);
-                        let mb_width = ((width + 15) / 16).max(1);
-                        let mb_height = ((height + 15) / 16).max(1);
-                        let mbs_per_frame = mb_width * mb_height;
-                        if mbs_per_frame > 0 {
-                            let mut max_refs = level_caps / mbs_per_frame;
-                            if max_refs <= 0 {
-                                max_refs = 1;
-                            }
-                            max_refs = max_refs.min(8);
-                            if (*ctx).refs == 0 || (*ctx).refs > max_refs {
-                                (*ctx).refs = max_refs;
-                                set_codec_option_i64(ctx, "refs", max_refs as i64);
-                                debug!(
-                                    "Adjusted NVENC reference frames to {} to satisfy H.264 level DPB limits",
-                                    max_refs
-                                );
-                            }
+                    let width = (*ctx).width.max(1);
+                    let height = (*ctx).height.max(1);
+                    let mb_width = ((width + 15) / 16).max(1);
+                    let mb_height = ((height + 15) / 16).max(1);
+                    let mbs_per_frame = mb_width * mb_height;
+                    if mbs_per_frame > 0 {
+                        let mut max_refs = level_caps / mbs_per_frame;
+                        if max_refs <= 0 {
+                            max_refs = 1;
+                        }
+                        max_refs = max_refs.min(8);
+                        if (*ctx).refs == 0 || (*ctx).refs > max_refs {
+                            (*ctx).refs = max_refs;
+                            set_codec_option_i64(ctx, "refs", max_refs as i64);
+                            debug!(
+                                "Adjusted NVENC reference frames to {} to satisfy H.264 level DPB limits",
+                                max_refs
+                            );
                         }
                     }
                 }
