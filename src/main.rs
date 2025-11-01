@@ -16,7 +16,7 @@ use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan}
 use std::{
     convert::TryFrom,
     env,
-    ffi::{CStr, CString},
+    ffi::{c_char, CStr, CString},
     fs,
     os::raw::c_void,
     path::{Path, PathBuf},
@@ -546,6 +546,426 @@ fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
     }
 }
 
+fn sample_fmt_name(fmt: ffi::AVSampleFormat) -> String {
+    unsafe {
+        let ptr = ffi::av_get_sample_fmt_name(fmt);
+        if ptr.is_null() {
+            format!("sample_fmt({})", fmt)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn sample_fmt_name_from_i32(fmt: i32) -> String {
+    sample_fmt_name(fmt as ffi::AVSampleFormat)
+}
+
+fn media_type_name(media_type: ffi::AVMediaType) -> String {
+    unsafe {
+        let ptr = ffi::av_get_media_type_string(media_type);
+        if ptr.is_null() {
+            format!("media_type({})", media_type)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn codec_id_name(codec_id: ffi::AVCodecID) -> String {
+    unsafe {
+        let ptr = ffi::avcodec_get_name(codec_id);
+        if ptr.is_null() {
+            format!("codec({})", codec_id)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn profile_label(codec_id: ffi::AVCodecID, profile: i32) -> String {
+    if codec_id == ffi::AV_CODEC_ID_H264 {
+        format!("{} ({})", profile, describe_h264_profile(profile))
+    } else {
+        profile.to_string()
+    }
+}
+
+fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
+    if codec_id == ffi::AV_CODEC_ID_H264 {
+        format!("{} ({})", level, describe_h264_level(level))
+    } else {
+        level.to_string()
+    }
+}
+
+fn field_order_name(order: ffi::AVFieldOrder) -> &'static str {
+    match order {
+        ffi::AVFieldOrder_AV_FIELD_UNKNOWN => "unknown",
+        ffi::AVFieldOrder_AV_FIELD_PROGRESSIVE => "progressive",
+        ffi::AVFieldOrder_AV_FIELD_TT => "tt (top coded/display top)",
+        ffi::AVFieldOrder_AV_FIELD_BB => "bb (bottom coded/display bottom)",
+        ffi::AVFieldOrder_AV_FIELD_TB => "tb (top coded/bottom display)",
+        ffi::AVFieldOrder_AV_FIELD_BT => "bt (bottom coded/top display)",
+        _ => "invalid",
+    }
+}
+
+fn color_range_name(range: ffi::AVColorRange) -> String {
+    unsafe {
+        let ptr = ffi::av_color_range_name(range);
+        if ptr.is_null() {
+            format!("range({})", range)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn color_primaries_name(primaries: ffi::AVColorPrimaries) -> String {
+    unsafe {
+        let ptr = ffi::av_color_primaries_name(primaries);
+        if ptr.is_null() {
+            format!("primaries({})", primaries)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn color_trc_name(trc: ffi::AVColorTransferCharacteristic) -> String {
+    unsafe {
+        let ptr = ffi::av_color_transfer_name(trc);
+        if ptr.is_null() {
+            format!("transfer({})", trc)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn color_space_name(space: ffi::AVColorSpace) -> String {
+    unsafe {
+        let ptr = ffi::av_color_space_name(space);
+        if ptr.is_null() {
+            format!("colorspace({})", space)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
+    unsafe {
+        let ptr = ffi::av_chroma_location_name(loc);
+        if ptr.is_null() {
+            format!("chroma_loc({})", loc)
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn channel_order_name(order: ffi::AVChannelOrder) -> &'static str {
+    match order {
+        ffi::AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC => "unspecified",
+        ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE => "native",
+        ffi::AVChannelOrder_AV_CHANNEL_ORDER_CUSTOM => "custom",
+        ffi::AVChannelOrder_AV_CHANNEL_ORDER_AMBISONIC => "ambisonic",
+        _ => "invalid",
+    }
+}
+
+fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
+    unsafe {
+        if layout.nb_channels <= 0 {
+            return "unset".to_string();
+        }
+
+        let mut buf = [0 as c_char; 128];
+        let res = ffi::av_channel_layout_describe(
+            layout as *const ffi::AVChannelLayout,
+            buf.as_mut_ptr(),
+            buf.len(),
+        );
+        if res >= 0 {
+            CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+        } else if layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+            format!("mask=0x{:x}", layout.u.mask)
+        } else {
+            format!(
+                "order={} channels={}",
+                channel_order_name(layout.order),
+                layout.nb_channels
+            )
+        }
+    }
+}
+
+fn rational_to_string(r: ffi::AVRational) -> String {
+    format!("{}/{}", r.num, r.den)
+}
+
+fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> String {
+    match media_type {
+        mt if mt == ffi::AVMediaType_AVMEDIA_TYPE_VIDEO => {
+            let name = pix_fmt_name(format as ffi::AVPixelFormat);
+            format!("{} ({})", format, name)
+        }
+        mt if mt == ffi::AVMediaType_AVMEDIA_TYPE_AUDIO => {
+            let name = sample_fmt_name_from_i32(format);
+            format!("{} ({})", format, name)
+        }
+        _ => format!("{}", format),
+    }
+}
+
+fn build_codec_context_lines(raw: *mut ffi::AVCodecContext) -> Vec<String> {
+    unsafe {
+        let mut lines = Vec::new();
+        lines.push(format!("    [AVCodecContext @ {:p}]", raw));
+        lines.push(format!(
+            "      codec_type: {} ({})",
+            media_type_name((*raw).codec_type),
+            (*raw).codec_type
+        ));
+        lines.push(format!(
+            "      codec_id: {} ({})",
+            codec_id_name((*raw).codec_id),
+            (*raw).codec_id
+        ));
+        lines.push(format!(
+            "      profile: {}",
+            profile_label((*raw).codec_id, (*raw).profile)
+        ));
+        lines.push(format!(
+            "      level: {}",
+            level_label((*raw).codec_id, (*raw).level)
+        ));
+        lines.push(format!(
+            "      time_base: {}",
+            rational_to_string((*raw).time_base)
+        ));
+        lines.push(format!(
+            "      framerate: {}",
+            rational_to_string((*raw).framerate)
+        ));
+        lines.push(format!("      bit_rate: {}", (*raw).bit_rate));
+        lines.push(format!("      rc_max_rate: {}", (*raw).rc_max_rate));
+        lines.push(format!("      rc_min_rate: {}", (*raw).rc_min_rate));
+        lines.push(format!("      rc_buffer_size: {}", (*raw).rc_buffer_size));
+        lines.push(format!(
+            "      rc_initial_buffer_occupancy: {}",
+            (*raw).rc_initial_buffer_occupancy
+        ));
+        lines.push(format!(
+            "      bit_rate_tolerance: {}",
+            (*raw).bit_rate_tolerance
+        ));
+        lines.push(format!("      width: {}", (*raw).width));
+        lines.push(format!("      height: {}", (*raw).height));
+        lines.push(format!("      coded_width: {}", (*raw).coded_width));
+        lines.push(format!("      coded_height: {}", (*raw).coded_height));
+        lines.push(format!("      gop_size: {}", (*raw).gop_size));
+        lines.push(format!("      max_b_frames: {}", (*raw).max_b_frames));
+        lines.push(format!("      has_b_frames: {}", (*raw).has_b_frames));
+        lines.push(format!("      refs: {}", (*raw).refs));
+        lines.push(format!("      pix_fmt: {}", pix_fmt_name((*raw).pix_fmt)));
+        lines.push(format!(
+            "      sample_fmt: {}",
+            sample_fmt_name((*raw).sample_fmt)
+        ));
+        lines.push(format!("      sample_rate: {}", (*raw).sample_rate));
+        lines.push(format!(
+            "      channel_layout: {}",
+            describe_channel_layout(&(*raw).ch_layout)
+        ));
+        lines.push(format!(
+            "      channel_order: {} ({})",
+            channel_order_name((*raw).ch_layout.order),
+            (*raw).ch_layout.order
+        ));
+        if (*raw).ch_layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+            lines.push(format!(
+                "      channel_mask: 0x{:x}",
+                (*raw).ch_layout.u.mask
+            ));
+        }
+        lines.push(format!("      thread_count: {}", (*raw).thread_count));
+        lines.push(format!("      thread_type: {}", (*raw).thread_type));
+        lines.push(format!("      flags: 0x{:x}", (*raw).flags));
+        lines.push(format!("      flags2: 0x{:x}", (*raw).flags2));
+        lines.push(format!(
+            "      color_range: {} ({})",
+            color_range_name((*raw).color_range),
+            (*raw).color_range
+        ));
+        lines.push(format!(
+            "      color_primaries: {} ({})",
+            color_primaries_name((*raw).color_primaries),
+            (*raw).color_primaries
+        ));
+        lines.push(format!(
+            "      color_trc: {} ({})",
+            color_trc_name((*raw).color_trc),
+            (*raw).color_trc
+        ));
+        lines.push(format!(
+            "      color_space: {} ({})",
+            color_space_name((*raw).colorspace),
+            (*raw).colorspace
+        ));
+        lines.push(format!(
+            "      chroma_location: {} ({})",
+            chroma_location_name((*raw).chroma_sample_location),
+            (*raw).chroma_sample_location
+        ));
+        lines.push(format!("      hw_device_ctx: {:p}", (*raw).hw_device_ctx));
+        lines.push(format!("      hw_frames_ctx: {:p}", (*raw).hw_frames_ctx));
+        lines
+    }
+}
+
+fn build_codec_parameters_lines(raw: *mut ffi::AVCodecContext) -> Option<Vec<String>> {
+    unsafe {
+        let mut params = ffi::avcodec_parameters_alloc();
+        if params.is_null() {
+            return None;
+        }
+        let params_ptr = params;
+        if ffi::avcodec_parameters_from_context(params, raw) < 0 {
+            ffi::avcodec_parameters_free(&mut params);
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!("    [AVCodecParameters @ {:p}]", params_ptr));
+        lines.push(format!(
+            "      codec_type: {} ({})",
+            media_type_name((*params).codec_type),
+            (*params).codec_type
+        ));
+        lines.push(format!(
+            "      codec_id: {} ({})",
+            codec_id_name((*params).codec_id),
+            (*params).codec_id
+        ));
+        lines.push(format!("      codec_tag: 0x{:08x}", (*params).codec_tag));
+        lines.push(format!(
+            "      format: {}",
+            codec_params_format_string((*params).codec_type, (*params).format)
+        ));
+        lines.push(format!("      bit_rate: {}", (*params).bit_rate));
+        lines.push(format!(
+            "      bits_per_coded_sample: {}",
+            (*params).bits_per_coded_sample
+        ));
+        lines.push(format!(
+            "      bits_per_raw_sample: {}",
+            (*params).bits_per_raw_sample
+        ));
+        lines.push(format!(
+            "      profile: {}",
+            profile_label((*params).codec_id, (*params).profile)
+        ));
+        lines.push(format!(
+            "      level: {}",
+            level_label((*params).codec_id, (*params).level)
+        ));
+        lines.push(format!("      width: {}", (*params).width));
+        lines.push(format!("      height: {}", (*params).height));
+        lines.push(format!(
+            "      sample_aspect_ratio: {}",
+            rational_to_string((*params).sample_aspect_ratio)
+        ));
+        lines.push(format!(
+            "      field_order: {} ({})",
+            field_order_name((*params).field_order),
+            (*params).field_order
+        ));
+        lines.push(format!(
+            "      color_range: {} ({})",
+            color_range_name((*params).color_range),
+            (*params).color_range
+        ));
+        lines.push(format!(
+            "      color_primaries: {} ({})",
+            color_primaries_name((*params).color_primaries),
+            (*params).color_primaries
+        ));
+        lines.push(format!(
+            "      color_trc: {} ({})",
+            color_trc_name((*params).color_trc),
+            (*params).color_trc
+        ));
+        lines.push(format!(
+            "      color_space: {} ({})",
+            color_space_name((*params).color_space),
+            (*params).color_space
+        ));
+        lines.push(format!(
+            "      chroma_location: {} ({})",
+            chroma_location_name((*params).chroma_location),
+            (*params).chroma_location
+        ));
+        lines.push(format!("      video_delay: {}", (*params).video_delay));
+        lines.push(format!("      sample_rate: {}", (*params).sample_rate));
+        lines.push(format!("      block_align: {}", (*params).block_align));
+        lines.push(format!("      frame_size: {}", (*params).frame_size));
+        lines.push(format!(
+            "      initial_padding: {}",
+            (*params).initial_padding
+        ));
+        lines.push(format!(
+            "      trailing_padding: {}",
+            (*params).trailing_padding
+        ));
+        lines.push(format!("      seek_preroll: {}", (*params).seek_preroll));
+        lines.push(format!(
+            "      channels: {}",
+            (*params).ch_layout.nb_channels
+        ));
+        lines.push(format!(
+            "      channel_order: {} ({})",
+            channel_order_name((*params).ch_layout.order),
+            (*params).ch_layout.order
+        ));
+        lines.push(format!(
+            "      channel_layout: {}",
+            describe_channel_layout(&(*params).ch_layout)
+        ));
+        if (*params).ch_layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+            lines.push(format!(
+                "      channel_mask: 0x{:x}",
+                (*params).ch_layout.u.mask
+            ));
+        }
+        lines.push(format!(
+            "      extradata_size: {}",
+            (*params).extradata_size
+        ));
+
+        ffi::avcodec_parameters_free(&mut params);
+        Some(lines)
+    }
+}
+
+fn build_encoder_debug_dump(raw: *mut ffi::AVCodecContext) -> Option<String> {
+    unsafe {
+        if raw.is_null() {
+            return None;
+        }
+    }
+
+    let mut lines = build_codec_context_lines(raw);
+    if let Some(mut params_lines) = build_codec_parameters_lines(raw) {
+        lines.push(String::new());
+        lines.append(&mut params_lines);
+    }
+
+    Some(lines.join("\n"))
+}
+
 fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
     unsafe {
         let raw = ctx.as_ptr();
@@ -573,6 +993,14 @@ fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
             has_hw_device,
             has_hw_frames
         );
+        if log::log_enabled!(Level::Debug) {
+            if let Some(detail) = build_encoder_debug_dump(raw) {
+                debug!(
+                    "Encoder {} [{}] raw codec state:\n{}",
+                    encoder_name, stage, detail
+                );
+            }
+        }
     }
 }
 
