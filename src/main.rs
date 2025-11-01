@@ -149,6 +149,43 @@ fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> Strin
     }
 }
 
+fn check_h264_profile_level_constraints(
+    stream_codec_id: ffi::AVCodecID,
+    raw_profile: i32,
+    raw_level: i32,
+    min_h264_profile: H264Profile,
+    min_h264_level: H264Level,
+    reasons: &mut Vec<String>,
+) {
+    if stream_codec_id != ffi::AV_CODEC_ID_H264 {
+        return;
+    }
+
+    match H264Profile::try_from(raw_profile) {
+        Ok(profile) => {
+            if profile > min_h264_profile {
+                reasons.push(format!(
+                    "H.264 profile {:?} exceeds device limit {:?}",
+                    profile, min_h264_profile
+                ));
+            }
+        }
+        Err(_) => reasons.push("H.264 profile unknown; cannot confirm compatibility".into()),
+    }
+
+    match H264Level::try_from(raw_level) {
+        Ok(level) => {
+            if level > min_h264_level {
+                reasons.push(format!(
+                    "H.264 level {:?} exceeds device limit {:?}",
+                    level, min_h264_level
+                ));
+            }
+        }
+        Err(_) => reasons.push("H.264 level unknown; cannot confirm compatibility".into()),
+    }
+}
+
 unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
     if ctx.is_null() {
         warn!(
@@ -490,6 +527,29 @@ mod video_tests {
     }
 
     #[test]
+    fn enforce_h264_constraints_sets_target_profile_and_level_for_nvenc() {
+        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let mut ctx = AVCodecContext::new(&codec);
+        enforce_h264_constraints(
+            &mut ctx,
+            H264Profile::High,
+            H264Level::Level4_1,
+            "h264_nvenc",
+        );
+        assert_eq!(ctx.profile, H264Profile::High as i32);
+        assert_eq!(ctx.level, H264Level::Level4_1 as i32);
+    }
+
+    #[test]
+    fn enforce_h264_constraints_sets_target_profile_and_level_for_x264() {
+        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let mut ctx = AVCodecContext::new(&codec);
+        enforce_h264_constraints(&mut ctx, H264Profile::High, H264Level::Level4, "libx264");
+        assert_eq!(ctx.profile, H264Profile::High as i32);
+        assert_eq!(ctx.level, H264Level::Level4 as i32);
+    }
+
+    #[test]
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
@@ -502,6 +562,44 @@ mod video_tests {
         assert_eq!(
             level_option_value_for_encoder("libx264", H264Level::Level4_1),
             "41"
+        );
+    }
+
+    #[test]
+    fn h264_constraints_ignore_non_h264_streams() {
+        let mut reasons = Vec::new();
+        check_h264_profile_level_constraints(
+            ffi::AV_CODEC_ID_HEVC,
+            ffi::AV_PROFILE_UNKNOWN,
+            0,
+            H264Profile::High,
+            H264Level::Level4_1,
+            &mut reasons,
+        );
+        assert!(
+            reasons.is_empty(),
+            "expected no H.264 warnings for HEVC stream"
+        );
+    }
+
+    #[test]
+    fn h264_constraints_flag_out_of_bounds_profiles_and_levels() {
+        let mut reasons = Vec::new();
+        check_h264_profile_level_constraints(
+            ffi::AV_CODEC_ID_H264,
+            ffi::AV_PROFILE_H264_HIGH_444 as i32,
+            H264Level::Level5_2 as i32,
+            H264Profile::High,
+            H264Level::Level4_1,
+            &mut reasons,
+        );
+        assert!(
+            reasons.iter().any(|reason| reason.contains("profile")),
+            "expected profile violation"
+        );
+        assert!(
+            reasons.iter().any(|reason| reason.contains("level")),
+            "expected level violation"
         );
     }
 
@@ -1996,29 +2094,14 @@ fn assess_direct_play_compatibility(
     }
 
     if target_video_codec == ffi::AV_CODEC_ID_H264 {
-        match H264Profile::try_from(video_par.profile) {
-            Ok(profile) => {
-                if profile > min_h264_profile {
-                    reasons.push(format!(
-                        "H.264 profile {:?} exceeds device limit {:?}",
-                        profile, min_h264_profile
-                    ));
-                }
-            }
-            Err(_) => reasons.push("H.264 profile unknown; cannot confirm compatibility".into()),
-        }
-
-        match H264Level::try_from(video_par.level) {
-            Ok(level) => {
-                if level > min_h264_level {
-                    reasons.push(format!(
-                        "H.264 level {:?} exceeds device limit {:?}",
-                        level, min_h264_level
-                    ));
-                }
-            }
-            Err(_) => reasons.push("H.264 level unknown; cannot confirm compatibility".into()),
-        }
+        check_h264_profile_level_constraints(
+            video_par.codec_id,
+            video_par.profile,
+            video_par.level,
+            min_h264_profile,
+            min_h264_level,
+            &mut reasons,
+        );
     }
 
     let mut audio_ok = false;
