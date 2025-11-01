@@ -714,6 +714,16 @@ pub enum VideoQuality {
 #[cfg(test)]
 mod video_tests {
     use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn ensure_ffmpeg_present() {
+        let out = Command::new("ffmpeg").arg("-version").output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
+        }
+    }
 
     #[test]
     fn profile_option_applies_to_supported_encoders() {
@@ -799,6 +809,50 @@ mod video_tests {
             reasons.iter().any(|reason| reason.contains("level")),
             "expected level violation"
         );
+    }
+
+    #[test]
+    fn verify_output_detects_nvenc_mismatch() {
+        ensure_ffmpeg_present();
+        let tmp = tempdir().expect("tempdir");
+        let output = tmp.path().join("nvenc_mismatch.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1280x720:rate=23.976:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-profile:v",
+                "main",
+                "-level:v",
+                "5.2",
+                output.to_str().unwrap(),
+            ])
+            .status()
+            .expect("run ffmpeg");
+        assert!(status.success(), "ffmpeg profile fixture failed");
+
+        let cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+        let err = verify_output_h264_profile_level(
+            cstr.as_c_str(),
+            output.as_path(),
+            H264Profile::High,
+            H264Level::Level4_1,
+            Some("h264_nvenc"),
+            true,
+        )
+        .expect_err("expected mismatch error");
+        let mismatch = err
+            .downcast::<HwProfileLevelMismatch>()
+            .expect("expected HwProfileLevelMismatch");
+        assert_eq!(mismatch.expected_profile, H264Profile::High);
+        assert_eq!(mismatch.expected_level, H264Level::Level4_1);
+        assert!(matches!(mismatch.actual_profile, Some(H264Profile::Main)));
     }
 
     #[test]
@@ -1618,6 +1672,10 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
         }
     }
 
+    debug!(
+        "value_source(hw_accel)={:?}",
+        matches.value_source("hw_accel")
+    );
     if !cli_value_provided(matches, "hw_accel") {
         if let Some(hw_accel) = cfg.hw_accel {
             debug!(
