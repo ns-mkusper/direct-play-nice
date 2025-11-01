@@ -3058,7 +3058,7 @@ fn convert_video_file(
     requested_video_quality: VideoQuality,
     requested_audio_quality: AudioQuality,
     hw_accel: HwAccel,
-) -> Result<(), anyhow::Error> {
+) -> Result<ConversionOutcome, anyhow::Error> {
     let mut input_format_context = AVFormatContextInput::open(input_file)?;
     if log::log_enabled!(Level::Debug) {
         input_format_context.dump(0, input_file)?;
@@ -3097,6 +3097,7 @@ fn convert_video_file(
     let mut logged_audio_encoder = false;
     let mut desired_h264_profile: Option<H264Profile> = None;
     let mut desired_h264_level: Option<H264Level> = None;
+    let mut h264_verification: Option<H264Verification> = None;
     let mut last_video_encoder_name: Option<String> = None;
     let mut hardware_encoder_used = false;
 
@@ -3663,7 +3664,7 @@ fn convert_video_file(
         if let (Some(expected_profile), Some(expected_level)) =
             (desired_h264_profile, desired_h264_level)
         {
-            verify_output_h264_profile_level(
+            let verification = verify_output_h264_profile_level(
                 output_file,
                 output_path,
                 expected_profile,
@@ -3671,10 +3672,13 @@ fn convert_video_file(
                 last_video_encoder_name.as_deref(),
                 hardware_encoder_used,
             )?;
+            h264_verification = Some(verification);
         }
     }
 
-    Ok(())
+    Ok(ConversionOutcome {
+        h264_verification,
+    })
 }
 
 fn select_primary_video_stream_index(
