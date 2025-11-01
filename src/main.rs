@@ -379,8 +379,15 @@ fn check_h264_profile_level_constraints(
 }
 
 fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
-    matches
+    let direct = matches
         .value_source(id)
+        .is_some_and(|src| matches!(src, ValueSource::CommandLine));
+    if direct {
+        return true;
+    }
+    let alt_id = id.replace('_', "-");
+    matches
+        .value_source(alt_id.as_str())
         .is_some_and(|src| matches!(src, ValueSource::CommandLine))
 }
 
