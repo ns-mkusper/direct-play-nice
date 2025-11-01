@@ -76,6 +76,53 @@ fn describe_h264_level(level: i32) -> String {
         .unwrap_or_else(|_| format!("level({})", level))
 }
 
+#[derive(Copy, Clone)]
+struct H264RateLimit {
+    max_bitrate_bits: i64,
+    max_buffer_bits: i64,
+}
+
+fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264RateLimit> {
+    use H264Level::*;
+    const K: i64 = 1_000;
+
+    let (rate_kbits, buffer_kbits) = match level {
+        Level1 => (80, 175),
+        Level1_1 => (240, 500),
+        Level1_2 => (480, 1_000),
+        Level1_3 => (960, 2_000),
+        Level2 => (2_500, 2_000),
+        Level2_1 => (4_000, 4_000),
+        Level2_2 => (4_000, 4_000),
+        Level3 => (12_500, 10_000),
+        Level3_1 => (17_500, 14_000),
+        Level3_2 => (25_000, 20_000),
+        Level4 => (25_000, 25_000),
+        Level4_1 => (62_500, 62_500),
+        Level4_2 => (62_500, 62_500),
+        Level5 => (135_000, 135_000),
+        Level5_1 => (240_000, 240_000),
+        Level5_2 => return None,
+    };
+
+    Some(H264RateLimit {
+        max_bitrate_bits: rate_kbits * K,
+        max_buffer_bits: buffer_kbits * K,
+    })
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+
+    #[test]
+    fn level_4_1_limits_match_table() {
+        let limits = h264_high_profile_rate_limits(H264Level::Level4_1).unwrap();
+        assert_eq!(limits.max_bitrate_bits, 62_500_000);
+        assert_eq!(limits.max_buffer_bits, 62_500_000);
+    }
+}
+
 fn enforce_h264_constraints(
     encode_context: &mut AVCodecContext,
     target_profile: H264Profile,
@@ -591,6 +638,7 @@ fn apply_hw_encoder_quality(
     encoder_name: &str,
     target_bitrate: Option<i64>,
     is_constant_quality_mode: bool,
+    h264_level: Option<H264Level>,
 ) {
     unsafe {
         debug!(
@@ -661,12 +709,34 @@ fn apply_hw_encoder_quality(
                  */
                 const NVENC_BITRATE_MULTIPLIER: i64 = 20;
                 let nvenc_target = bit_rate.saturating_mul(NVENC_BITRATE_MULTIPLIER);
-                let buffering = nvenc_target.saturating_mul(2);
+                let mut nvenc_rate = nvenc_target;
+                let mut nvenc_buffer = nvenc_target.saturating_mul(2);
 
-                set_codec_option_i64(ctx, "b", nvenc_target);
-                set_codec_option_i64(ctx, "maxrate", nvenc_target);
-                set_codec_option_i64(ctx, "minrate", nvenc_target);
-                set_codec_option_i64(ctx, "bufsize", buffering);
+                if let Some(level) = h264_level.and_then(h264_high_profile_rate_limits) {
+                    if nvenc_rate > level.max_bitrate_bits {
+                        debug!(
+                            "Clamping NVENC maxrate {} -> {} to respect H.264 high-profile level limit",
+                            nvenc_rate, level.max_bitrate_bits
+                        );
+                        nvenc_rate = level.max_bitrate_bits;
+                    }
+                    if nvenc_buffer > level.max_buffer_bits {
+                        debug!(
+                            "Clamping NVENC bufsize {} -> {} to respect H.264 high-profile level limit",
+                            nvenc_buffer, level.max_buffer_bits
+                        );
+                        nvenc_buffer = level.max_buffer_bits;
+                    }
+                }
+
+                if nvenc_buffer < nvenc_rate {
+                    nvenc_buffer = nvenc_rate;
+                }
+
+                set_codec_option_i64(ctx, "b", nvenc_rate);
+                set_codec_option_i64(ctx, "maxrate", nvenc_rate);
+                set_codec_option_i64(ctx, "minrate", nvenc_rate);
+                set_codec_option_i64(ctx, "bufsize", nvenc_buffer);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
             }
         }
@@ -2206,6 +2276,7 @@ fn set_video_codec_par(
         encoder_name,
         target_bit_rate,
         is_constant_quality_mode, // <-- PASS NEW PARAMETER
+        Some(h264_level),
     );
     log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
