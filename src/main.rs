@@ -3366,6 +3366,7 @@ fn main() -> Result<()> {
     configure_ffmpeg_logging();
 
     let mut matches = Args::command().get_matches();
+    let matches_snapshot = matches.clone();
     let mut args = Args::from_arg_matches_mut(&mut matches).expect("Failed to parse CLI arguments");
 
     let loaded_config = config::load(args.config_file.as_deref())?;
@@ -3387,7 +3388,7 @@ fn main() -> Result<()> {
         }
     }
     if let Some((cfg, _)) = &loaded_config {
-        apply_config_overrides(&mut args, cfg, &matches);
+        apply_config_overrides(&mut args, cfg, &matches_snapshot);
     }
     let config_plex = loaded_config
         .as_ref()
