@@ -80,11 +80,11 @@ fn enforce_h264_constraints(
     encoder_name: &str,
 ) {
     let level_option_value = level_option_value_for_encoder(encoder_name, target_level);
+    let ctx_ptr = encode_context.as_mut_ptr();
+    if should_apply_profile_option(encoder_name) {
+        apply_h264_profile_option(ctx_ptr, encoder_name, target_profile);
+    }
     unsafe {
-        let ctx_ptr = encode_context.as_mut_ptr();
-        if should_apply_profile_option(encoder_name) {
-            set_codec_option_str(ctx_ptr, "profile", target_profile.ffmpeg_name());
-        }
         set_codec_option_str(ctx_ptr, "level", &level_option_value);
         (*ctx_ptr).profile = target_profile as i32;
         (*ctx_ptr).level = target_level as i32;
@@ -146,6 +146,21 @@ fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> Strin
         level.ffmpeg_name().to_string()
     } else {
         (level as i32).to_string()
+    }
+}
+
+fn apply_h264_profile_option(
+    ctx_ptr: *mut ffi::AVCodecContext,
+    encoder_name: &str,
+    profile: H264Profile,
+) {
+    let lower = encoder_name.to_ascii_lowercase();
+    unsafe {
+        if lower.contains("nvenc") {
+            set_codec_option_i64(ctx_ptr, "profile", profile as i32 as i64);
+        } else {
+            set_codec_option_str(ctx_ptr, "profile", profile.ffmpeg_name());
+        }
     }
 }
 
@@ -1894,13 +1909,7 @@ fn set_video_codec_par(
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
     }
     if should_apply_profile_option(encoder_name) {
-        unsafe {
-            set_codec_option_str(
-                encode_context.as_mut_ptr(),
-                "profile",
-                h264_profile.ffmpeg_name(),
-            );
-        }
+        apply_h264_profile_option(encode_context.as_mut_ptr(), encoder_name, h264_profile);
     }
 
     let level_option_value = level_option_value_for_encoder(encoder_name, h264_level);
