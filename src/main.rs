@@ -80,34 +80,36 @@ fn describe_h264_level(level: i32) -> String {
 struct H264RateLimit {
     max_bitrate_bits: i64,
     max_buffer_bits: i64,
+    max_dpb_mbs: i32,
 }
 
 fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264RateLimit> {
     use H264Level::*;
     const K: i64 = 1_000;
 
-    let (rate_kbits, buffer_kbits) = match level {
-        Level1 => (80, 175),
-        Level1_1 => (240, 500),
-        Level1_2 => (480, 1_000),
-        Level1_3 => (960, 2_000),
-        Level2 => (2_500, 2_000),
-        Level2_1 => (4_000, 4_000),
-        Level2_2 => (4_000, 4_000),
-        Level3 => (12_500, 10_000),
-        Level3_1 => (17_500, 14_000),
-        Level3_2 => (25_000, 20_000),
-        Level4 => (25_000, 25_000),
-        Level4_1 => (62_500, 62_500),
-        Level4_2 => (62_500, 62_500),
-        Level5 => (135_000, 135_000),
-        Level5_1 => (240_000, 240_000),
+    let (rate_kbits, buffer_kbits, max_dpb_mbs) = match level {
+        Level1 => (80, 175, 396),
+        Level1_1 => (240, 500, 900),
+        Level1_2 => (480, 1_000, 2_376),
+        Level1_3 => (960, 2_000, 2_376),
+        Level2 => (2_500, 2_000, 2_376),
+        Level2_1 => (4_000, 4_000, 4_752),
+        Level2_2 => (4_000, 4_000, 8_100),
+        Level3 => (12_500, 10_000, 8_100),
+        Level3_1 => (17_500, 14_000, 18_000),
+        Level3_2 => (25_000, 20_000, 20_480),
+        Level4 => (25_000, 25_000, 32_768),
+        Level4_1 => (62_500, 62_500, 32_768),
+        Level4_2 => (62_500, 62_500, 34_816),
+        Level5 => (135_000, 135_000, 110_400),
+        Level5_1 => (240_000, 240_000, 184_320),
         Level5_2 => return None,
     };
 
     Some(H264RateLimit {
         max_bitrate_bits: rate_kbits * K,
         max_buffer_bits: buffer_kbits * K,
+        max_dpb_mbs,
     })
 }
 
@@ -120,6 +122,7 @@ mod rate_limit_tests {
         let limits = h264_high_profile_rate_limits(H264Level::Level4_1).unwrap();
         assert_eq!(limits.max_bitrate_bits, 62_500_000);
         assert_eq!(limits.max_buffer_bits, 62_500_000);
+        assert_eq!(limits.max_dpb_mbs, 32_768);
     }
 }
 
@@ -1148,21 +1151,24 @@ fn apply_hw_encoder_quality(
                 let mut nvenc_rate = nvenc_target;
                 let mut nvenc_buffer = nvenc_target.saturating_mul(2);
 
-                if let Some(level) = h264_level.and_then(h264_high_profile_rate_limits) {
-                    if nvenc_rate > level.max_bitrate_bits {
+                let mut max_dpb_mbs: Option<i32> = None;
+
+                if let Some(level_caps) = h264_level.and_then(h264_high_profile_rate_limits) {
+                    if nvenc_rate > level_caps.max_bitrate_bits {
                         debug!(
                             "Clamping NVENC maxrate {} -> {} to respect H.264 high-profile level limit",
-                            nvenc_rate, level.max_bitrate_bits
+                            nvenc_rate, level_caps.max_bitrate_bits
                         );
-                        nvenc_rate = level.max_bitrate_bits;
+                        nvenc_rate = level_caps.max_bitrate_bits;
                     }
-                    if nvenc_buffer > level.max_buffer_bits {
+                    if nvenc_buffer > level_caps.max_buffer_bits {
                         debug!(
                             "Clamping NVENC bufsize {} -> {} to respect H.264 high-profile level limit",
-                            nvenc_buffer, level.max_buffer_bits
+                            nvenc_buffer, level_caps.max_buffer_bits
                         );
-                        nvenc_buffer = level.max_buffer_bits;
+                        nvenc_buffer = level_caps.max_buffer_bits;
                     }
+                    max_dpb_mbs = Some(level_caps.max_dpb_mbs);
                 }
 
                 if nvenc_buffer < nvenc_rate {
@@ -1174,6 +1180,39 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "minrate", nvenc_rate);
                 set_codec_option_i64(ctx, "bufsize", nvenc_buffer);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
+
+                unsafe {
+                    (*ctx).rc_max_rate = nvenc_rate;
+                    (*ctx).rc_min_rate = nvenc_rate;
+                    let buf_i32 = nvenc_buffer.clamp(1, i32::MAX as i64) as i32;
+                    (*ctx).rc_buffer_size = buf_i32;
+                    (*ctx).rc_initial_buffer_occupancy = buf_i32;
+                }
+
+                if let Some(level_caps) = max_dpb_mbs {
+                    unsafe {
+                        let width = (*ctx).width.max(1);
+                        let height = (*ctx).height.max(1);
+                        let mb_width = ((width + 15) / 16).max(1);
+                        let mb_height = ((height + 15) / 16).max(1);
+                        let mbs_per_frame = mb_width * mb_height;
+                        if mbs_per_frame > 0 {
+                            let mut max_refs = level_caps / mbs_per_frame;
+                            if max_refs <= 0 {
+                                max_refs = 1;
+                            }
+                            max_refs = max_refs.min(8);
+                            if (*ctx).refs == 0 || (*ctx).refs > max_refs {
+                                (*ctx).refs = max_refs;
+                                set_codec_option_i64(ctx, "refs", max_refs as i64);
+                                debug!(
+                                    "Adjusted NVENC reference frames to {} to satisfy H.264 level DPB limits",
+                                    max_refs
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
