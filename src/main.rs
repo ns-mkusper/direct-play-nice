@@ -201,14 +201,13 @@ fn should_apply_profile_option(encoder_name: &str) -> bool {
 
 fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
     let lower = encoder_name.to_ascii_lowercase();
-    if lower.contains("nvenc") {
-        (level as i32).to_string()
-    } else if lower.contains("amf") || lower.contains("qsv") {
+    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
         level.ffmpeg_name().to_string()
     } else {
         (level as i32).to_string()
     }
 }
+
 
 fn apply_h264_profile_option(
     ctx_ptr: *mut ffi::AVCodecContext,
@@ -1278,7 +1277,7 @@ mod video_tests {
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
-            "41"
+            "4.1"
         );
         assert_eq!(
             level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
