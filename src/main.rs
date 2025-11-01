@@ -386,9 +386,7 @@ fn verify_output_h264_profile_level(
     let actual_level = actual_level_ffprobe;
 
     match (actual_profile, actual_level) {
-        (Some(profile), Some(level))
-            if profile == expected_profile && level == expected_level =>
-        {
+        (Some(profile), Some(level)) if profile == expected_profile && level == expected_level => {
             debug!(
                 "Verified H.264 profile {:?} level {:?} for '{}'",
                 profile, level, display_path
@@ -3676,9 +3674,7 @@ fn convert_video_file(
         }
     }
 
-    Ok(ConversionOutcome {
-        h264_verification,
-    })
+    Ok(ConversionOutcome { h264_verification })
 }
 
 fn select_primary_video_stream_index(
@@ -4311,7 +4307,8 @@ fn run_conversion(
     }
 
     match (plan, conversion_result) {
-        (Some(plan), Ok(())) => {
+        (Some(plan), Ok(outcome)) => {
+            debug_assert!(outcome.profile_verified());
             let final_path = plan.finalize_success()?;
             if let Some(ref refresher) = plex_refresher {
                 if let Err(err) = refresher.refresh_path(&final_path) {
@@ -4333,9 +4330,13 @@ fn run_conversion(
             }
             Err(err)
         }
-        (None, Ok(())) => {
+        (None, Ok(outcome)) => {
             if args.delete_source.unwrap_or(false) {
-                if let (Some(input_cstr), Some(output_cstr)) =
+                if !outcome.profile_verified() {
+                    warn!(
+                        "Skipping --delete-source because profile/level verification did not confirm expected constraints"
+                    );
+                } else if let (Some(input_cstr), Some(output_cstr)) =
                     (args.input_file.as_ref(), args.output_file.as_ref())
                 {
                     let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
