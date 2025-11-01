@@ -88,7 +88,16 @@ fn enforce_h264_constraints(
         apply_h264_profile_option(ctx_ptr, encoder_name, target_profile);
     }
     unsafe {
-        set_codec_option_str(ctx_ptr, "level", &level_option_value);
+        let mut level_applied = set_codec_option_str(ctx_ptr, "level", &level_option_value);
+        if !level_applied && encoder_name.to_ascii_lowercase().contains("nvenc") {
+            level_applied = set_codec_option_i64(ctx_ptr, "level", target_level as i32 as i64);
+        }
+        if !level_applied {
+            debug!(
+                "Failed to set level option '{}' for encoder {}; relying on direct struct assignment",
+                level_option_value, encoder_name
+            );
+        }
         (*ctx_ptr).profile = target_profile as i32;
         (*ctx_ptr).level = target_level as i32;
     }
@@ -145,7 +154,9 @@ fn should_apply_profile_option(encoder_name: &str) -> bool {
 
 fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
     let lower = encoder_name.to_ascii_lowercase();
-    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
+    if lower.contains("nvenc") {
+        (level as i32).to_string()
+    } else if lower.contains("amf") || lower.contains("qsv") {
         level.ffmpeg_name().to_string()
     } else {
         (level as i32).to_string()
@@ -761,7 +772,7 @@ mod video_tests {
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
-            "4.1"
+            "41"
         );
         assert_eq!(
             level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
