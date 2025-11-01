@@ -1108,9 +1108,15 @@ struct Args {
     #[arg(long = "servarr-output-suffix", default_value = "")]
     servarr_output_suffix: String,
 
-    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations)
-    #[arg(long, default_value_t = false)]
-    delete_source: bool,
+    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
+    #[arg(
+        long = "delete-source",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    delete_source: Option<bool>,
 
     /// Trigger a Plex library refresh for the output directory after a successful conversion
     #[arg(long = "plex-refresh", default_value_t = false)]
@@ -1423,8 +1429,10 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config) {
         args.servarr_output_suffix = suffix.clone();
     }
 
-    if let Some(delete_source) = cfg.delete_source {
-        args.delete_source = delete_source;
+    if args.delete_source.is_none() {
+        if let Some(delete_source) = cfg.delete_source {
+            args.delete_source = Some(delete_source);
+        }
     }
 
     if cfg.plex.is_some() {
@@ -3405,7 +3413,7 @@ fn run_conversion(
             Err(err)
         }
         (None, Ok(())) => {
-            if args.delete_source {
+            if args.delete_source.unwrap_or(false) {
                 if let (Some(input_cstr), Some(output_cstr)) =
                     (args.input_file.as_ref(), args.output_file.as_ref())
                 {

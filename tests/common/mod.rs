@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+
 use predicates::str;
 use rsmpeg::avformat::AVFormatContextInput;
+use rsmpeg::ffi;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -105,4 +108,95 @@ pub fn probe_duration_ms(path: &PathBuf) -> u64 {
 pub fn assert_cli_success(mut cmd: Command) {
     use assert_cmd::prelude::*;
     cmd.assert().success().stdout(str::is_empty());
+}
+
+pub fn gen_h264_high_input(tmp: &TempDir) -> PathBuf {
+    let dir = tmp.path();
+    let video = dir.join("v_h264.mp4");
+    let audio = dir.join("a_eac3.mka");
+    let input = dir.join("input_h264.mkv");
+
+    // Create 1920x1080 H.264 High@L5.2 video
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1920x1080:rate=23.976:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-profile:v",
+                "high",
+                "-level:v",
+                "5.2",
+                "-x264-params",
+                "ref=4",
+                &video.to_string_lossy(),
+            ])
+            .status()
+            .expect("run ffmpeg video")
+            .success(),
+        "ffmpeg H.264 video generation failed"
+    );
+
+    // Create 6 channel E-AC3 audio to mirror real-world input
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anoisesrc=duration=2",
+                "-ac",
+                "6",
+                "-c:a",
+                "eac3",
+                "-b:a",
+                "384k",
+                &audio.to_string_lossy(),
+            ])
+            .status()
+            .expect("run ffmpeg audio")
+            .success(),
+        "ffmpeg E-AC3 generation failed"
+    );
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                &input.to_string_lossy(),
+            ])
+            .status()
+            .expect("run ffmpeg mux")
+            .success(),
+        "ffmpeg mux for H.264 input failed"
+    );
+
+    input
+}
+
+pub fn read_video_profile_level(path: &Path) -> (i32, i32) {
+    let cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
+    let ictx = AVFormatContextInput::open(cstr.as_c_str()).expect("open output file");
+    for stream in ictx.streams() {
+        let par = stream.codecpar();
+        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+            return (par.profile, par.level);
+        }
+    }
+    panic!("no video stream found in {}", path.display());
 }
