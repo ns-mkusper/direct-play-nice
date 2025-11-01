@@ -329,6 +329,20 @@ impl std::fmt::Display for HwProfileLevelMismatch {
 
 impl std::error::Error for HwProfileLevelMismatch {}
 
+#[derive(Debug, Clone)]
+struct H264Verification {
+    expected_profile: H264Profile,
+    expected_level: H264Level,
+    actual_profile: H264Profile,
+    actual_level: H264Level,
+}
+
+impl H264Verification {
+    fn is_valid(&self) -> bool {
+        self.actual_profile == self.expected_profile && self.actual_level == self.expected_level
+    }
+}
+
 fn verify_output_h264_profile_level(
     output_file: &CStr,
     output_path: &Path,
@@ -336,7 +350,7 @@ fn verify_output_h264_profile_level(
     expected_level: H264Level,
     encoder_name: Option<&str>,
     used_hw_encoder: bool,
-) -> Result<()> {
+) -> Result<H264Verification> {
     let display_path = output_path.display().to_string();
     let (actual_profile_ffprobe, actual_level_ffprobe) = match probe_with_ffprobe(output_path) {
         Some(values) => {
@@ -371,32 +385,31 @@ fn verify_output_h264_profile_level(
     let actual_profile = actual_profile_ffprobe;
     let actual_level = actual_level_ffprobe;
 
-    if actual_profile.is_none() || actual_level.is_none() {
-        debug!(
-            "H.264 profile/level read as {:?}/{:?} for '{}'",
-            actual_profile, actual_level, display_path
-        );
+    match (actual_profile, actual_level) {
+        (Some(profile), Some(level))
+            if profile == expected_profile && level == expected_level =>
+        {
+            debug!(
+                "Verified H.264 profile {:?} level {:?} for '{}'",
+                profile, level, display_path
+            );
+            Ok(H264Verification {
+                expected_profile,
+                expected_level,
+                actual_profile: profile,
+                actual_level: level,
+            })
+        }
+        _ => Err(anyhow!(HwProfileLevelMismatch::new(
+            encoder_name.unwrap_or("unknown encoder").to_string(),
+            expected_profile,
+            expected_level,
+            actual_profile,
+            actual_level,
+            used_hw_encoder,
+            display_path,
+        ))),
     }
-
-    if actual_profile == Some(expected_profile) && actual_level == Some(expected_level) {
-        debug!(
-            "Verified H.264 profile {:?} level {:?} for '{}'",
-            actual_profile.unwrap(),
-            actual_level.unwrap(),
-            display_path
-        );
-        return Ok(());
-    }
-
-    Err(anyhow!(HwProfileLevelMismatch::new(
-        encoder_name.unwrap_or("unknown encoder").to_string(),
-        expected_profile,
-        expected_level,
-        actual_profile,
-        actual_level,
-        used_hw_encoder,
-        display_path,
-    )))
 }
 
 fn check_h264_profile_level_constraints(
@@ -2803,6 +2816,20 @@ fn set_subtitle_codec_par(
 struct DirectPlayAssessment {
     compatible: bool,
     reasons: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct ConversionOutcome {
+    h264_verification: Option<H264Verification>,
+}
+
+impl ConversionOutcome {
+    fn profile_verified(&self) -> bool {
+        self.h264_verification
+            .as_ref()
+            .map(|check| check.is_valid())
+            .unwrap_or(true)
+    }
 }
 
 fn assess_direct_play_compatibility(
