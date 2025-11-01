@@ -51,7 +51,7 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
     let output = tmp.path().join("out.mp4");
 
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.arg("--config")
+    cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")
         .arg("chromecast_1st_gen")
@@ -91,7 +91,7 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
     let output = tmp.path().join("out.mp4");
 
     let mut cmd = Command::cargo_bin("direct_play_nice")?;
-    cmd.arg("--config")
+    cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")
         .arg("chromecast_1st_gen")

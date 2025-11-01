@@ -12,12 +12,13 @@ use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
 use serde::{Deserialize, Serialize};
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
-use std::path::{Path, PathBuf};
 use std::{
     convert::TryFrom,
     env,
     ffi::{CStr, CString},
+    fs,
     os::raw::c_void,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicI64, Ordering},
 };
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
@@ -155,13 +156,116 @@ fn apply_h264_profile_option(
     profile: H264Profile,
 ) {
     let lower = encoder_name.to_ascii_lowercase();
-    unsafe {
-        if lower.contains("nvenc") {
-            set_codec_option_i64(ctx_ptr, "profile", profile as i32 as i64);
-        } else {
-            set_codec_option_str(ctx_ptr, "profile", profile.ffmpeg_name());
+    let applied = unsafe { set_codec_option_str(ctx_ptr, "profile", profile.ffmpeg_name()) };
+    if !applied && lower.contains("nvenc") {
+        if let Some(value) = nvenc_profile_value(profile) {
+            unsafe {
+                set_codec_option_i64(ctx_ptr, "profile", value);
+            }
         }
     }
+}
+
+fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
+    match profile {
+        H264Profile::Baseline => Some(0),
+        H264Profile::Main => Some(1),
+        H264Profile::High => Some(2),
+        H264Profile::High444 => Some(3),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct HwProfileLevelMismatch {
+    encoder: String,
+    expected_profile: H264Profile,
+    expected_level: H264Level,
+    actual_profile: Option<H264Profile>,
+    actual_level: Option<H264Level>,
+    used_hw_encoder: bool,
+    output_path: String,
+}
+
+impl HwProfileLevelMismatch {
+    fn new(
+        encoder: String,
+        expected_profile: H264Profile,
+        expected_level: H264Level,
+        actual_profile: Option<H264Profile>,
+        actual_level: Option<H264Level>,
+        used_hw_encoder: bool,
+        output_path: String,
+    ) -> Self {
+        Self {
+            encoder,
+            expected_profile,
+            expected_level,
+            actual_profile,
+            actual_level,
+            used_hw_encoder,
+            output_path,
+        }
+    }
+}
+
+impl std::fmt::Display for HwProfileLevelMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "encoder {} produced H.264 profile {:?} level {:?} but expected profile {:?} level {:?} for {}",
+            self.encoder,
+            self.actual_profile.unwrap_or(H264Profile::Baseline),
+            self.actual_level.unwrap_or(H264Level::Level1),
+            self.expected_profile,
+            self.expected_level,
+            self.output_path
+        )
+    }
+}
+
+impl std::error::Error for HwProfileLevelMismatch {}
+
+fn verify_output_h264_profile_level(
+    output_file: &CStr,
+    output_path: &Path,
+    expected_profile: H264Profile,
+    expected_level: H264Level,
+    encoder_name: Option<&str>,
+    used_hw_encoder: bool,
+) -> Result<()> {
+    let display_path = output_path.display().to_string();
+    let input_ctx = AVFormatContextInput::open(output_file)
+        .with_context(|| format!("Opening '{}' to verify H.264 profile/level", display_path))?;
+
+    let mut actual_profile: Option<H264Profile> = None;
+    let mut actual_level: Option<H264Level> = None;
+
+    for stream in input_ctx.streams() {
+        if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+            continue;
+        }
+        if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
+            break;
+        }
+        actual_profile = H264Profile::try_from(stream.codecpar().profile).ok();
+        actual_level = H264Level::try_from(stream.codecpar().level).ok();
+        break;
+    }
+
+    if actual_profile == Some(expected_profile) && actual_level == Some(expected_level) {
+        return Ok(());
+    }
+
+    Err(anyhow!(HwProfileLevelMismatch::new(
+        encoder_name.unwrap_or("unknown encoder").to_string(),
+        expected_profile,
+        expected_level,
+        actual_profile,
+        actual_level,
+        used_hw_encoder,
+        display_path,
+    )))
 }
 
 fn check_h264_profile_level_constraints(
@@ -201,85 +305,85 @@ fn check_h264_profile_level_constraints(
     }
 }
 
-unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) {
+unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) -> bool {
     if ctx.is_null() {
         warn!(
             "Failed to set codec option {}='{}': encoder context is null",
             key, value
         );
-        return;
+        return false;
     }
     match (CString::new(key), CString::new(value)) {
         (Ok(k), Ok(v)) => {
-            let mut last_err = None;
-            for target in [ctx as *mut c_void, (*ctx).priv_data] {
-                if target.is_null() {
-                    continue;
-                }
-                let ret = ffi::av_opt_set(target, k.as_ptr(), v.as_ptr(), 0);
-                if ret == 0 {
-                    trace!("Codec option {}='{}' set", key, value);
-                    return;
-                }
-                last_err = Some(ret);
-                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
-                    break;
-                }
-            }
-            if let Some(err) = last_err {
+            let ret = ffi::av_opt_set(
+                ctx as *mut c_void,
+                k.as_ptr(),
+                v.as_ptr(),
+                ffi::AV_OPT_SEARCH_CHILDREN as i32,
+            );
+            if ret == 0 {
+                trace!("Codec option {}='{}' set", key, value);
+                true
+            } else if ret != ffi::AVERROR_OPTION_NOT_FOUND {
                 warn!(
                     "Failed to set codec option {}='{}': {}",
                     key,
                     value,
-                    av_error_to_string(err)
+                    av_error_to_string(ret)
                 );
+                false
+            } else {
+                false
             }
         }
-        _ => warn!(
-            "Failed to set codec option {}='{}': invalid CString",
-            key, value
-        ),
+        _ => {
+            warn!(
+                "Failed to set codec option {}='{}': invalid CString",
+                key, value
+            );
+            false
+        }
     }
 }
 
-unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) {
+unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) -> bool {
     if ctx.is_null() {
         warn!(
             "Failed to set codec option {}={} (int): encoder context is null",
             key, value
         );
-        return;
+        return false;
     }
     match CString::new(key) {
         Ok(k) => {
-            let mut last_err = None;
-            for target in [ctx as *mut c_void, (*ctx).priv_data] {
-                if target.is_null() {
-                    continue;
-                }
-                let ret = ffi::av_opt_set_int(target, k.as_ptr(), value, 0);
-                if ret == 0 {
-                    trace!("Codec option {}={} (int) set", key, value);
-                    return;
-                }
-                last_err = Some(ret);
-                if ret != ffi::AVERROR_OPTION_NOT_FOUND {
-                    break;
-                }
-            }
-            if let Some(err) = last_err {
+            let ret = ffi::av_opt_set_int(
+                ctx as *mut c_void,
+                k.as_ptr(),
+                value,
+                ffi::AV_OPT_SEARCH_CHILDREN as i32,
+            );
+            if ret == 0 {
+                trace!("Codec option {}={} (int) set", key, value);
+                true
+            } else if ret != ffi::AVERROR_OPTION_NOT_FOUND {
                 warn!(
                     "Failed to set codec option {}={} (int): {}",
                     key,
                     value,
-                    av_error_to_string(err)
+                    av_error_to_string(ret)
                 );
+                false
+            } else {
+                false
             }
         }
-        Err(_) => warn!(
-            "Failed to set codec option {}={} (int): invalid CString",
-            key, value
-        ),
+        Err(_) => {
+            warn!(
+                "Failed to set codec option {}={} (int): invalid CString",
+                key, value
+            );
+            false
+        }
     }
 }
 
@@ -2273,6 +2377,10 @@ fn convert_video_file(
 
     let mut logged_video_encoder = false;
     let mut logged_audio_encoder = false;
+    let mut desired_h264_profile: Option<H264Profile> = None;
+    let mut desired_h264_level: Option<H264Level> = None;
+    let mut last_video_encoder_name: Option<String> = None;
+    let mut hardware_encoder_used = false;
 
     let primary_index = select_primary_video_stream_index(
         &input_format_context,
@@ -2426,6 +2534,9 @@ fn convert_video_file(
                         false,
                     ),
                 };
+                if using_hw_encoder {
+                    hardware_encoder_used = true;
+                }
                 encode_context = AVCodecContext::new(&encoder);
                 // Attach hardware device if present (must be set before open())
                 if let Some(buf) = maybe_hw_dev {
@@ -2440,6 +2551,19 @@ fn convert_video_file(
                 encoder_name_for_video = Some(encoder_name_owned.clone());
                 target_h264_profile = Some(min_h264_profile);
                 target_h264_level = Some(min_h264_level);
+                desired_h264_profile = Some(min_h264_profile);
+                desired_h264_level = Some(min_h264_level);
+                last_video_encoder_name = Some(encoder_name_owned.clone());
+                let encoder_name_lower = encoder_name_owned.to_ascii_lowercase();
+                if encoder_name_lower.contains("nvenc")
+                    || encoder_name_lower.contains("qsv")
+                    || encoder_name_lower.contains("amf")
+                    || encoder_name_lower.contains("vaapi")
+                    || encoder_name_lower.contains("videotoolbox")
+                    || encoder_name_lower.contains("_mf")
+                {
+                    hardware_encoder_used = true;
+                }
 
                 if !logged_video_encoder {
                     let encoder_name = &encoder_name_owned;
@@ -2816,6 +2940,21 @@ fn convert_video_file(
     }
 
     output_format_context.write_trailer()?;
+
+    if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        if let (Some(expected_profile), Some(expected_level)) =
+            (desired_h264_profile, desired_h264_level)
+        {
+            verify_output_h264_profile_level(
+                output_file,
+                output_path,
+                expected_profile,
+                expected_level,
+                last_video_encoder_name.as_deref(),
+                hardware_encoder_used,
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -3371,7 +3510,7 @@ fn run_conversion(
     }
     let _conversion_slot = acquire_slot()?;
 
-    let conversion_result = convert_video_file(
+    let mut conversion_result = convert_video_file(
         input_file,
         output_file,
         common_video_codec,
@@ -3388,6 +3527,64 @@ fn run_conversion(
         args.audio_quality,
         args.hw_accel,
     );
+
+    if let Err(err) = conversion_result {
+        conversion_result = match err.downcast::<HwProfileLevelMismatch>() {
+            Ok(mismatch) => {
+                if args.hw_accel != HwAccel::None && mismatch.used_hw_encoder {
+                    let actual_profile = mismatch
+                        .actual_profile
+                        .map(|p| format!("{:?}", p))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let actual_level = mismatch
+                        .actual_level
+                        .map(|l| l.ffmpeg_name().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    warn!(
+                        "Hardware encoder {} produced H.264 profile {} level {} for '{}' (expected profile {:?} level {:?}); retrying with software encoder (libx264)",
+                        mismatch.encoder,
+                        actual_profile,
+                        actual_level,
+                        mismatch.output_path,
+                        mismatch.expected_profile,
+                        mismatch.expected_level
+                    );
+                    if let Some(output_cstr) = args.output_file.as_ref() {
+                        let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                        if output_path.exists() {
+                            if let Err(remove_err) = fs::remove_file(&output_path) {
+                                warn!(
+                                    "Failed to remove incompatible output '{}': {}",
+                                    output_path.display(),
+                                    remove_err
+                                );
+                            }
+                        }
+                    }
+                    convert_video_file(
+                        input_file,
+                        output_file,
+                        common_video_codec,
+                        common_audio_codec,
+                        min_h264_profile,
+                        min_h264_level,
+                        min_fps,
+                        min_resolution,
+                        &quality_limits,
+                        args.unsupported_video_policy,
+                        args.primary_video_stream_index,
+                        args.primary_video_criteria,
+                        args.video_quality,
+                        args.audio_quality,
+                        HwAccel::None,
+                    )
+                } else {
+                    Err(anyhow!(mismatch))
+                }
+            }
+            Err(err) => Err(err),
+        };
+    }
 
     match (plan, conversion_result) {
         (Some(plan), Ok(())) => {
@@ -3420,7 +3617,7 @@ fn run_conversion(
                     let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
                     let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
                     if input_path != output_path {
-                        match std::fs::remove_file(&input_path) {
+                        match fs::remove_file(&input_path) {
                             Ok(_) => info!(
                                 "Deleted source file '{}' after successful conversion",
                                 input_path.display()
