@@ -379,15 +379,8 @@ fn check_h264_profile_level_constraints(
 }
 
 fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
-    let direct = matches
-        .value_source(id)
-        .is_some_and(|src| matches!(src, ValueSource::CommandLine));
-    if direct {
-        return true;
-    }
-    let alt_id = id.replace('_', "-");
     matches
-        .value_source(alt_id.as_str())
+        .value_source(id)
         .is_some_and(|src| matches!(src, ValueSource::CommandLine))
 }
 
@@ -1627,6 +1620,11 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
 
     if !cli_value_provided(matches, "hw_accel") {
         if let Some(hw_accel) = cfg.hw_accel {
+            debug!(
+                "Applying config hw_accel={:?} (CLI value source: {:?})",
+                hw_accel,
+                matches.value_source("hw_accel")
+            );
             args.hw_accel = hw_accel;
         }
     }
