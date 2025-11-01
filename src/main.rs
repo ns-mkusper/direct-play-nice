@@ -201,13 +201,14 @@ fn should_apply_profile_option(encoder_name: &str) -> bool {
 
 fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
     let lower = encoder_name.to_ascii_lowercase();
-    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
+    if lower.contains("nvenc") {
+        level.ffmpeg_name().to_string()
+    } else if lower.contains("amf") || lower.contains("qsv") {
         level.ffmpeg_name().to_string()
     } else {
         (level as i32).to_string()
     }
 }
-
 
 fn apply_h264_profile_option(
     ctx_ptr: *mut ffi::AVCodecContext,
@@ -1277,7 +1278,7 @@ mod video_tests {
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
-            "4.1"
+            "41"
         );
         assert_eq!(
             level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
@@ -2713,7 +2714,6 @@ fn set_video_codec_par(
         is_constant_quality_mode, // <-- PASS NEW PARAMETER
         Some(h264_level),
     );
-    log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
     encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // TODO: find a safe way to do this
@@ -2730,6 +2730,7 @@ fn set_video_codec_par(
     unsafe {
         set_codec_option_str(encode_context.as_mut_ptr(), "level", &level_option_value);
     }
+    log_encoder_state("video setup", encode_context, encoder_name);
     // Codec parameters are extracted after the encoder is opened.
 }
 
