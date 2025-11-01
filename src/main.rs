@@ -1278,7 +1278,7 @@ mod video_tests {
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
-            "41"
+            "4.1"
         );
         assert_eq!(
             level_option_value_for_encoder("amf_h264", H264Level::Level5_1),
