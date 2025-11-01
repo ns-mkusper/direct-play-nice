@@ -601,12 +601,12 @@ fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
 
 fn field_order_name(order: ffi::AVFieldOrder) -> &'static str {
     match order {
-        ffi::AVFieldOrder_AV_FIELD_UNKNOWN => "unknown",
-        ffi::AVFieldOrder_AV_FIELD_PROGRESSIVE => "progressive",
-        ffi::AVFieldOrder_AV_FIELD_TT => "tt (top coded/display top)",
-        ffi::AVFieldOrder_AV_FIELD_BB => "bb (bottom coded/display bottom)",
-        ffi::AVFieldOrder_AV_FIELD_TB => "tb (top coded/bottom display)",
-        ffi::AVFieldOrder_AV_FIELD_BT => "bt (bottom coded/top display)",
+        ffi::AV_FIELD_UNKNOWN => "unknown",
+        ffi::AV_FIELD_PROGRESSIVE => "progressive",
+        ffi::AV_FIELD_TT => "tt (top coded/display top)",
+        ffi::AV_FIELD_BB => "bb (bottom coded/display bottom)",
+        ffi::AV_FIELD_TB => "tb (top coded/bottom display)",
+        ffi::AV_FIELD_BT => "bt (bottom coded/top display)",
         _ => "invalid",
     }
 }
@@ -668,10 +668,10 @@ fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
 
 fn channel_order_name(order: ffi::AVChannelOrder) -> &'static str {
     match order {
-        ffi::AVChannelOrder_AV_CHANNEL_ORDER_UNSPEC => "unspecified",
-        ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE => "native",
-        ffi::AVChannelOrder_AV_CHANNEL_ORDER_CUSTOM => "custom",
-        ffi::AVChannelOrder_AV_CHANNEL_ORDER_AMBISONIC => "ambisonic",
+        ffi::AV_CHANNEL_ORDER_UNSPEC => "unspecified",
+        ffi::AV_CHANNEL_ORDER_NATIVE => "native",
+        ffi::AV_CHANNEL_ORDER_CUSTOM => "custom",
+        ffi::AV_CHANNEL_ORDER_AMBISONIC => "ambisonic",
         _ => "invalid",
     }
 }
@@ -690,7 +690,7 @@ fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
         );
         if res >= 0 {
             CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
-        } else if layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+        } else if layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
             format!("mask=0x{:x}", layout.u.mask)
         } else {
             format!(
@@ -708,11 +708,11 @@ fn rational_to_string(r: ffi::AVRational) -> String {
 
 fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> String {
     match media_type {
-        mt if mt == ffi::AVMediaType_AVMEDIA_TYPE_VIDEO => {
+        mt if mt == ffi::AVMEDIA_TYPE_VIDEO => {
             let name = pix_fmt_name(format as ffi::AVPixelFormat);
             format!("{} ({})", format, name)
         }
-        mt if mt == ffi::AVMediaType_AVMEDIA_TYPE_AUDIO => {
+        mt if mt == ffi::AVMEDIA_TYPE_AUDIO => {
             let name = sample_fmt_name_from_i32(format);
             format!("{} ({})", format, name)
         }
@@ -720,7 +720,7 @@ fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> Stri
     }
 }
 
-fn build_codec_context_lines(raw: *mut ffi::AVCodecContext) -> Vec<String> {
+fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
     unsafe {
         let mut lines = Vec::new();
         lines.push(format!("    [AVCodecContext @ {:p}]", raw));
@@ -785,7 +785,7 @@ fn build_codec_context_lines(raw: *mut ffi::AVCodecContext) -> Vec<String> {
             channel_order_name((*raw).ch_layout.order),
             (*raw).ch_layout.order
         ));
-        if (*raw).ch_layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+        if (*raw).ch_layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
             lines.push(format!(
                 "      channel_mask: 0x{:x}",
                 (*raw).ch_layout.u.mask
@@ -826,7 +826,7 @@ fn build_codec_context_lines(raw: *mut ffi::AVCodecContext) -> Vec<String> {
     }
 }
 
-fn build_codec_parameters_lines(raw: *mut ffi::AVCodecContext) -> Option<Vec<String>> {
+fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<String>> {
     unsafe {
         let mut params = ffi::avcodec_parameters_alloc();
         if params.is_null() {
@@ -934,7 +934,7 @@ fn build_codec_parameters_lines(raw: *mut ffi::AVCodecContext) -> Option<Vec<Str
             "      channel_layout: {}",
             describe_channel_layout(&(*params).ch_layout)
         ));
-        if (*params).ch_layout.order == ffi::AVChannelOrder_AV_CHANNEL_ORDER_NATIVE {
+        if (*params).ch_layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
             lines.push(format!(
                 "      channel_mask: 0x{:x}",
                 (*params).ch_layout.u.mask
@@ -950,13 +950,10 @@ fn build_codec_parameters_lines(raw: *mut ffi::AVCodecContext) -> Option<Vec<Str
     }
 }
 
-fn build_encoder_debug_dump(raw: *mut ffi::AVCodecContext) -> Option<String> {
-    unsafe {
-        if raw.is_null() {
-            return None;
-        }
+fn build_encoder_debug_dump(raw: *const ffi::AVCodecContext) -> Option<String> {
+    if raw.is_null() {
+        return None;
     }
-
     let mut lines = build_codec_context_lines(raw);
     if let Some(mut params_lines) = build_codec_parameters_lines(raw) {
         lines.push(String::new());
@@ -994,7 +991,7 @@ fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
             has_hw_frames
         );
         if log::log_enabled!(Level::Debug) {
-            if let Some(detail) = build_encoder_debug_dump(raw) {
+            if let Some(detail) = build_encoder_debug_dump(raw as *const ffi::AVCodecContext) {
                 debug!(
                     "Encoder {} [{}] raw codec state:\n{}",
                     encoder_name, stage, detail
