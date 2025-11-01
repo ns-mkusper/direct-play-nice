@@ -79,23 +79,37 @@ fn enforce_h264_constraints(
     target_level: H264Level,
     encoder_name: &str,
 ) {
-    let encoder_name_lower = encoder_name.to_ascii_lowercase();
+    let level_option_value = level_option_value_for_encoder(encoder_name, target_level);
     unsafe {
         let ctx_ptr = encode_context.as_mut_ptr();
-        if encoder_name_lower.contains("x264") {
+        if should_apply_profile_option(encoder_name) {
             set_codec_option_str(ctx_ptr, "profile", target_profile.ffmpeg_name());
-            set_codec_option_str(ctx_ptr, "level", target_level.ffmpeg_name());
         }
+        set_codec_option_str(ctx_ptr, "level", &level_option_value);
         (*ctx_ptr).profile = target_profile as i32;
         (*ctx_ptr).level = target_level as i32;
     }
 
     let actual_profile = encode_context.profile;
     let actual_level = encode_context.level;
+    let target_profile_desc = describe_h264_profile(target_profile as i32);
+    let target_level_desc = describe_h264_level(target_level as i32);
+    let reported_profile_desc = describe_h264_profile(actual_profile);
+    let reported_level_desc = describe_h264_level(actual_level);
+
+    info!(
+        "Video encoder {}: requested profile {} level {}; reported profile {} level {}",
+        encoder_name,
+        target_profile_desc,
+        target_level_desc,
+        reported_profile_desc,
+        reported_level_desc
+    );
+
     if actual_profile == 0 {
-        debug!(
-            "Video encoder {} reported unknown H.264 profile after init",
-            encoder_name
+        info!(
+            "Video encoder {} reported unknown H.264 profile after init (target {})",
+            encoder_name, target_profile_desc
         );
     } else if actual_profile > target_profile as i32 {
         warn!(
@@ -107,9 +121,9 @@ fn enforce_h264_constraints(
     }
 
     if actual_level == 0 {
-        debug!(
-            "Video encoder {} reported unknown H.264 level after init",
-            encoder_name
+        info!(
+            "Video encoder {} reported unknown H.264 level after init (target {})",
+            encoder_name, target_level_desc
         );
     } else if actual_level > target_level as i32 {
         warn!(
@@ -118,18 +132,12 @@ fn enforce_h264_constraints(
             describe_h264_level(actual_level),
             describe_h264_level(target_level as i32)
         );
-    } else {
-        debug!(
-            "Video encoder {} locked to profile {} level {}",
-            encoder_name,
-            describe_h264_profile(actual_profile),
-            describe_h264_level(actual_level)
-        );
     }
 }
 
 fn should_apply_profile_option(encoder_name: &str) -> bool {
-    encoder_name.to_ascii_lowercase().contains("x264")
+    let encoder_name_lower = encoder_name.to_ascii_lowercase();
+    encoder_name_lower.contains("x264") || encoder_name_lower.contains("nvenc")
 }
 
 fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
@@ -473,10 +481,11 @@ mod video_tests {
     use super::*;
 
     #[test]
-    fn profile_option_only_applies_to_x264() {
+    fn profile_option_applies_to_supported_encoders() {
         assert!(should_apply_profile_option("libx264"));
         assert!(should_apply_profile_option("LIBX264"));
-        assert!(!should_apply_profile_option("h264_nvenc"));
+        assert!(should_apply_profile_option("h264_nvenc"));
+        assert!(should_apply_profile_option("H264_NVENC"));
         assert!(!should_apply_profile_option("amf_h264"));
     }
 
