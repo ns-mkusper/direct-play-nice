@@ -340,6 +340,30 @@ impl std::fmt::Display for HwProfileLevelMismatch {
 
 impl std::error::Error for HwProfileLevelMismatch {}
 
+#[derive(Debug)]
+struct HwEncoderInitError {
+    encoder: String,
+    message: String,
+}
+
+impl HwEncoderInitError {
+    fn new(encoder: String, message: String) -> Self {
+        Self { encoder, message }
+    }
+}
+
+impl std::fmt::Display for HwEncoderInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "hardware encoder {} failed to initialize: {}",
+            self.encoder, self.message
+        )
+    }
+}
+
+impl std::error::Error for HwEncoderInitError {}
+
 #[derive(Debug, Clone)]
 struct H264Verification {
     expected_profile: H264Profile,
@@ -3411,6 +3435,9 @@ fn convert_video_file(
 
         let mut output_stream = output_format_context.new_stream();
 
+        let mut encoder_is_hw = false;
+        let mut current_encoder_name: Option<String> = None;
+
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
@@ -3432,6 +3459,7 @@ fn convert_video_file(
                 if using_hw_encoder {
                     hardware_encoder_used = true;
                 }
+                encoder_is_hw = using_hw_encoder;
                 encode_context = AVCodecContext::new(&encoder);
                 // Attach hardware device if present (must be set before open())
                 if let Some(buf) = maybe_hw_dev {
@@ -3443,6 +3471,7 @@ fn convert_video_file(
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
+                current_encoder_name = Some(encoder_name_owned.clone());
                 encoder_name_for_video = Some(encoder_name_owned.clone());
                 if let Some((min_h264_profile, min_h264_level)) = h264_constraints {
                     target_h264_profile = Some(min_h264_profile);
@@ -3666,6 +3695,20 @@ fn convert_video_file(
             }
         }
 
+        let open_result = encode_context
+            .open(None)
+            .with_context(|| format!("Error opening {} encoder", media_label));
+        if let Err(err) = open_result {
+            if encoder_is_hw && media_type == ffi::AVMEDIA_TYPE_VIDEO {
+                return Err(anyhow!(HwEncoderInitError::new(
+                    current_encoder_name.unwrap_or_else(|| "unknown".to_string()),
+                    err.to_string(),
+                )));
+            } else {
+                return Err(err);
+            }
+        }
+
         output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
@@ -3880,6 +3923,144 @@ fn convert_video_file(
     }
 
     Ok(ConversionOutcome { h264_verification })
+}
+
+fn cleanup_partial_output(path: &CStr) {
+    let output_path = PathBuf::from(path.to_string_lossy().into_owned());
+    if output_path.exists() {
+        if let Err(remove_err) = fs::remove_file(&output_path) {
+            warn!(
+                "Failed to remove incompatible output '{}': {}",
+                output_path.display(),
+                remove_err
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_with_software_encoder(
+    input_file: &CStr,
+    output_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    h264_constraints: Option<(H264Profile, H264Level)>,
+    min_fps: u32,
+    min_resolution: Resolution,
+    quality_limits: &QualityLimits,
+    uv_policy: UnsupportedVideoPolicy,
+    primary_video_stream_index: Option<usize>,
+    primary_video_criteria: PrimaryVideoCriteria,
+    requested_video_quality: VideoQuality,
+    requested_audio_quality: AudioQuality,
+) -> Result<ConversionOutcome, anyhow::Error> {
+    convert_video_file(
+        input_file,
+        output_file,
+        target_video_codec,
+        target_audio_codec,
+        h264_constraints,
+        min_fps,
+        min_resolution,
+        quality_limits,
+        uv_policy,
+        primary_video_stream_index,
+        primary_video_criteria,
+        requested_video_quality,
+        requested_audio_quality,
+        HwAccel::None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_hw_profile_mismatch(
+    mismatch: HwProfileLevelMismatch,
+    args: &Args,
+    input_file: &CStr,
+    output_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    h264_constraints: Option<(H264Profile, H264Level)>,
+    min_fps: u32,
+    min_resolution: Resolution,
+    quality_limits: &QualityLimits,
+) -> Result<ConversionOutcome, anyhow::Error> {
+    if args.hw_accel == HwAccel::None || !mismatch.used_hw_encoder {
+        return Err(anyhow!(mismatch));
+    }
+
+    let actual_profile = mismatch
+        .actual_profile
+        .map(|p| format!("{:?}", p))
+        .unwrap_or_else(|| "unknown".to_string());
+    let actual_level = mismatch
+        .actual_level
+        .map(|l| l.ffmpeg_name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    warn!(
+        "Hardware encoder {} produced H.264 profile {} level {} for '{}' (expected profile {:?} level {:?}); retrying with software encoder (libx264)",
+        mismatch.encoder,
+        actual_profile,
+        actual_level,
+        mismatch.output_path,
+        mismatch.expected_profile,
+        mismatch.expected_level
+    );
+    cleanup_partial_output(output_file);
+    retry_with_software_encoder(
+        input_file,
+        output_file,
+        target_video_codec,
+        target_audio_codec,
+        h264_constraints,
+        min_fps,
+        min_resolution,
+        quality_limits,
+        args.unsupported_video_policy,
+        args.primary_video_stream_index,
+        args.primary_video_criteria,
+        args.video_quality,
+        args.audio_quality,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_hw_encoder_init_error(
+    init_error: HwEncoderInitError,
+    args: &Args,
+    input_file: &CStr,
+    output_file: &CStr,
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    h264_constraints: Option<(H264Profile, H264Level)>,
+    min_fps: u32,
+    min_resolution: Resolution,
+    quality_limits: &QualityLimits,
+) -> Result<ConversionOutcome, anyhow::Error> {
+    if args.hw_accel == HwAccel::None {
+        return Err(anyhow!(init_error));
+    }
+
+    warn!(
+        "Hardware encoder {} failed to initialize ({}); retrying with software encoder",
+        init_error.encoder, init_error.message
+    );
+    cleanup_partial_output(output_file);
+    retry_with_software_encoder(
+        input_file,
+        output_file,
+        target_video_codec,
+        target_audio_codec,
+        h264_constraints,
+        min_fps,
+        min_resolution,
+        quality_limits,
+        args.unsupported_video_policy,
+        args.primary_video_stream_index,
+        args.primary_video_criteria,
+        args.video_quality,
+        args.audio_quality,
+    )
 }
 
 fn select_primary_video_stream_index(
@@ -4487,59 +4668,33 @@ fn run_conversion(
     if let Err(err) = conversion_result {
         if target_video_codec == ffi::AV_CODEC_ID_H264 {
             conversion_result = match err.downcast::<HwProfileLevelMismatch>() {
-                Ok(mismatch) => {
-                    if args.hw_accel != HwAccel::None && mismatch.used_hw_encoder {
-                        let actual_profile = mismatch
-                            .actual_profile
-                            .map(|p| format!("{:?}", p))
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let actual_level = mismatch
-                            .actual_level
-                            .map(|l| l.ffmpeg_name().to_string())
-                            .unwrap_or_else(|| "unknown".to_string());
-                        warn!(
-                            "Hardware encoder {} produced H.264 profile {} level {} for '{}' (expected profile {:?} level {:?}); retrying with software encoder (libx264)",
-                            mismatch.encoder,
-                            actual_profile,
-                            actual_level,
-                            mismatch.output_path,
-                            mismatch.expected_profile,
-                            mismatch.expected_level
-                        );
-                        if let Some(output_cstr) = args.output_file.as_ref() {
-                            let output_path =
-                                PathBuf::from(output_cstr.to_string_lossy().into_owned());
-                            if output_path.exists() {
-                                if let Err(remove_err) = fs::remove_file(&output_path) {
-                                    warn!(
-                                        "Failed to remove incompatible output '{}': {}",
-                                        output_path.display(),
-                                        remove_err
-                                    );
-                                }
-                            }
-                        }
-                        convert_video_file(
-                            input_file,
-                            output_file,
-                            target_video_codec,
-                            common_audio_codec,
-                            h264_constraints,
-                            min_fps,
-                            min_resolution,
-                            &quality_limits,
-                            args.unsupported_video_policy,
-                            args.primary_video_stream_index,
-                            args.primary_video_criteria,
-                            args.video_quality,
-                            args.audio_quality,
-                            HwAccel::None,
-                        )
-                    } else {
-                        Err(anyhow!(mismatch))
-                    }
-                }
-                Err(err) => Err(err),
+                Ok(mismatch) => handle_hw_profile_mismatch(
+                    mismatch,
+                    &args,
+                    input_file,
+                    output_file,
+                    target_video_codec,
+                    common_audio_codec,
+                    h264_constraints,
+                    min_fps,
+                    min_resolution,
+                    &quality_limits,
+                ),
+                Err(err) => match err.downcast::<HwEncoderInitError>() {
+                    Ok(init_err) => handle_hw_encoder_init_error(
+                        init_err,
+                        &args,
+                        input_file,
+                        output_file,
+                        target_video_codec,
+                        common_audio_codec,
+                        h264_constraints,
+                        min_fps,
+                        min_resolution,
+                        &quality_limits,
+                    ),
+                    Err(err) => Err(err),
+                },
             };
         } else {
             conversion_result = Err(err);
