@@ -4693,7 +4693,28 @@ fn run_conversion(
                         min_resolution,
                         &quality_limits,
                     ),
-                    Err(err2) => Err(err2),
+                    Err(err2) => {
+                        warn!(
+                            "NVENC initialization failed ({}); retrying with software encoder",
+                            err2
+                        );
+                        cleanup_partial_output(output_file);
+                        retry_with_software_encoder(
+                            input_file,
+                            output_file,
+                            target_video_codec,
+                            common_audio_codec,
+                            h264_constraints,
+                            min_fps,
+                            min_resolution,
+                            &quality_limits,
+                            args.unsupported_video_policy,
+                            args.primary_video_stream_index,
+                            args.primary_video_criteria,
+                            args.video_quality,
+                            args.audio_quality,
+                        )
+                    }
                 },
             };
         } else {
