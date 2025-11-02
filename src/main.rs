@@ -1152,13 +1152,14 @@ fn apply_hw_encoder_quality(
                 set_codec_option_str(ctx, "frame_skipping", "0");
             }
         } else if encoder_name.contains("nvenc") {
-            set_codec_option_str(ctx, "preset", "slow");
-            set_codec_option_str(ctx, "tune", "hq");
+            // Maxwell-compatible defaults: fast preset, no extra tuning
+            set_codec_option_str(ctx, "preset", "p2");
+            set_codec_option_i64(ctx, "max_b_frames", 0);
 
             if is_constant_quality_mode {
-                // FIX: Use VBR with a Constant Quality (CQ) factor for match-source quality.
                 set_codec_option_str(ctx, "rc", "vbr");
                 set_codec_option_i64(ctx, "cq", 21);
+                set_codec_option_i64(ctx, "rc-lookahead", 0);
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
@@ -1196,7 +1197,7 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "maxrate", nvenc_rate);
                 set_codec_option_i64(ctx, "minrate", bit_rate.max(1));
                 set_codec_option_i64(ctx, "bufsize", nvenc_buffer);
-                set_codec_option_i64(ctx, "rc-lookahead", 20);
+                set_codec_option_i64(ctx, "rc-lookahead", 0);
 
                 (*ctx).rc_max_rate = nvenc_rate;
                 (*ctx).rc_min_rate = bit_rate.max(1);
