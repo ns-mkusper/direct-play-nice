@@ -1,5 +1,7 @@
 use crate::gpu::HwAccel;
-use crate::{AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoQuality};
+use crate::{
+    AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::env;
@@ -15,6 +17,7 @@ pub const CONFIG_ENV_VAR: &str = "DIRECT_PLAY_NICE_CONFIG";
 pub struct Config {
     pub streaming_devices: Option<StreamingDevicesSetting>,
     pub video_quality: Option<VideoQuality>,
+    pub video_codec: Option<VideoCodecPreference>,
     pub audio_quality: Option<AudioQuality>,
     pub max_video_bitrate: Option<String>,
     pub max_audio_bitrate: Option<String>,

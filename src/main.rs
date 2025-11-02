@@ -64,6 +64,12 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
+fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
+    devices
+        .iter()
+        .all(|device| device.video_codec.contains(&Some(codec)))
+}
+
 fn describe_h264_profile(profile: i32) -> String {
     H264Profile::try_from(profile)
         .map(|p| format!("{:?}", p))
@@ -82,6 +88,8 @@ struct H264RateLimit {
     max_buffer_bits: i64,
     max_dpb_mbs: i32,
 }
+
+const NVENC_MAX_SAFE_REFERENCE_FRAMES: i32 = 1;
 
 fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264RateLimit> {
     use H264Level::*;
@@ -1130,75 +1138,67 @@ fn apply_hw_encoder_quality(
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
-                /*
-                 * NVENC BITRATE SCALING FIX (CBR/VBR)
-                 *
-                 * The h264_nvenc and hevc_nvenc encoders, when used in constrained modes (CBR/VBR),
-                 * are known to severely undershoot the requested bitrate (b), often producing a final
-                 * file size that is only a fraction (e.g., 1/20th to 1/40th) of the target.
-                 *
-                 * This is due to a discrepancy in how FFmpeg passes the bitrate value to the
-                 * underlying NVENC API and the encoder's tendency to prioritize a low fixed quality
-                 * floor.
-                 *
-                 * To compensate, we must artificially inflate the value passed to the core bitrate
-                 * option ('b'). Empirical results show a multiplier of ~20--30x reliably forces NVENC
-                 * to allocate enough resources to meet the user's intended target bitrate ceiling.
-                 * This fix is isolated to NVENC sessions only.
-                 */
-                const NVENC_BITRATE_MULTIPLIER: i64 = 20;
-                let nvenc_target = bit_rate.saturating_mul(NVENC_BITRATE_MULTIPLIER);
-                let mut nvenc_rate = nvenc_target;
-                let mut nvenc_buffer = nvenc_target.saturating_mul(2);
+                const DEFAULT_BUFFER_MULTIPLIER: i64 = 2;
+                let mut desired_rate = bit_rate;
+                let mut level_caps = None;
 
-                let mut max_dpb_mbs: Option<i32> = None;
-
-                if let Some(level_caps) = h264_level.and_then(h264_high_profile_rate_limits) {
-                    if nvenc_rate > level_caps.max_bitrate_bits {
+                if let Some(caps) = h264_level.and_then(h264_high_profile_rate_limits) {
+                    level_caps = Some(caps);
+                    if desired_rate > caps.max_bitrate_bits {
                         debug!(
-                            "Clamping NVENC maxrate {} -> {} to respect H.264 high-profile level limit",
-                            nvenc_rate, level_caps.max_bitrate_bits
+                            "Clamping NVENC target bitrate {} -> {} to respect H.264 level limit",
+                            desired_rate, caps.max_bitrate_bits
                         );
-                        nvenc_rate = level_caps.max_bitrate_bits;
+                        desired_rate = caps.max_bitrate_bits;
                     }
-                    if nvenc_buffer > level_caps.max_buffer_bits {
-                        debug!(
-                            "Clamping NVENC bufsize {} -> {} to respect H.264 high-profile level limit",
-                            nvenc_buffer, level_caps.max_buffer_bits
-                        );
-                        nvenc_buffer = level_caps.max_buffer_bits;
-                    }
-                    max_dpb_mbs = Some(level_caps.max_dpb_mbs);
                 }
 
-                if nvenc_buffer < nvenc_rate {
-                    nvenc_buffer = nvenc_rate;
+                let nvenc_rate = desired_rate.max(1);
+                let mut nvenc_buffer = desired_rate
+                    .saturating_mul(DEFAULT_BUFFER_MULTIPLIER)
+                    .max(nvenc_rate);
+
+                if let Some(caps) = level_caps {
+                    if nvenc_buffer > caps.max_buffer_bits {
+                        debug!(
+                            "Clamping NVENC bufsize {} -> {} to respect H.264 level limit",
+                            nvenc_buffer, caps.max_buffer_bits
+                        );
+                        nvenc_buffer = caps.max_buffer_bits;
+                    }
                 }
 
                 set_codec_option_i64(ctx, "b", nvenc_rate);
                 set_codec_option_i64(ctx, "maxrate", nvenc_rate);
-                set_codec_option_i64(ctx, "minrate", nvenc_rate);
+                set_codec_option_i64(ctx, "minrate", bit_rate.max(1));
                 set_codec_option_i64(ctx, "bufsize", nvenc_buffer);
                 set_codec_option_i64(ctx, "rc-lookahead", 20);
 
                 (*ctx).rc_max_rate = nvenc_rate;
-                (*ctx).rc_min_rate = nvenc_rate;
+                (*ctx).rc_min_rate = bit_rate.max(1);
                 let buf_i32 = nvenc_buffer.clamp(1, i32::MAX as i64) as i32;
                 (*ctx).rc_buffer_size = buf_i32;
                 (*ctx).rc_initial_buffer_occupancy = buf_i32;
 
-                if let Some(level_caps) = max_dpb_mbs {
+                if let Some(caps) = level_caps {
                     let width = (*ctx).width.max(1);
                     let height = (*ctx).height.max(1);
                     let mb_width = ((width + 15) / 16).max(1);
                     let mb_height = ((height + 15) / 16).max(1);
                     let mbs_per_frame = mb_width * mb_height;
                     if mbs_per_frame > 0 {
-                        let mut max_refs = level_caps / mbs_per_frame;
+                        let mut max_refs = caps.max_dpb_mbs / mbs_per_frame;
                         if max_refs <= 0 {
                             max_refs = 1;
                         }
-                        max_refs = max_refs.min(8);
+                        let capped_refs = max_refs.min(NVENC_MAX_SAFE_REFERENCE_FRAMES).min(8);
+                        if capped_refs < max_refs {
+                            debug!(
+                                "Clamping NVENC ref frames {} -> {} to satisfy device limits",
+                                max_refs, capped_refs
+                            );
+                            max_refs = capped_refs;
+                        }
                         if (*ctx).refs == 0 || (*ctx).refs > max_refs {
                             (*ctx).refs = max_refs;
                             set_codec_option_i64(ctx, "refs", max_refs as i64);
@@ -1212,6 +1212,14 @@ fn apply_hw_encoder_quality(
             }
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoCodecPreference {
+    Auto,
+    H264,
+    Hevc,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
@@ -1307,6 +1315,36 @@ mod video_tests {
         enforce_h264_constraints(&mut ctx, H264Profile::High, H264Level::Level4, "libx264");
         assert_eq!(ctx.profile, H264Profile::High as i32);
         assert_eq!(ctx.level, H264Level::Level4 as i32);
+    }
+
+    #[test]
+    fn nvenc_rate_controls_obey_level_limits() {
+        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let mut ctx = AVCodecContext::new(&codec);
+        ctx.set_bit_rate(2_000_000);
+        ctx.set_width(1280);
+        ctx.set_height(720);
+        unsafe {
+            (*ctx.as_mut_ptr()).refs = 16;
+        }
+
+        apply_hw_encoder_quality(
+            ctx.as_mut_ptr(),
+            "h264_nvenc",
+            Some(2_000_000),
+            false,
+            Some(H264Level::Level4_1),
+        );
+
+        assert_eq!(ctx.rc_max_rate, 2_000_000);
+        assert_eq!(ctx.rc_min_rate, 2_000_000);
+        assert_eq!(ctx.rc_buffer_size, 4_000_000);
+        assert_eq!(ctx.rc_initial_buffer_occupancy, 4_000_000);
+        assert!(ctx.refs >= 1, "expected at least one reference frame");
+        assert!(
+            ctx.refs <= NVENC_MAX_SAFE_REFERENCE_FRAMES,
+            "expected refs to respect NVENC safe cap"
+        );
     }
 
     #[test]
@@ -1822,6 +1860,15 @@ struct Args {
     )]
     video_quality: VideoQuality,
 
+    /// Target video codec preference (auto selects the intersection of device support)
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = VideoCodecPreference::Auto,
+        id = "video_codec"
+    )]
+    video_codec: VideoCodecPreference,
+
     /// Target audio quality profile (defaults to match the source bitrate)
     #[arg(
         long,
@@ -2215,6 +2262,12 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     if !cli_value_provided(matches, "video_quality") {
         if let Some(video_quality) = cfg.video_quality {
             args.video_quality = video_quality;
+        }
+    }
+
+    if !cli_value_provided(matches, "video_codec") {
+        if let Some(video_codec) = cfg.video_codec {
+            args.video_codec = video_codec;
         }
     }
 
@@ -2667,7 +2720,7 @@ fn load_encode_and_write(
     Ok(())
 }
 
-fn set_video_codec_par(
+fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     _output_stream: &mut AVStreamMut,
@@ -2766,6 +2819,87 @@ fn set_video_codec_par(
         set_codec_option_str(encode_context.as_mut_ptr(), "level", &level_option_value);
     }
     log_encoder_state("video setup", encode_context, encoder_name);
+    // Codec parameters are extracted after the encoder is opened.
+}
+
+fn set_hevc_video_codec_par(
+    decode_context: &mut AVCodecContext,
+    encode_context: &mut AVCodecContext,
+    _output_stream: &mut AVStreamMut,
+    quality_limits: &QualityLimits,
+    device_max_resolution: Resolution,
+    source_bit_rate_hint: i64,
+    encoder_name: &str,
+    is_constant_quality_mode: bool,
+) {
+    encode_context.set_sample_rate(decode_context.sample_rate);
+    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let (target_width, target_height) = clamp_dimensions(
+        decode_context.width,
+        decode_context.height,
+        device_cap,
+        quality_limits.max_video_dimensions,
+    );
+
+    if target_width != decode_context.width || target_height != decode_context.height {
+        debug!(
+            "Scaling video from {}x{} to {}x{}",
+            decode_context.width, decode_context.height, target_width, target_height
+        );
+    }
+
+    encode_context.set_width(target_width);
+    encode_context.set_height(target_height);
+    encode_context.set_time_base(decode_context.time_base);
+    encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
+    encode_context.set_max_b_frames(decode_context.max_b_frames);
+
+    let mut target_bit_rate: Option<i64> = None;
+
+    if !is_constant_quality_mode {
+        let source_bit_rate = if decode_context.bit_rate > 0 {
+            decode_context.bit_rate
+        } else if source_bit_rate_hint > 0 {
+            source_bit_rate_hint
+        } else {
+            default_video_bitrate(encode_context.width, encode_context.height)
+        };
+
+        target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
+
+        if let Some(bit_rate) = target_bit_rate {
+            debug!(
+                "Video bitrate target set to {} bps (Fixed Bitrate Mode)",
+                bit_rate
+            );
+            encode_context.set_bit_rate(bit_rate);
+            unsafe {
+                let vbv = bit_rate.saturating_mul(2).clamp(1, i32::MAX as i64) as i32;
+                (*encode_context.as_mut_ptr()).rc_max_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_min_rate = bit_rate;
+                (*encode_context.as_mut_ptr()).rc_buffer_size = vbv;
+                (*encode_context.as_mut_ptr()).rc_initial_buffer_occupancy = vbv;
+                (*encode_context.as_mut_ptr()).bit_rate_tolerance =
+                    (bit_rate / 8).max(1).clamp(1, i32::MAX as i64) as i32;
+            }
+        } else {
+            debug!("Video bitrate target not set; using encoder default");
+        }
+    } else {
+        debug!("Video encoding set to Constant Quality (CQ/CQP) mode. Ignoring bitrate limits.");
+        encode_context.set_bit_rate(0);
+    }
+
+    apply_hw_encoder_quality(
+        encode_context.as_mut_ptr(),
+        encoder_name,
+        target_bit_rate,
+        is_constant_quality_mode,
+        None,
+    );
+    log_encoder_state("video setup", encode_context, encoder_name);
+    encode_context.set_gop_size(decode_context.gop_size);
+    encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
     // Codec parameters are extracted after the encoder is opened.
 }
 
@@ -2869,8 +3003,7 @@ fn assess_direct_play_compatibility(
     input_file: &CStr,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
-    min_h264_profile: H264Profile,
-    min_h264_level: H264Level,
+    h264_constraints: Option<(H264Profile, H264Level)>,
     max_fps: u32,
     device_cap: (u32, u32),
     quality_limits: &QualityLimits,
@@ -2966,6 +3099,8 @@ fn assess_direct_play_compatibility(
     }
 
     if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        let (min_h264_profile, min_h264_level) =
+            h264_constraints.expect("missing h264 constraints");
         check_h264_profile_level_constraints(
             video_par.codec_id,
             video_par.profile,
@@ -3080,8 +3215,7 @@ fn convert_video_file(
     output_file: &CStr,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
-    min_h264_profile: H264Profile,
-    min_h264_level: H264Level,
+    h264_constraints: Option<(H264Profile, H264Level)>,
     _min_fps: u32,
     device_max_resolution: Resolution,
     quality_limits: &QualityLimits,
@@ -3092,6 +3226,11 @@ fn convert_video_file(
     requested_audio_quality: AudioQuality,
     hw_accel: HwAccel,
 ) -> Result<ConversionOutcome, anyhow::Error> {
+    let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        h264_constraints
+    } else {
+        None
+    };
     let mut input_format_context = AVFormatContextInput::open(input_file)?;
     if log::log_enabled!(Level::Debug) {
         input_format_context.dump(0, input_file)?;
@@ -3281,8 +3420,12 @@ fn convert_video_file(
                 let (encoder, using_hw_encoder) = match maybe_hw_encoder {
                     Some(enc) => (enc, true),
                     None => (
-                        AVCodec::find_encoder(target_video_codec)
-                            .expect("Could not find H264 encoder"),
+                        AVCodec::find_encoder(target_video_codec).unwrap_or_else(|| {
+                            panic!(
+                                "Could not find {} encoder",
+                                describe_codec(target_video_codec)
+                            )
+                        }),
                         false,
                     ),
                 };
@@ -3301,10 +3444,12 @@ fn convert_video_file(
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
                 encoder_name_for_video = Some(encoder_name_owned.clone());
-                target_h264_profile = Some(min_h264_profile);
-                target_h264_level = Some(min_h264_level);
-                desired_h264_profile = Some(min_h264_profile);
-                desired_h264_level = Some(min_h264_level);
+                if let Some((min_h264_profile, min_h264_level)) = h264_constraints {
+                    target_h264_profile = Some(min_h264_profile);
+                    target_h264_level = Some(min_h264_level);
+                    desired_h264_profile = Some(min_h264_profile);
+                    desired_h264_level = Some(min_h264_level);
+                }
                 last_video_encoder_name = Some(encoder_name_owned.clone());
                 let encoder_name_lower = encoder_name_owned.to_ascii_lowercase();
                 if encoder_name_lower.contains("nvenc")
@@ -3343,18 +3488,31 @@ fn convert_video_file(
                     logged_video_encoder = true;
                 }
 
-                set_video_codec_par(
-                    &mut decode_context,
-                    &mut encode_context,
-                    &mut output_stream,
-                    min_h264_profile,
-                    min_h264_level,
-                    quality_limits,
-                    device_max_resolution,
-                    input_stream_codecpar.bit_rate,
-                    &encoder_name_owned,
-                    is_constant_quality_mode, // <-- PASS NEW PARAMETER
-                );
+                if let Some((min_h264_profile, min_h264_level)) = h264_constraints {
+                    set_h264_video_codec_par(
+                        &mut decode_context,
+                        &mut encode_context,
+                        &mut output_stream,
+                        min_h264_profile,
+                        min_h264_level,
+                        quality_limits,
+                        device_max_resolution,
+                        input_stream_codecpar.bit_rate,
+                        &encoder_name_owned,
+                        is_constant_quality_mode,
+                    );
+                } else {
+                    set_hevc_video_codec_par(
+                        &mut decode_context,
+                        &mut encode_context,
+                        &mut output_stream,
+                        quality_limits,
+                        device_max_resolution,
+                        input_stream_codecpar.bit_rate,
+                        &encoder_name_owned,
+                        is_constant_quality_mode,
+                    );
+                }
                 let src_par = stream.codecpar();
                 info!(
                     "Video stream {}: {}x{} {} -> {}x{} {}{}",
@@ -3649,17 +3807,29 @@ fn convert_video_file(
                 } else {
                     String::new()
                 };
-                info!(
-                    "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
-                    context.stream_index,
-                    context.encode_context.width,
-                    context.encode_context.height,
-                    describe_codec(target_video_codec),
-                    preset,
-                    context.encode_context.bit_rate,
-                    describe_h264_profile(context.encode_context.profile),
-                    describe_h264_level(context.encode_context.level)
-                );
+                if target_video_codec == ffi::AV_CODEC_ID_H264 {
+                    info!(
+                        "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
+                        context.stream_index,
+                        context.encode_context.width,
+                        context.encode_context.height,
+                        describe_codec(target_video_codec),
+                        preset,
+                        context.encode_context.bit_rate,
+                        describe_h264_profile(context.encode_context.profile),
+                        describe_h264_level(context.encode_context.level)
+                    );
+                } else {
+                    info!(
+                        "Output video stream {} summary: {}x{} {}{}, bitrate {} bps",
+                        context.stream_index,
+                        context.encode_context.width,
+                        context.encode_context.height,
+                        describe_codec(target_video_codec),
+                        preset,
+                        context.encode_context.bit_rate
+                    );
+                }
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 let preset = if requested_audio_quality == AudioQuality::MatchSource {
@@ -4185,10 +4355,36 @@ fn run_conversion(
         bail!("No streaming devices resolved from CLI arguments.");
     }
 
-    let common_video_codec = StreamingDevice::get_common_video_codec(&streaming_devices)?;
+    let target_video_codec = match args.video_codec {
+        VideoCodecPreference::Auto => StreamingDevice::get_common_video_codec(&streaming_devices)?,
+        VideoCodecPreference::H264 => {
+            if devices_support_codec(&streaming_devices, ffi::AV_CODEC_ID_H264) {
+                ffi::AV_CODEC_ID_H264
+            } else {
+                bail!(
+                    "Requested video codec H.264 is not supported by all selected streaming devices"
+                );
+            }
+        }
+        VideoCodecPreference::Hevc => {
+            if devices_support_codec(&streaming_devices, ffi::AV_CODEC_ID_HEVC) {
+                ffi::AV_CODEC_ID_HEVC
+            } else {
+                bail!(
+                    "Requested video codec HEVC is not supported by all selected streaming devices"
+                );
+            }
+        }
+    };
     let common_audio_codec = StreamingDevice::get_common_audio_codec(&streaming_devices)?;
-    let min_h264_profile = StreamingDevice::get_min_h264_profile(&streaming_devices)?;
-    let min_h264_level = StreamingDevice::get_min_h264_level(&streaming_devices)?;
+    let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
+        Some((
+            StreamingDevice::get_min_h264_profile(&streaming_devices)?,
+            StreamingDevice::get_min_h264_level(&streaming_devices)?,
+        ))
+    } else {
+        None
+    };
     let min_fps = StreamingDevice::get_min_fps(&streaming_devices)?;
     let min_resolution = StreamingDevice::get_min_resolution(&streaming_devices)?;
     let device_cap = resolution_to_dimensions(min_resolution);
@@ -4216,10 +4412,17 @@ fn run_conversion(
         args.audio_quality,
         describe_bitrate(quality_limits.max_audio_bitrate)
     );
-    info!(
-        "Device capability ceiling: {}x{}, H.264 profile {:?}, level {:?}",
-        device_cap.0, device_cap.1, min_h264_profile, min_h264_level
-    );
+    if let Some((profile, level)) = h264_constraints {
+        info!(
+            "Device capability ceiling: {}x{}, H.264 profile {:?}, level {:?}",
+            device_cap.0, device_cap.1, profile, level
+        );
+    } else {
+        info!(
+            "Device capability ceiling: {}x{}",
+            device_cap.0, device_cap.1
+        );
+    }
 
     let input_file = args
         .input_file
@@ -4234,10 +4437,9 @@ fn run_conversion(
 
     match assess_direct_play_compatibility(
         input_file,
-        common_video_codec,
+        target_video_codec,
         common_audio_codec,
-        min_h264_profile,
-        min_h264_level,
+        h264_constraints,
         min_fps,
         device_cap,
         &quality_limits,
@@ -4268,10 +4470,9 @@ fn run_conversion(
     let mut conversion_result = convert_video_file(
         input_file,
         output_file,
-        common_video_codec,
+        target_video_codec,
         common_audio_codec,
-        min_h264_profile,
-        min_h264_level,
+        h264_constraints,
         min_fps,
         min_resolution,
         &quality_limits,
@@ -4284,61 +4485,65 @@ fn run_conversion(
     );
 
     if let Err(err) = conversion_result {
-        conversion_result = match err.downcast::<HwProfileLevelMismatch>() {
-            Ok(mismatch) => {
-                if args.hw_accel != HwAccel::None && mismatch.used_hw_encoder {
-                    let actual_profile = mismatch
-                        .actual_profile
-                        .map(|p| format!("{:?}", p))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let actual_level = mismatch
-                        .actual_level
-                        .map(|l| l.ffmpeg_name().to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    warn!(
-                        "Hardware encoder {} produced H.264 profile {} level {} for '{}' (expected profile {:?} level {:?}); retrying with software encoder (libx264)",
-                        mismatch.encoder,
-                        actual_profile,
-                        actual_level,
-                        mismatch.output_path,
-                        mismatch.expected_profile,
-                        mismatch.expected_level
-                    );
-                    if let Some(output_cstr) = args.output_file.as_ref() {
-                        let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
-                        if output_path.exists() {
-                            if let Err(remove_err) = fs::remove_file(&output_path) {
-                                warn!(
-                                    "Failed to remove incompatible output '{}': {}",
-                                    output_path.display(),
-                                    remove_err
-                                );
+        if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            conversion_result = match err.downcast::<HwProfileLevelMismatch>() {
+                Ok(mismatch) => {
+                    if args.hw_accel != HwAccel::None && mismatch.used_hw_encoder {
+                        let actual_profile = mismatch
+                            .actual_profile
+                            .map(|p| format!("{:?}", p))
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let actual_level = mismatch
+                            .actual_level
+                            .map(|l| l.ffmpeg_name().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        warn!(
+                            "Hardware encoder {} produced H.264 profile {} level {} for '{}' (expected profile {:?} level {:?}); retrying with software encoder (libx264)",
+                            mismatch.encoder,
+                            actual_profile,
+                            actual_level,
+                            mismatch.output_path,
+                            mismatch.expected_profile,
+                            mismatch.expected_level
+                        );
+                        if let Some(output_cstr) = args.output_file.as_ref() {
+                            let output_path =
+                                PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                            if output_path.exists() {
+                                if let Err(remove_err) = fs::remove_file(&output_path) {
+                                    warn!(
+                                        "Failed to remove incompatible output '{}': {}",
+                                        output_path.display(),
+                                        remove_err
+                                    );
+                                }
                             }
                         }
+                        convert_video_file(
+                            input_file,
+                            output_file,
+                            target_video_codec,
+                            common_audio_codec,
+                            h264_constraints,
+                            min_fps,
+                            min_resolution,
+                            &quality_limits,
+                            args.unsupported_video_policy,
+                            args.primary_video_stream_index,
+                            args.primary_video_criteria,
+                            args.video_quality,
+                            args.audio_quality,
+                            HwAccel::None,
+                        )
+                    } else {
+                        Err(anyhow!(mismatch))
                     }
-                    convert_video_file(
-                        input_file,
-                        output_file,
-                        common_video_codec,
-                        common_audio_codec,
-                        min_h264_profile,
-                        min_h264_level,
-                        min_fps,
-                        min_resolution,
-                        &quality_limits,
-                        args.unsupported_video_policy,
-                        args.primary_video_stream_index,
-                        args.primary_video_criteria,
-                        args.video_quality,
-                        args.audio_quality,
-                        HwAccel::None,
-                    )
-                } else {
-                    Err(anyhow!(mismatch))
                 }
-            }
-            Err(err) => Err(err),
-        };
+                Err(err) => Err(err),
+            };
+        } else {
+            conversion_result = Err(err);
+        }
     }
 
     match (plan, conversion_result) {
