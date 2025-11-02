@@ -4665,9 +4665,9 @@ fn run_conversion(
         args.hw_accel,
     );
 
-    if let Err(err) = conversion_result {
+    if let Err(err0) = conversion_result {
         if target_video_codec == ffi::AV_CODEC_ID_H264 {
-            conversion_result = match err.downcast::<HwProfileLevelMismatch>() {
+            conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                 Ok(mismatch) => handle_hw_profile_mismatch(
                     mismatch,
                     &args,
@@ -4680,7 +4680,7 @@ fn run_conversion(
                     min_resolution,
                     &quality_limits,
                 ),
-                Err(err) => match err.downcast::<HwEncoderInitError>() {
+                Err(err1) => match err1.downcast::<HwEncoderInitError>() {
                     Ok(init_err) => handle_hw_encoder_init_error(
                         init_err,
                         &args,
@@ -4693,11 +4693,11 @@ fn run_conversion(
                         min_resolution,
                         &quality_limits,
                     ),
-                    Err(err) => Err(err),
+                    Err(err2) => Err(err2),
                 },
             };
         } else {
-            conversion_result = Err(err);
+            conversion_result = Err(err0);
         }
     }
 
