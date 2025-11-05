@@ -4,7 +4,7 @@ use clap::{value_parser, ArgMatches, CommandFactory, FromArgMatches, Parser, Val
 use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
-use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
+use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVCodecRef, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
 use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVDictionary, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
@@ -62,6 +62,41 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
                 .unwrap_or("unknown")
         },
     }
+}
+
+fn preferred_decoder_names(codec_id: ffi::AVCodecID) -> &'static [&'static str] {
+    match codec_id {
+        ffi::AV_CODEC_ID_AV1 => &["libdav1d", "libaom-av1"],
+        _ => &[],
+    }
+}
+
+fn find_decoder_with_fallback(codec_id: ffi::AVCodecID) -> Option<AVCodecRef<'static>> {
+    for &name in preferred_decoder_names(codec_id) {
+        match CString::new(name) {
+            Ok(cname) => {
+                if let Some(decoder) = AVCodec::find_decoder_by_name(cname.as_c_str()) {
+                    debug!(
+                        "Using preferred decoder '{}' for codec {}",
+                        name,
+                        describe_codec(codec_id)
+                    );
+                    return Some(decoder);
+                } else {
+                    trace!(
+                        "Preferred decoder '{}' for codec {} not available",
+                        name,
+                        describe_codec(codec_id)
+                    );
+                }
+            }
+            Err(_) => {
+                trace!("Decoder name '{}' contained interior NUL; skipping", name);
+            }
+        }
+    }
+
+    AVCodec::find_decoder(codec_id)
 }
 
 fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
@@ -358,6 +393,35 @@ impl std::fmt::Display for HwEncoderInitError {
 }
 
 impl std::error::Error for HwEncoderInitError {}
+
+#[derive(Debug)]
+struct DecoderError {
+    codec: String,
+    stream_index: i32,
+    message: String,
+}
+
+impl DecoderError {
+    fn new(codec: String, stream_index: i32, message: String) -> Self {
+        Self {
+            codec,
+            stream_index,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for DecoderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "decoder '{}' for stream {} failed: {}",
+            self.codec, self.stream_index, self.message
+        )
+    }
+}
+
+impl std::error::Error for DecoderError {}
 
 #[derive(Debug, Clone)]
 struct H264Verification {
@@ -2104,6 +2168,7 @@ pub struct StreamProcessingContext {
     skip_stream: bool,
     #[allow(dead_code)]
     hw_device_ctx: Option<*mut ffi::AVBufferRef>,
+    decoder_name: String,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -2114,6 +2179,7 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("pts", &self.pts)
             .field("last_written_dts", &self.last_written_dts)
             .field("skip_stream", &self.skip_stream)
+            .field("decoder_name", &self.decoder_name)
             .finish()
     }
 }
@@ -2351,7 +2417,11 @@ fn process_video_stream(
     {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
-            bail!("Packet failed to send to decoder: {}", e); // TODO: reasonable to end here on error?
+            return Err(anyhow!(DecoderError::new(
+                stream_processing_context.decoder_name.clone(),
+                stream_processing_context.stream_index,
+                e.to_string(),
+            )));
         }
     }
 
@@ -2447,7 +2517,11 @@ fn process_audio_stream(
     {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) => {
-            bail!("Packet failed to send to decoder: {}", e); // TODO: reasonable to end here on error?
+            return Err(anyhow!(DecoderError::new(
+                stream_processing_context.decoder_name.clone(),
+                stream_processing_context.stream_index,
+                e.to_string(),
+            )));
         }
     }
 
@@ -2720,10 +2794,92 @@ fn load_encode_and_write(
     Ok(())
 }
 
+const MAX_REASONABLE_FPS: f64 = 300.0;
+
+fn is_valid_framerate(r: ffi::AVRational) -> bool {
+    r.num > 0 && r.den > 0 && (r.num as f64 / r.den as f64) <= MAX_REASONABLE_FPS
+}
+
+fn derive_stream_framerate(
+    decode_context: &AVCodecContext,
+    input_stream: &AVStreamRef,
+) -> Option<ffi::AVRational> {
+    unsafe {
+        let ctx_ptr = decode_context.as_ptr();
+        if !ctx_ptr.is_null() {
+            let ctx_rate = (*ctx_ptr).framerate;
+            if is_valid_framerate(ctx_rate) {
+                return Some(ctx_rate);
+            }
+        }
+    }
+
+    if let Some(rate) = input_stream.guess_framerate() {
+        if is_valid_framerate(rate) {
+            return Some(rate);
+        }
+    }
+
+    unsafe {
+        let stream_ptr = input_stream.as_ptr();
+        if !stream_ptr.is_null() {
+            let avg = (*stream_ptr).avg_frame_rate;
+            if is_valid_framerate(avg) {
+                return Some(avg);
+            }
+            let reported = (*stream_ptr).r_frame_rate;
+            if is_valid_framerate(reported) {
+                return Some(reported);
+            }
+        }
+    }
+
+    None
+}
+
+fn configure_video_timing(
+    decode_context: &AVCodecContext,
+    encode_context: &mut AVCodecContext,
+    output_stream: &mut AVStreamMut,
+    input_stream: &AVStreamRef,
+) {
+    let mut encode_time_base = decode_context.time_base;
+
+    if let Some(framerate) = derive_stream_framerate(decode_context, input_stream) {
+        if let Some(fps) = rational_to_f64(framerate) {
+            debug!(
+                "Using derived output frame rate {:.3} fps ({} / {})",
+                fps, framerate.num, framerate.den
+            );
+        }
+        encode_context.set_framerate(framerate);
+        encode_time_base = ra(framerate.den, framerate.num);
+    } else if encode_time_base.num > 0 {
+        let implied_fps = encode_time_base.den as f64 / encode_time_base.num as f64;
+        if implied_fps > MAX_REASONABLE_FPS {
+            let fallback = ffi::AVRational {
+                num: 1001,
+                den: 24000,
+            };
+            debug!(
+                "Input time base {} implies {:.1} fps; overriding to fallback time base {}",
+                rational_to_string(encode_time_base),
+                implied_fps,
+                rational_to_string(fallback)
+            );
+            encode_time_base = fallback;
+        }
+    }
+
+    encode_context.set_time_base(encode_time_base);
+    output_stream.set_time_base(encode_time_base);
+}
+
 fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    _output_stream: &mut AVStreamMut,
+    output_stream: &mut AVStreamMut,
+    input_stream: &AVStreamRef,
     h264_profile: H264Profile, // TODO: handle cases somewhere when target video codec is NOT h264
     h264_level: H264Level,
     quality_limits: &QualityLimits,
@@ -2750,13 +2906,7 @@ fn set_h264_video_codec_par(
 
     encode_context.set_width(target_width);
     encode_context.set_height(target_height);
-    encode_context.set_time_base(decode_context.time_base);
-    unsafe {
-        let framerate = (*decode_context.as_ptr()).framerate;
-        if framerate.num > 0 && framerate.den > 0 {
-            encode_context.set_framerate(framerate);
-        }
-    }
+    configure_video_timing(decode_context, encode_context, output_stream, input_stream);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
@@ -2831,7 +2981,8 @@ fn set_h264_video_codec_par(
 fn set_hevc_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
-    _output_stream: &mut AVStreamMut,
+    output_stream: &mut AVStreamMut,
+    input_stream: &AVStreamRef,
     quality_limits: &QualityLimits,
     device_max_resolution: Resolution,
     source_bit_rate_hint: i64,
@@ -2856,7 +3007,7 @@ fn set_hevc_video_codec_par(
 
     encode_context.set_width(target_width);
     encode_context.set_height(target_height);
-    encode_context.set_time_base(decode_context.time_base);
+    configure_video_timing(decode_context, encode_context, output_stream, input_stream);
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
@@ -3331,7 +3482,7 @@ fn convert_video_file(
                 .to_string_lossy()
                 .into_owned()
         };
-        let decoder = match AVCodec::find_decoder(input_codec_id) {
+        let decoder = match find_decoder_with_fallback(input_codec_id) {
             Some(dec) => dec,
             None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
                 warn!(
@@ -3348,6 +3499,12 @@ fn convert_video_file(
                 );
             }
         };
+        debug!(
+            "Selected decoder '{}' for stream {} (codec {})",
+            decoder.name().to_string_lossy(),
+            stream.index,
+            codec_name
+        );
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
         decode_context.set_time_base(stream.time_base); // TODO: needed?
@@ -3513,6 +3670,7 @@ fn convert_video_file(
                         &mut decode_context,
                         &mut encode_context,
                         &mut output_stream,
+                        stream,
                         min_h264_profile,
                         min_h264_level,
                         quality_limits,
@@ -3526,6 +3684,7 @@ fn convert_video_file(
                         &mut decode_context,
                         &mut encode_context,
                         &mut output_stream,
+                        stream,
                         quality_limits,
                         device_max_resolution,
                         input_stream_codecpar.bit_rate,
@@ -3709,6 +3868,7 @@ fn convert_video_file(
             last_written_dts: None,
             skip_stream: false,
             hw_device_ctx: hw_device_ctx_ptr,
+            decoder_name: decoder.name().to_string_lossy().into_owned(),
         };
 
         stream_contexts.push(stream_process_context);
@@ -4680,28 +4840,31 @@ fn run_conversion(
                         min_resolution,
                         &quality_limits,
                     ),
-                    Err(err2) => {
-                        warn!(
-                            "NVENC initialization failed ({}); retrying with software encoder",
-                            err2
-                        );
-                        cleanup_partial_output(output_file);
-                        retry_with_software_encoder(
-                            input_file,
-                            output_file,
-                            target_video_codec,
-                            common_audio_codec,
-                            h264_constraints,
-                            min_fps,
-                            min_resolution,
-                            &quality_limits,
-                            args.unsupported_video_policy,
-                            args.primary_video_stream_index,
-                            args.primary_video_criteria,
-                            args.video_quality,
-                            args.audio_quality,
-                        )
-                    }
+                    Err(err2) => match err2.downcast::<DecoderError>() {
+                        Ok(dec_err) => Err(anyhow!(dec_err)),
+                        Err(err3) => {
+                            warn!(
+                                "NVENC initialization failed ({}); retrying with software encoder",
+                                err3
+                            );
+                            cleanup_partial_output(output_file);
+                            retry_with_software_encoder(
+                                input_file,
+                                output_file,
+                                target_video_codec,
+                                common_audio_codec,
+                                h264_constraints,
+                                min_fps,
+                                min_resolution,
+                                &quality_limits,
+                                args.unsupported_video_policy,
+                                args.primary_video_stream_index,
+                                args.primary_video_criteria,
+                                args.video_quality,
+                                args.audio_quality,
+                            )
+                        }
+                    },
                 },
             };
         } else {
