@@ -14,6 +14,7 @@ use rsmpeg::swscale::SwsContext;
 use serde::{Deserialize, Serialize};
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
 use std::{
+    collections::HashSet,
     convert::TryFrom,
     env,
     ffi::{c_char, CStr, CString},
@@ -21,6 +22,7 @@ use std::{
     os::raw::c_void,
     path::{Path, PathBuf},
     process::Command,
+    ptr,
     sync::atomic::{AtomicI64, Ordering},
 };
 use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
@@ -33,7 +35,9 @@ mod servarr;
 mod streaming_devices;
 mod throttle;
 
-use gpu::{find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel};
+use gpu::{
+    acquire_hw_device, find_hw_encoder, gather_probe_json, print_probe, print_probe_codecs, HwAccel,
+};
 use throttle::acquire_slot;
 
 fn describe_bitrate(bitrate: Option<i64>) -> String {
@@ -64,39 +68,113 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
-fn preferred_decoder_names(codec_id: ffi::AVCodecID) -> &'static [&'static str] {
+const AV1_HW_DECODER_NAMES: &[&str] = &["av1_cuvid", "av1_nvdec"];
+const AV1_SW_DECODER_NAMES: &[&str] = &["libdav1d", "libaom-av1", "av1"];
+const H264_HW_DECODER_NAMES: &[&str] = &["h264_cuvid"];
+const H264_SW_DECODER_NAMES: &[&str] = &["h264"];
+const HEVC_HW_DECODER_NAMES: &[&str] = &["hevc_cuvid"];
+const HEVC_SW_DECODER_NAMES: &[&str] = &["hevc"];
+
+fn preferred_decoder_names(codec_id: ffi::AVCodecID, prefer_hw: bool) -> &'static [&'static str] {
     match codec_id {
-        ffi::AV_CODEC_ID_AV1 => &["libdav1d", "libaom-av1"],
+        ffi::AV_CODEC_ID_AV1 => {
+            if prefer_hw {
+                AV1_HW_DECODER_NAMES
+            } else {
+                AV1_SW_DECODER_NAMES
+            }
+        }
+        ffi::AV_CODEC_ID_H264 => {
+            if prefer_hw {
+                H264_HW_DECODER_NAMES
+            } else {
+                H264_SW_DECODER_NAMES
+            }
+        }
+        ffi::AV_CODEC_ID_HEVC => {
+            if prefer_hw {
+                HEVC_HW_DECODER_NAMES
+            } else {
+                HEVC_SW_DECODER_NAMES
+            }
+        }
         _ => &[],
     }
 }
 
-fn find_decoder_with_fallback(codec_id: ffi::AVCodecID) -> Option<AVCodecRef<'static>> {
-    for &name in preferred_decoder_names(codec_id) {
-        match CString::new(name) {
-            Ok(cname) => {
-                if let Some(decoder) = AVCodec::find_decoder_by_name(cname.as_c_str()) {
-                    debug!(
-                        "Using preferred decoder '{}' for codec {}",
-                        name,
-                        describe_codec(codec_id)
-                    );
-                    return Some(decoder);
-                } else {
-                    trace!(
-                        "Preferred decoder '{}' for codec {} not available",
-                        name,
-                        describe_codec(codec_id)
-                    );
+fn find_decoder_with_fallback(
+    codec_id: ffi::AVCodecID,
+    prefer_hw: bool,
+) -> Option<AVCodecRef<'static>> {
+    let passes: &[bool] = if prefer_hw { &[true, false] } else { &[false] };
+
+    for pass in passes {
+        for &name in preferred_decoder_names(codec_id, *pass) {
+            match CString::new(name) {
+                Ok(cname) => {
+                    if let Some(decoder) = AVCodec::find_decoder_by_name(cname.as_c_str()) {
+                        debug!(
+                            "Using preferred decoder '{}' for codec {}",
+                            name,
+                            describe_codec(codec_id)
+                        );
+                        return Some(decoder);
+                    } else {
+                        trace!(
+                            "Preferred decoder '{}' for codec {} not available; continuing search",
+                            name,
+                            describe_codec(codec_id)
+                        );
+                    }
                 }
-            }
-            Err(_) => {
-                trace!("Decoder name '{}' contained interior NUL; skipping", name);
+                Err(_) => {
+                    trace!("Decoder name '{}' contained interior NUL; skipping", name);
+                }
             }
         }
     }
 
     AVCodec::find_decoder(codec_id)
+}
+
+unsafe extern "C" fn select_cuda_hw_format(
+    _ctx: *mut ffi::AVCodecContext,
+    pix_fmts: *const ffi::AVPixelFormat,
+) -> ffi::AVPixelFormat {
+    if pix_fmts.is_null() {
+        return ffi::AV_PIX_FMT_NONE;
+    }
+    let mut ptr = pix_fmts;
+    while (*ptr) != ffi::AV_PIX_FMT_NONE {
+        if (*ptr) == ffi::AV_PIX_FMT_CUDA {
+            return *ptr;
+        }
+        ptr = ptr.add(1);
+    }
+    *pix_fmts
+}
+
+fn configure_cuda_hw_decoder(
+    decode_context: &mut AVCodecContext,
+    device: *mut ffi::AVBufferRef,
+) -> Result<()> {
+    unsafe {
+        if device.is_null() {
+            bail!("No CUDA hw device available for hardware decode");
+        }
+
+        let ctx_ptr = decode_context.as_mut_ptr();
+        (*ctx_ptr).get_format = Some(select_cuda_hw_format);
+        let device_ref = ffi::av_buffer_ref(device);
+        if device_ref.is_null() {
+            bail!("Failed to acquire reference to CUDA device context");
+        }
+        (*ctx_ptr).hw_device_ctx = device_ref;
+
+        (*ctx_ptr).hw_frames_ctx = ptr::null_mut();
+    }
+
+    Ok(())
 }
 
 fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
@@ -2399,6 +2477,31 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     }
 }
 
+fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
+    if frame.format == ffi::AV_PIX_FMT_CUDA as i32 {
+        let mut sw_frame = AVFrame::new();
+        sw_frame.set_format(ffi::AV_PIX_FMT_NV12 as i32);
+        sw_frame.set_width(frame.width);
+        sw_frame.set_height(frame.height);
+        sw_frame.set_pts(frame.pts);
+        sw_frame.set_time_base(frame.time_base);
+        unsafe {
+            let ret = ffi::av_hwframe_transfer_data(sw_frame.as_mut_ptr(), frame.as_ptr(), 0);
+            if ret < 0 {
+                bail!(
+                    "Failed to transfer CUDA frame to system memory: {}",
+                    av_error_to_string(ret)
+                );
+            }
+            (*sw_frame.as_mut_ptr()).best_effort_timestamp =
+                (*frame.as_ptr()).best_effort_timestamp;
+        }
+        Ok(sw_frame)
+    } else {
+        Ok(frame)
+    }
+}
+
 fn process_video_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
@@ -2445,6 +2548,8 @@ fn process_video_stream(
             }
         };
 
+        let frame = ensure_software_frame(frame)?;
+
         if let Some(progress) = progress.as_deref_mut() {
             progress.report(
                 frame.best_effort_timestamp,
@@ -2458,10 +2563,13 @@ fn process_video_stream(
         new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
         new_frame.alloc_buffer().context("Error allocating ")?;
 
+        let source_width = frame.width;
+        let source_height = frame.height;
+        let source_pix_fmt = frame.format as ffi::AVPixelFormat;
         let mut sws_context = SwsContext::get_context(
-            stream_processing_context.decode_context.width,
-            stream_processing_context.decode_context.height,
-            stream_processing_context.decode_context.pix_fmt,
+            source_width,
+            source_height,
+            source_pix_fmt,
             stream_processing_context.encode_context.width,
             stream_processing_context.encode_context.height,
             stream_processing_context.encode_context.pix_fmt,
@@ -2475,12 +2583,7 @@ fn process_video_stream(
         new_frame.set_pts(frame.best_effort_timestamp);
 
         sws_context
-            .scale_frame(
-                &frame,
-                0,
-                stream_processing_context.decode_context.height,
-                &mut new_frame,
-            )
+            .scale_frame(&frame, 0, source_height, &mut new_frame)
             .context("Failed to scale frame.")?;
 
         encode_and_write_frame(
@@ -3422,6 +3525,24 @@ fn convert_video_file(
     let is_constant_quality_mode = requested_video_quality == VideoQuality::MatchSource;
     // END FIX: Determine Constant Quality Mode
 
+    let allow_cuda_hw_decode = matches!(hw_accel, HwAccel::Auto | HwAccel::Nvenc);
+    let shared_hw_device = if allow_cuda_hw_decode {
+        acquire_hw_device(hw_accel)
+    } else {
+        None
+    };
+
+    if log::log_enabled!(Level::Debug) {
+        if let Ok(dav1d_name) = CString::new("libdav1d") {
+            let present = AVCodec::find_decoder_by_name(dav1d_name.as_c_str()).is_some();
+            debug!("libdav1d decoder available: {}", present);
+        }
+        if let Ok(libaom_name) = CString::new("libaom-av1") {
+            let present = AVCodec::find_decoder_by_name(libaom_name.as_c_str()).is_some();
+            debug!("libaom-av1 decoder available: {}", present);
+        }
+    }
+
     let mut logged_video_encoder = false;
     let mut logged_audio_encoder = false;
     let mut desired_h264_profile: Option<H264Profile> = None;
@@ -3429,6 +3550,7 @@ fn convert_video_file(
     let mut h264_verification: Option<H264Verification> = None;
     let mut last_video_encoder_name: Option<String> = None;
     let mut hardware_encoder_used = false;
+    let mut hw_decode_blacklist: HashSet<ffi::AVCodecID> = HashSet::new();
 
     let primary_index = select_primary_video_stream_index(
         &input_format_context,
@@ -3482,7 +3604,11 @@ fn convert_video_file(
                 .to_string_lossy()
                 .into_owned()
         };
-        let decoder = match find_decoder_with_fallback(input_codec_id) {
+        let prefer_hw_decode = allow_cuda_hw_decode
+            && shared_hw_device.is_some()
+            && input_codec_type == ffi::AVMEDIA_TYPE_VIDEO
+            && !hw_decode_blacklist.contains(&input_codec_id);
+        let mut decoder = match find_decoder_with_fallback(input_codec_id, prefer_hw_decode) {
             Some(dec) => dec,
             None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
                 warn!(
@@ -3499,11 +3625,10 @@ fn convert_video_file(
                 );
             }
         };
+        let mut decoder_name_owned = decoder.name().to_string_lossy().into_owned();
         debug!(
             "Selected decoder '{}' for stream {} (codec {})",
-            decoder.name().to_string_lossy(),
-            stream.index,
-            codec_name
+            decoder_name_owned, stream.index, codec_name
         );
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
@@ -3511,7 +3636,118 @@ fn convert_video_file(
         if let Some(framerate) = stream.guess_framerate() {
             decode_context.set_framerate(framerate);
         }
-        if let Err(err) = decode_context.open(None) {
+
+        let mut hw_decoder_active = false;
+        let mut need_software_retry = false;
+        if prefer_hw_decode
+            && (decoder_name_owned.contains("cuvid") || decoder_name_owned.contains("nvdec"))
+        {
+            if let Some(device) = shared_hw_device {
+                match configure_cuda_hw_decoder(&mut decode_context, device) {
+                    Ok(()) => {
+                        hw_decoder_active = true;
+                        debug!(
+                            "Configured CUDA hardware decoder '{}' for stream {}",
+                            decoder_name_owned, stream.index
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to configure CUDA hardware decoder '{}' for stream {}: {}; falling back to software decode",
+                            decoder_name_owned,
+                            stream.index,
+                            err
+                        );
+                        unsafe {
+                            let ctx_ptr = decode_context.as_mut_ptr();
+                            (*ctx_ptr).hw_device_ctx = ptr::null_mut();
+                            (*ctx_ptr).hw_frames_ctx = ptr::null_mut();
+                            (*ctx_ptr).get_format = None;
+                        }
+                        if hw_decode_blacklist.insert(input_codec_id) {
+                            debug!(
+                                "Disabling CUDA hardware decode for codec {} after init failure",
+                                describe_codec(input_codec_id)
+                            );
+                        }
+                        need_software_retry = true;
+                    }
+                }
+            }
+        }
+
+        if need_software_retry {
+            if let Some(sw_decoder) = find_decoder_with_fallback(input_codec_id, false) {
+                decoder = sw_decoder;
+                decoder_name_owned = decoder.name().to_string_lossy().into_owned();
+                debug!(
+                    "Retrying stream {} with software decoder '{}'",
+                    stream.index, decoder_name_owned
+                );
+                decode_context = AVCodecContext::new(&decoder);
+                decode_context.apply_codecpar(&input_stream_codecpar)?;
+                decode_context.set_time_base(stream.time_base);
+                if let Some(framerate) = stream.guess_framerate() {
+                    decode_context.set_framerate(framerate);
+                }
+            } else {
+                warn!(
+                    "Hardware decoder '{}' unavailable and no software fallback found for stream {}",
+                    decoder_name_owned, stream.index
+                );
+            }
+        }
+
+        let mut decoder_open_error = match decode_context.open(None) {
+            Ok(_) => None,
+            Err(err) => Some(err),
+        };
+
+        if hw_decoder_active {
+            if let Some(open_err) = decoder_open_error.take() {
+                warn!(
+                    "Hardware decoder '{}' failed to open for stream {}: {}; retrying with software decoder",
+                    decoder_name_owned,
+                    stream.index,
+                    open_err
+                );
+                let mut fallback_error = Some(open_err);
+                if let Some(sw_decoder) = find_decoder_with_fallback(input_codec_id, false) {
+                    decoder = sw_decoder;
+                    decoder_name_owned = decoder.name().to_string_lossy().into_owned();
+                    debug!(
+                        "Retrying stream {} with software decoder '{}'",
+                        stream.index, decoder_name_owned
+                    );
+                    decode_context = AVCodecContext::new(&decoder);
+                    decode_context.apply_codecpar(&input_stream_codecpar)?;
+                    decode_context.set_time_base(stream.time_base);
+                    if let Some(framerate) = stream.guess_framerate() {
+                        decode_context.set_framerate(framerate);
+                    }
+                    fallback_error = match decode_context.open(None) {
+                        Ok(_) => None,
+                        Err(err) => Some(err),
+                    };
+                    hw_decoder_active = false;
+                    if hw_decode_blacklist.insert(input_codec_id) {
+                        debug!(
+                            "Disabling CUDA hardware decode for codec {} after open failure",
+                            describe_codec(input_codec_id)
+                        );
+                    }
+                }
+                decoder_open_error = fallback_error;
+            }
+        }
+
+        if let Some(err) = decoder_open_error {
+            if hw_decode_blacklist.insert(input_codec_id) {
+                debug!(
+                    "Disabling CUDA hardware decode for codec {} due to decoder error",
+                    describe_codec(input_codec_id)
+                );
+            }
             if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
                 warn!(
                     "Skipping subtitle stream {} (codec {}): failed to open decoder ({}).",
@@ -3527,6 +3763,11 @@ fn convert_video_file(
                 ));
             }
         }
+
+        debug!(
+            "Decoder '{}' ready for stream {} (hardware={})",
+            decoder_name_owned, stream.index, hw_decoder_active
+        );
 
         let mut encode_context: AVCodecContext;
         let media_type: ffi::AVMediaType;
@@ -3581,7 +3822,7 @@ fn convert_video_file(
             ffi::AVMEDIA_TYPE_VIDEO => {
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
-                    find_hw_encoder(target_video_codec, hw_accel);
+                    find_hw_encoder(target_video_codec, hw_accel, shared_hw_device);
                 let (encoder, using_hw_encoder) = match maybe_hw_encoder {
                     Some(enc) => (enc, true),
                     None => (
@@ -4066,6 +4307,12 @@ fn convert_video_file(
                 hardware_encoder_used,
             )?;
             h264_verification = Some(verification);
+        }
+    }
+
+    if let Some(mut device) = shared_hw_device {
+        unsafe {
+            ffi::av_buffer_unref(&mut device);
         }
     }
 
