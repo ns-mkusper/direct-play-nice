@@ -6,15 +6,25 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn nvenc_tests_enabled() -> bool {
-    matches!(std::env::var("ENABLE_NVENC_TESTS").ok().as_deref(), Some("1"))
+    matches!(
+        std::env::var("ENABLE_NVENC_TESTS").ok().as_deref(),
+        Some("1")
+    )
 }
 
 fn tool_available(binary: &str, args: &[&str]) -> bool {
-    Command::new(binary).args(args).status().map(|s| s.success()).unwrap_or(false)
+    Command::new(binary)
+        .args(args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn ffmpeg_has_nvenc() -> bool {
-    if let Ok(output) = Command::new("ffmpeg").args(["-hide_banner", "-encoders"]).output() {
+    if let Ok(output) = Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+    {
         if output.status.success() {
             return String::from_utf8_lossy(&output.stdout).contains("h264_nvenc");
         }
@@ -86,9 +96,9 @@ fn probe_output(path: &Path) -> Result<String, Box<dyn Error>> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,profile,level:format_tags=encoder",
+            "stream=codec_name,profile,level:stream_tags=encoder:format_tags=encoder",
             "-of",
-            "default=nw=1:nk=1",
+            "default=nw=1",
             path.to_str().unwrap(),
         ])
         .output()?;
@@ -152,12 +162,18 @@ fn nvenc_h264_profile_and_level_are_correct() -> Result<(), Box<dyn Error>> {
         } else if let Some(v) = line.strip_prefix("level=") {
             level = Some(v.trim().to_string());
         } else if let Some(v) = line.strip_prefix("TAG:encoder=") {
-            encoder_tag = Some(v.trim().to_string());
+            if encoder_tag.is_none() {
+                encoder_tag = Some(v.trim().to_string());
+            }
         }
     }
 
     let codec_name = codec_name.ok_or("missing codec_name from ffprobe")?;
-    assert_eq!(codec_name, "h264", "unexpected codec name: {}\n{}", codec_name, probe);
+    assert_eq!(
+        codec_name, "h264",
+        "unexpected codec name: {}\n{}",
+        codec_name, probe
+    );
 
     let profile = profile.ok_or("missing profile from ffprobe")?;
     assert!(
@@ -189,4 +205,3 @@ fn nvenc_h264_profile_and_level_are_correct() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-

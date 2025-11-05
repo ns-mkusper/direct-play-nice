@@ -6,7 +6,7 @@ use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef};
-use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVFrame, AVSamples};
+use rsmpeg::avutil::{ra, AVAudioFifo, AVChannelLayout, AVDictionary, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
@@ -86,38 +86,34 @@ fn describe_h264_level(level: i32) -> String {
 struct H264RateLimit {
     max_bitrate_bits: i64,
     max_buffer_bits: i64,
-    max_dpb_mbs: i32,
 }
-
-const NVENC_MAX_SAFE_REFERENCE_FRAMES: i32 = 1;
 
 fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264RateLimit> {
     use H264Level::*;
     const K: i64 = 1_000;
 
-    let (rate_kbits, buffer_kbits, max_dpb_mbs) = match level {
-        Level1 => (80, 175, 396),
-        Level1_1 => (240, 500, 900),
-        Level1_2 => (480, 1_000, 2_376),
-        Level1_3 => (960, 2_000, 2_376),
-        Level2 => (2_500, 2_000, 2_376),
-        Level2_1 => (4_000, 4_000, 4_752),
-        Level2_2 => (4_000, 4_000, 8_100),
-        Level3 => (12_500, 10_000, 8_100),
-        Level3_1 => (17_500, 14_000, 18_000),
-        Level3_2 => (25_000, 20_000, 20_480),
-        Level4 => (25_000, 25_000, 32_768),
-        Level4_1 => (62_500, 62_500, 32_768),
-        Level4_2 => (62_500, 62_500, 34_816),
-        Level5 => (135_000, 135_000, 110_400),
-        Level5_1 => (240_000, 240_000, 184_320),
+    let (rate_kbits, buffer_kbits) = match level {
+        Level1 => (80, 175),
+        Level1_1 => (240, 500),
+        Level1_2 => (480, 1_000),
+        Level1_3 => (960, 2_000),
+        Level2 => (2_500, 2_000),
+        Level2_1 => (4_000, 4_000),
+        Level2_2 => (4_000, 4_000),
+        Level3 => (12_500, 10_000),
+        Level3_1 => (17_500, 14_000),
+        Level3_2 => (25_000, 20_000),
+        Level4 => (25_000, 25_000),
+        Level4_1 => (62_500, 62_500),
+        Level4_2 => (62_500, 62_500),
+        Level5 => (135_000, 135_000),
+        Level5_1 => (240_000, 240_000),
         Level5_2 => return None,
     };
 
     Some(H264RateLimit {
         max_bitrate_bits: rate_kbits * K,
         max_buffer_bits: buffer_kbits * K,
-        max_dpb_mbs,
     })
 }
 
@@ -130,7 +126,6 @@ mod rate_limit_tests {
         let limits = h264_high_profile_rate_limits(H264Level::Level4_1).unwrap();
         assert_eq!(limits.max_bitrate_bits, 62_500_000);
         assert_eq!(limits.max_buffer_bits, 62_500_000);
-        assert_eq!(limits.max_dpb_mbs, 32_768);
     }
 }
 
@@ -1155,20 +1150,34 @@ fn apply_hw_encoder_quality(
             // Maxwell-compatible defaults: fast preset, no extra tuning
             set_codec_option_str(ctx, "preset", "p2");
             set_codec_option_i64(ctx, "max_b_frames", 0);
+            (*ctx).max_b_frames = 0;
+            (*ctx).has_b_frames = 0;
+
+            let level_caps = h264_level.and_then(h264_high_profile_rate_limits);
 
             if is_constant_quality_mode {
                 set_codec_option_str(ctx, "rc", "vbr");
                 set_codec_option_i64(ctx, "cq", 21);
                 set_codec_option_i64(ctx, "rc-lookahead", 0);
+                if let Some(ref caps) = level_caps {
+                    let safe_rate = caps.max_bitrate_bits.max(1);
+                    let safe_buffer = caps.max_buffer_bits.max(safe_rate);
+                    set_codec_option_i64(ctx, "maxrate", safe_rate);
+                    set_codec_option_i64(ctx, "bufsize", safe_buffer);
+                    (*ctx).rc_max_rate = safe_rate;
+                    (*ctx).rc_buffer_size = safe_buffer.clamp(1, i32::MAX as i64) as i32;
+                    (*ctx).rc_initial_buffer_occupancy = (*ctx).rc_buffer_size;
+                    debug!(
+                        "Configured NVENC VBV for CQ mode: maxrate={} bufsize={}",
+                        safe_rate, safe_buffer
+                    );
+                }
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
                 const DEFAULT_BUFFER_MULTIPLIER: i64 = 2;
                 let mut desired_rate = bit_rate;
-                let mut level_caps = None;
-
-                if let Some(caps) = h264_level.and_then(h264_high_profile_rate_limits) {
-                    level_caps = Some(caps);
+                if let Some(ref caps) = level_caps {
                     if desired_rate > caps.max_bitrate_bits {
                         debug!(
                             "Clamping NVENC target bitrate {} -> {} to respect H.264 level limit",
@@ -1183,7 +1192,7 @@ fn apply_hw_encoder_quality(
                     .saturating_mul(DEFAULT_BUFFER_MULTIPLIER)
                     .max(nvenc_rate);
 
-                if let Some(caps) = level_caps {
+                if let Some(ref caps) = level_caps {
                     if nvenc_buffer > caps.max_buffer_bits {
                         debug!(
                             "Clamping NVENC bufsize {} -> {} to respect H.264 level limit",
@@ -1204,36 +1213,6 @@ fn apply_hw_encoder_quality(
                 let buf_i32 = nvenc_buffer.clamp(1, i32::MAX as i64) as i32;
                 (*ctx).rc_buffer_size = buf_i32;
                 (*ctx).rc_initial_buffer_occupancy = buf_i32;
-
-                if let Some(caps) = level_caps {
-                    let width = (*ctx).width.max(1);
-                    let height = (*ctx).height.max(1);
-                    let mb_width = ((width + 15) / 16).max(1);
-                    let mb_height = ((height + 15) / 16).max(1);
-                    let mbs_per_frame = mb_width * mb_height;
-                    if mbs_per_frame > 0 {
-                        let mut max_refs = caps.max_dpb_mbs / mbs_per_frame;
-                        if max_refs <= 0 {
-                            max_refs = 1;
-                        }
-                        let capped_refs = max_refs.min(NVENC_MAX_SAFE_REFERENCE_FRAMES).min(8);
-                        if capped_refs < max_refs {
-                            debug!(
-                                "Clamping NVENC ref frames {} -> {} to satisfy device limits",
-                                max_refs, capped_refs
-                            );
-                            max_refs = capped_refs;
-                        }
-                        if (*ctx).refs == 0 || (*ctx).refs > max_refs {
-                            (*ctx).refs = max_refs;
-                            set_codec_option_i64(ctx, "refs", max_refs as i64);
-                            debug!(
-                                "Adjusted NVENC reference frames to {} to satisfy H.264 level DPB limits",
-                                max_refs
-                            );
-                        }
-                    }
-                }
             }
         }
     }
@@ -1366,10 +1345,6 @@ mod video_tests {
         assert_eq!(ctx.rc_buffer_size, 4_000_000);
         assert_eq!(ctx.rc_initial_buffer_occupancy, 4_000_000);
         assert!(ctx.refs >= 1, "expected at least one reference frame");
-        assert!(
-            ctx.refs <= NVENC_MAX_SAFE_REFERENCE_FRAMES,
-            "expected refs to respect NVENC safe cap"
-        );
     }
 
     #[test]
@@ -2776,6 +2751,12 @@ fn set_h264_video_codec_par(
     encode_context.set_width(target_width);
     encode_context.set_height(target_height);
     encode_context.set_time_base(decode_context.time_base);
+    unsafe {
+        let framerate = (*decode_context.as_ptr()).framerate;
+        if framerate.num > 0 && framerate.den > 0 {
+            encode_context.set_framerate(framerate);
+        }
+    }
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
@@ -3441,7 +3422,6 @@ fn convert_video_file(
 
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
-                output_stream.set_metadata(stream.metadata().as_deref().cloned());
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
                     find_hw_encoder(target_video_codec, hw_accel);
@@ -3472,6 +3452,16 @@ fn convert_video_file(
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
+                let encoder_key = CString::new("encoder").expect("encoder key CString");
+                let encoder_value =
+                    CString::new(encoder_name_owned.clone()).expect("encoder value CString");
+                let video_metadata = stream
+                    .metadata()
+                    .as_deref()
+                    .cloned()
+                    .map(|dict| dict.set(&encoder_key, &encoder_value, 0))
+                    .unwrap_or_else(|| AVDictionary::new(&encoder_key, &encoder_value, 0));
+                output_stream.set_metadata(Some(video_metadata));
                 current_encoder_name = Some(encoder_name_owned.clone());
                 encoder_name_for_video = Some(encoder_name_owned.clone());
                 if let Some((min_h264_profile, min_h264_level)) = h264_constraints {
@@ -3681,10 +3671,6 @@ fn convert_video_file(
             ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
             _ => "stream",
         };
-
-        encode_context
-            .open(None)
-            .with_context(|| format!("Error opening {} encoder", media_label))?;
 
         if media_type == ffi::AVMEDIA_TYPE_VIDEO {
             if let (Some(profile), Some(level), Some(encoder_name)) = (

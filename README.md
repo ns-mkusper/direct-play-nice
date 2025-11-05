@@ -339,6 +339,19 @@ are marked `#[ignore]`. To run them explicitly:
 VCPKG_ROOT=/opt/vcpkg cargo test -- --ignored
 ```
 
+### Optional: NVENC regression suite
+
+The NVENC matrix exercises the hardware encoder across multiple device/bitrate
+profiles. Because it depends on NVIDIA hardware (with working `h264_nvenc`
+support) it is opt-in. Enable it with:
+
+```bash
+ENABLE_NVENC_TESTS=1 cargo test nvenc_matrix -- --test-threads=1
+```
+
+The existing single-case NVENC integration test also participates when the same
+environment variable is set.
+
 ### Optional: direnv
 
 If you use `direnv`, add the following to `.envrc` so shells pick up the shared
