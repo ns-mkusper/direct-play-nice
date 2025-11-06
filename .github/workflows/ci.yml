@@ -58,8 +58,10 @@ jobs:
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
 
-      - name: Install vcpkg build dependencies
-        run: sudo apt-get --assume-yes install nasm ffmpeg
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get --assume-yes install nasm ffmpeg
 
       - name: Test sccache and set wrapper
         id: sccache-check

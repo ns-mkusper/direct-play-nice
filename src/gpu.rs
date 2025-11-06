@@ -40,9 +40,21 @@ pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> 
     }
 }
 
+pub fn acquire_hw_device(pref: HwAccel) -> Option<*mut ffi::AVBufferRef> {
+    match pref {
+        HwAccel::Auto | HwAccel::Nvenc => try_create_hw_device("cuda"),
+        HwAccel::Vaapi => try_create_hw_device("vaapi"),
+        HwAccel::Qsv => try_create_hw_device("qsv"),
+        HwAccel::Videotoolbox => try_create_hw_device("videotoolbox"),
+        HwAccel::Amf => try_create_hw_device("d3d11va").or_else(|| try_create_hw_device("dxva2")),
+        HwAccel::None => None,
+    }
+}
+
 pub fn find_hw_encoder(
     codec_id: ffi::AVCodecID,
     pref: HwAccel,
+    shared_device: Option<*mut ffi::AVBufferRef>,
 ) -> (Option<AVCodecRef<'static>>, Option<*mut ffi::AVBufferRef>) {
     let encoders = encoder_candidates(codec_id);
 
@@ -64,11 +76,21 @@ pub fn find_hw_encoder(
         if let Some(encoder) = AVCodec::find_encoder_by_name(cname.as_c_str()) {
             let mut device_ref: Option<*mut ffi::AVBufferRef> = None;
             let mut success = dev_types.is_empty();
-            for dev in dev_types {
-                if let Some(buf) = try_create_hw_device(dev) {
-                    device_ref = Some(buf);
+            if let Some(shared) = shared_device {
+                unsafe {
+                    device_ref = Some(ffi::av_buffer_ref(shared));
                     success = true;
-                    break;
+                }
+            } else {
+                for dev in dev_types {
+                    if let Some(buf) = try_create_hw_device(dev) {
+                        device_ref = Some(buf);
+                        success = true;
+                        break;
+                    }
+                }
+                if success {
+                    // keep the created device as-is
                 }
             }
             if !success {

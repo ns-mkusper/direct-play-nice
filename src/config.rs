@@ -1,5 +1,7 @@
 use crate::gpu::HwAccel;
-use crate::{AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoQuality};
+use crate::{
+    AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::env;
@@ -15,6 +17,7 @@ pub const CONFIG_ENV_VAR: &str = "DIRECT_PLAY_NICE_CONFIG";
 pub struct Config {
     pub streaming_devices: Option<StreamingDevicesSetting>,
     pub video_quality: Option<VideoQuality>,
+    pub video_codec: Option<VideoCodecPreference>,
     pub audio_quality: Option<AudioQuality>,
     pub max_video_bitrate: Option<String>,
     pub max_audio_bitrate: Option<String>,
@@ -108,7 +111,13 @@ fn resolve_default_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Mutex, OnceLock, MutexGuard};
     use tempfile::NamedTempFile;
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn load_from_cli_path() {
@@ -135,6 +144,7 @@ mod tests {
 
     #[test]
     fn load_from_env_path() {
+        let _guard = env_lock();
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
             tmp,
@@ -161,6 +171,7 @@ mod tests {
 
     #[test]
     fn absent_config_returns_none() {
+        let _guard = env_lock();
         let original_cfg = env::var_os(CONFIG_ENV_VAR);
         let original_xdg = env::var_os("XDG_CONFIG_HOME");
         let original_home = env::var_os("HOME");

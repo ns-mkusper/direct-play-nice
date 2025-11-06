@@ -104,7 +104,7 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
     let output = dir.join("out_attach.mp4");
 
     // Run CLI
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -226,7 +226,7 @@ fn cli_skips_mkv_font_attachment_streams() -> Result<(), Box<dyn std::error::Err
 
     let output = dir.join("out_font.mp4");
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -354,7 +354,7 @@ fn cli_skips_webvtt_subtitles_but_keeps_text_streams() -> Result<(), Box<dyn std
 
     let output = dir.join("out_vtt.mp4");
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -479,7 +479,7 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
     );
 
     let output = dir.join("out_cover.mp4");
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
