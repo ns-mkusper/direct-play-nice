@@ -12,15 +12,18 @@ All notable changes to this project will be documented in this file.
 
 ### 🛠 Fixes
 
-- Rescaled video frame timestamps during re-encode so Chromecast direct-play exports remain within the 200 ms duration tolerance.
+- Rescaled video frame timestamps during re-encode so Chromecast direct-play
+  exports remain within the 200 ms duration tolerance.
 
 ### 🧪 Tests
 
-- Synchronized configuration-loading tests with a global environment mutex to prevent nightly-only race conditions.
+- Synchronized configuration-loading tests with a global environment mutex to
+  prevent nightly-only race conditions.
 
 ### 🧹 Maintenance
 
-- Updated CLI integration suites to use `cargo::cargo_bin!` for compatibility with custom Cargo build directories.
+- Updated CLI integration suites to use `cargo::cargo_bin!` for compatibility
+  with custom Cargo build directories.
 
 ## [0.1.0-alpha.1] - 2024-09-01
 
