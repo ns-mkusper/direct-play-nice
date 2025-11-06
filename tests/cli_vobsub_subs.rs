@@ -7,6 +7,7 @@
 //! test portable, we attempt bitmap first and fall back to ASS text subs
 //! inside MKV if all bitmap encoders are unavailable.
 
+use assert_cmd::cargo::cargo_bin;
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;
@@ -166,7 +167,7 @@ fn cli_converts_vobsub_to_mov_text_and_direct_play() -> Result<(), Box<dyn std::
     let output = tmp.path().join("out_vobsub.mp4");
 
     // Run the CLI for all Chromecast models
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)

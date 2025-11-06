@@ -1,5 +1,6 @@
 mod common;
 
+use assert_cmd::cargo::cargo_bin;
 use assert_cmd::prelude::*;
 use common::{ensure_ffmpeg_present, gen_problem_input};
 use predicates::str;
@@ -15,7 +16,7 @@ fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn run_cli(input: &PathBuf, output: &PathBuf, extra_args: &[&str]) -> Result<(), Box<dyn Error>> {
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen")
         .arg(input)
@@ -50,7 +51,7 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")
@@ -90,7 +91,7 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")

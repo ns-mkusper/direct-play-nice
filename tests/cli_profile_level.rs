@@ -1,6 +1,6 @@
 mod common;
 
-use assert_cmd::prelude::*;
+use assert_cmd::cargo::cargo_bin;
 use common::{ensure_ffmpeg_present, gen_h264_high_input, read_video_profile_level};
 use rsmpeg::ffi;
 use std::error::Error;
@@ -12,7 +12,7 @@ fn run_cli(
     output: &std::path::Path,
     hw_accel: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.env("RUST_LOG", "info")
         .arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")

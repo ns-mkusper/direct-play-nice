@@ -1,5 +1,6 @@
 //! Integration tests covering the direct-play compatibility preflight.
 
+use assert_cmd::cargo::cargo_bin;
 use assert_cmd::prelude::*;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str;
@@ -87,7 +88,7 @@ fn cli_skips_when_input_already_direct_play() -> Result<(), Box<dyn std::error::
 
     new_temp_mp4(&input);
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -149,7 +150,7 @@ fn cli_transcodes_when_audio_incompatible() -> Result<(), Box<dyn std::error::Er
         "precondition: source audio must be MP3"
     );
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -178,7 +179,7 @@ fn cli_skips_when_quality_caps_are_met() -> Result<(), Box<dyn std::error::Error
 
     new_temp_mp4(&input);
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg("--video-quality")
@@ -208,7 +209,7 @@ fn cli_transcodes_when_video_bitrate_exceeds_cap() -> Result<(), Box<dyn std::er
 
     new_temp_mp4(&input);
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg("--max-video-bitrate")
@@ -235,7 +236,7 @@ fn cli_transcodes_when_video_resolution_exceeds_quality() -> Result<(), Box<dyn 
 
     new_temp_mp4(&input);
 
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg("--video-quality")
