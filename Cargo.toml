@@ -5,7 +5,7 @@ license = "GPL-3.0-only"
 documentation = "https://github.com/ns-mkusper/direct-play-nice"
 homepage = "https://github.com/ns-mkusper/direct-play-nice"
 repository = "https://github.com/ns-mkusper/direct-play-nice"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2021"
 
 
