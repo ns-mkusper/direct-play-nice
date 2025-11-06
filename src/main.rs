@@ -2580,7 +2580,26 @@ fn process_video_stream(
         )
         .context("Failed to create a swscale context.")?;
 
-        new_frame.set_pts(frame.best_effort_timestamp);
+        // Ensure the encoder sees timestamps in its own time base to avoid inflated durations.
+        let mut rescaled_pts = if frame.best_effort_timestamp != ffi::AV_NOPTS_VALUE {
+            frame.best_effort_timestamp
+        } else {
+            frame.pts
+        };
+        if rescaled_pts != ffi::AV_NOPTS_VALUE {
+            rescaled_pts = unsafe {
+                ffi::av_rescale_q(
+                    rescaled_pts,
+                    stream_processing_context.decode_context.time_base,
+                    stream_processing_context.encode_context.time_base,
+                )
+            };
+        }
+
+        new_frame.set_time_base(stream_processing_context.encode_context.time_base);
+        if rescaled_pts != ffi::AV_NOPTS_VALUE {
+            new_frame.set_pts(rescaled_pts);
+        }
 
         sws_context
             .scale_frame(&frame, 0, source_height, &mut new_frame)
