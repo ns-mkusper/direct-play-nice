@@ -126,7 +126,7 @@ fn cli_all_devices_selector_converts_to_direct_play() -> Result<(), Box<dyn std:
     let output = tmp.path().join("out_all.mp4");
 
     // Use the selector value instead of enumerating models
-    let mut cmd = Command::cargo_bin("direct_play_nice")?;
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s").arg("all").arg(&input).arg(&output);
     cmd.assert().success().stdout(str::is_empty());
     assert!(output.exists(), "output file was not created");

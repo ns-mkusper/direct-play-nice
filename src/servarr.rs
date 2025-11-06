@@ -103,7 +103,7 @@ impl ReplacePlan {
         }
     }
 
-    pub fn finalize_success(self) -> Result<()> {
+    pub fn finalize_success(self) -> Result<PathBuf> {
         use std::fs;
 
         // Move the original file aside
@@ -141,7 +141,7 @@ impl ReplacePlan {
             }
         }
 
-        Ok(())
+        Ok(self.final_output_path)
     }
 
     pub fn abort_on_failure(&self) -> Result<()> {
@@ -185,6 +185,7 @@ pub enum IntegrationPreparation {
     None,
     Skip { reason: String },
     Replace(ReplacePlan),
+    Batch(Vec<ReplacePlan>),
 }
 
 pub fn prepare_from_env(view: ArgsView<'_>) -> Result<IntegrationPreparation> {
@@ -249,7 +250,7 @@ fn prepare_download(
         return Ok(IntegrationPreparation::None);
     }
 
-    let input_path = resolve_media_path(kind).with_context(|| {
+    let input_paths = resolve_media_paths(kind).with_context(|| {
         format!(
             "{} integration requires ${} to be set for Download events.",
             kind.label(),
@@ -257,11 +258,10 @@ fn prepare_download(
         )
     })?;
 
-    if !input_path.exists() {
+    if input_paths.is_empty() {
         bail!(
-            "{} integration could not find media file at '{}'.",
-            kind.label(),
-            input_path.display()
+            "{} integration did not receive any media file paths.",
+            kind.label()
         );
     }
 
@@ -274,32 +274,49 @@ fn prepare_download(
         view.desired_suffix
     };
 
-    let final_output_path =
-        resolve_output_path(&input_path, view.desired_extension, effective_suffix)?;
-    let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
-    let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
-
-    let input_cstring = path_to_cstring(&input_path)?;
-    let temp_output_cstring = path_to_cstring(&temp_output_path)?;
-
     let display_name = get_env_ignore_case(kind.title_var());
     let is_upgrade = get_env_ignore_case(kind.is_upgrade_var()).and_then(parse_boolish);
 
-    let plan = ReplacePlan {
-        kind,
-        event_type,
-        display_name,
-        is_upgrade,
-        input_path,
-        final_output_path,
-        temp_output_path,
-        backup_path,
-        input_cstring,
-        temp_output_cstring,
-    };
-    plan.log_summary();
+    let mut plans = Vec::new();
 
-    Ok(IntegrationPreparation::Replace(plan))
+    for input_path in input_paths {
+        if !input_path.exists() {
+            bail!(
+                "{} integration could not find media file at '{}'.",
+                kind.label(),
+                input_path.display()
+            );
+        }
+
+        let final_output_path =
+            resolve_output_path(&input_path, view.desired_extension, effective_suffix)?;
+        let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
+        let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
+
+        let input_cstring = path_to_cstring(&input_path)?;
+        let temp_output_cstring = path_to_cstring(&temp_output_path)?;
+
+        let plan = ReplacePlan {
+            kind,
+            event_type: event_type.clone(),
+            display_name: display_name.clone(),
+            is_upgrade,
+            input_path,
+            final_output_path,
+            temp_output_path,
+            backup_path,
+            input_cstring,
+            temp_output_cstring,
+        };
+        plan.log_summary();
+        plans.push(plan);
+    }
+
+    if plans.len() == 1 {
+        Ok(IntegrationPreparation::Replace(plans.remove(0)))
+    } else {
+        Ok(IntegrationPreparation::Batch(plans))
+    }
 }
 
 fn resolve_output_path(
@@ -389,18 +406,20 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     }
 }
 
-fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
+fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>> {
     let env_snapshot = crate::logging::collect_relevant_env(kind);
 
-    if let Some(path) = match kind {
+    if let Some(paths) = match kind {
         IntegrationKind::Sonarr => {
-            get_env_path(&["sonarr_episodefile_path", "sonarr_episodefile_paths"])
+            get_env_paths(&["sonarr_episodefile_path", "sonarr_episodefile_paths"])
         }
         IntegrationKind::Radarr => {
-            get_env_path(&["radarr_moviefile_path", "radarr_moviefile_paths"])
+            get_env_paths(&["radarr_moviefile_path", "radarr_moviefile_paths"])
         }
     } {
-        return Ok(PathBuf::from(path));
+        if !paths.is_empty() {
+            return Ok(paths.into_iter().map(PathBuf::from).collect());
+        }
     }
 
     match kind {
@@ -410,66 +429,99 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 "sonarr_destinationfolder",
                 "sonarr_destinationpath",
             ]);
-            let relative = first_non_empty(&[
+            let relative = get_env_paths(&[
                 "sonarr_episodefile_relativepath",
                 "sonarr_episodefile_relativepaths",
             ]);
             let source_folder =
                 first_non_empty(&["sonarr_episodefile_sourcefolder", "sonarr_sourcefolder"]);
-            let source_path = get_env_path(&["sonarr_episodefile_sourcepath", "sonarr_sourcepath"]);
-            if let (Some(series), Some(rel)) = (series.as_deref(), relative.as_deref()) {
-                if !series.trim().is_empty() && !rel.trim().is_empty() {
-                    let joined = Path::new(series).join(rel);
-                    debug!(
-                        "Sonarr fallback path resolved via series/relative: {} + {}",
-                        series, rel
-                    );
-                    return Ok(joined);
-                }
-            }
+            let source_path =
+                get_env_paths(&["sonarr_episodefile_sourcepath", "sonarr_sourcepath"]);
 
-            if let (Some(series), Some(source)) = (series.as_deref(), source_path.as_deref()) {
-                if !series.trim().is_empty() && !source.trim().is_empty() {
-                    if let Some(file_name) = Path::new(source).file_name() {
-                        let joined = Path::new(series).join(file_name);
+            if let (Some(series), Some(rel_list)) = (series.as_deref(), relative.clone()) {
+                let mut joined = Vec::new();
+                for rel in rel_list {
+                    if !series.trim().is_empty() && !rel.trim().is_empty() {
+                        let candidate = Path::new(series).join(&rel);
                         debug!(
-                            "Sonarr fallback path resolved via series/source file: {} + {:?}",
-                            series, file_name
+                            "Sonarr fallback path resolved via series/relative: {} + {}",
+                            series, rel
                         );
-                        return Ok(joined);
+                        joined.push(candidate);
                     }
                 }
-            }
-
-            if let (Some(folder), Some(rel)) = (source_folder.as_deref(), relative.as_deref()) {
-                if !folder.trim().is_empty() && !rel.trim().is_empty() {
-                    let joined = Path::new(folder).join(rel);
-                    debug!(
-                        "Sonarr fallback path resolved via source folder/relative: {} + {}",
-                        folder, rel
-                    );
+                if !joined.is_empty() {
                     return Ok(joined);
                 }
             }
 
-            if let (Some(folder), Some(source)) = (source_folder.as_deref(), source_path.as_deref())
+            if let (Some(series), Some(source_list)) = (series.as_deref(), source_path.clone()) {
+                let mut joined = Vec::new();
+                for source in source_list {
+                    if !series.trim().is_empty() && !source.trim().is_empty() {
+                        if let Some(file_name) = Path::new(&source).file_name() {
+                            let candidate = Path::new(series).join(file_name);
+                            debug!(
+                                "Sonarr fallback path resolved via series/source file: {} + {:?}",
+                                series, file_name
+                            );
+                            joined.push(candidate);
+                        }
+                    }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(rel_list)) = (source_folder.as_deref(), relative.clone()) {
+                let mut joined = Vec::new();
+                for rel in rel_list {
+                    if !folder.trim().is_empty() && !rel.trim().is_empty() {
+                        let candidate = Path::new(folder).join(&rel);
+                        debug!(
+                            "Sonarr fallback path resolved via source folder/relative: {} + {}",
+                            folder, rel
+                        );
+                        joined.push(candidate);
+                    }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(source_list)) =
+                (source_folder.as_deref(), source_path.clone())
             {
-                if !folder.trim().is_empty() && !source.trim().is_empty() {
-                    if let Some(file_name) = Path::new(source).file_name() {
-                        let joined = Path::new(folder).join(file_name);
-                        debug!(
-                            "Sonarr fallback path resolved via source folder/file: {} + {:?}",
-                            folder, file_name
-                        );
-                        return Ok(joined);
+                let mut joined = Vec::new();
+                for source in source_list {
+                    if !folder.trim().is_empty() && !source.trim().is_empty() {
+                        if let Some(file_name) = Path::new(&source).file_name() {
+                            let candidate = Path::new(folder).join(file_name);
+                            debug!(
+                                "Sonarr fallback path resolved via source folder/file: {} + {:?}",
+                                folder, file_name
+                            );
+                            joined.push(candidate);
+                        }
                     }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
                 }
             }
 
-            if let Some(source) = source_path {
-                if !source.trim().is_empty() {
-                    debug!("Sonarr fallback path resolved via source path: {}", source);
-                    return Ok(PathBuf::from(source));
+            if let Some(source_list) = source_path {
+                let mut collected = Vec::new();
+                for source in source_list {
+                    if !source.trim().is_empty() {
+                        debug!("Sonarr fallback path resolved via source path: {}", source);
+                        collected.push(PathBuf::from(source));
+                    }
+                }
+                if !collected.is_empty() {
+                    return Ok(collected);
                 }
             }
 
@@ -484,66 +536,98 @@ fn resolve_media_path(kind: IntegrationKind) -> Result<PathBuf> {
                 "radarr_destinationfolder",
                 "radarr_destinationpath",
             ]);
-            let relative = first_non_empty(&[
+            let relative = get_env_paths(&[
                 "radarr_moviefile_relativepath",
                 "radarr_moviefile_relativepaths",
             ]);
             let source_folder =
                 first_non_empty(&["radarr_moviefile_sourcefolder", "radarr_sourcefolder"]);
-            let source_path = get_env_path(&["radarr_moviefile_sourcepath", "radarr_sourcepath"]);
-            if let (Some(movie), Some(rel)) = (movie.as_deref(), relative.as_deref()) {
-                if !movie.trim().is_empty() && !rel.trim().is_empty() {
-                    let joined = Path::new(movie).join(rel);
-                    debug!(
-                        "Radarr fallback path resolved via movie/relative: {} + {}",
-                        movie, rel
-                    );
-                    return Ok(joined);
-                }
-            }
+            let source_path = get_env_paths(&["radarr_moviefile_sourcepath", "radarr_sourcepath"]);
 
-            if let (Some(movie), Some(source)) = (movie.as_deref(), source_path.as_deref()) {
-                if !movie.trim().is_empty() && !source.trim().is_empty() {
-                    if let Some(file_name) = Path::new(source).file_name() {
-                        let joined = Path::new(movie).join(file_name);
+            if let (Some(movie), Some(rel_list)) = (movie.as_deref(), relative.clone()) {
+                let mut joined = Vec::new();
+                for rel in rel_list {
+                    if !movie.trim().is_empty() && !rel.trim().is_empty() {
+                        let candidate = Path::new(movie).join(&rel);
                         debug!(
-                            "Radarr fallback path resolved via movie/source file: {} + {:?}",
-                            movie, file_name
+                            "Radarr fallback path resolved via movie/relative: {} + {}",
+                            movie, rel
                         );
-                        return Ok(joined);
+                        joined.push(candidate);
                     }
                 }
-            }
-
-            if let (Some(folder), Some(rel)) = (source_folder.as_deref(), relative.as_deref()) {
-                if !folder.trim().is_empty() && !rel.trim().is_empty() {
-                    let joined = Path::new(folder).join(rel);
-                    debug!(
-                        "Radarr fallback path resolved via source folder/relative: {} + {}",
-                        folder, rel
-                    );
+                if !joined.is_empty() {
                     return Ok(joined);
                 }
             }
 
-            if let (Some(folder), Some(source)) = (source_folder.as_deref(), source_path.as_deref())
+            if let (Some(movie), Some(source_list)) = (movie.as_deref(), source_path.clone()) {
+                let mut joined = Vec::new();
+                for source in source_list {
+                    if !movie.trim().is_empty() && !source.trim().is_empty() {
+                        if let Some(file_name) = Path::new(&source).file_name() {
+                            let candidate = Path::new(movie).join(file_name);
+                            debug!(
+                                "Radarr fallback path resolved via movie/source file: {} + {:?}",
+                                movie, file_name
+                            );
+                            joined.push(candidate);
+                        }
+                    }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(rel_list)) = (source_folder.as_deref(), relative.clone()) {
+                let mut joined = Vec::new();
+                for rel in rel_list {
+                    if !folder.trim().is_empty() && !rel.trim().is_empty() {
+                        let candidate = Path::new(folder).join(&rel);
+                        debug!(
+                            "Radarr fallback path resolved via source folder/relative: {} + {}",
+                            folder, rel
+                        );
+                        joined.push(candidate);
+                    }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
+                }
+            }
+
+            if let (Some(folder), Some(source_list)) =
+                (source_folder.as_deref(), source_path.clone())
             {
-                if !folder.trim().is_empty() && !source.trim().is_empty() {
-                    if let Some(file_name) = Path::new(source).file_name() {
-                        let joined = Path::new(folder).join(file_name);
-                        debug!(
-                            "Radarr fallback path resolved via source folder/file: {} + {:?}",
-                            folder, file_name
-                        );
-                        return Ok(joined);
+                let mut joined = Vec::new();
+                for source in source_list {
+                    if !folder.trim().is_empty() && !source.trim().is_empty() {
+                        if let Some(file_name) = Path::new(&source).file_name() {
+                            let candidate = Path::new(folder).join(file_name);
+                            debug!(
+                                "Radarr fallback path resolved via source folder/file: {} + {:?}",
+                                folder, file_name
+                            );
+                            joined.push(candidate);
+                        }
                     }
+                }
+                if !joined.is_empty() {
+                    return Ok(joined);
                 }
             }
 
-            if let Some(source) = source_path {
-                if !source.trim().is_empty() {
-                    debug!("Radarr fallback path resolved via source path: {}", source);
-                    return Ok(PathBuf::from(source));
+            if let Some(source_list) = source_path {
+                let mut collected = Vec::new();
+                for source in source_list {
+                    if !source.trim().is_empty() {
+                        debug!("Radarr fallback path resolved via source path: {}", source);
+                        collected.push(PathBuf::from(source));
+                    }
+                }
+                if !collected.is_empty() {
+                    return Ok(collected);
                 }
             }
 
@@ -608,16 +692,18 @@ fn first_non_empty(keys: &[&str]) -> Option<String> {
     None
 }
 
-fn get_env_path(keys: &[&str]) -> Option<String> {
+fn get_env_paths(keys: &[&str]) -> Option<Vec<String>> {
     for key in keys {
         if let Some(val) = get_env_ignore_case(key) {
-            let trimmed = val.trim();
-            if trimmed.is_empty() {
-                continue;
+            let mut entries = Vec::new();
+            for part in val.split('|') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    entries.push(trimmed.to_string());
+                }
             }
-            let first = trimmed.split('|').next().unwrap().trim();
-            if !first.is_empty() {
-                return Some(first.to_string());
+            if !entries.is_empty() {
+                return Some(entries);
             }
         }
     }
@@ -675,7 +761,11 @@ mod tests {
         env::set_var("sonarr_series_path", "/tmp/show");
         env::set_var("sonarr_episodefile_relativepath", "Season 1/episode.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(
             resolved,
             Path::new("/tmp/show").join("Season 1/episode.mkv")
@@ -693,7 +783,11 @@ mod tests {
         env::remove_var("sonarr_series_path");
         env::set_var("sonarr_episodefile_sourcepath", "/tmp/source/episode.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(resolved, PathBuf::from("/tmp/source/episode.mkv"));
 
         env::remove_var("sonarr_episodefile_sourcepath");
@@ -705,8 +799,35 @@ mod tests {
         env::remove_var("sonarr_episodefile_path");
         env::set_var("sonarr_episodefile_paths", "/tmp/show/Season 1/episode.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Sonarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(resolved, PathBuf::from("/tmp/show/Season 1/episode.mkv"));
+
+        env::remove_var("sonarr_episodefile_paths");
+    }
+
+    #[test]
+    fn resolve_media_paths_handles_multiple_sonarr_entries() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("sonarr_episodefile_path");
+        env::set_var(
+            "sonarr_episodefile_paths",
+            "/tmp/show/Season 1/episode1.mkv|/tmp/show/Season 1/episode2.mkv",
+        );
+
+        let resolved = resolve_media_paths(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(
+            resolved[0],
+            PathBuf::from("/tmp/show/Season 1/episode1.mkv")
+        );
+        assert_eq!(
+            resolved[1],
+            PathBuf::from("/tmp/show/Season 1/episode2.mkv")
+        );
 
         env::remove_var("sonarr_episodefile_paths");
     }
@@ -719,7 +840,11 @@ mod tests {
         env::set_var("radarr_movie_path", "/tmp/movie");
         env::set_var("radarr_moviefile_relativepath", "movie.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Radarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(resolved, Path::new("/tmp/movie").join("movie.mkv"));
 
         env::remove_var("radarr_moviefile_relativepath");
@@ -734,7 +859,11 @@ mod tests {
         env::remove_var("radarr_movie_path");
         env::set_var("radarr_moviefile_sourcepath", "/tmp/source/movie.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Radarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(resolved, PathBuf::from("/tmp/source/movie.mkv"));
 
         env::remove_var("radarr_moviefile_sourcepath");
@@ -746,8 +875,29 @@ mod tests {
         env::remove_var("radarr_moviefile_path");
         env::set_var("radarr_moviefile_paths", "/tmp/movie/movie.mkv");
 
-        let resolved = resolve_media_path(IntegrationKind::Radarr).unwrap();
+        let resolved = resolve_media_paths(IntegrationKind::Radarr)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(resolved, PathBuf::from("/tmp/movie/movie.mkv"));
+
+        env::remove_var("radarr_moviefile_paths");
+    }
+
+    #[test]
+    fn resolve_media_paths_handles_multiple_radarr_entries() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        env::remove_var("radarr_moviefile_path");
+        env::set_var(
+            "radarr_moviefile_paths",
+            "/tmp/movie/part1.mkv|/tmp/movie/part2.mkv",
+        );
+
+        let resolved = resolve_media_paths(IntegrationKind::Radarr).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0], PathBuf::from("/tmp/movie/part1.mkv"));
+        assert_eq!(resolved[1], PathBuf::from("/tmp/movie/part2.mkv"));
 
         env::remove_var("radarr_moviefile_paths");
     }

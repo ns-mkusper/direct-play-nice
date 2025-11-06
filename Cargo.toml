@@ -5,7 +5,7 @@ license = "GPL-3.0-only"
 documentation = "https://github.com/ns-mkusper/direct-play-nice"
 homepage = "https://github.com/ns-mkusper/direct-play-nice"
 repository = "https://github.com/ns-mkusper/direct-play-nice"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.3"
 edition = "2021"
 
 
@@ -30,6 +30,8 @@ toml = "0.8.16"
 vcpkg = "0.2.15"
 fs2 = "0.4"
 libc = "0.2"
+roxmltree = "0.20.0"
+ureq = { version = "2.9.7", features = ["tls"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -69,7 +71,7 @@ global = "ubuntu-22.04"
 
 [package.metadata.vcpkg]
 dependencies = [
-  "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec]",
+  "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d]",
   "x264[asm,core]",
 ]
 # fork includes update to ffmpeg8
@@ -80,6 +82,6 @@ rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static"
 dependencies = [
-  "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,qsv,amf]",
+  "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
 ]

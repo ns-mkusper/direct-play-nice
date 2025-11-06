@@ -187,6 +187,57 @@ for the list of variables they expose.
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
 > you convert to `.mp4`, Plex/Jellyfin can immediately direct play the result.
 
+### Plex Refresh
+
+Avoid the “Plex dance” by letting `direct_play_nice` trigger a targeted Plex
+library refresh after a successful conversion. Supply a Plex token (and
+optionally a custom server URL) via CLI flags or environment variables:
+
+- `--plex-refresh` enables the behaviour for the current invocation. It is also
+  activated automatically when both a Plex URL and token are provided through
+  environment variables.
+- `--plex-token <TOKEN>` or `DIRECT_PLAY_NICE_PLEX_TOKEN` / `PLEX_TOKEN`
+  authenticate the refresh request.
+- `--plex-url <http://host:port>` or `DIRECT_PLAY_NICE_PLEX_URL` override the
+  Plex base URL (defaults to `http://127.0.0.1:32400`).
+- Set `DIRECT_PLAY_NICE_PLEX_REFRESH=true` in the environment to make automatic
+  refreshes the default for CLI runs.
+- Prefer to store long-lived settings in `config.toml` under
+  `$XDG_CONFIG_HOME/direct-play-nice` (fallback `~/.config/direct-play-nice`) or
+  point at a custom file with either `--config-file` or the
+  `DIRECT_PLAY_NICE_CONFIG` environment variable.
+- Need a Plex token? Follow Plex’s official guide on locating your
+  `X-Plex-Token` in their
+  [support article](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+
+The tool looks up the Plex library section that contains the converted file
+and invokes the server’s refresh endpoint for that directory, eliminating the
+need to manually move files in and out of the library.
+
+Example `~/.config/direct-play-nice/config.toml` (remember to quote strings):
+
+```toml
+streaming_devices = ["all"]
+video_quality = "match-source"
+audio_quality = "match-source"
+max_video_bitrate = "2M"
+max_audio_bitrate = "160k"
+hw_accel = "auto"
+unsupported_video_policy = "ignore"
+servarr_output_extension = "mp4"
+servarr_output_suffix = ".fixed"
+delete_source = false
+
+[plex]
+refresh = true
+url = "http://localhost:32400"
+token = "PLEX-TOKEN-HERE"
+```
+
+Only the `[plex]` section is consumed today; the top-level keys mirror CLI
+flags so you can keep preferred defaults documented alongside your Plex
+credentials.
+
 ![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
 
 ### Quality Controls
@@ -243,6 +294,19 @@ are marked `#[ignore]`. To run them explicitly:
 ```bash
 VCPKG_ROOT=/opt/vcpkg cargo test -- --ignored
 ```
+
+### Optional: NVENC regression suite
+
+The NVENC matrix exercises the hardware encoder across multiple device/bitrate
+profiles. Because it depends on NVIDIA hardware (with working `h264_nvenc`
+support) it is opt-in. Enable it with:
+
+```bash
+ENABLE_NVENC_TESTS=1 cargo test nvenc_matrix -- --test-threads=1
+```
+
+The existing single-case NVENC integration test also participates when the same
+environment variable is set.
 
 ### Optional: direnv
 
