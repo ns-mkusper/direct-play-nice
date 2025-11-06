@@ -5,7 +5,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use assert_cmd::cargo::cargo_bin;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
 use std::ffi::CString;
@@ -23,7 +22,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
 
     // Run the CLI for all Chromecast models (intersection guarantees
     // output is direct-play-compatible across all of them).
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)

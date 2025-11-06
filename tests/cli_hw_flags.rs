@@ -4,7 +4,6 @@
 //! flag is accepted and the conversion succeeds. They do not assert that a
 //! hardware encoder was used, since CI machines may lack GPUs.
 
-use assert_cmd::cargo::cargo_bin;
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;
@@ -124,7 +123,7 @@ fn cli_hw_accel_none_and_auto_succeed() -> Result<(), Box<dyn std::error::Error>
 
     // none
     let out_none = tmp.path().join("out_none.mp4");
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -137,7 +136,7 @@ fn cli_hw_accel_none_and_auto_succeed() -> Result<(), Box<dyn std::error::Error>
 
     // auto
     let out_auto = tmp.path().join("out_auto.mp4");
-    let mut cmd2 = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd2 = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd2.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
         .arg(&input)
@@ -160,7 +159,7 @@ fn cli_hw_accel_overrides_config() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&config_path, "hw_accel = \"nvenc\"\n")?;
 
     let output = tmp.path().join("out_override.mp4");
-    let output_result = Command::new(cargo_bin!("direct_play_nice"))
+    let output_result = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
         .arg("--config-file")
         .arg(&config_path)
         .arg("-s")

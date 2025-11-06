@@ -1,7 +1,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use assert_cmd::cargo::cargo_bin;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +27,7 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
 #[test]
 fn sonarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path())
         .env("sonarr_eventtype", "Test");
     common::assert_cli_success(cmd);
@@ -47,7 +46,7 @@ fn sonarr_grab_event_skips_conversion() -> Result<(), Box<dyn std::error::Error>
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("sonarr_eventtype", "Grab")
         .env("sonarr_episodefile_path", &input);
@@ -90,7 +89,7 @@ fn sonarr_download_converts_and_replaces() -> Result<(), Box<dyn std::error::Err
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
@@ -134,7 +133,7 @@ fn sonarr_upgrade_download_flag_converts() -> Result<(), Box<dyn std::error::Err
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
@@ -189,7 +188,7 @@ token = "test-token"
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
@@ -241,7 +240,7 @@ fn sonarr_download_handles_multiple_paths() -> Result<(), Box<dyn std::error::Er
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", "")
@@ -294,7 +293,7 @@ fn radarr_download_with_match_input_extension_replaces_in_place(
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
 
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
         .env("radarr_eventtype", "Download")
         .env("radarr_moviefile_path", &input)
@@ -321,7 +320,7 @@ fn radarr_download_with_match_input_extension_replaces_in_place(
 #[test]
 fn radarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
-    let mut cmd = Command::new(cargo_bin!("direct_play_nice"));
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path())
         .env("radarr_eventtype", "Test");
     common::assert_cli_success(cmd);
