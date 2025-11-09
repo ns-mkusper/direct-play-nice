@@ -1,69 +1,15 @@
+mod common;
+
 use assert_cmd::Command;
+use common::{ffprobe_avg_frame_rate, ffprobe_duration};
 use std::error::Error;
-use std::path::Path;
 use std::process::Command as StdCommand;
 use tempfile::tempdir;
 
-fn ffprobe_duration(path: &Path) -> Result<f64, Box<dyn Error>> {
-    let output = StdCommand::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            path.to_str().expect("path utf8"),
-        ])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "ffprobe failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let duration = String::from_utf8(output.stdout)?.trim().parse::<f64>()?;
-    Ok(duration)
-}
-
-fn parse_fraction(value: &str) -> Result<f64, Box<dyn Error>> {
-    if let Some((num, den)) = value.split_once('/') {
-        let num = num.trim().parse::<f64>()?;
-        let den = den.trim().parse::<f64>()?;
-        if den == 0.0 {
-            Err("fraction denominator cannot be zero".into())
-        } else {
-            Ok(num / den)
-        }
-    } else {
-        Ok(value.trim().parse::<f64>()?)
-    }
-}
-
-fn ffprobe_avg_frame_rate(path: &Path) -> Result<f64, Box<dyn Error>> {
-    let output = StdCommand::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=avg_frame_rate",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            path.to_str().expect("path utf8"),
-        ])
-        .output()?;
-    assert!(
-        output.status.success(),
-        "ffprobe failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let rate = String::from_utf8(output.stdout)?;
-    parse_fraction(rate.trim())
-}
-
 #[test]
 fn preserves_duration_and_fps_after_transcode() -> Result<(), Box<dyn Error>> {
+    common::ensure_ffmpeg_present();
+
     let tmp = tempdir()?;
     let input = tmp.path().join("kaiji_like.mkv");
     let output = tmp.path().join("kaiji_like.fixed.mp4");
