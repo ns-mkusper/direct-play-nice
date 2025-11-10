@@ -25,6 +25,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CI_BASE_IMAGE: ${{ format('ghcr.io/{0}/direct-play-nice-ci:latest', toLower(github.repository_owner)) }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -35,9 +36,14 @@ jobs:
     if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
     name: Test (Linux)
     runs-on: ubuntu-latest
+    container: ${{ env.CI_BASE_IMAGE }}
     permissions:
       contents: read
       actions: write
+      packages: read
+    env:
+      LD_LIBRARY_PATH: /opt/vcpkg/installed/x64-linux/lib
+      PKG_CONFIG_PATH: /opt/vcpkg/installed/x64-linux/lib/pkgconfig
     strategy:
       matrix:
         toolchain:
@@ -53,61 +59,20 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
-
       - name: Set up sccache
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
 
-      - name: Install dependencies
+      - name: Enable sccache if available
         run: |
-          sudo apt-get update -y
-          sudo apt-get --assume-yes install nasm ffmpeg
-
-      - name: Test sccache and set wrapper
-        id: sccache-check
-        run: |
-          RUSTC_WRAPPER=sccache cargo install cargo-vcpkg
-        continue-on-error: true
-
-      - name: Set job-level RUSTC_WRAPPER
-        if: steps.sccache-check.outcome == 'success'
-        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-      - if: steps.sccache-check.outcome == 'failure'
-        run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-
-      - name: Read pinned vcpkg revision from Cargo.toml
-        id: vcpkg_rev
-        shell: bash
-        run: |
-          set -euo pipefail
-          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ -z "$REV" ]; then
-            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
+          if command -v sccache >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          else
+            echo "sccache not found; continuing without compiler cache"
           fi
-          echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
-      
-      - name: Build vcpkg dependencies
-        env:
-          VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
-          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
-          VCPKG_MAX_CONCURRENCY: 2
-          CMAKE_BUILD_PARALLEL_LEVEL: 2
-          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-        run: cargo vcpkg --verbose build
-
-      - name: Upload vcpkg logs on failure
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: vcpkg-logs
-          path: |
-            target/vcpkg/buildtrees/**/*.log
-            target/vcpkg/buildtrees/**/*.txt
-          retention-days: 7
 
       - name: Compile tests (no run)
         env:
