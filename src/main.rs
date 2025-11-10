@@ -68,6 +68,15 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
+fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRational) {
+    unsafe {
+        let current = (*ctx.as_ptr()).pkt_timebase;
+        if current.num <= 0 || current.den <= 0 {
+            (*ctx.as_mut_ptr()).pkt_timebase = time_base;
+        }
+    }
+}
+
 const AV1_HW_DECODER_NAMES: &[&str] = &["av1_cuvid", "av1_nvdec"];
 const AV1_SW_DECODER_NAMES: &[&str] = &["libdav1d", "libaom-av1", "av1"];
 const H264_HW_DECODER_NAMES: &[&str] = &["h264_cuvid"];
@@ -3665,6 +3674,7 @@ fn convert_video_file(
                 match configure_cuda_hw_decoder(&mut decode_context, device) {
                     Ok(()) => {
                         hw_decoder_active = true;
+                        ensure_decoder_pkt_time_base(&mut decode_context, stream.time_base);
                         debug!(
                             "Configured CUDA hardware decoder '{}' for stream {}",
                             decoder_name_owned, stream.index

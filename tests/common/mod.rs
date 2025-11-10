@@ -3,12 +3,16 @@
 use predicates::str;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
+use std::env;
+use std::error::Error;
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+const NV_LIB_DIR: &str = "/usr/lib/x86_64-linux-gnu/nvidia/current";
 
 pub fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -108,6 +112,84 @@ pub fn probe_duration_ms(path: &PathBuf) -> u64 {
 pub fn assert_cli_success(mut cmd: Command) {
     use assert_cmd::prelude::*;
     cmd.assert().success().stdout(str::is_empty());
+}
+
+pub fn nv_library_env_value() -> Option<String> {
+    if fs::metadata(NV_LIB_DIR)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        let existing = env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        if existing.is_empty() {
+            Some(NV_LIB_DIR.to_string())
+        } else {
+            Some(format!("{NV_LIB_DIR}:{existing}"))
+        }
+    } else {
+        None
+    }
+}
+
+pub fn ffprobe_duration(path: &Path) -> Result<f64, Box<dyn Error>> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path.to_str().expect("path utf8"),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let duration = String::from_utf8(output.stdout)?.trim().parse::<f64>()?;
+    Ok(duration)
+}
+
+fn parse_fraction(value: &str) -> Result<f64, Box<dyn Error>> {
+    if let Some((num, den)) = value.split_once('/') {
+        let num = num.trim().parse::<f64>()?;
+        let den = den.trim().parse::<f64>()?;
+        if den == 0.0 {
+            Err("fraction denominator cannot be zero".into())
+        } else {
+            Ok(num / den)
+        }
+    } else {
+        Ok(value.trim().parse::<f64>()?)
+    }
+}
+
+pub fn ffprobe_avg_frame_rate(path: &Path) -> Result<f64, Box<dyn Error>> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path.to_str().expect("path utf8"),
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let rate = String::from_utf8(output.stdout)?;
+    parse_fraction(rate.trim())
 }
 
 pub fn gen_h264_high_input(tmp: &TempDir) -> PathBuf {

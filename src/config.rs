@@ -111,7 +111,7 @@ fn resolve_default_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::{Mutex, OnceLock, MutexGuard};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::NamedTempFile;
 
     fn env_lock() -> MutexGuard<'static, ()> {
