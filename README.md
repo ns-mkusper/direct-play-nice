@@ -177,40 +177,12 @@ direct_play_nice --probe-streams --output json input.mkv
 
 ### Sonarr / Radarr
 
-When running via Sonarr, Radarr, etc you can use this program to convert each
-downloaded video file to a Direct-Play-compatible format by adding it as a
-Custom Script Connection (`Settings >> Connect >> Custom Script`).
-
-The binary now auto-detects Sonarr/Radarr custom-script invocations:
-
-- `sonarr_eventtype=Download` or `radarr_eventtype=Download` triggers an
-  in-place transcode of the file referenced by the corresponding
-  `$sonarr_episodefile_path` / `$radarr_moviefile_path` environment variable.
-- All other event types (e.g. `Test`, `Grab`, `Rename`, etc.) exit cleanly
-  without requiring any CLI arguments.
-- By default the script promotes the converted output to an `.mp4` beside the
-  original file (which is removed once the conversion completes). Override this
-  by passing `--servarr-output-extension match-input` to keep the original
-  container or any custom extension (e.g. `--servarr-output-extension mkv`).
-
-Example Sonarr command:
-
-```bash
-/path/to/direct_play_nice --video-quality match-source --audio-quality match-source
-```
-
-Example Radarr command keeping the source container:
-
-```bash
-/path/to/direct_play_nice --servarr-output-extension match-input
-```
-
-Example Sonarr command that keeps all defaults (resulting in
-`Episode.fixed.mp4` after conversion):
-
-```bash
-/path/to/direct_play_nice
-```
+When running via Sonarr or Radarr you can wire this binary in as a Custom Script
+Connection (`Settings >> Connect >> Custom Script`). These apps now supply all
+metadata through environment variables, so simply point the *Path* field at your
+`direct_play_nice` executable—no extra CLI arguments are needed. Consult the
+[Servarr custom script documentation](https://wiki.servarr.com/sonarr/custom-scripts)
+for the list of variables they expose.
 
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
 > you convert to `.mp4`, Plex/Jellyfin can immediately direct play the result.
@@ -289,7 +261,7 @@ override the presets with any value such as `4800k`, `6M`, or `12.5mbps`.
 ## Building
 
 This project relies on [FFmpeg](https://www.ffmpeg.org/) and
-[rsmpeg](https://github.com/larksuite/rsmpeg) and builds on Mac, Linux and
+[rsmpeg](https://github.com/larksuite/rsmpeg) and builds on macOS, Linux, and
 Windows:
 
 ```bash
@@ -298,31 +270,15 @@ cargo vcpkg build
 cargo build
 ```
 
-After running `cargo vcpkg build` once, point `VCPKG_ROOT` at the shared
-installation so builds and CI reuse the same FFmpeg toolchain (this repo
-defaults to `/opt/vcpkg` on Unix and `C:\\src\\vcpkg` on Windows):
+After the initial `cargo vcpkg build`, set `VCPKG_ROOT` to the location of your
+vcpkg checkout so local builds and CI reuse the same toolchain:
 
 ```bash
 export VCPKG_ROOT=/opt/vcpkg
 ```
 
-The repo defaults to `/opt/vcpkg` on Unix-like platforms and `C:\\src\\vcpkg` on
-Windows; override this environment variable if your setup differs. Our
-`Cargo.toml` pins vcpkg to commit `21012a516c9e5fa547baf212f2d937cd8d15dcb5`
-which includes FFmpeg 8—if you reuse an existing checkout, make sure it is
-checked out to that revision:
-
-```powershell
-# Windows PowerShell
-git -C $env:VCPKG_ROOT fetch https://github.com/cqundefine/vcpkg.git
-git -C $env:VCPKG_ROOT checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
-```
-
-```bash
-# macOS/Linux
-git -C "$VCPKG_ROOT" fetch https://github.com/cqundefine/vcpkg.git
-git -C "$VCPKG_ROOT" checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
-```
+The examples below assume `/opt/vcpkg` on Unix-like systems and `C:\\src\\vcpkg`
+on Windows, but you can point `VCPKG_ROOT` anywhere you keep the vcpkg tree.
 
 ## Tests
 
