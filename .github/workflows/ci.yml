@@ -54,27 +54,6 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
 
-      - name: Set up sccache
-        id: sccache-setup
-        uses: mozilla-actions/sccache-action@v0.0.5
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get --assume-yes install nasm ffmpeg
-
-      - name: Test sccache and set wrapper
-        id: sccache-check
-        run: |
-          RUSTC_WRAPPER=sccache cargo install cargo-vcpkg
-        continue-on-error: true
-
-      - name: Set job-level RUSTC_WRAPPER
-        if: steps.sccache-check.outcome == 'success'
-        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-      - if: steps.sccache-check.outcome == 'failure'
-        run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
-
       - name: Read pinned vcpkg revision from Cargo.toml
         id: vcpkg_rev
         shell: bash
@@ -86,9 +65,34 @@ jobs:
           fi
           echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
+      - name: Restore sccache cache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: ${{ runner.os }}-sccache-v2-${{ steps.vcpkg_rev.outputs.rev }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-v2-
+
+      - name: Set up sccache
+        id: sccache-setup
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Set RUSTC_WRAPPER
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install nasm ffmpeg
+
+      - name: Install cargo-vcpkg
+        run: cargo install cargo-vcpkg
+
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
-      
+        with:
+          key: vcpkg-v1-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}
+
       - name: Build vcpkg dependencies
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
