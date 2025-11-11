@@ -25,7 +25,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CI_BASE_IMAGE: ${{ format('ghcr.io/{0}/direct-play-nice-ci:latest', toLower(github.repository_owner)) }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -36,14 +35,9 @@ jobs:
     if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
     name: Test (Linux)
     runs-on: ubuntu-latest
-    container: ${{ env.CI_BASE_IMAGE }}
     permissions:
       contents: read
       actions: write
-      packages: read
-    env:
-      LD_LIBRARY_PATH: /opt/vcpkg/installed/x64-linux/lib
-      PKG_CONFIG_PATH: /opt/vcpkg/installed/x64-linux/lib/pkgconfig
     strategy:
       matrix:
         toolchain:
@@ -59,20 +53,65 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt
+
+      - name: Read pinned vcpkg revision from Cargo.toml
+        id: vcpkg_rev
+        shell: bash
+        run: |
+          set -euo pipefail
+          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ -z "$REV" ]; then
+            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
+          fi
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+
+      - name: Restore sccache cache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/sccache
+          key: ${{ runner.os }}-sccache-v2-${{ steps.vcpkg_rev.outputs.rev }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-v2-
+
       - name: Set up sccache
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
 
-      - name: Enable sccache if available
+      - name: Set RUSTC_WRAPPER
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
         run: |
-          if command -v sccache >/dev/null 2>&1; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          else
-            echo "sccache not found; continuing without compiler cache"
-          fi
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install nasm ffmpeg
+
+      - name: Install cargo-vcpkg
+        run: cargo install cargo-vcpkg
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          key: vcpkg-v1-${{ runner.os }}-${{ steps.vcpkg_rev.outputs.rev }}
+
+      - name: Build vcpkg dependencies
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo vcpkg --verbose build
+
+      - name: Upload vcpkg logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs
+          path: |
+            target/vcpkg/buildtrees/**/*.log
+            target/vcpkg/buildtrees/**/*.txt
+          retention-days: 7
 
       - name: Compile tests (no run)
         env:
