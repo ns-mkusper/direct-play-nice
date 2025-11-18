@@ -1263,9 +1263,7 @@ fn apply_hw_encoder_quality(
             encoder_name, target_bitrate, is_constant_quality_mode
         );
         if encoder_name.contains("amf") {
-            let derived_bitrate = target_bitrate.unwrap_or_default();
-            // Use a very high ceiling (100 Mbps) to ensure the CQP setting is not throttled.
-            let large_vbv_bits = 100_000_000i64;
+            let derived_bitrate = target_bitrate.unwrap_or(10_000_000).max(1);
 
             // General quality boosts
             set_codec_option_str(ctx, "usage", "high_quality");
@@ -1285,9 +1283,9 @@ fn apply_hw_encoder_quality(
                 set_codec_option_i64(ctx, "qp_p", 22);
                 set_codec_option_i64(ctx, "qp_b", 24);
 
-                // Set maxrate/bufsize high to ensure CQP isn't artificially capped.
-                set_codec_option_i64(ctx, "maxrate", large_vbv_bits);
-                set_codec_option_i64(ctx, "bufsize", large_vbv_bits);
+                let buf_bits = derived_bitrate.saturating_mul(2).max(derived_bitrate);
+                set_codec_option_i64(ctx, "maxrate", derived_bitrate);
+                set_codec_option_i64(ctx, "bufsize", buf_bits);
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
@@ -1310,19 +1308,35 @@ fn apply_hw_encoder_quality(
                 set_codec_option_str(ctx, "rc", "vbr");
                 set_codec_option_i64(ctx, "cq", 21);
                 set_codec_option_i64(ctx, "rc-lookahead", 0);
+                const DEFAULT_NVENC_VBV: i64 = 10_000_000;
+                let mut desired_rate = target_bitrate.unwrap_or(DEFAULT_NVENC_VBV).max(1);
                 if let Some(ref caps) = level_caps {
-                    let safe_rate = caps.max_bitrate_bits.max(1);
-                    let safe_buffer = caps.max_buffer_bits.max(safe_rate);
-                    set_codec_option_i64(ctx, "maxrate", safe_rate);
-                    set_codec_option_i64(ctx, "bufsize", safe_buffer);
-                    (*ctx).rc_max_rate = safe_rate;
-                    (*ctx).rc_buffer_size = safe_buffer.clamp(1, i32::MAX as i64) as i32;
-                    (*ctx).rc_initial_buffer_occupancy = (*ctx).rc_buffer_size;
-                    debug!(
-                        "Configured NVENC VBV for CQ mode: maxrate={} bufsize={}",
-                        safe_rate, safe_buffer
-                    );
+                    if desired_rate > caps.max_bitrate_bits {
+                        debug!(
+                            "Clamping NVENC CQ VBV {} -> {} to respect H.264 level limit",
+                            desired_rate, caps.max_bitrate_bits
+                        );
+                        desired_rate = caps.max_bitrate_bits.max(1);
+                    }
                 }
+                let mut desired_buffer = desired_rate.saturating_mul(2).max(desired_rate);
+                if let Some(ref caps) = level_caps {
+                    if desired_buffer > caps.max_buffer_bits {
+                        desired_buffer = caps.max_buffer_bits.max(desired_rate);
+                    }
+                }
+
+                set_codec_option_i64(ctx, "maxrate", desired_rate);
+                set_codec_option_i64(ctx, "bufsize", desired_buffer);
+
+                (*ctx).rc_max_rate = desired_rate;
+                let buf_i32 = desired_buffer.clamp(1, i32::MAX as i64) as i32;
+                (*ctx).rc_buffer_size = buf_i32;
+                (*ctx).rc_initial_buffer_occupancy = buf_i32;
+                debug!(
+                    "Configured NVENC VBV for CQ mode: maxrate={} bufsize={}",
+                    desired_rate, desired_buffer
+                );
             } else if let Some(bit_rate) = target_bitrate {
                 // CBR/Constrained VBR mode for fixed bitrate presets
                 set_codec_option_str(ctx, "rc", "cbr");
@@ -1875,6 +1889,33 @@ fn clamp_dimensions(
     }
     if target_height % 2 != 0 {
         target_height = (target_height - 1).max(2);
+    }
+
+    // Prefer chroma-friendly widths to avoid decoder artefacts on devices that
+    // expect multiples of 16 (e.g. legacy Chromecasts).
+    const WIDTH_ALIGNMENT: i32 = 16;
+    if target_width >= WIDTH_ALIGNMENT && target_width % WIDTH_ALIGNMENT != 0 {
+        let aspect_ratio = source_width as f64 / source_height as f64;
+        let max_width_i32 = max_width as i32;
+        let max_height_i32 = max_height as i32;
+
+        let mut aligned_width = ((target_width / WIDTH_ALIGNMENT).max(1)) * WIDTH_ALIGNMENT;
+        if aligned_width > max_width_i32 {
+            aligned_width = (max_width_i32 / WIDTH_ALIGNMENT).max(1) * WIDTH_ALIGNMENT;
+        }
+
+        while aligned_width >= WIDTH_ALIGNMENT {
+            let mut aligned_height = ((aligned_width as f64 / aspect_ratio).round() as i32).max(2);
+            if aligned_height % 2 != 0 {
+                aligned_height += 1;
+            }
+            if aligned_height <= max_height_i32 {
+                target_width = aligned_width;
+                target_height = aligned_height.max(2);
+                break;
+            }
+            aligned_width -= WIDTH_ALIGNMENT;
+        }
     }
 
     (target_width, target_height)
@@ -3041,22 +3082,20 @@ fn set_h264_video_codec_par(
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P); // TODO: downgrade more intelligently?
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
-    // START FIX: CONDITIONAL BITRATE SETTING
-    let mut target_bit_rate: Option<i64> = None;
+    let default_hint = default_video_bitrate(target_width, target_height);
+    let source_bit_rate = if decode_context.bit_rate > 0 {
+        decode_context.bit_rate
+    } else if source_bit_rate_hint > 0 {
+        source_bit_rate_hint
+    } else {
+        default_hint
+    };
+    let rate_hint = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate)
+        .or_else(|| (source_bit_rate > 0).then_some(source_bit_rate))
+        .or(Some(default_hint));
 
     if !is_constant_quality_mode {
-        // Calculate the target bitrate only if we are in a fixed-bitrate mode
-        let source_bit_rate = if decode_context.bit_rate > 0 {
-            decode_context.bit_rate
-        } else if source_bit_rate_hint > 0 {
-            source_bit_rate_hint
-        } else {
-            default_video_bitrate(encode_context.width, encode_context.height)
-        };
-
-        target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
-
-        if let Some(bit_rate) = target_bit_rate {
+        if let Some(bit_rate) = rate_hint {
             debug!(
                 "Video bitrate target set to {} bps (Fixed Bitrate Mode)",
                 bit_rate
@@ -3075,18 +3114,18 @@ fn set_h264_video_codec_par(
             debug!("Video bitrate target not set; using encoder default");
         }
     } else {
-        // In Constant Quality Mode, explicitly tell the FFmpeg context to ignore bitrate constraint
-        // The hardware tuning function (below) will enforce the quality/QP.
-        debug!("Video encoding set to Constant Quality (CQ/CQP) mode. Ignoring bitrate limits.");
+        debug!(
+            "Video encoding set to Constant Quality (CQ/CQP) mode. VBV derived from {} bps.",
+            rate_hint.unwrap_or(default_hint)
+        );
         encode_context.set_bit_rate(0);
     }
-    // END FIX: CONDITIONAL BITRATE SETTING
 
     apply_hw_encoder_quality(
         encode_context.as_mut_ptr(),
         encoder_name,
-        target_bit_rate,
-        is_constant_quality_mode, // <-- PASS NEW PARAMETER
+        rate_hint,
+        is_constant_quality_mode,
         Some(h264_level),
     );
     encode_context.set_gop_size(decode_context.gop_size);
@@ -3142,20 +3181,20 @@ fn set_hevc_video_codec_par(
     encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
-    let mut target_bit_rate: Option<i64> = None;
+    let default_hint = default_video_bitrate(target_width, target_height);
+    let source_bit_rate = if decode_context.bit_rate > 0 {
+        decode_context.bit_rate
+    } else if source_bit_rate_hint > 0 {
+        source_bit_rate_hint
+    } else {
+        default_hint
+    };
+    let rate_hint = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate)
+        .or_else(|| (source_bit_rate > 0).then_some(source_bit_rate))
+        .or(Some(default_hint));
 
     if !is_constant_quality_mode {
-        let source_bit_rate = if decode_context.bit_rate > 0 {
-            decode_context.bit_rate
-        } else if source_bit_rate_hint > 0 {
-            source_bit_rate_hint
-        } else {
-            default_video_bitrate(encode_context.width, encode_context.height)
-        };
-
-        target_bit_rate = derive_target_bitrate(source_bit_rate, quality_limits.max_video_bitrate);
-
-        if let Some(bit_rate) = target_bit_rate {
+        if let Some(bit_rate) = rate_hint {
             debug!(
                 "Video bitrate target set to {} bps (Fixed Bitrate Mode)",
                 bit_rate
@@ -3174,14 +3213,17 @@ fn set_hevc_video_codec_par(
             debug!("Video bitrate target not set; using encoder default");
         }
     } else {
-        debug!("Video encoding set to Constant Quality (CQ/CQP) mode. Ignoring bitrate limits.");
+        debug!(
+            "Video encoding set to Constant Quality (CQ/CQP) mode. VBV derived from {} bps.",
+            rate_hint.unwrap_or(default_hint)
+        );
         encode_context.set_bit_rate(0);
     }
 
     apply_hw_encoder_quality(
         encode_context.as_mut_ptr(),
         encoder_name,
-        target_bit_rate,
+        rate_hint,
         is_constant_quality_mode,
         None,
     );
@@ -4771,6 +4813,12 @@ fn main() -> Result<()> {
     let mut args = Args::from_arg_matches_mut(&mut matches).expect("Failed to parse CLI arguments");
 
     let loaded_config = config::load(args.config_file.as_deref())?;
+    if loaded_config.is_none() {
+        warn!(
+            "No direct-play-nice configuration found. Falling back to CLI defaults; set {} or place config.toml under ~/.config/direct-play-nice/ to override.",
+            config::CONFIG_ENV_VAR
+        );
+    }
     if let Some((_, source)) = &loaded_config {
         match source {
             config::ConfigSource::Cli(path) => {
