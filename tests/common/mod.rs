@@ -103,6 +103,38 @@ pub fn gen_problem_input(tmp: &TempDir) -> (PathBuf, u64) {
     (input, dur_ms)
 }
 
+pub fn gen_odd_width_input(tmp: &TempDir) -> (PathBuf, u64) {
+    let dir = tmp.path();
+    let input = dir.join("odd_width.mkv");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=1792x1080:rate=24:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            input.to_str().unwrap(),
+        ])
+        .status()
+        .expect("run ffmpeg odd-width generator");
+    assert!(status.success(), "ffmpeg odd-width generation failed");
+    let dur_ms = probe_duration_ms(&input);
+    (input, dur_ms)
+}
+
 pub fn probe_duration_ms(path: &PathBuf) -> u64 {
     let input_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
