@@ -77,7 +77,7 @@ dependencies = [
 # fork includes update to ffmpeg8
 # see: https://github.com/microsoft/vcpkg/pull/47107
 git = "https://github.com/cqundefine/vcpkg"
-rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
+rev = "f26ec398c25c4980f33a50391f00a75f7ad62ef7"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static"
