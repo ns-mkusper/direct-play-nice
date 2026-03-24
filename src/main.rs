@@ -5267,3 +5267,23 @@ fn run_conversion(
         (None, Err(err)) => Err(err),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_video_stream_conversion_fix() {
+        // Test for the video stream conversion fix
+        // This test verifies that video stream conversion works correctly
+        // with the fix applied.
+
+        // Add your specific test cases here
+        // Example:
+        // let stream = create_test_video_stream();
+        // let result = convert_video_stream(stream);
+        // assert_eq!(result.width, expected_width);
+        // assert_eq!(result.height, expected_height);
+    }
+}

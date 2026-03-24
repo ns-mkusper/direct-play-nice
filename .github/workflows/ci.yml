@@ -83,7 +83,7 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: linux-vcpkg-v2
+          prefix-key: linux-vcpkg-v3-ffmpeg8
 
       - name: Build vcpkg dependencies
         env:
