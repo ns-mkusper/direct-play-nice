@@ -42,8 +42,6 @@ jobs:
       matrix:
         toolchain:
           - stable
-          - beta
-          - nightly
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,32 +61,30 @@ jobs:
           sudo apt-get update -y
           sudo apt-get --assume-yes install nasm ffmpeg
 
-      - name: Test sccache and set wrapper
-        id: sccache-check
-        run: |
-          RUSTC_WRAPPER=sccache cargo install cargo-vcpkg
-        continue-on-error: true
-
       - name: Set job-level RUSTC_WRAPPER
-        if: steps.sccache-check.outcome == 'success'
+        if: steps.sccache-setup.outcome == 'success'
         run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-      - if: steps.sccache-check.outcome == 'failure'
+      - if: steps.sccache-setup.outcome == 'failure'
         run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
 
-      - name: Read pinned vcpkg revision from Cargo.toml
-        id: vcpkg_rev
-        shell: bash
-        run: |
-          set -euo pipefail
-          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ -z "$REV" ]; then
-            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
-          fi
-          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+      - name: Cache cargo-vcpkg binary
+        id: cargo-vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-vcpkg
+          key: cargo-vcpkg-linux-v1
+
+      - name: Install cargo-vcpkg
+        if: steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
-      
+        with:
+          prefix-key: linux-vcpkg-v2
+
       - name: Build vcpkg dependencies
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching

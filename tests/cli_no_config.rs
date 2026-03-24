@@ -3,38 +3,55 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use assert_cmd::prelude::*;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
 use std::ffi::CString;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-#[test]
-fn converts_with_sane_defaults_when_config_missing() -> Result<(), Box<dyn std::error::Error>> {
-    common::ensure_ffmpeg_present();
-
-    let tmp = TempDir::new()?;
-    let (input, in_dur_ms) = common::gen_odd_width_input(&tmp);
-    let output = tmp.path().join("out.mp4");
-
-    // Clear config-related environment so the binary cannot load user settings.
+fn run_no_config_conversion(
+    input: &Path,
+    output: &Path,
+    extra_args: &[&str],
+    home: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
-    cmd.arg(&input).arg(&output);
+    cmd.args(extra_args).arg(input).arg(output);
     cmd.env_remove("DIRECT_PLAY_NICE_CONFIG");
     cmd.env_remove("XDG_CONFIG_HOME");
     cmd.env_remove("DIRECT_PLAY_NICE_CONFIG_FILE"); // legacy variable just in case
-    cmd.env("HOME", tmp.path());
-    cmd.assert().success().stdout(predicates::str::is_empty());
-
+    cmd.env("HOME", home);
+    // Keep test deterministic by preventing opportunistic GPU probing via PATH lookups.
+    cmd.env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin");
+    let output_result = cmd.output()?;
     assert!(
-        output.exists(),
-        "expected output file {:?} to be created",
-        output
+        output_result.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output_result.stderr)
     );
+    assert!(
+        output_result.stdout.is_empty(),
+        "stdout should be empty, got: {}",
+        String::from_utf8_lossy(&output_result.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output_result.stderr).to_string();
+    assert!(
+        stderr.contains("No direct-play-nice configuration found"),
+        "expected no-config warning in stderr, got:\n{}",
+        stderr
+    );
+    Ok(stderr)
+}
 
-    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+fn assert_no_config_output_sane(
+    output: &PathBuf,
+    in_dur_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(output.exists(), "expected output file {:?} to be created", output);
+
+    let output_cstr = CString::new(output.to_string_lossy().to_string())?;
     let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
 
     let mut video_stream = None;
@@ -99,6 +116,39 @@ fn converts_with_sane_defaults_when_config_missing() -> Result<(), Box<dyn std::
         in_dur_ms,
         out_dur_ms
     );
+
+    Ok(())
+}
+
+#[test]
+fn converts_with_sane_defaults_when_config_missing() -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let (input, in_dur_ms) = common::gen_odd_width_input(&tmp);
+    let output_default = tmp.path().join("out_default.mp4");
+
+    run_no_config_conversion(
+        &input,
+        &output_default,
+        &["--hw-accel", "none"],
+        tmp.path(),
+    )?;
+    assert_no_config_output_sane(&output_default, in_dur_ms)?;
+
+    let output_all = tmp.path().join("out_all.mp4");
+    let stderr = run_no_config_conversion(
+        &input,
+        &output_all,
+        &["-s", "all", "--hw-accel", "none"],
+        tmp.path(),
+    )?;
+    assert!(
+        stderr.contains("Target streaming devices"),
+        "expected device resolution logs in stderr, got:\n{}",
+        stderr
+    );
+    assert_no_config_output_sane(&output_all, in_dur_ms)?;
 
     Ok(())
 }
