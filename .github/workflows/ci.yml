@@ -84,9 +84,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
+          cargo fetch
           CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-          BINDING_PATH=$(find "$CARGO_HOME_DIR/registry/src" -type f -path "*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs" | head -n1)
+          BINDING_PATH=$(find "$CARGO_HOME_DIR/registry/src" -type f -path "*/rusty_ffmpeg-0.16.7*/src/binding.rs" | head -n1)
           if [ -z "$BINDING_PATH" ]; then
             echo "Failed to resolve rusty_ffmpeg prebuilt binding.rs"
             exit 1
