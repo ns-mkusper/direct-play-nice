@@ -33,7 +33,7 @@ concurrency:
 jobs:
   test:
     if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
-    name: Test (Linux ${{ matrix.toolchain }})
+    name: Test (Linux) (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
