@@ -4,6 +4,7 @@ use rsmpeg::avcodec::{AVCodec, AVCodecContext};
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
 use std::collections::HashSet;
+use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,7 +35,7 @@ pub fn convert_bitmap_subtitles_to_srt(
     input_file: &CStr,
     work_dir: &Path,
     sub_mode: SubMode,
-    default_language: &str,
+    default_language: Option<&str>,
 ) -> Result<Vec<OcrSubtitleTrack>> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(Vec::new());
@@ -53,12 +54,14 @@ pub fn convert_bitmap_subtitles_to_srt(
         .to_str()
         .map_err(|_| anyhow!("Input path must be valid UTF-8 for OCR side pass"))?
         .to_string();
+    let system_language = detect_system_ocr_language();
 
     let mut tracks = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let resolved_lang = resolve_ocr_language(
             candidate.language_tag.as_deref(),
             default_language,
+            system_language.as_deref(),
             &available_langs,
         );
         let srt_path = work_dir.join(format!("stream-{}.srt", candidate.stream_index));
@@ -208,7 +211,10 @@ fn ocr_single_stream(
         }
     }
     if !applied_codecpar {
-        bail!("subtitle stream {} codec parameters unavailable", stream_index);
+        bail!(
+            "subtitle stream {} codec parameters unavailable",
+            stream_index
+        );
     }
     decode_context.set_time_base(stream_time_base);
     decode_context.open(None)?;
@@ -570,7 +576,8 @@ fn extract_language_tag_from_metadata(dict: &rsmpeg::avutil::AVDictionary) -> Op
 
 fn resolve_ocr_language(
     tag: Option<&str>,
-    default_lang: &str,
+    default_lang: Option<&str>,
+    system_lang: Option<&str>,
     available: &HashSet<String>,
 ) -> String {
     let mapped = tag
@@ -581,10 +588,18 @@ fn resolve_ocr_language(
         return code;
     }
 
-    let default_mapped =
-        map_language_tag_to_tesseract(default_lang).unwrap_or_else(|| "eng".to_string());
-    if available.contains(&default_mapped) {
-        return default_mapped;
+    if let Some(configured) = default_lang
+        .and_then(map_language_tag_to_tesseract)
+        .filter(|code| available.contains(code))
+    {
+        return configured;
+    }
+
+    if let Some(system) = system_lang
+        .and_then(map_language_tag_to_tesseract)
+        .filter(|code| available.contains(code))
+    {
+        return system;
     }
 
     if available.contains("eng") {
@@ -596,6 +611,30 @@ fn resolve_ocr_language(
         .next()
         .cloned()
         .unwrap_or_else(|| "eng".to_string())
+}
+
+fn detect_system_ocr_language() -> Option<String> {
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(raw) = env::var_os(var) {
+            let val = raw.to_string_lossy().trim().to_string();
+            if val.is_empty() {
+                continue;
+            }
+            let normalized = val
+                .split('.')
+                .next()
+                .unwrap_or(&val)
+                .split('@')
+                .next()
+                .unwrap_or(&val)
+                .trim()
+                .to_string();
+            if !normalized.is_empty() {
+                return Some(normalized);
+            }
+        }
+    }
+    None
 }
 
 fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
@@ -758,5 +797,30 @@ mod tests {
             Some("por".to_string())
         );
         assert_eq!(map_language_tag_to_tesseract(""), None);
+    }
+
+    #[test]
+    fn resolve_language_prefers_stream_metadata_then_config_then_system_then_english() {
+        let available = ["eng", "spa", "fra"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            resolve_ocr_language(Some("spa"), Some("eng"), Some("fr_FR.UTF-8"), &available),
+            "spa"
+        );
+        assert_eq!(
+            resolve_ocr_language(None, Some("fra"), Some("en_US.UTF-8"), &available),
+            "fra"
+        );
+        assert_eq!(
+            resolve_ocr_language(None, None, Some("fr_FR.UTF-8"), &available),
+            "fra"
+        );
+        assert_eq!(
+            resolve_ocr_language(None, None, Some("zz_ZZ"), &available),
+            "eng"
+        );
     }
 }

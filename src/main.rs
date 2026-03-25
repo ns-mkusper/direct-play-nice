@@ -2180,12 +2180,8 @@ struct Args {
     sub_mode: SubMode,
 
     /// Default Tesseract language code used when subtitle stream language is missing (e.g. eng, spa, jpn).
-    #[arg(
-        long = "ocr-default-language",
-        default_value = "eng",
-        id = "ocr_default_language"
-    )]
-    ocr_default_language: String,
+    #[arg(long = "ocr-default-language", id = "ocr_default_language")]
+    ocr_default_language: Option<String>,
 
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
     #[arg(
@@ -2550,7 +2546,7 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
 
     if !cli_value_provided(matches, "ocr_default_language") {
         if let Some(default_language) = cfg.ocr_default_language.as_ref() {
-            args.ocr_default_language = default_language.clone();
+            args.ocr_default_language = Some(default_language.clone());
         }
     }
 
@@ -5282,7 +5278,7 @@ fn run_conversion(
                 input_file,
                 output_file,
                 args.sub_mode,
-                &args.ocr_default_language,
+                args.ocr_default_language.as_deref(),
             )?;
             Ok(outcome)
         });
@@ -5364,7 +5360,7 @@ fn post_process_ocr_subtitles(
     input_file: &CStr,
     output_file: &CStr,
     sub_mode: SubMode,
-    default_ocr_language: &str,
+    default_ocr_language: Option<&str>,
 ) -> Result<()> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(());
