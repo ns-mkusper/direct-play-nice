@@ -98,8 +98,25 @@ jobs:
         with:
           prefix-key: linux-vcpkg-v3-ffmpeg8
 
+      - name: Cache vcpkg workspace (cross-branch)
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-root-linux-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            vcpkg-root-linux-
+
       - name: Build vcpkg dependencies
         env:
+          VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
