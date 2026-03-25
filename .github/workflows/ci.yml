@@ -180,6 +180,9 @@ jobs:
     name: Test (Windows MSVC)
     if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: write
     env:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}\\target\\vcpkg
@@ -252,12 +255,27 @@ jobs:
         if: steps.vcpkg-root-cache-win.outputs.cache-hit != 'true'
         shell: pwsh
         env:
-          VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_FEATURE_FLAGS: manifests
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
           VCPKG_MAX_CONCURRENCY: 2
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-        run: cargo vcpkg --verbose build
+        run: |
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "vcpkg build attempt $attempt/$maxAttempts"
+            cargo vcpkg --verbose build
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "vcpkg build succeeded"
+              break
+            }
+            if ($attempt -eq $maxAttempts) {
+              Write-Host "vcpkg build failed after $maxAttempts attempts"
+              exit $LASTEXITCODE
+            }
+            $sleepSeconds = 30 * $attempt
+            Write-Host "vcpkg build failed (exit $LASTEXITCODE). Retrying in $sleepSeconds seconds..."
+            Start-Sleep -Seconds $sleepSeconds
+          }
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
