@@ -80,19 +80,6 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: cargo install cargo-vcpkg --locked
 
-      - name: Resolve rusty_ffmpeg prebuilt bindings
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fetch
-          CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
-          BINDING_PATH=$(find "$CARGO_HOME_DIR/registry/src" -type f -path "*/rusty_ffmpeg-0.16.7*/src/binding.rs" | head -n1)
-          if [ -z "$BINDING_PATH" ]; then
-            echo "Failed to resolve rusty_ffmpeg prebuilt binding.rs"
-            exit 1
-          fi
-          echo "FFMPEG_BINDING_PATH=$BINDING_PATH" >> "$GITHUB_ENV"
-
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -124,6 +111,9 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL: 2
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: cargo vcpkg --verbose build
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
