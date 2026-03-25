@@ -1,6 +1,7 @@
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, PrimaryVideoCriteria, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+    AudioQuality, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy, VideoCodecPreference,
+    VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -27,6 +28,8 @@ pub struct Config {
     pub primary_video_criteria: Option<PrimaryVideoCriteria>,
     pub servarr_output_extension: Option<String>,
     pub servarr_output_suffix: Option<String>,
+    pub sub_mode: Option<SubMode>,
+    pub ocr_default_language: Option<String>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
@@ -195,5 +198,22 @@ mod tests {
             Some(val) => env::set_var("HOME", val),
             None => env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn parses_subtitle_ocr_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            sub_mode = "force"
+            ocr_default_language = "spa"
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.sub_mode, Some(SubMode::Force));
+        assert_eq!(cfg.ocr_default_language.as_deref(), Some("spa"));
     }
 }

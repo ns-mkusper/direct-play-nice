@@ -33,6 +33,7 @@ mod logging;
 mod plex;
 mod servarr;
 mod streaming_devices;
+mod subtitle_ocr;
 mod throttle;
 
 use gpu::{
@@ -1792,6 +1793,14 @@ pub enum UnsupportedVideoPolicy {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum SubMode {
+    Auto,
+    Force,
+    Skip,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
@@ -2161,6 +2170,23 @@ struct Args {
     )]
     servarr_output_suffix: String,
 
+    /// Subtitle handling mode: auto converts bitmap subs via OCR, force processes all subtitle streams as text, skip disables subtitle processing.
+    #[arg(
+        long = "sub-mode",
+        value_enum,
+        default_value_t = SubMode::Auto,
+        id = "sub_mode"
+    )]
+    sub_mode: SubMode,
+
+    /// Default Tesseract language code used when subtitle stream language is missing (e.g. eng, spa, jpn).
+    #[arg(
+        long = "ocr-default-language",
+        default_value = "eng",
+        id = "ocr_default_language"
+    )]
+    ocr_default_language: String,
+
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
     #[arg(
         long = "delete-source",
@@ -2513,6 +2539,18 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     if !cli_value_provided(matches, "servarr_output_suffix") {
         if let Some(suffix) = cfg.servarr_output_suffix.as_ref() {
             args.servarr_output_suffix = suffix.clone();
+        }
+    }
+
+    if !cli_value_provided(matches, "sub_mode") {
+        if let Some(sub_mode) = cfg.sub_mode {
+            args.sub_mode = sub_mode;
+        }
+    }
+
+    if !cli_value_provided(matches, "ocr_default_language") {
+        if let Some(default_language) = cfg.ocr_default_language.as_ref() {
+            args.ocr_default_language = default_language.clone();
         }
     }
 
@@ -3331,6 +3369,8 @@ impl ConversionOutcome {
 
 fn assess_direct_play_compatibility(
     input_file: &CStr,
+    target_is_mp4: bool,
+    sub_mode: SubMode,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
     h264_constraints: Option<(H264Profile, H264Level)>,
@@ -3494,6 +3534,21 @@ fn assess_direct_play_compatibility(
         }
     }
 
+    if target_is_mp4 && !matches!(sub_mode, SubMode::Skip) {
+        for stream in &streams {
+            let codecpar = stream.codecpar();
+            if codecpar.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
+                && is_image_based_subtitle(codecpar.codec_id)
+            {
+                reasons.push(format!(
+                    "bitmap subtitle stream {} requires OCR conversion for MP4 direct-play",
+                    stream.index
+                ));
+                break;
+            }
+        }
+    }
+
     Ok(DirectPlayAssessment {
         compatible: reasons.is_empty(),
         reasons,
@@ -3543,6 +3598,7 @@ mod direct_play_tests {
 fn convert_video_file(
     input_file: &CStr,
     output_file: &CStr,
+    sub_mode: SubMode,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
     h264_constraints: Option<(H264Profile, H264Level)>,
@@ -3869,19 +3925,25 @@ fn convert_video_file(
             }
         }
 
-        if decode_context.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
-            && target_is_mp4
-            && is_image_based_subtitle(decode_context.codec_id)
-        {
-            warn!(
-                "Skipping subtitle stream {} (codec {}) for MP4 output; image-based subtitles are not supported.",
-                stream.index,
-                unsafe {
-                    CStr::from_ptr(ffi::avcodec_get_name(decode_context.codec_id))
-                        .to_string_lossy()
-                }
-            );
-            continue;
+        if decode_context.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+            if matches!(sub_mode, SubMode::Skip) {
+                info!(
+                    "Skipping subtitle stream {} due to --sub-mode=skip",
+                    stream.index
+                );
+                continue;
+            }
+            if target_is_mp4 && is_image_based_subtitle(decode_context.codec_id) {
+                info!(
+                    "Deferring bitmap subtitle stream {} (codec {}) to OCR side pass.",
+                    stream.index,
+                    unsafe {
+                        CStr::from_ptr(ffi::avcodec_get_name(decode_context.codec_id))
+                            .to_string_lossy()
+                    }
+                );
+                continue;
+            }
         }
 
         let mut output_stream = output_format_context.new_stream();
@@ -4407,6 +4469,7 @@ fn cleanup_partial_output(path: &CStr) {
 fn retry_with_software_encoder(
     input_file: &CStr,
     output_file: &CStr,
+    sub_mode: SubMode,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
     h264_constraints: Option<(H264Profile, H264Level)>,
@@ -4422,6 +4485,7 @@ fn retry_with_software_encoder(
     convert_video_file(
         input_file,
         output_file,
+        sub_mode,
         target_video_codec,
         target_audio_codec,
         h264_constraints,
@@ -4443,6 +4507,7 @@ fn handle_hw_profile_mismatch(
     args: &Args,
     input_file: &CStr,
     output_file: &CStr,
+    sub_mode: SubMode,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
     h264_constraints: Option<(H264Profile, H264Level)>,
@@ -4475,6 +4540,7 @@ fn handle_hw_profile_mismatch(
     retry_with_software_encoder(
         input_file,
         output_file,
+        sub_mode,
         target_video_codec,
         target_audio_codec,
         h264_constraints,
@@ -4495,6 +4561,7 @@ fn handle_hw_encoder_init_error(
     args: &Args,
     input_file: &CStr,
     output_file: &CStr,
+    sub_mode: SubMode,
     target_video_codec: ffi::AVCodecID,
     target_audio_codec: ffi::AVCodecID,
     h264_constraints: Option<(H264Profile, H264Level)>,
@@ -4514,6 +4581,7 @@ fn handle_hw_encoder_init_error(
     retry_with_software_encoder(
         input_file,
         output_file,
+        sub_mode,
         target_video_codec,
         target_audio_codec,
         h264_constraints,
@@ -5086,9 +5154,17 @@ fn run_conversion(
         .as_ref()
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
+    let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
+    let target_is_mp4 = output_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "m4v"))
+        .unwrap_or(false);
 
     match assess_direct_play_compatibility(
         input_file,
+        target_is_mp4,
+        args.sub_mode,
         target_video_codec,
         common_audio_codec,
         h264_constraints,
@@ -5122,6 +5198,7 @@ fn run_conversion(
     let mut conversion_result = convert_video_file(
         input_file,
         output_file,
+        args.sub_mode,
         target_video_codec,
         common_audio_codec,
         h264_constraints,
@@ -5144,6 +5221,7 @@ fn run_conversion(
                     &args,
                     input_file,
                     output_file,
+                    args.sub_mode,
                     target_video_codec,
                     common_audio_codec,
                     h264_constraints,
@@ -5157,6 +5235,7 @@ fn run_conversion(
                         &args,
                         input_file,
                         output_file,
+                        args.sub_mode,
                         target_video_codec,
                         common_audio_codec,
                         h264_constraints,
@@ -5175,6 +5254,7 @@ fn run_conversion(
                             retry_with_software_encoder(
                                 input_file,
                                 output_file,
+                                args.sub_mode,
                                 target_video_codec,
                                 common_audio_codec,
                                 h264_constraints,
@@ -5194,6 +5274,18 @@ fn run_conversion(
         } else {
             conversion_result = Err(err0);
         }
+    }
+
+    if conversion_result.is_ok() && target_is_mp4 {
+        conversion_result = conversion_result.and_then(|outcome| {
+            post_process_ocr_subtitles(
+                input_file,
+                output_file,
+                args.sub_mode,
+                &args.ocr_default_language,
+            )?;
+            Ok(outcome)
+        });
     }
 
     match (plan, conversion_result) {
@@ -5268,6 +5360,51 @@ fn run_conversion(
     }
 }
 
+fn post_process_ocr_subtitles(
+    input_file: &CStr,
+    output_file: &CStr,
+    sub_mode: SubMode,
+    default_ocr_language: &str,
+) -> Result<()> {
+    if matches!(sub_mode, SubMode::Skip) {
+        return Ok(());
+    }
+
+    let mut ocr_work_dir = std::env::temp_dir();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    ocr_work_dir.push(format!(
+        "direct-play-nice-ocr-{}-{}",
+        std::process::id(),
+        now
+    ));
+    fs::create_dir_all(&ocr_work_dir).with_context(|| {
+        format!(
+            "creating OCR temporary directory '{}'",
+            ocr_work_dir.display()
+        )
+    })?;
+
+    let tracks = subtitle_ocr::convert_bitmap_subtitles_to_srt(
+        input_file,
+        &ocr_work_dir,
+        sub_mode,
+        default_ocr_language,
+    )?;
+    subtitle_ocr::mux_srt_tracks_into_mp4(output_file, &tracks)?;
+
+    if let Err(err) = fs::remove_dir_all(&ocr_work_dir) {
+        debug!(
+            "Failed to clean OCR temporary directory '{}': {}",
+            ocr_work_dir.display(),
+            err
+        );
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
