@@ -98,27 +98,10 @@ jobs:
         with:
           prefix-key: linux-vcpkg-v3-ffmpeg8
 
-      - name: Read pinned vcpkg revision from Cargo.toml
-        id: vcpkg_rev
-        shell: bash
-        run: |
-          set -euo pipefail
-          REV=$(sed -n 's/^rev\s*=\s*"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ -z "$REV" ]; then
-            REV=$(sha256sum Cargo.toml | cut -d' ' -f1)
-          fi
-          echo "rev=$REV" >> "$GITHUB_OUTPUT"
-
-      - name: Cache vcpkg binary artifacts
-        uses: actions/cache@v4
-        with:
-          path: target/vcpkg/bincache
-          key: vcpkg-bincache-linux-${{ steps.vcpkg_rev.outputs.rev }}
-
       - name: Build vcpkg dependencies
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/target/vcpkg/bincache,readwrite
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
           VCPKG_MAX_CONCURRENCY: 2
           CMAKE_BUILD_PARALLEL_LEVEL: 2
@@ -135,12 +118,9 @@ jobs:
             target/vcpkg/buildtrees/**/*.txt
           retention-days: 7
 
-      - name: Compile tests (no run)
+      - name: Run tests
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-        run: cargo test --no-run --verbose
-
-      - name: Run tests
         run: cargo test -q
 
       - name: sccache stats
