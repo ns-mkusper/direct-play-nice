@@ -1447,11 +1447,11 @@ mod video_tests {
     use std::process::Command;
     use tempfile::tempdir;
 
-    fn ensure_ffmpeg_present() {
+    fn ffmpeg_present() -> bool {
         let out = Command::new("ffmpeg").arg("-version").output();
         match out {
-            Ok(o) if o.status.success() => {}
-            _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
+            Ok(o) if o.status.success() => true,
+            _ => false,
         }
     }
 
@@ -1569,7 +1569,10 @@ mod video_tests {
 
     #[test]
     fn verify_output_detects_nvenc_mismatch() {
-        ensure_ffmpeg_present();
+        if !ffmpeg_present() {
+            eprintln!("skipping verify_output_detects_nvenc_mismatch: ffmpeg not found on PATH");
+            return;
+        }
         let tmp = tempdir().expect("tempdir");
         let output = tmp.path().join("nvenc_mismatch.mp4");
         let status = std::process::Command::new("ffmpeg")
