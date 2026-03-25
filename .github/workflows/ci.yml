@@ -104,6 +104,7 @@ jobs:
       - name: Build vcpkg dependencies
         env:
           VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+          VCPKG_BUILD_TYPE: release
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
