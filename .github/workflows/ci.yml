@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get --assume-yes install nasm ffmpeg
+          sudo apt-get --assume-yes install nasm ffmpeg autoconf autoconf-archive automake libtool
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
@@ -112,8 +112,7 @@ jobs:
         if: steps.vcpkg-root-cache.outputs.cache-hit != 'true'
         env:
           VCPKG_BUILD_TYPE: release
-          VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_FEATURE_FLAGS: manifests
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
           VCPKG_MAX_CONCURRENCY: 2
           CMAKE_BUILD_PARALLEL_LEVEL: 2
