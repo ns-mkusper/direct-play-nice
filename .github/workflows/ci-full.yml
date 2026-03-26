@@ -105,7 +105,7 @@ jobs:
                 continue
               fi
               if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
-                echo "Unexpected vcpkg origin in $dir: $origin"
+                echo "Unexpected vcpkg origin in : $origin"
                 rm -rf "$dir"
                 cache_invalid=1
               fi
@@ -280,13 +280,13 @@ jobs:
                   continue
                 }
                 if ($origin -ne "https://github.com/microsoft/vcpkg.git" -and $origin -ne "https://github.com/microsoft/vcpkg") {
-                  Write-Host "Unexpected vcpkg origin in $dir: $origin"
+                  Write-Host "Unexpected vcpkg origin in : $origin"
                   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
                   $cacheInvalid = $true
                 }
               }
             } catch {
-              Write-Host "Failed to validate vcpkg origin in $dir: $($_.Exception.Message)"
+              Write-Host "Failed to validate vcpkg origin in : $($_.Exception.Message)"
               Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
               $cacheInvalid = $true
             }
@@ -464,7 +464,7 @@ jobs:
                 continue
               fi
               if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
-                echo "Unexpected vcpkg origin in $dir: $origin"
+                echo "Unexpected vcpkg origin in : $origin"
                 rm -rf "$dir"
                 cache_invalid=1
               fi
