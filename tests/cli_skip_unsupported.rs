@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Integration tests for skipping non-supported/auxiliary stream types
 //!
 //! Validates that the CLI handles containers with attachments and

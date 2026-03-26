@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;

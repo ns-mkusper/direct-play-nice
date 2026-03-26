@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Ensure sane defaults when no configuration file is available.
 
 #[path = "common/mod.rs"]
@@ -49,7 +51,11 @@ fn assert_no_config_output_sane(
     output: &PathBuf,
     in_dur_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    assert!(output.exists(), "expected output file {:?} to be created", output);
+    assert!(
+        output.exists(),
+        "expected output file {:?} to be created",
+        output
+    );
 
     let output_cstr = CString::new(output.to_string_lossy().to_string())?;
     let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
@@ -128,12 +134,7 @@ fn converts_with_sane_defaults_when_config_missing() -> Result<(), Box<dyn std::
     let (input, in_dur_ms) = common::gen_odd_width_input(&tmp);
     let output_default = tmp.path().join("out_default.mp4");
 
-    run_no_config_conversion(
-        &input,
-        &output_default,
-        &["--hw-accel", "none"],
-        tmp.path(),
-    )?;
+    run_no_config_conversion(&input, &output_default, &["--hw-accel", "none"], tmp.path())?;
     assert_no_config_output_sane(&output_default, in_dur_ms)?;
 
     let output_all = tmp.path().join("out_all.mp4");

@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Integration test: converts an input with VobSub (dvd_subtitle)
 //! bitmap subtitles and verifies the output is Chromecast direct‑play
 //! compatible with MOV_TEXT subs and stable timing.

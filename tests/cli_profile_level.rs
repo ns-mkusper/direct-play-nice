@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 mod common;
 
 use common::{ensure_ffmpeg_present, gen_h264_high_input, read_video_profile_level};

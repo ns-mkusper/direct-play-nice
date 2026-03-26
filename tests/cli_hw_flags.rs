@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! GPU acceleration: flag smoke tests
 //!
 //! These tests exercise `--hw-accel` with `auto` and `none` to ensure the

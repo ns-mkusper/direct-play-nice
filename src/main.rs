@@ -21,7 +21,6 @@ use std::{
     fs,
     os::raw::c_void,
     path::{Path, PathBuf},
-    process::Command,
     ptr,
     sync::atomic::{AtomicI64, Ordering},
 };
@@ -365,49 +364,6 @@ fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
     }
 }
 
-fn probe_with_ffprobe(path: &Path) -> Option<(H264Profile, H264Level)> {
-    let output = Command::new("ffprobe")
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("v:0")
-        .arg("-show_entries")
-        .arg("stream=profile,level")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
-        .arg(path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let profile_str = lines.next()?;
-    let level_str = lines.next()?;
-
-    let profile = match profile_str.to_ascii_lowercase().as_str() {
-        "baseline" => H264Profile::Baseline,
-        "main" => H264Profile::Main,
-        "extended" => H264Profile::Extended,
-        "high" => H264Profile::High,
-        "high10" | "high 10" | "high_10" => H264Profile::High10,
-        "high422" | "high 4:2:2" | "high_422" => H264Profile::High422,
-        "high444" | "high 4:4:4" | "high_444" => H264Profile::High444,
-        _ => return None,
-    };
-
-    let level_value: i32 = level_str.parse().ok()?;
-    let level = H264Level::try_from(level_value).ok()?;
-
-    Some((profile, level))
-}
-
 #[derive(Debug)]
 struct HwProfileLevelMismatch {
     encoder: String,
@@ -534,38 +490,24 @@ fn verify_output_h264_profile_level(
     used_hw_encoder: bool,
 ) -> Result<H264Verification> {
     let display_path = output_path.display().to_string();
-    let (actual_profile_ffprobe, actual_level_ffprobe) = match probe_with_ffprobe(output_path) {
-        Some(values) => {
-            debug!(
-                "ffprobe reported H.264 profile {:?} level {:?} for '{}'",
-                values.0, values.1, display_path
-            );
-            (Some(values.0), Some(values.1))
-        }
-        None => {
-            let input_ctx = AVFormatContextInput::open(output_file).with_context(|| {
-                format!("Opening '{}' to verify H.264 profile/level", display_path)
-            })?;
+    let input_ctx = AVFormatContextInput::open(output_file).with_context(|| {
+        format!("Opening '{}' to verify H.264 profile/level", display_path)
+    })?;
 
-            let mut profile: Option<H264Profile> = None;
-            let mut level: Option<H264Level> = None;
+    let mut actual_profile: Option<H264Profile> = None;
+    let mut actual_level: Option<H264Level> = None;
 
-            for stream in input_ctx.streams() {
-                if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
-                    continue;
-                }
-                if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
-                    break;
-                }
-                profile = H264Profile::try_from(stream.codecpar().profile).ok();
-                level = H264Level::try_from(stream.codecpar().level).ok();
-                break;
-            }
-            (profile, level)
+    for stream in input_ctx.streams() {
+        if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+            continue;
         }
-    };
-    let actual_profile = actual_profile_ffprobe;
-    let actual_level = actual_level_ffprobe;
+        if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
+            break;
+        }
+        actual_profile = H264Profile::try_from(stream.codecpar().profile).ok();
+        actual_level = H264Level::try_from(stream.codecpar().level).ok();
+        break;
+    }
 
     match (actual_profile, actual_level) {
         (Some(profile), Some(level)) if profile == expected_profile && level == expected_level => {
@@ -1804,6 +1746,21 @@ pub enum SubMode {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum OcrEngine {
+    Tesseract,
+    PpOcrV4,
+    External,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OcrFormat {
+    Srt,
+    Ass,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
@@ -2186,6 +2143,28 @@ struct Args {
     #[arg(long = "ocr-default-language", id = "ocr_default_language")]
     ocr_default_language: Option<String>,
 
+    /// OCR backend to use for bitmap subtitle conversion.
+    #[arg(
+        long = "ocr-engine",
+        value_enum,
+        default_value_t = OcrEngine::Tesseract,
+        id = "ocr_engine"
+    )]
+    ocr_engine: OcrEngine,
+
+    /// OCR output format: srt (text only) or ass (positioned, colored).
+    #[arg(
+        long = "ocr-format",
+        value_enum,
+        default_value_t = OcrFormat::Srt,
+        id = "ocr_format"
+    )]
+    ocr_format: OcrFormat,
+
+    /// Shell command used when --ocr-engine=external. The command receives DPN_OCR_IMAGE and DPN_OCR_LANGUAGE env vars and must print recognized text to stdout.
+    #[arg(long = "ocr-external-command", id = "ocr_external_command", hide = true)]
+    ocr_external_command: Option<String>,
+
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
     #[arg(
         long = "delete-source",
@@ -2550,6 +2529,24 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     if !cli_value_provided(matches, "ocr_default_language") {
         if let Some(default_language) = cfg.ocr_default_language.as_ref() {
             args.ocr_default_language = Some(default_language.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "ocr_engine") {
+        if let Some(ocr_engine) = cfg.ocr_engine {
+            args.ocr_engine = ocr_engine;
+        }
+    }
+
+    if !cli_value_provided(matches, "ocr_format") {
+        if let Some(ocr_format) = cfg.ocr_format {
+            args.ocr_format = ocr_format;
+        }
+    }
+
+    if !cli_value_provided(matches, "ocr_external_command") {
+        if let Some(ocr_external_command) = cfg.ocr_external_command.as_ref() {
+            args.ocr_external_command = Some(ocr_external_command.clone());
         }
     }
 
@@ -3932,7 +3929,7 @@ fn convert_video_file(
                 );
                 continue;
             }
-            if target_is_mp4 && is_image_based_subtitle(decode_context.codec_id) {
+            if is_image_based_subtitle(decode_context.codec_id) {
                 info!(
                     "Deferring bitmap subtitle stream {} (codec {}) to OCR side pass.",
                     stream.index,
@@ -5154,12 +5151,16 @@ fn run_conversion(
         .map(|s| s.as_c_str())
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
     let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
-    let target_is_mp4 = output_path
+    let output_extension = output_path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "m4v"))
-        .unwrap_or(false);
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    let target_is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
+    let output_is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
+    let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
 
+    let mut needs_conversion = true;
     match assess_direct_play_compatibility(
         input_file,
         target_is_mp4,
@@ -5175,14 +5176,21 @@ fn run_conversion(
     ) {
         Ok(assessment) => {
             if assessment.compatible {
+                if !should_ocr {
+                    info!(
+                        "Input is already direct-play compatible for the requested devices; skipping conversion."
+                    );
+                    return Ok(());
+                }
                 info!(
-                    "Input is already direct-play compatible for the requested devices; skipping conversion."
+                    "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
                 );
-                return Ok(());
-            }
-            info!("Transcoding required to satisfy requested device constraints.");
-            for reason in assessment.reasons {
-                info!("  - {}", reason);
+                needs_conversion = false;
+            } else {
+                info!("Transcoding required to satisfy requested device constraints.");
+                for reason in assessment.reasons {
+                    info!("  - {}", reason);
+                }
             }
         }
         Err(err) => {
@@ -5192,48 +5200,53 @@ fn run_conversion(
             );
         }
     }
-    let _conversion_slot = acquire_slot()?;
 
-    let mut conversion_result = convert_video_file(
-        input_file,
-        output_file,
-        args.sub_mode,
-        target_video_codec,
-        common_audio_codec,
-        h264_constraints,
-        min_fps,
-        min_resolution,
-        &quality_limits,
-        args.unsupported_video_policy,
-        args.primary_video_stream_index,
-        args.primary_video_criteria,
-        args.video_quality,
-        args.audio_quality,
-        args.hw_accel,
-    );
+    let temp_output_cstring = if needs_conversion && output_is_mkv {
+        let stem = output_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let tmp_path = output_path.with_file_name(format!("{stem}.conv.mp4"));
+        Some(CString::new(tmp_path.to_string_lossy().to_string())?)
+    } else {
+        None
+    };
+    let conversion_output_file = temp_output_cstring
+        .as_ref()
+        .map(|c| c.as_c_str())
+        .unwrap_or(output_file);
+    let mut conversion_result = if needs_conversion {
+        let _conversion_slot = acquire_slot()?;
+        convert_video_file(
+            input_file,
+            conversion_output_file,
+            args.sub_mode,
+            target_video_codec,
+            common_audio_codec,
+            h264_constraints,
+            min_fps,
+            min_resolution,
+            &quality_limits,
+            args.unsupported_video_policy,
+            args.primary_video_stream_index,
+            args.primary_video_criteria,
+            args.video_quality,
+            args.audio_quality,
+            args.hw_accel,
+        )
+    } else {
+        Ok(ConversionOutcome::default())
+    };
 
-    if let Err(err0) = conversion_result {
-        if target_video_codec == ffi::AV_CODEC_ID_H264 {
-            conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
-                Ok(mismatch) => handle_hw_profile_mismatch(
-                    mismatch,
-                    &args,
-                    input_file,
-                    output_file,
-                    args.sub_mode,
-                    target_video_codec,
-                    common_audio_codec,
-                    h264_constraints,
-                    min_fps,
-                    min_resolution,
-                    &quality_limits,
-                ),
-                Err(err1) => match err1.downcast::<HwEncoderInitError>() {
-                    Ok(init_err) => handle_hw_encoder_init_error(
-                        init_err,
+    if needs_conversion {
+        if let Err(err0) = conversion_result {
+            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+                conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
+                    Ok(mismatch) => handle_hw_profile_mismatch(
+                        mismatch,
                         &args,
                         input_file,
-                        output_file,
+                        conversion_output_file,
                         args.sub_mode,
                         target_video_codec,
                         common_audio_codec,
@@ -5242,49 +5255,82 @@ fn run_conversion(
                         min_resolution,
                         &quality_limits,
                     ),
-                    Err(err2) => match err2.downcast::<DecoderError>() {
-                        Ok(dec_err) => Err(anyhow!(dec_err)),
-                        Err(err3) => {
-                            warn!(
-                                "NVENC initialization failed ({}); retrying with software encoder",
-                                err3
-                            );
-                            cleanup_partial_output(output_file);
-                            retry_with_software_encoder(
-                                input_file,
-                                output_file,
-                                args.sub_mode,
-                                target_video_codec,
-                                common_audio_codec,
-                                h264_constraints,
-                                min_fps,
-                                min_resolution,
-                                &quality_limits,
-                                args.unsupported_video_policy,
-                                args.primary_video_stream_index,
-                                args.primary_video_criteria,
-                                args.video_quality,
-                                args.audio_quality,
-                            )
-                        }
+                    Err(err1) => match err1.downcast::<HwEncoderInitError>() {
+                        Ok(init_err) => handle_hw_encoder_init_error(
+                            init_err,
+                            &args,
+                            input_file,
+                            conversion_output_file,
+                            args.sub_mode,
+                            target_video_codec,
+                            common_audio_codec,
+                            h264_constraints,
+                            min_fps,
+                            min_resolution,
+                            &quality_limits,
+                        ),
+                        Err(err2) => match err2.downcast::<DecoderError>() {
+                            Ok(dec_err) => Err(anyhow!(dec_err)),
+                            Err(err3) => {
+                                warn!(
+                                    "NVENC initialization failed ({}); retrying with software encoder",
+                                    err3
+                                );
+                                cleanup_partial_output(conversion_output_file);
+                                retry_with_software_encoder(
+                                    input_file,
+                                    conversion_output_file,
+                                    args.sub_mode,
+                                    target_video_codec,
+                                    common_audio_codec,
+                                    h264_constraints,
+                                    min_fps,
+                                    min_resolution,
+                                    &quality_limits,
+                                    args.unsupported_video_policy,
+                                    args.primary_video_stream_index,
+                                    args.primary_video_criteria,
+                                    args.video_quality,
+                                    args.audio_quality,
+                                )
+                            }
+                        },
                     },
-                },
-            };
-        } else {
-            conversion_result = Err(err0);
+                };
+            } else {
+                conversion_result = Err(err0);
+            }
         }
     }
 
-    if conversion_result.is_ok() && target_is_mp4 {
+    if conversion_result.is_ok() && should_ocr {
+        let mux_source_file = if needs_conversion {
+            conversion_output_file
+        } else {
+            input_file
+        };
         conversion_result = conversion_result.and_then(|outcome| {
             post_process_ocr_subtitles(
                 input_file,
+                mux_source_file,
                 output_file,
                 args.sub_mode,
                 args.ocr_default_language.as_deref(),
+                args.ocr_engine,
+                args.ocr_format,
+                args.ocr_external_command.as_deref(),
             )?;
             Ok(outcome)
         });
+    } else if conversion_result.is_ok() && needs_conversion && output_is_mkv {
+        subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
+    }
+
+    if let Some(tmp_cstr) = temp_output_cstring.as_ref() {
+        let tmp_path = PathBuf::from(tmp_cstr.to_string_lossy().into_owned());
+        if tmp_path != output_path {
+            let _ = fs::remove_file(&tmp_path);
+        }
     }
 
     match (plan, conversion_result) {
@@ -5361,9 +5407,13 @@ fn run_conversion(
 
 fn post_process_ocr_subtitles(
     input_file: &CStr,
+    mux_source_file: &CStr,
     output_file: &CStr,
     sub_mode: SubMode,
     default_ocr_language: Option<&str>,
+    ocr_engine: OcrEngine,
+    ocr_format: OcrFormat,
+    ocr_external_command: Option<&str>,
 ) -> Result<()> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(());
@@ -5386,13 +5436,16 @@ fn post_process_ocr_subtitles(
         )
     })?;
 
-    let tracks = subtitle_ocr::convert_bitmap_subtitles_to_srt(
+    let tracks = subtitle_ocr::convert_bitmap_subtitles(
         input_file,
         &ocr_work_dir,
         sub_mode,
         default_ocr_language,
+        ocr_engine,
+        ocr_format,
+        ocr_external_command,
     )?;
-    subtitle_ocr::mux_srt_tracks_into_mp4(output_file, &tracks)?;
+    subtitle_ocr::mux_text_tracks_from(mux_source_file, output_file, &tracks)?;
 
     if let Err(err) = fs::remove_dir_all(&ocr_work_dir) {
         debug!(

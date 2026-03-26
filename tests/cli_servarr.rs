@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 #[path = "common/mod.rs"]
 mod common;
 

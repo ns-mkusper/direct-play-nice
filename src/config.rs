@@ -1,7 +1,7 @@
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy, VideoCodecPreference,
-    VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,
+    VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -30,6 +30,9 @@ pub struct Config {
     pub servarr_output_suffix: Option<String>,
     pub sub_mode: Option<SubMode>,
     pub ocr_default_language: Option<String>,
+    pub ocr_engine: Option<OcrEngine>,
+    pub ocr_format: Option<OcrFormat>,
+    pub ocr_external_command: Option<String>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
@@ -208,6 +211,9 @@ mod tests {
             r#"
             sub_mode = "force"
             ocr_default_language = "spa"
+            ocr_engine = "external"
+            ocr_format = "ass"
+            ocr_external_command = "python3 /opt/ocr/run.py"
             "#
         )
         .unwrap();
@@ -215,5 +221,11 @@ mod tests {
         let cfg = read_from_path(tmp.path()).unwrap();
         assert_eq!(cfg.sub_mode, Some(SubMode::Force));
         assert_eq!(cfg.ocr_default_language.as_deref(), Some("spa"));
+        assert_eq!(cfg.ocr_engine, Some(OcrEngine::External));
+        assert_eq!(cfg.ocr_format, Some(OcrFormat::Ass));
+        assert_eq!(
+            cfg.ocr_external_command.as_deref(),
+            Some("python3 /opt/ocr/run.py")
+        );
     }
 }

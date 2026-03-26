@@ -1,0 +1,15 @@
+{
+  "expected_text": "SILENCE OCR GOLDEN TEST LINE",
+  "expected_bbox": [
+    29,
+    45,
+    663,
+    80
+  ],
+  "expected_color_rgb": [
+    255,
+    255,
+    0
+  ],
+  "is_italic": false
+}

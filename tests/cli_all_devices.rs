@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Ensure that specifying `-s all` produces a direct-play compatible output.
 
 #[path = "common/mod.rs"]

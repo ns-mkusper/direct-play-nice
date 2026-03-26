@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Integration test: ensure CLI converts a problematic video
 //! into a Chromecast direct‑play compatible MP4 without
 //! breaking duration or stream mappings.

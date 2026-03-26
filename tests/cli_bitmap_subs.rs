@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Integration test: converts an input with bitmap subtitles
 //! and verifies the output is Chromecast direct‑play compatible with
 //! text subs (MOV_TEXT) and intact timing. We prefer PGS, but fall back

@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! GPU acceleration: probe-mode smoke tests
 //!
 //! These tests validate the new hardware probing CLI surfaces. They don't
