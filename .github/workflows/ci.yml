@@ -32,7 +32,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   FULL_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && 'true' || 'false' }}
-  TOOLCHAINS: ${{ ((github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && '["stable","beta","nightly"]' || '["stable"]' }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -51,7 +50,7 @@ jobs:
     strategy:
       max-parallel: 1
       matrix:
-        toolchain: ${{ fromJson(env.TOOLCHAINS) }}
+        toolchain: ${{ fromJson(((github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && '["stable","beta","nightly"]' || '["stable"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
