@@ -113,6 +113,7 @@ jobs:
       - name: Validate vcpkg cache origin
         run: |
           cache_invalid=0
+          expected_rev="$(rg -n '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
           for dir in target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
             if [ -e "$dir/.git" ]; then
               origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
@@ -126,6 +127,14 @@ jobs:
                 echo "Unexpected vcpkg origin in : $origin"
                 rm -rf "$dir"
                 cache_invalid=1
+                continue
+              fi
+              if [ -n "$expected_rev" ]; then
+                if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
+                  echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
+                  rm -rf "$dir"
+                  cache_invalid=1
+                fi
               fi
             fi
           done
@@ -285,6 +294,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $cacheInvalid = $false
+          $expectedRev = $null
+          $revLine = Select-String -Path Cargo.toml -Pattern '^rev = "' | Select-Object -First 1
+          if ($revLine) {
+            $expectedRev = $revLine.Line -replace '^rev = "' -replace '"$',''
+          }
           $dirs = @("target/vcpkg/.vcpkg-root", "target/vcpkg/vcpkg")
           foreach ($dir in $dirs) {
             try {
@@ -300,6 +314,15 @@ jobs:
                   Write-Host "Unexpected vcpkg origin in : $origin"
                   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
                   $cacheInvalid = $true
+                  continue
+                }
+                if ($expectedRev) {
+                  git -C $dir cat-file -e "$expectedRev^{tree}" 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Missing vcpkg rev $expectedRev in $dir; clearing cache entry"
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                    $cacheInvalid = $true
+                  }
                 }
               }
             } catch {
