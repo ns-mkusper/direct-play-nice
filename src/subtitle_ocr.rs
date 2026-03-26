@@ -2332,13 +2332,10 @@ mod tests {
                 panic!("No OCR output for {:?}", path);
             };
 
-            let expected_text: String = expected
-                .expected_text
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            let actual_text: String = line.text.chars().filter(|c| !c.is_whitespace()).collect();
-            let similarity = jaro_winkler(&actual_text, &expected_text);
+            let expected_text = expected.expected_text.trim();
+            let actual_text = line.text.trim();
+            let wer = word_error_rate(expected_text, actual_text);
+            let similarity = 1.0 - wer;
             assert!(
                 similarity > 0.95,
                 "Text similarity too low for {:?}: {}",
