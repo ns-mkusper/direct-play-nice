@@ -99,6 +99,7 @@ jobs:
         with:
           path: |
             target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
             target/vcpkg/downloads
             target/vcpkg/installed
             target/vcpkg/packages
@@ -114,6 +115,11 @@ jobs:
         run: |
           cache_invalid=0
           expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          if [ -e "target/vcpkg" ] && [ ! -e "target/vcpkg/.git" ]; then
+            echo "vcpkg root missing .git; clearing cache entry"
+            rm -rf target/vcpkg
+            cache_invalid=1
+          fi
           for dir in target/vcpkg target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
             if [ -e "$dir/.git" ]; then
               origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
@@ -278,6 +284,7 @@ jobs:
         with:
           path: |
             target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
             target/vcpkg/downloads
             target/vcpkg/installed
             target/vcpkg/packages
@@ -298,6 +305,11 @@ jobs:
           $revLine = Select-String -Path Cargo.toml -Pattern '^rev = "' | Select-Object -First 1
           if ($revLine) {
             $expectedRev = $revLine.Line -replace '^rev = "' -replace '"$',''
+          }
+          if (Test-Path "target/vcpkg" -and -not (Test-Path "target/vcpkg/.git")) {
+            Write-Host "vcpkg root missing .git; clearing cache entry"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
+            $cacheInvalid = $true
           }
           $dirs = @("target/vcpkg", "target/vcpkg/.vcpkg-root", "target/vcpkg/vcpkg")
           foreach ($dir in $dirs) {
@@ -373,6 +385,7 @@ jobs:
         with:
           path: |
             target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
             target/vcpkg/downloads
             target/vcpkg/installed
             target/vcpkg/packages
