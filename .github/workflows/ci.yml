@@ -22,9 +22,17 @@ on:
       - '.prettier*'
       - '.vscode/**'
       - '.idea/**'
+  workflow_dispatch:
+    inputs:
+      full_suite:
+        description: 'Run full CI (beta/nightly + FFmpeg CLI tests)'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
+  FULL_SUITE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && 'true' || 'false' }}
+  TOOLCHAINS: ${{ ((github.event_name == 'workflow_dispatch' && inputs.full_suite == 'true') || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci'))) && '["stable","beta","nightly"]' || '["stable"]' }}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -32,7 +40,7 @@ concurrency:
 
 jobs:
   test:
-    if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]')) }}
     name: Test (Linux) (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
     env:
@@ -43,10 +51,7 @@ jobs:
     strategy:
       max-parallel: 1
       matrix:
-        toolchain:
-          - stable
-          - beta
-          - nightly
+        toolchain: ${{ fromJson(env.TOOLCHAINS) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -209,7 +214,7 @@ jobs:
 
   windows-test:
     name: Test (Windows MSVC)
-    if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]')) }}
     runs-on: windows-latest
     permissions:
       contents: read
@@ -398,7 +403,7 @@ jobs:
 
   ffmpeg-cli-tests:
     name: Test (FFmpeg CLI)
-    if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
+    if: ${{ env.FULL_SUITE == 'true' && (github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]'))) }}
     needs: test
     runs-on: ubuntu-latest
     env:
