@@ -214,7 +214,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}\\target\\vcpkg
-      VCPKGRS_TRIPLET: x64-windows-static
+      VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -255,7 +255,7 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: windows-vcpkg-v2-ffmpeg8
+          prefix-key: windows-vcpkg-v3-ffmpeg8
 
       - name: Cache OCR models
         uses: actions/cache@v4
@@ -276,9 +276,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-windows-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            vcpkg-root-windows-v2-
+            vcpkg-root-windows-v3-
 
       - name: Validate vcpkg cache origin
         shell: pwsh
@@ -357,7 +357,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-windows-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg

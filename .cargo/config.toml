@@ -21,8 +21,6 @@ rustflags = [
   "link-arg=Ole32.lib",
   "-C",
   "link-arg=User32.lib",
-  "-C",
-  "target-feature=+crt-static",
 ]
 
 [env]
@@ -41,5 +39,5 @@ VCPKG_ROOT = "/opt/vcpkg"
 [target.x86_64-pc-windows-msvc.env]
 # Default triplet for vcpkg-rs on Windows; CI/local can override by exporting
 # VCPKGRS_TRIPLET to a different value (e.g., x64-windows-static-md).
-VCPKGRS_TRIPLET = "x64-windows-static"
+VCPKGRS_TRIPLET = "x64-windows-static-md"
 VCPKG_ROOT = "C\\\\src\\\\vcpkg"
