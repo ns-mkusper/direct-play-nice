@@ -1,12 +1,15 @@
+# Golden Subtitle OCR Fixtures
+
 Golden subtitle OCR fixtures live here.
 
 Each fixture should include:
+
 - `name.png` (bitmap subtitle image)
 - `name.json` (expected OCR metadata)
 
 Example JSON schema:
 
-```
+```json
 {
   "expected_text": "HELLO WORLD",
   "expected_bbox": [100, 800, 400, 860],

@@ -109,9 +109,21 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            vcpkg-root-linux-
+            vcpkg-root-linux-v2-
+
+      - name: Validate vcpkg cache origin
+        run: |
+          for dir in target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
+            if [ -d "$dir/.git" ]; then
+              origin=$(git -C "$dir" remote get-url origin || true)
+              if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
+                echo "Unexpected vcpkg origin in $dir: $origin"
+                rm -rf "$dir"
+              fi
+            fi
+          done
 
       - name: Use cached vcpkg workspace
         if: steps.vcpkg-root-cache.outputs.cache-hit == 'true'
@@ -256,9 +268,23 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-windows-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v2-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            vcpkg-root-windows-
+            vcpkg-root-windows-v2-
+
+      - name: Validate vcpkg cache origin
+        shell: pwsh
+        run: |
+          $dirs = @("target/vcpkg/.vcpkg-root", "target/vcpkg/vcpkg")
+          foreach ($dir in $dirs) {
+            if (Test-Path "$dir/.git") {
+              $origin = git -C $dir remote get-url origin
+              if ($origin -ne "https://github.com/microsoft/vcpkg.git" -and $origin -ne "https://github.com/microsoft/vcpkg") {
+                Write-Host "Unexpected vcpkg origin in $dir: $origin"
+                Remove-Item -Recurse -Force $dir
+              }
+            }
+          }
 
       - name: Use cached vcpkg workspace
         if: steps.vcpkg-root-cache-win.outputs.cache-hit == 'true'
@@ -304,7 +330,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-windows-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v2-${{ hashFiles('Cargo.toml') }}
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
