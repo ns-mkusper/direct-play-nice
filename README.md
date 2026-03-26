@@ -177,15 +177,16 @@ direct_play_nice --probe-streams --output json input.mkv
 
 ### Subtitle OCR
 
-Bitmap subtitles (PGS/VobSub/DVD) are not compatible with MP4 direct‑play. When the output
-container is MP4, `direct_play_nice` can OCR those bitmap streams into text subtitles.
+Bitmap subtitles (PGS/VobSub/DVD) are not compatible with MP4 direct‑play. When the
+output container is MP4, `direct_play_nice` can OCR those bitmap streams into text
+subtitles.
 
 Defaults:
 
-- `--sub-mode auto` (default): only bitmap subtitle streams are OCR‑converted; text subtitles
-  are preserved when possible.
-- `--ocr-engine tesseract` (default): uses `tesseract` (LSTM) for OCR when bitmap subtitles
-  exist.
+- `--sub-mode auto` (default): only bitmap subtitle streams are OCR‑converted; text
+  subtitles are preserved when possible.
+- `--ocr-engine tesseract` (default): uses `tesseract` (LSTM) for OCR when bitmap
+  subtitles exist.
 - `--ocr-format srt` (default): emits simple text subtitles (SRT/MOV_TEXT).
 - If no bitmap subtitles are present, no OCR pass is performed.
 
@@ -193,22 +194,23 @@ Enable/override behavior:
 
 - `--sub-mode=skip` disables all subtitle processing (no OCR, no subtitle output).
 - `--sub-mode=force` keeps subtitle processing enabled even if you usually skip it.
-- `--ocr-default-language <lang>` sets a fallback language code (e.g. `eng`, `spa`) when a
-  subtitle stream is missing language metadata.
-- `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is downgraded to
-  `mov_text`; use an MKV output if you want to preserve full ASS styling.
+- `--ocr-default-language <lang>` sets a fallback language code (e.g. `eng`, `spa`)
+  when a subtitle stream is missing language metadata.
+- `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is downgraded
+  to `mov_text`; use an MKV output if you want to preserve full ASS styling.
 
 PP‑OCRv4 (ONNX Runtime):
 
 - `--ocr-engine=ppocrv4` uses a native ONNX Runtime pipeline (PP‑OCRv4) with execution
   provider fallback: CUDA → DirectML → CoreML → CPU.
-- GPU execution providers require the matching runtime libraries (CUDA toolkit for NVIDIA,
-  DirectML on Windows, CoreML on macOS). Missing runtimes fall back to CPU automatically.
+- GPU execution providers require the matching runtime libraries (CUDA toolkit for
+  NVIDIA, DirectML on Windows, CoreML on macOS). Missing runtimes fall back to CPU
+  automatically.
 - Models auto‑download into `models/` next to the executable, or
   `~/.config/direct-play-nice/models/` on Linux (override with `DPN_OCR_MODEL_DIR`).
-- To swap models, drop replacement `.onnx` files into the model directory with the same
-  filenames: `ch_PP-OCRv4_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_infer.onnx`,
-  `en_PP-OCRv4_rec_infer.onnx`.
+- To swap models, drop replacement `.onnx` files into the model directory with the
+  same filenames: `ch_PP-OCRv4_det_infer.onnx`,
+  `ch_ppocr_mobile_v2.0_cls_infer.onnx`, `en_PP-OCRv4_rec_infer.onnx`.
 
 Config file equivalents:
 
