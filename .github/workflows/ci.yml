@@ -229,9 +229,9 @@ jobs:
         with:
           prefix-key: windows-vcpkg-v2-ffmpeg8
 
-      - name: Cache vcpkg workspace (cross-branch)
+      - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-win
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -276,6 +276,21 @@ jobs:
             Write-Host "vcpkg build failed (exit $LASTEXITCODE). Retrying in $sleepSeconds seconds..."
             Start-Sleep -Seconds $sleepSeconds
           }
+
+      - name: Save vcpkg workspace cache
+        if: steps.vcpkg-root-cache-win.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-root-windows-${{ hashFiles('Cargo.toml') }}
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
