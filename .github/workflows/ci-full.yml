@@ -95,7 +95,7 @@ jobs:
       - name: Validate vcpkg cache origin
         run: |
           cache_invalid=0
-          expected_rev="$(rg -n '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
           for dir in target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
             if [ -e "$dir/.git" ]; then
               origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
@@ -477,7 +477,7 @@ jobs:
       - name: Validate vcpkg cache origin
         run: |
           cache_invalid=0
-          expected_rev="$(rg -n '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
           for dir in target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
             if [ -e "$dir/.git" ]; then
               origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)

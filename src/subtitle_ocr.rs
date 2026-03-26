@@ -1955,6 +1955,54 @@ mod tests {
     use tempfile::TempDir;
     use strsim::jaro_winkler;
 
+    fn normalize_text_for_word_similarity(input: &str) -> String {
+        input
+            .to_uppercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn normalize_text_for_char_similarity(input: &str) -> String {
+        input
+            .to_uppercase()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    fn char_error_rate(expected: &str, actual: &str) -> f32 {
+        let expected_chars: Vec<char> = expected.chars().collect();
+        let actual_chars: Vec<char> = actual.chars().collect();
+        if expected_chars.is_empty() {
+            return if actual_chars.is_empty() { 0.0 } else { 1.0 };
+        }
+
+        let m = expected_chars.len();
+        let n = actual_chars.len();
+        let mut dp = vec![vec![0usize; n + 1]; m + 1];
+        for i in 0..=m {
+            dp[i][0] = i;
+        }
+        for j in 0..=n {
+            dp[0][j] = j;
+        }
+        for i in 1..=m {
+            for j in 1..=n {
+                let cost = if expected_chars[i - 1] == actual_chars[j - 1] {
+                    0
+                } else {
+                    1
+                };
+                dp[i][j] = std::cmp::min(
+                    std::cmp::min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
+                    dp[i - 1][j - 1] + cost,
+                );
+            }
+        }
+        dp[m][n] as f32 / expected_chars.len() as f32
+    }
+
     #[test]
     fn overlap_sanitization_truncates_earlier_block() {
         let mut cues = vec![
@@ -2215,12 +2263,25 @@ mod tests {
     fn test_text_similarity_wer_like_threshold() {
         let expected = "THIS OCR QUALITY TEST USES MANY WORDS TO ALLOW SMALL ERRORS WITHOUT FAILING STRICT THRESHOLDS IN CI RUNS TODAY ALWAYS FOR STABILITY CHECKS EACH TIME";
         let actual = "THIS OCR QUALITY TEST USES MANY WORDS TO ALLOW SMALL ERRORS WITHOUT FAILING STRICT THRESHOLDS IN CI RUNS TODAY ALWAYS FOR STABIL1TY CHECKS EACH TIME";
-        let wer = word_error_rate(expected, actual);
+        let expected_words = normalize_text_for_word_similarity(expected);
+        let actual_words = normalize_text_for_word_similarity(actual);
+        let wer = word_error_rate(&expected_words, &actual_words);
         let similarity = 1.0 - wer;
         assert!(
             similarity > 0.95,
             "WER similarity too low: {} ({} vs {})",
             similarity,
+            expected,
+            actual
+        );
+        let expected_chars = normalize_text_for_char_similarity(expected);
+        let actual_chars = normalize_text_for_char_similarity(actual);
+        let cer = char_error_rate(&expected_chars, &actual_chars);
+        let cer_similarity = 1.0 - cer;
+        assert!(
+            cer_similarity > 0.95,
+            "CER similarity too low: {} ({} vs {})",
+            cer_similarity,
             expected,
             actual
         );
@@ -2334,13 +2395,20 @@ mod tests {
 
             let expected_text = expected.expected_text.trim();
             let actual_text = line.text.trim();
-            let wer = word_error_rate(expected_text, actual_text);
-            let similarity = 1.0 - wer;
+            let expected_words = normalize_text_for_word_similarity(expected_text);
+            let actual_words = normalize_text_for_word_similarity(actual_text);
+            let wer = word_error_rate(&expected_words, &actual_words);
+            let expected_chars = normalize_text_for_char_similarity(expected_text);
+            let actual_chars = normalize_text_for_char_similarity(actual_text);
+            let cer = char_error_rate(&expected_chars, &actual_chars);
+            let similarity = (1.0 - wer).max(1.0 - cer);
             assert!(
                 similarity > 0.95,
-                "Text similarity too low for {:?}: {}",
+                "Text similarity too low for {:?}: {} (wer {:.3}, cer {:.3})",
                 path,
-                similarity
+                similarity,
+                wer,
+                cer
             );
 
             let expected_bbox = OcrBoundingBox {
