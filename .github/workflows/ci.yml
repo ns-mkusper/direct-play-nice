@@ -26,8 +26,7 @@ on:
     inputs:
       full_suite:
         description: 'Run full CI (beta/nightly + FFmpeg CLI tests)'
-        type: boolean
-        default: false
+        default: 'false'
 
 env:
   CARGO_TERM_COLOR: always
