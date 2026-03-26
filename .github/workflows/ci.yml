@@ -286,22 +286,29 @@ jobs:
       - name: Validate vcpkg cache origin
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $cacheInvalid = $false
           $dirs = @("target/vcpkg/.vcpkg-root", "target/vcpkg/vcpkg")
           foreach ($dir in $dirs) {
-            if (Test-Path "$dir/.git") {
-              $origin = git -C $dir remote get-url origin 2>$null
-              if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($origin)) {
-                Write-Host "Failed to read vcpkg origin in $dir; clearing cache entry"
-                Remove-Item -Recurse -Force $dir
-                $cacheInvalid = $true
-                continue
+            try {
+              if (Test-Path "$dir/.git") {
+                $origin = git -C $dir remote get-url origin 2>$null
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($origin)) {
+                  Write-Host "Failed to read vcpkg origin in $dir; clearing cache entry"
+                  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                  $cacheInvalid = $true
+                  continue
+                }
+                if ($origin -ne "https://github.com/microsoft/vcpkg.git" -and $origin -ne "https://github.com/microsoft/vcpkg") {
+                  Write-Host "Unexpected vcpkg origin in $dir: $origin"
+                  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                  $cacheInvalid = $true
+                }
               }
-              if ($origin -ne "https://github.com/microsoft/vcpkg.git" -and $origin -ne "https://github.com/microsoft/vcpkg") {
-                Write-Host "Unexpected vcpkg origin in $dir: $origin"
-                Remove-Item -Recurse -Force $dir
-                $cacheInvalid = $true
-              }
+            } catch {
+              Write-Host "Failed to validate vcpkg origin in $dir: $($_.Exception.Message)"
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+              $cacheInvalid = $true
             }
           }
           if ($cacheInvalid) {
