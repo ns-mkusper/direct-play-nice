@@ -306,7 +306,7 @@ jobs:
           if ($revLine) {
             $expectedRev = $revLine.Line -replace '^rev = "' -replace '"$',''
           }
-          if (Test-Path "target/vcpkg" -and -not (Test-Path "target/vcpkg/.git")) {
+          if ((Test-Path "target/vcpkg") -and -not (Test-Path "target/vcpkg/.git")) {
             Write-Host "vcpkg root missing .git; clearing cache entry"
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
             $cacheInvalid = $true

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
-use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
+use ort::execution_providers::{CPUExecutionProvider, ExecutionProvider, ExecutionProviderDispatch};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use ort::execution_providers::CUDAExecutionProvider;
 #[cfg(target_vendor = "apple")]
@@ -21,7 +21,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{atomic::{AtomicBool, Ordering}, OnceLock};
 
 use crate::{OcrEngine, OcrFormat, SubMode};
 
@@ -141,13 +141,16 @@ impl SubtitleConverter for PpOcrV4Engine {
             });
         }
 
-        lines.sort_by(|a, b| sort_ocr_lines(a, b));
+        let lines = merge_ocr_lines_with_spacing(lines);
 
         Ok(OcrOutput { lines })
     }
 }
 
 static ORT_ENV_INIT: OnceLock<()> = OnceLock::new();
+static ORT_ENV_GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
+static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
+static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
 
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
@@ -171,14 +174,6 @@ pub fn convert_bitmap_subtitles(
         bail!("--ocr-engine=external requires --ocr-external-command");
     }
 
-    let available_langs = if matches!(ocr_engine, OcrEngine::Tesseract) {
-        list_tesseract_languages().context(
-            "Failed to query Tesseract language packs. Install `tesseract-ocr` and required traineddata files.",
-        )?
-    } else {
-        HashSet::new()
-    };
-
     let input_path = input_file
         .to_str()
         .map_err(|_| anyhow!("Input path must be valid UTF-8 for OCR side pass"))?
@@ -186,7 +181,14 @@ pub fn convert_bitmap_subtitles(
     let system_language = detect_system_ocr_language();
     let video_dimensions = probe_video_dimensions(input_file);
 
-    let mut engine = build_ocr_engine(ocr_engine, ocr_external_command)?;
+    let (resolved_engine, mut engine) = build_ocr_engine(ocr_engine, ocr_external_command)?;
+    let available_langs = if matches!(resolved_engine, OcrEngine::Tesseract) {
+        list_tesseract_languages().context(
+            "Failed to query Tesseract language packs. Install `tesseract-ocr` and required traineddata files.",
+        )?
+    } else {
+        HashSet::new()
+    };
 
     let mut tracks = Vec::with_capacity(candidates.len());
     for candidate in candidates {
@@ -195,7 +197,7 @@ pub fn convert_bitmap_subtitles(
             default_language,
             system_language.as_deref(),
             &available_langs,
-            ocr_engine,
+            resolved_engine,
         );
         let subtitle_path = work_dir.join(format!(
             "stream-{}.{}",
@@ -209,6 +211,7 @@ pub fn convert_bitmap_subtitles(
             work_dir,
             ocr_format,
             video_dimensions,
+            resolved_engine,
             &mut *engine,
         )?;
 
@@ -247,33 +250,132 @@ impl OcrFormat {
 fn build_ocr_engine(
     ocr_engine: OcrEngine,
     ocr_external_command: Option<&str>,
-) -> Result<Box<dyn SubtitleConverter>> {
+) -> Result<(OcrEngine, Box<dyn SubtitleConverter>)> {
     match ocr_engine {
-        OcrEngine::Tesseract => Ok(Box::new(TesseractEngine)),
+        OcrEngine::Tesseract => Ok((OcrEngine::Tesseract, Box::new(TesseractEngine))),
         OcrEngine::External => {
             let command = ocr_external_command
                 .ok_or_else(|| anyhow!("missing OCR external command"))?
                 .to_string();
-            Ok(Box::new(ExternalEngine { command }))
+            Ok((OcrEngine::External, Box::new(ExternalEngine { command })))
         }
         OcrEngine::PpOcrV4 => {
-            init_ort_environment();
+            let gpu_available = init_ort_environment()?;
+            if !gpu_available {
+                warn!(
+                    "PP-OCRv4 running without GPU acceleration. \
+                     Install the CUDA/DirectML/CoreML runtime or set DPN_OCR_REQUIRE_GPU=1 to fail if GPU is required."
+                );
+            }
             let model_dir = resolve_model_dir()?;
-            let engine = PpOcrV4Engine::new(&model_dir)?;
-            Ok(Box::new(engine))
+            let engine = init_ppocr_engine(&model_dir, require_gpu())?;
+            Ok((OcrEngine::PpOcrV4, Box::new(engine)))
+        }
+        OcrEngine::Auto => {
+            let require_gpu = require_gpu();
+            let gpu_available = match init_ort_environment() {
+                Ok(available) => available,
+                Err(err) => {
+                    if require_gpu {
+                        return Err(err);
+                    }
+                    warn!("PP-OCRv4 unavailable; falling back to Tesseract: {}", err);
+                    return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
+                }
+            };
+
+            if matches!(auto_engine_preference(gpu_available), OcrEngine::Tesseract) {
+                info!("Auto-selected Tesseract (no GPU execution provider available).");
+                return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
+            }
+
+            match (|| -> Result<PpOcrV4Engine> {
+                let model_dir = resolve_model_dir()?;
+                init_ppocr_engine(&model_dir, require_gpu)
+            })() {
+                Ok(engine) => {
+                    info!("Auto-selected PP-OCRv4 engine with GPU acceleration");
+                    Ok((OcrEngine::PpOcrV4, Box::new(engine)))
+                }
+                Err(err) => {
+                    if require_gpu {
+                        return Err(err);
+                    }
+                    warn!("PP-OCRv4 unavailable; falling back to Tesseract: {}", err);
+                    Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)))
+                }
+            }
         }
     }
 }
 
-fn init_ort_environment() {
-    ORT_ENV_INIT.get_or_init(|| {
-        let providers = build_execution_providers();
-        match ort::init().with_execution_providers(providers).commit() {
-            Ok(true) => info!("Initialized ONNX Runtime environment for OCR execution providers"),
-            Ok(false) => debug!("ONNX Runtime environment already initialized; skipping reconfigure"),
-            Err(err) => warn!("Failed to initialize ONNX Runtime environment: {}", err),
+fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
+    if gpu_available {
+        OcrEngine::PpOcrV4
+    } else {
+        OcrEngine::Tesseract
+    }
+}
+
+fn ppocr_require_gpu_error(err: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!(
+        "PP-OCRv4 failed to initialize with DPN_OCR_REQUIRE_GPU=1. \
+         Verify CUDA/ONNX Runtime GPU libraries are installed. Underlying error: {}",
+        err
+    )
+}
+
+fn init_ppocr_engine(model_dir: &Path, require_gpu: bool) -> Result<PpOcrV4Engine> {
+    match PpOcrV4Engine::new(model_dir) {
+        Ok(engine) => Ok(engine),
+        Err(err) => {
+            if require_gpu {
+                return Err(ppocr_require_gpu_error(err));
+            }
+            if force_cpu_execution_providers() {
+                return Err(err);
+            }
+            warn!(
+                "PP-OCRv4 failed to initialize with GPU providers; retrying with CPU-only providers: {}",
+                err
+            );
+            FORCE_CPU_EP.store(true, Ordering::Relaxed);
+            match PpOcrV4Engine::new(model_dir) {
+                Ok(engine) => {
+                    info!("PP-OCRv4 initialized with CPU-only execution provider");
+                    Ok(engine)
+                }
+                Err(retry_err) => {
+                    warn!(
+                        "PP-OCRv4 CPU-only initialization failed; falling back: {}",
+                        retry_err
+                    );
+                    Err(err)
+                }
+            }
         }
-    });
+    }
+}
+
+fn init_ort_environment() -> Result<bool> {
+    if ORT_ENV_INIT.get().is_some() {
+        return Ok(*ORT_ENV_GPU_AVAILABLE.get().unwrap_or(&false));
+    }
+    let selection = build_execution_providers()?;
+    match ort::init()
+        .with_execution_providers(selection.providers)
+        .commit()
+    {
+        Ok(true) => info!("Initialized ONNX Runtime environment for OCR execution providers"),
+        Ok(false) => debug!("ONNX Runtime environment already initialized; skipping reconfigure"),
+        Err(err) => {
+            warn!("Failed to initialize ONNX Runtime environment: {}", err);
+            return Err(anyhow!("Failed to initialize ONNX Runtime environment: {err}"));
+        }
+    }
+    let _ = ORT_ENV_INIT.set(());
+    let _ = ORT_ENV_GPU_AVAILABLE.set(selection.gpu_available);
+    Ok(selection.gpu_available)
 }
 
 struct ModelSpec {
@@ -320,8 +422,9 @@ impl PpOcrV4Engine {
 }
 
 fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
-    let providers = build_execution_providers();
-    let mut builder = builder.with_execution_providers(providers)?;
+    let selection =
+        build_execution_providers().map_err(|err| ort::Error::new(err.to_string()))?;
+    let mut builder = builder.with_execution_providers(selection.providers)?;
     builder = builder.with_intra_threads(
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -334,22 +437,262 @@ fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort:
     )
 }
 
-fn build_execution_providers() -> Vec<ExecutionProviderDispatch> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionProviderKind {
+    Cuda,
+    DirectML,
+    CoreML,
+    Cpu,
+}
+
+impl ExecutionProviderKind {
+    fn label(self) -> &'static str {
+        match self {
+            ExecutionProviderKind::Cuda => "cuda",
+            ExecutionProviderKind::DirectML => "directml",
+            ExecutionProviderKind::CoreML => "coreml",
+            ExecutionProviderKind::Cpu => "cpu",
+        }
+    }
+}
+
+struct ExecutionProviderSelection {
+    providers: Vec<ExecutionProviderDispatch>,
+    gpu_available: bool,
+}
+
+fn require_gpu() -> bool {
+    env::var("DPN_OCR_REQUIRE_GPU")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn force_cpu_execution_providers() -> bool {
+    if env::var("DPN_OCR_FORCE_CPU")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return true;
+    }
+    FORCE_CPU_EP.load(Ordering::Relaxed)
+}
+
+fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
+    kinds
+        .iter()
+        .map(|kind| kind.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+    let mut ep = CUDAExecutionProvider::default().build();
+    if require_gpu {
+        ep = ep.error_on_failure();
+    }
+    ep
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn build_cuda_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+    unreachable!("CUDA execution provider is not supported on this platform");
+}
+
+#[cfg(target_os = "windows")]
+fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+    let mut ep = DirectMLExecutionProvider::default().build();
+    if require_gpu {
+        ep = ep.error_on_failure();
+    }
+    ep
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_directml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+    unreachable!("DirectML execution provider is only supported on Windows");
+}
+
+#[cfg(target_vendor = "apple")]
+fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+    let mut ep = CoreMLExecutionProvider::default().build();
+    if require_gpu {
+        ep = ep.error_on_failure();
+    }
+    ep
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+    unreachable!("CoreML execution provider is only supported on Apple platforms");
+}
+
+fn select_execution_provider_plan(
+    require_gpu: bool,
+    cuda_available: bool,
+    directml_available: bool,
+    coreml_available: bool,
+) -> Result<(Vec<ExecutionProviderKind>, bool)> {
+    let mut kinds = Vec::new();
+    let mut gpu_available = false;
+
+    if cuda_available {
+        gpu_available = true;
+        kinds.push(ExecutionProviderKind::Cuda);
+    }
+    if directml_available {
+        gpu_available = true;
+        kinds.push(ExecutionProviderKind::DirectML);
+    }
+    if coreml_available {
+        gpu_available = true;
+        kinds.push(ExecutionProviderKind::CoreML);
+    }
+
+    if require_gpu && !gpu_available {
+        bail!("No GPU execution providers available. Install the required GPU runtime libraries or unset DPN_OCR_REQUIRE_GPU=1 to allow CPU fallback.");
+    }
+
+    kinds.push(ExecutionProviderKind::Cpu);
+    Ok((kinds, gpu_available))
+}
+
+fn build_execution_providers() -> Result<ExecutionProviderSelection> {
+    let require_gpu = require_gpu();
+    if require_gpu {
+        info!("DPN_OCR_REQUIRE_GPU=1; GPU execution provider is required.");
+    }
+    let force_cpu = force_cpu_execution_providers();
+    if force_cpu {
+        warn!("DPN_OCR_FORCE_CPU=1; disabling GPU execution providers.");
+    }
+    if require_gpu && force_cpu {
+        bail!("DPN_OCR_REQUIRE_GPU=1 cannot be used with DPN_OCR_FORCE_CPU=1.");
+    }
     let mut providers = Vec::new();
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    {
-        providers.push(CUDAExecutionProvider::default().build());
+    let cuda_available = if force_cpu {
+        false
+    } else {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            let cuda = CUDAExecutionProvider::default();
+            match cuda.is_available() {
+                Ok(true) => {
+                    info!("ONNX Runtime CUDA execution provider available");
+                    true
+                }
+                Ok(false) => {
+                    warn!("ONNX Runtime CUDA execution provider not available; falling back to CPU.");
+                    false
+                }
+                Err(err) => {
+                    warn!("Failed to query CUDA execution provider availability: {}", err);
+                    false
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            false
+        }
+    };
+
+    let directml_available = if force_cpu {
+        false
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            let directml = DirectMLExecutionProvider::default();
+            match directml.is_available() {
+                Ok(true) => {
+                    info!("ONNX Runtime DirectML execution provider available");
+                    true
+                }
+                Ok(false) => {
+                    warn!(
+                        "ONNX Runtime DirectML execution provider not available; falling back to CPU."
+                    );
+                    false
+                }
+                Err(err) => {
+                    warn!("Failed to query DirectML execution provider availability: {}", err);
+                    false
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    };
+
+    let coreml_available = if force_cpu {
+        false
+    } else {
+        #[cfg(target_vendor = "apple")]
+        {
+            let coreml = CoreMLExecutionProvider::default();
+            match coreml.is_available() {
+                Ok(true) => {
+                    info!("ONNX Runtime CoreML execution provider available");
+                    true
+                }
+                Ok(false) => {
+                    warn!("ONNX Runtime CoreML execution provider not available; falling back to CPU.");
+                    false
+                }
+                Err(err) => {
+                    warn!("Failed to query CoreML execution provider availability: {}", err);
+                    false
+                }
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            false
+        }
+    };
+
+    let (kinds, gpu_available) =
+        select_execution_provider_plan(require_gpu, cuda_available, directml_available, coreml_available)?;
+
+    if gpu_available {
+        info!(
+            "OCR execution provider order: {}",
+            format_provider_kinds(&kinds)
+        );
+    } else if force_cpu {
+        info!("OCR execution provider order: cpu (GPU providers disabled)");
+    } else {
+        warn!(
+            "No GPU execution providers available; PP-OCR will run on CPU. \
+             Install the GPU runtime libraries or set DPN_OCR_REQUIRE_GPU=1 to fail instead."
+        );
     }
-    #[cfg(target_os = "windows")]
-    {
-        providers.push(DirectMLExecutionProvider::default().build());
+
+    for kind in kinds {
+        match kind {
+            ExecutionProviderKind::Cuda => {
+                providers.push(build_cuda_provider(require_gpu));
+            }
+            ExecutionProviderKind::DirectML => {
+                providers.push(build_directml_provider(require_gpu));
+            }
+            ExecutionProviderKind::CoreML => {
+                providers.push(build_coreml_provider(require_gpu));
+            }
+            ExecutionProviderKind::Cpu => {
+                providers.push(CPUExecutionProvider::default().build());
+            }
+        }
     }
-    #[cfg(target_vendor = "apple")]
-    {
-        providers.push(CoreMLExecutionProvider::default().build());
-    }
-    providers.push(CPUExecutionProvider::default().build());
-    providers
+
+    Ok(ExecutionProviderSelection {
+        providers,
+        gpu_available,
+    })
 }
 
 fn resolve_model_dir() -> Result<PathBuf> {
@@ -994,6 +1337,7 @@ fn ocr_single_stream(
     work_dir: &Path,
     ocr_format: OcrFormat,
     video_dimensions: Option<(u32, u32)>,
+    ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
 ) -> Result<Vec<SubtitleCue>> {
     let input_cstr = CString::new(input_path).context("input path has interior NUL")?;
@@ -1065,6 +1409,7 @@ fn ocr_single_stream(
                 work_dir,
                 ocr_format,
                 video_dimensions,
+                ocr_engine,
                 engine,
             )?;
             cues.append(&mut new_cues);
@@ -1086,6 +1431,7 @@ fn ocr_single_stream(
             work_dir,
             ocr_format,
             video_dimensions,
+            ocr_engine,
             engine,
         )?;
         cues.append(&mut new_cues);
@@ -1107,6 +1453,7 @@ fn subtitle_to_cues(
     work_dir: &Path,
     ocr_format: OcrFormat,
     video_dimensions: Option<(u32, u32)>,
+    ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
 ) -> Result<Vec<SubtitleCue>> {
     if subtitle.is_null() {
@@ -1139,6 +1486,7 @@ fn subtitle_to_cues(
         stream_index,
         packet_seq,
         work_dir,
+        ocr_engine,
         engine,
     )?;
     if had_imagery && lines.is_empty() {
@@ -1206,6 +1554,7 @@ fn extract_subtitle_lines(
     stream_index: i32,
     packet_seq: usize,
     work_dir: &Path,
+    ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
 ) -> Result<(Vec<OcrLine>, bool)> {
     let mut lines = Vec::new();
@@ -1273,7 +1622,55 @@ fn extract_subtitle_lines(
         fs::write(&pgm_path, pgm)
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
-        let output = engine.extract_lines(&pgm_path, language)?;
+        let mut output = engine.extract_lines(&pgm_path, language)?;
+        if matches!(ocr_engine, OcrEngine::PpOcrV4)
+            && language_uses_spaces(language)
+            && ppocr_spacing_needs_fallback(&output.lines)
+        {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(language) {
+                match run_tesseract(&pgm_path, &fallback_language) {
+                    Ok(text) if !text.is_empty() => {
+                        let bbox: Option<OcrBoundingBox> = output
+                            .lines
+                            .iter()
+                            .filter_map(|line| line.bbox.as_ref())
+                            .fold(None, |acc, b| match acc {
+                                Some(mut current) => {
+                                    current.left = current.left.min(b.left);
+                                    current.right = current.right.max(b.right);
+                                    current.top = current.top.min(b.top);
+                                    current.bottom = current.bottom.max(b.bottom);
+                                    Some(current)
+                                }
+                                None => Some(b.clone()),
+                            });
+                        output.lines = vec![OcrLine {
+                            text,
+                            bbox,
+                            score: None,
+                            color: None,
+                            italic: false,
+                        }];
+                        info!(
+                            "PP-OCRv4 spacing fallback: using Tesseract({}) text for subtitle stream {} packet {} rect {}",
+                            fallback_language, stream_index, packet_seq, i
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!(
+                            "PP-OCRv4 spacing fallback failed for subtitle stream {} packet {} rect {} (lang={}): {}",
+                            stream_index, packet_seq, i, fallback_language, err
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    "PP-OCRv4 spacing fallback skipped (no Tesseract languages available) for subtitle stream {} packet {} rect {}",
+                    stream_index, packet_seq, i
+                );
+            }
+        }
         let _ = fs::remove_file(&pgm_path);
         for mut line in output.lines {
             if let Some(bbox) = line.bbox.as_mut() {
@@ -1289,6 +1686,62 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn language_uses_spaces(language: &str) -> bool {
+    let lang = language.to_lowercase();
+    matches!(
+        lang.as_str(),
+        "eng"
+            | "en"
+            | "en-us"
+            | "en_us"
+            | "fre"
+            | "fra"
+            | "fr"
+            | "spa"
+            | "es"
+            | "de"
+            | "deu"
+            | "ger"
+            | "it"
+            | "ita"
+            | "pt"
+            | "por"
+            | "nl"
+            | "nld"
+            | "sv"
+            | "swe"
+            | "da"
+            | "dan"
+            | "no"
+            | "nor"
+            | "fi"
+            | "fin"
+    )
+}
+
+fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
+    if lines.is_empty() {
+        return false;
+    }
+    let mut has_spaces = false;
+    let mut long_token = false;
+    let mut has_letters = false;
+    for line in lines {
+        let text = line.text.trim();
+        if text.contains(' ') {
+            has_spaces = true;
+            break;
+        }
+        if text.len() >= 12 {
+            long_token = true;
+        }
+        if text.chars().any(|c| c.is_alphabetic()) {
+            has_letters = true;
+        }
+    }
+    has_letters && long_token && !has_spaces
 }
 
 fn run_tesseract(image_path: &Path, language: &str) -> Result<String> {
@@ -1741,6 +2194,135 @@ fn sort_ocr_lines(a: &OcrLine, b: &OcrLine) -> std::cmp::Ordering {
     }
 }
 
+fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    let mut with_bbox = Vec::new();
+    let mut without_bbox = Vec::new();
+    for line in lines {
+        if line.bbox.is_some() {
+            with_bbox.push(line);
+        } else {
+            without_bbox.push(line);
+        }
+    }
+
+    if with_bbox.is_empty() {
+        return without_bbox;
+    }
+
+    with_bbox.sort_by(|a, b| sort_ocr_lines(a, b));
+
+    struct LineGroup {
+        items: Vec<OcrLine>,
+        center_y: f32,
+        avg_height: f32,
+        bbox: OcrBoundingBox,
+        score_sum: f32,
+        score_count: usize,
+    }
+
+    let mut groups: Vec<LineGroup> = Vec::new();
+
+    for line in with_bbox {
+        let bbox = line.bbox.clone().expect("bbox missing");
+        let score = line.score;
+        let height = (bbox.bottom - bbox.top).max(1) as f32;
+        let center_y = (bbox.top + bbox.bottom) as f32 / 2.0;
+
+        let mut matched = None;
+        for (idx, group) in groups.iter().enumerate() {
+            let threshold = (group.avg_height * 0.6).max(4.0);
+            if (center_y - group.center_y).abs() <= threshold {
+                matched = Some(idx);
+                break;
+            }
+        }
+
+        if let Some(idx) = matched {
+            let group = &mut groups[idx];
+            group.items.push(line);
+            let count = group.items.len() as f32;
+            group.center_y = (group.center_y * (count - 1.0) + center_y) / count;
+            group.avg_height = (group.avg_height * (count - 1.0) + height) / count;
+            group.bbox.left = group.bbox.left.min(bbox.left);
+            group.bbox.right = group.bbox.right.max(bbox.right);
+            group.bbox.top = group.bbox.top.min(bbox.top);
+            group.bbox.bottom = group.bbox.bottom.max(bbox.bottom);
+            if let Some(score) = score {
+                group.score_sum += score;
+                group.score_count += 1;
+            }
+        } else {
+            let mut score_sum = 0.0;
+            let mut score_count = 0;
+            if let Some(score) = score {
+                score_sum = score;
+                score_count = 1;
+            }
+            groups.push(LineGroup {
+                items: vec![line],
+                center_y,
+                avg_height: height,
+                bbox: bbox.clone(),
+                score_sum,
+                score_count,
+            });
+        }
+    }
+
+    let mut merged = Vec::new();
+    for mut group in groups {
+        group.items.sort_by(|a, b| {
+            let a_box = a.bbox.as_ref().expect("bbox missing");
+            let b_box = b.bbox.as_ref().expect("bbox missing");
+            a_box.left.cmp(&b_box.left)
+        });
+
+        let avg_height = group.avg_height.max(1.0);
+        let space_threshold = (avg_height * 0.25).max(2.0);
+        let mut text = String::new();
+        let mut prev_right: Option<i32> = None;
+
+        for item in group.items {
+            let bbox = item.bbox.as_ref().expect("bbox missing");
+            if let Some(prev) = prev_right {
+                let gap = bbox.left - prev;
+                if (gap as f32) > space_threshold {
+                    text.push(' ');
+                }
+            }
+            text.push_str(item.text.trim());
+            prev_right = Some(bbox.right);
+        }
+
+        let text = normalize_utf8_text(&text);
+        if text.is_empty() {
+            continue;
+        }
+
+        let score = if group.score_count > 0 {
+            Some(group.score_sum / group.score_count as f32)
+        } else {
+            None
+        };
+
+        merged.push(OcrLine {
+            text,
+            bbox: Some(group.bbox),
+            score,
+            color: None,
+            italic: false,
+        });
+    }
+
+    merged.extend(without_bbox);
+    merged.sort_by(|a, b| sort_ocr_lines(a, b));
+    merged
+}
+
 fn load_image(path: &Path) -> Result<image::RgbImage> {
     let img = image::open(path).with_context(|| format!("loading image '{}'", path.display()))?;
     Ok(img.to_rgb8())
@@ -1925,6 +2507,22 @@ fn list_tesseract_languages() -> Result<HashSet<String>> {
 
     debug!("Detected {} Tesseract language packs", langs.len());
     Ok(langs)
+}
+
+fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
+    let cached = TESSERACT_LANG_CACHE.get_or_init(|| list_tesseract_languages());
+    cached.as_ref().ok()
+}
+
+fn resolve_tesseract_fallback_language(language: &str) -> Option<String> {
+    let langs = tesseract_languages_cached()?;
+    if langs.contains(language) {
+        return Some(language.to_string());
+    }
+    if langs.contains("eng") {
+        return Some("eng".to_string());
+    }
+    langs.iter().next().cloned()
 }
 
 fn codec_name(codec_id: ffi::AVCodecID) -> String {
@@ -2255,8 +2853,56 @@ mod tests {
 
     #[test]
     fn test_onnx_session_initializes_with_fallbacks() {
-        init_ort_environment();
+        init_ort_environment().unwrap();
         assert!(ORT_ENV_INIT.get().is_some(), "ORT environment not initialized");
+    }
+
+    #[test]
+    fn test_gpu_requirement_env_gate() {
+        if std::env::var("DPN_OCR_REQUIRE_GPU")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return;
+        }
+        let selection = build_execution_providers()
+            .expect("GPU execution providers required but unavailable");
+        assert!(
+            selection.providers.len() > 1,
+            "Expected at least one GPU execution provider plus CPU"
+        );
+        assert!(selection.gpu_available, "GPU availability was not detected");
+    }
+
+    #[test]
+    fn test_provider_selection_prefers_cuda_when_available() {
+        let (kinds, gpu_available) =
+            select_execution_provider_plan(false, true, true, true).unwrap();
+        assert!(gpu_available);
+        assert_eq!(kinds.first(), Some(&ExecutionProviderKind::Cuda));
+        assert_eq!(kinds.last(), Some(&ExecutionProviderKind::Cpu));
+    }
+
+    #[test]
+    fn test_provider_selection_requires_gpu_flag() {
+        let err = select_execution_provider_plan(true, false, false, false)
+            .expect_err("Expected error when requiring GPU without providers");
+        assert!(
+            err.to_string().contains("No GPU execution providers"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_auto_engine_prefers_ppocr_with_gpu() {
+        assert_eq!(auto_engine_preference(true), OcrEngine::PpOcrV4);
+    }
+
+    #[test]
+    fn test_auto_engine_prefers_tesseract_without_gpu() {
+        assert_eq!(auto_engine_preference(false), OcrEngine::Tesseract);
     }
 
     #[test]
@@ -2305,6 +2951,91 @@ mod tests {
         };
         let iou = intersection_over_union(&a, &b);
         assert!(iou > 0.90, "IoU too low: {}", iou);
+    }
+
+    #[test]
+    fn test_ppocr_spacing_inserts_space_for_gap() {
+        let lines = vec![
+            OcrLine {
+                text: "By".to_string(),
+                bbox: Some(OcrBoundingBox {
+                    left: 0,
+                    right: 10,
+                    top: 0,
+                    bottom: 10,
+                }),
+                score: Some(0.9),
+                color: None,
+                italic: false,
+            },
+            OcrLine {
+                text: "this".to_string(),
+                bbox: Some(OcrBoundingBox {
+                    left: 14,
+                    right: 30,
+                    top: 0,
+                    bottom: 10,
+                }),
+                score: Some(0.9),
+                color: None,
+                italic: false,
+            },
+        ];
+
+        let merged = merge_ocr_lines_with_spacing(lines);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "By this");
+    }
+
+    #[test]
+    fn test_ppocr_spacing_keeps_compact_tokens() {
+        let lines = vec![
+            OcrLine {
+                text: "By".to_string(),
+                bbox: Some(OcrBoundingBox {
+                    left: 0,
+                    right: 10,
+                    top: 0,
+                    bottom: 10,
+                }),
+                score: Some(0.9),
+                color: None,
+                italic: false,
+            },
+            OcrLine {
+                text: "this".to_string(),
+                bbox: Some(OcrBoundingBox {
+                    left: 11,
+                    right: 30,
+                    top: 0,
+                    bottom: 10,
+                }),
+                score: Some(0.9),
+                color: None,
+                italic: false,
+            },
+        ];
+
+        let merged = merge_ocr_lines_with_spacing(lines);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Bythis");
+    }
+
+    #[test]
+    fn test_ppocr_spacing_fallback_detection() {
+        let lines = vec![OcrLine {
+            text: "BythistimeIobserved".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 100,
+                top: 0,
+                bottom: 10,
+            }),
+            score: Some(0.9),
+            color: None,
+            italic: false,
+        }];
+        assert!(ppocr_spacing_needs_fallback(&lines));
     }
 
     #[test]

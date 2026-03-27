@@ -185,8 +185,8 @@ Defaults:
 
 - `--sub-mode auto` (default): only bitmap subtitle streams are OCR‑converted; text
   subtitles are preserved when possible.
-- `--ocr-engine tesseract` (default): uses `tesseract` (LSTM) for OCR when bitmap
-  subtitles exist.
+- `--ocr-engine auto` (default): prefers PP‑OCRv4 when a GPU execution provider is
+  available; otherwise falls back to Tesseract.
 - `--ocr-format srt` (default): emits simple text subtitles (SRT/MOV_TEXT).
 - If no bitmap subtitles are present, no OCR pass is performed.
 
@@ -201,11 +201,15 @@ Enable/override behavior:
 
 PP‑OCRv4 (ONNX Runtime):
 
-- `--ocr-engine=ppocrv4` uses a native ONNX Runtime pipeline (PP‑OCRv4) with execution
+- `--ocr-engine=pp-ocr-v4` uses a native ONNX Runtime pipeline (PP‑OCRv4) with execution
   provider fallback: CUDA → DirectML → CoreML → CPU.
-- GPU execution providers require the matching runtime libraries (CUDA toolkit for
-  NVIDIA, DirectML on Windows, CoreML on macOS). Missing runtimes fall back to CPU
-  automatically.
+- GPU execution providers require the matching runtime libraries (CUDA toolkit +
+  cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS). Missing runtimes fall
+  back to CPU automatically.
+- For containers, install the NVIDIA Container Toolkit and expose the CUDA/cuDNN
+  libraries to the container (`--gpus all` or equivalent).
+- `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if unavailable).
+- `DPN_OCR_FORCE_CPU=1` disables GPU execution providers and forces CPU-only OCR.
 - Models auto‑download into `models/` next to the executable, or
   `~/.config/direct-play-nice/models/` on Linux (override with `DPN_OCR_MODEL_DIR`).
 - To swap models, drop replacement `.onnx` files into the model directory with the
@@ -217,7 +221,7 @@ Config file equivalents:
 ```toml
 sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
-ocr_engine = "tesseract"    # tesseract | ppocrv4 | external
+ocr_engine = "auto"         # auto | tesseract | ppocrv4 | external
 ocr_format = "srt"          # srt | ass
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```

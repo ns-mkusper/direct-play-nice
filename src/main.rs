@@ -1747,6 +1747,7 @@ pub enum SubMode {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OcrEngine {
+    Auto,
     Tesseract,
     PpOcrV4,
     External,
@@ -2147,7 +2148,7 @@ struct Args {
     #[arg(
         long = "ocr-engine",
         value_enum,
-        default_value_t = OcrEngine::Tesseract,
+        default_value_t = OcrEngine::Auto,
         id = "ocr_engine"
     )]
     ocr_engine: OcrEngine,
