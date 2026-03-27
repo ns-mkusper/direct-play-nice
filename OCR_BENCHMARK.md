@@ -15,6 +15,7 @@ Scope and inputs
 
 Notes
 - PP‑OCRv4 run on `plexserver` reported CUDA EP availability but GPU utilization remained ~0%, so inference appears to be CPU‑bound (likely missing CUDA/cuDNN runtime libraries). Use `DPN_OCR_REQUIRE_GPU=1` to fail fast and surface this condition.
+- A 10‑second idle sample on `plexserver` measured GPU0 at ~11.84W peak/avg (query: `nvidia-smi --query-gpu=utilization.gpu,power.draw`). The older idle log in `silence_full/idle_power.csv` is invalid due to a bad query string.
 
 ## Accuracy (5‑minute slice, stream 0)
 
