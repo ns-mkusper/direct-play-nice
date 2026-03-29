@@ -81,6 +81,8 @@ Options:
           Maximum video bitrate (e.g. 8M, 4800k, 5.5mbps)
       --max-audio-bitrate <MAX_AUDIO_BITRATE>
           Maximum audio bitrate (e.g. 320k, 0.2M)
+      --skip-codec-check
+          Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams)
       --unsupported-video-policy <POLICY>
           How to handle unsupported/extra video streams: convert|ignore|fail
           (default: ignore)
@@ -206,6 +208,10 @@ PP‑OCRv4 (ONNX Runtime):
 - GPU execution providers require the matching runtime libraries (CUDA toolkit +
   cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS). Missing runtimes fall
   back to CPU automatically.
+- On Linux, the CUDA EP must match the `libonnxruntime.so` build. Run
+  `./check_gpu_env.sh` (or `ldd $(find ~/.cache/ort -name 'libonnxruntime.so*' | head -n1)`)
+  to confirm which `libcudnn.so.*` is required and that it is discoverable via
+  `LD_LIBRARY_PATH`/`ldconfig`.
 - For containers, install the NVIDIA Container Toolkit and expose the CUDA/cuDNN
   libraries to the container (`--gpus all` or equivalent).
 - `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if unavailable).
@@ -336,6 +342,13 @@ files ahead of Plex / Jellyfin direct play, mix and match:
 
 Need something custom? Use `--max-video-bitrate` and/or `--max-audio-bitrate` to
 override the presets with any value such as `4800k`, `6M`, or `12.5mbps`.
+
+### Troubleshooting
+
+- H.264 profile/level verification can fail on non-standard streams or older
+  hardware encoders. Use `--skip-codec-check` to bypass the verification step
+  (or set `skip_codec_check = true` in `config.toml`) so the conversion can
+  proceed without forcing a fallback.
 
 ## Building
 

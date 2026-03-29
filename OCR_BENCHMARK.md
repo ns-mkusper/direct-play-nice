@@ -13,8 +13,12 @@ Scope and inputs
 | Tesseract (LSTM) | 6401.81 | 14.47 | 26.83 | 0.60% / 6.00% |
 | PP‑OCRv4 (ONNX Runtime) | 4628.22 | 9.47 | 11.89 | 2.50% / 5.00% |
 
+Comparison summary
+- PP‑OCRv4 (Auto) is ~27% faster than Tesseract with ~99.8% fewer empty‑text warnings.
+
 Notes
 - PP‑OCRv4 run on `plexserver` reported CUDA EP availability but GPU utilization remained ~0%, so inference appears to be CPU‑bound (likely missing CUDA/cuDNN runtime libraries). Use `DPN_OCR_REQUIRE_GPU=1` to fail fast and surface this condition.
+- `check_gpu_env.sh` on `plexserver` (Arch Linux) confirmed `libcudnn.so` is missing; install `cudnn` (e.g., `sudo pacman -S cudnn`) so the CUDA EP can initialize.
 - A 10‑second idle sample on `plexserver` measured GPU0 at ~11.84W peak/avg (query: `nvidia-smi --query-gpu=utilization.gpu,power.draw`). The older idle log in `silence_full/idle_power.csv` is invalid due to a bad query string.
 
 ## Accuracy (5‑minute slice, stream 0)
@@ -26,6 +30,12 @@ Levenshtein similarity is computed against the Tesseract SRT for the same slice.
 | Legacy (bitmap passthrough) | N/A | N/A | N/A |
 | Tesseract (LSTM) | 49 | 949 | 1.000 (baseline) |
 | PP‑OCRv4 + spacing fallback | 60 | 1 | 0.165 |
+
+## Troubleshooting (GPU 0% util)
+
+- Run `./check_gpu_env.sh` to confirm whether `libcudnn.so` is discoverable and to see missing shared libraries for `libonnxruntime.so`.
+- If cuDNN is missing, install the matching cuDNN package for your CUDA version and ensure it is on `LD_LIBRARY_PATH`/`ldconfig`.
+- In containers, verify `NVIDIA_VISIBLE_DEVICES`, `NVIDIA_DRIVER_CAPABILITIES`, and that the NVIDIA Container Toolkit is installed and `--gpus all` is set.
 
 ## Top 5 longest lines (slice, stream 0)
 

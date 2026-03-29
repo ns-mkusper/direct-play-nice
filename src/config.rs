@@ -33,6 +33,7 @@ pub struct Config {
     pub ocr_engine: Option<OcrEngine>,
     pub ocr_format: Option<OcrFormat>,
     pub ocr_external_command: Option<String>,
+    pub skip_codec_check: Option<bool>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }

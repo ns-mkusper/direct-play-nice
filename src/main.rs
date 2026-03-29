@@ -2166,6 +2166,10 @@ struct Args {
     #[arg(long = "ocr-external-command", id = "ocr_external_command", hide = true)]
     ocr_external_command: Option<String>,
 
+    /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
+    #[arg(long = "skip-codec-check", default_value_t = false, id = "skip_codec_check")]
+    skip_codec_check: bool,
+
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
     #[arg(
         long = "delete-source",
@@ -2548,6 +2552,12 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     if !cli_value_provided(matches, "ocr_external_command") {
         if let Some(ocr_external_command) = cfg.ocr_external_command.as_ref() {
             args.ocr_external_command = Some(ocr_external_command.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "skip_codec_check") {
+        if let Some(skip_codec_check) = cfg.skip_codec_check {
+            args.skip_codec_check = skip_codec_check;
         }
     }
 
@@ -3607,6 +3617,7 @@ fn convert_video_file(
     primary_criteria: PrimaryVideoCriteria,
     requested_video_quality: VideoQuality,
     requested_audio_quality: AudioQuality,
+    skip_codec_check: bool,
     hw_accel: HwAccel,
 ) -> Result<ConversionOutcome, anyhow::Error> {
     let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
@@ -4425,7 +4436,9 @@ fn convert_video_file(
     output_format_context.write_trailer()?;
 
     if target_video_codec == ffi::AV_CODEC_ID_H264 {
-        if let (Some(expected_profile), Some(expected_level)) =
+        if skip_codec_check {
+            info!("Skipping H.264 profile/level verification (--skip-codec-check).");
+        } else if let (Some(expected_profile), Some(expected_level)) =
             (desired_h264_profile, desired_h264_level)
         {
             let verification = verify_output_h264_profile_level(
@@ -4478,6 +4491,7 @@ fn retry_with_software_encoder(
     primary_video_criteria: PrimaryVideoCriteria,
     requested_video_quality: VideoQuality,
     requested_audio_quality: AudioQuality,
+    skip_codec_check: bool,
 ) -> Result<ConversionOutcome, anyhow::Error> {
     convert_video_file(
         input_file,
@@ -4494,6 +4508,7 @@ fn retry_with_software_encoder(
         primary_video_criteria,
         requested_video_quality,
         requested_audio_quality,
+        skip_codec_check,
         HwAccel::None,
     )
 }
@@ -4549,6 +4564,7 @@ fn handle_hw_profile_mismatch(
         args.primary_video_criteria,
         args.video_quality,
         args.audio_quality,
+        args.skip_codec_check,
     )
 }
 
@@ -4590,6 +4606,7 @@ fn handle_hw_encoder_init_error(
         args.primary_video_criteria,
         args.video_quality,
         args.audio_quality,
+        args.skip_codec_check,
     )
 }
 
@@ -5233,6 +5250,7 @@ fn run_conversion(
             args.primary_video_criteria,
             args.video_quality,
             args.audio_quality,
+            args.skip_codec_check,
             args.hw_accel,
         )
     } else {
@@ -5293,6 +5311,7 @@ fn run_conversion(
                                     args.primary_video_criteria,
                                     args.video_quality,
                                     args.audio_quality,
+                                    args.skip_codec_check,
                                 )
                             }
                         },
