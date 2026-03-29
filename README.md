@@ -187,8 +187,8 @@ Defaults:
 
 - `--sub-mode auto` (default): only bitmap subtitle streams are OCR‑converted; text
   subtitles are preserved when possible.
-- `--ocr-engine auto` (default): prefers PP‑OCRv4 when a GPU execution provider is
-  available; otherwise falls back to Tesseract.
+- `--ocr-engine auto` (default): prefers PP‑OCRv4 when a GPU execution
+  provider is available; otherwise falls back to Tesseract.
 - `--ocr-format srt` (default): emits simple text subtitles (SRT/MOV_TEXT).
 - If no bitmap subtitles are present, no OCR pass is performed.
 
@@ -198,20 +198,21 @@ Enable/override behavior:
 - `--sub-mode=force` keeps subtitle processing enabled even if you usually skip it.
 - `--ocr-default-language <lang>` sets a fallback language code (e.g. `eng`, `spa`)
   when a subtitle stream is missing language metadata.
-- `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is downgraded
-  to `mov_text`; use an MKV output if you want to preserve full ASS styling.
+- `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is
+  downgraded to `mov_text`; use an MKV output if you want to preserve full
+  ASS styling.
 
 PP‑OCRv4 (ONNX Runtime):
 
-- `--ocr-engine=pp-ocr-v4` uses a native ONNX Runtime pipeline (PP‑OCRv4) with execution
-  provider fallback: CUDA → DirectML → CoreML → CPU.
-- GPU execution providers require the matching runtime libraries (CUDA toolkit +
-  cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS). Missing runtimes fall
-  back to CPU automatically.
+- `--ocr-engine=pp-ocr-v4` uses a native ONNX Runtime pipeline (PP‑OCRv4)
+  with execution provider fallback: CUDA → DirectML → CoreML → CPU.
+- GPU execution providers require the matching runtime libraries (CUDA
+  toolkit + cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS).
+  Missing runtimes fall back to CPU automatically.
 - On Linux, the CUDA EP must match the `libonnxruntime.so` build. Run
-  `./check_gpu_env.sh` (or `ldd $(find ~/.cache/ort -name 'libonnxruntime.so*' | head -n1)`)
-  to confirm which `libcudnn.so.*` is required and that it is discoverable via
-  `LD_LIBRARY_PATH`/`ldconfig`.
+  `./check_gpu_env.sh` (or run `ldd` against the ONNX Runtime `.so`) to
+  confirm which `libcudnn.so.*` is required and that it is discoverable
+  via `LD_LIBRARY_PATH`/`ldconfig`.
 - For containers, install the NVIDIA Container Toolkit and expose the CUDA/cuDNN
   libraries to the container (`--gpus all` or equivalent).
 - `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if unavailable).
@@ -221,6 +222,16 @@ PP‑OCRv4 (ONNX Runtime):
 - To swap models, drop replacement `.onnx` files into the model directory with the
   same filenames: `ch_PP-OCRv4_det_infer.onnx`,
   `ch_ppocr_mobile_v2.0_cls_infer.onnx`, `en_PP-OCRv4_rec_infer.onnx`.
+
+System stability note (Arch Linux):
+
+- Prefer installing `cudnn` and `onnxruntime-cuda` from the Arch Linux
+  Archive if you want to avoid a full system upgrade.
+- Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
+  onnxruntime build.
+- On `plexserver` (GTX 960, CUDA 13.2), the CUDA EP initialized but OCR
+  segfaulted during model setup. This likely requires an older CUDA stack
+  or a GPU with newer compute capability.
 
 Config file equivalents:
 
