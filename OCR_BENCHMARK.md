@@ -38,6 +38,7 @@
 | CUDA13.2/cuDNN9.20/ORT1.24.4 | `139` | 50s | 25% | 37.56W | 105MB | No |
 | CUDA11.8/cuDNN8.4.1/ORT1.14.1 | `139` | 87s | 0% | 11.79W | 13MB | No |
 | CUDA11.8/cuDNN8.4.1/ORT1.15.1 | `139` | 33s | n/a | n/a | n/a | No |
+| CUDA11.4/cuDNN8.2.4/ORT1.13.1 | `139` | 75s | 21% | 35.95W | n/a | No |
 
 ### Notes
 
@@ -50,6 +51,8 @@
   still segfaulted (`139`) after ~32s with no GPU utilization.
 - A 2026-03-29 single-GPU run (CUDA_VISIBLE_DEVICES=0) with CUDA
   11.8/cuDNN 8.4.1/ORT 1.15.1 also segfaulted (`139`) after ~33s.
+- A 2026-03-29 single-GPU run with CUDA 11.4/cuDNN 8.2.4/ORT 1.13.1 hit
+  ~21% GPU utilization and peaked at ~35.95W, but still segfaulted.
 
 ## Accuracy (5-minute slice, stream 0)
 
