@@ -70,6 +70,8 @@ Notes
 
 - Full-movie runs still show PP-OCRv4 faster overall (~27% faster than
   Tesseract), but this 5-minute slice favored Tesseract on CPU.
+- Baseline locked on 2026-03-29 using `cpu_victory.mp4` and
+  `tesseract_baseline.mp4`.
 
 ## Accuracy (5-minute slice, stream 0)
 
