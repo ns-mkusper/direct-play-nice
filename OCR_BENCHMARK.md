@@ -53,17 +53,34 @@
   11.8/cuDNN 8.4.1/ORT 1.15.1 also segfaulted (`139`) after ~33s.
 - A 2026-03-29 single-GPU run with CUDA 11.4/cuDNN 8.2.4/ORT 1.13.1 hit
   ~21% GPU utilization and peaked at ~35.95W, but still segfaulted.
+- Conclusion: GTX 960 (Maxwell) is hardware-incompatible with PP-OCRv4
+  CUDA execution (illegal instruction / provider init failure).
+
+## CPU-only slice (PP-OCRv4 vs Tesseract)
+
+5-minute slice (00:15:00–00:20:00) rebuilt from the source file and
+converted with `--delete-source=false` for direct comparison.
+
+| Engine | Runtime | Frames | FPS |
+| --- | ---: | ---: | ---: |
+| PP-OCRv4 (CPU) | 90s | 7267 | 80.74 |
+| Tesseract (CPU) | 64s | 7267 | 113.55 |
+
+Notes
+
+- Full-movie runs still show PP-OCRv4 faster overall (~27% faster than
+  Tesseract), but this 5-minute slice favored Tesseract on CPU.
 
 ## Accuracy (5-minute slice, stream 0)
 
 Levenshtein similarity is computed against the Tesseract SRT for the
 same slice.
 
-| Engine | Cues (stream 0) | Empty warns (full) | Levenshtein vs Tess (avg) |
+| Engine | Cues (stream 1) | Empty warns (full) | Levenshtein vs Tess (avg) |
 | --- | ---: | ---: | ---: |
 | Legacy (bitmap passthrough) | N/A | N/A | N/A |
-| Tesseract (LSTM) | 49 | 949 | 1.000 (baseline) |
-| PP-OCRv4 (spacing) | 60 | 1 | 0.165 |
+| Tesseract (LSTM) | 58 | 949 | 1.000 (baseline) |
+| PP-OCRv4 (CPU + spacing) | 68 | 1 | 0.9414 |
 
 ## Troubleshooting (GPU 0% util)
 
