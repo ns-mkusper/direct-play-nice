@@ -233,14 +233,17 @@ System stability note (Arch Linux):
   Archive if you want to avoid a full system upgrade.
 - Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
   onnxruntime build.
-- On `plexserver` (GTX 960, driver 580xx), both CUDA 13.2 and the legacy
-  CUDA 11.8 + cuDNN 8.4.1 + ORT 1.14.1 stack still segfault during OCR
-  initialization. Use CPU OCR on this host for now.
+- On `plexserver` (GTX 960, driver 580xx), PP-OCR v3/v4 CUDA execution
+  segfaults during initialization, even with CUDA 11.4 + cuDNN 8.2.4 +
+  ONNX Runtime 1.13.1. The hardware is incompatible with the model
+  kernels. The tool automatically falls back to CPU OCR on this host.
 
 Legacy hardware support (Maxwell / GTX 960):
 
-- PP‑OCRv4 CUDA execution providers initialize but segfault during OCR
-  on GTX 960. No `NVRM` XID entries were observed.
+- PP‑OCR v3/v4 CUDA execution providers initialize but segfault during
+  OCR on GTX 960. No `NVRM` XID entries were observed.
+- CPU fallback runs at ~80 FPS on the 5‑minute slice and achieves a
+  0.9414 word-level similarity score versus the Tesseract baseline.
 - For reliable runs, leave `DPN_OCR_REQUIRE_GPU` unset or set
   `DPN_OCR_FORCE_CPU=1` to force CPU OCR.
 
