@@ -25,7 +25,9 @@ fn resolve_model_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("DPN_OCR_MODEL_DIR") {
         return Some(PathBuf::from(dir));
     }
-    let exe_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from));
     if let Some(dir) = exe_dir {
         let candidate = dir.join("models");
         if candidate.is_dir() {
@@ -70,7 +72,10 @@ fn bench_ppocr_inference(c: &mut Criterion) {
     let cls = model_dir.join("ch_ppocr_mobile_v2.0_cls_infer.onnx");
     let rec = model_dir.join("en_PP-OCRv4_rec_infer.onnx");
     if !det.exists() || !cls.exists() || !rec.exists() {
-        eprintln!("Skipping OCR benchmark: required models missing in {:?}", model_dir);
+        eprintln!(
+            "Skipping OCR benchmark: required models missing in {:?}",
+            model_dir
+        );
         return;
     }
 
@@ -98,7 +103,7 @@ fn bench_ppocr_inference(c: &mut Criterion) {
     group.bench_function("extract_text", |b| {
         b.iter(|| {
             let result = ocr.detect(black_box(&img), 50, 1024, 0.5, 0.3, 1.6, false, false);
-            black_box(result);
+            let _ = black_box(result);
         })
     });
     group.finish();

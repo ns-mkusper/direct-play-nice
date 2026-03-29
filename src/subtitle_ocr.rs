@@ -1,12 +1,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
-use ort::execution_providers::{CPUExecutionProvider, ExecutionProvider, ExecutionProviderDispatch};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use ort::execution_providers::CUDAExecutionProvider;
 #[cfg(target_vendor = "apple")]
 use ort::execution_providers::CoreMLExecutionProvider;
 #[cfg(target_os = "windows")]
 use ort::execution_providers::DirectMLExecutionProvider;
+use ort::execution_providers::{
+    CPUExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
+};
 use ort::session::builder::SessionBuilder;
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
@@ -21,7 +23,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{atomic::{AtomicBool, Ordering}, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
 
 use crate::{OcrEngine, OcrFormat, SubMode};
 
@@ -370,7 +375,9 @@ fn init_ort_environment() -> Result<bool> {
         Ok(false) => debug!("ONNX Runtime environment already initialized; skipping reconfigure"),
         Err(err) => {
             warn!("Failed to initialize ONNX Runtime environment: {}", err);
-            return Err(anyhow!("Failed to initialize ONNX Runtime environment: {err}"));
+            return Err(anyhow!(
+                "Failed to initialize ONNX Runtime environment: {err}"
+            ));
         }
     }
     let _ = ORT_ENV_INIT.set(());
@@ -422,8 +429,7 @@ impl PpOcrV4Engine {
 }
 
 fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
-    let selection =
-        build_execution_providers().map_err(|err| ort::Error::new(err.to_string()))?;
+    let selection = build_execution_providers().map_err(|err| ort::Error::new(err.to_string()))?;
     let mut builder = builder.with_execution_providers(selection.providers)?;
     builder = builder.with_intra_threads(
         std::thread::available_parallelism()
@@ -462,18 +468,11 @@ struct ExecutionProviderSelection {
 }
 
 fn require_gpu() -> bool {
-    env::var("DPN_OCR_REQUIRE_GPU")
-        .ok()
-        .as_deref()
-        == Some("1")
+    env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() == Some("1")
 }
 
 fn force_cpu_execution_providers() -> bool {
-    if env::var("DPN_OCR_FORCE_CPU")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    if env::var("DPN_OCR_FORCE_CPU").ok().as_deref() == Some("1") {
         return true;
     }
     FORCE_CPU_EP.load(Ordering::Relaxed)
@@ -527,6 +526,66 @@ fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
 #[cfg(not(target_vendor = "apple"))]
 fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("CoreML execution provider is only supported on Apple platforms");
+}
+
+#[cfg(target_os = "windows")]
+fn detect_directml_available(force_cpu: bool) -> bool {
+    if force_cpu {
+        return false;
+    }
+    let directml = DirectMLExecutionProvider::default();
+    match directml.is_available() {
+        Ok(true) => {
+            info!("ONNX Runtime DirectML execution provider available");
+            true
+        }
+        Ok(false) => {
+            warn!("ONNX Runtime DirectML execution provider not available; falling back to CPU.");
+            false
+        }
+        Err(err) => {
+            warn!(
+                "Failed to query DirectML execution provider availability: {}",
+                err
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_directml_available(_force_cpu: bool) -> bool {
+    false
+}
+
+#[cfg(target_vendor = "apple")]
+fn detect_coreml_available(force_cpu: bool) -> bool {
+    if force_cpu {
+        return false;
+    }
+    let coreml = CoreMLExecutionProvider::default();
+    match coreml.is_available() {
+        Ok(true) => {
+            info!("ONNX Runtime CoreML execution provider available");
+            true
+        }
+        Ok(false) => {
+            warn!("ONNX Runtime CoreML execution provider not available; falling back to CPU.");
+            false
+        }
+        Err(err) => {
+            warn!(
+                "Failed to query CoreML execution provider availability: {}",
+                err
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn detect_coreml_available(_force_cpu: bool) -> bool {
+    false
 }
 
 fn select_execution_provider_plan(
@@ -584,11 +643,16 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
                     true
                 }
                 Ok(false) => {
-                    warn!("ONNX Runtime CUDA execution provider not available; falling back to CPU.");
+                    warn!(
+                        "ONNX Runtime CUDA execution provider not available; falling back to CPU."
+                    );
                     false
                 }
                 Err(err) => {
-                    warn!("Failed to query CUDA execution provider availability: {}", err);
+                    warn!(
+                        "Failed to query CUDA execution provider availability: {}",
+                        err
+                    );
                     false
                 }
             }
@@ -599,64 +663,15 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
         }
     };
 
-    let directml_available = if force_cpu {
-        false
-    } else {
-        #[cfg(target_os = "windows")]
-        {
-            let directml = DirectMLExecutionProvider::default();
-            match directml.is_available() {
-                Ok(true) => {
-                    info!("ONNX Runtime DirectML execution provider available");
-                    true
-                }
-                Ok(false) => {
-                    warn!(
-                        "ONNX Runtime DirectML execution provider not available; falling back to CPU."
-                    );
-                    false
-                }
-                Err(err) => {
-                    warn!("Failed to query DirectML execution provider availability: {}", err);
-                    false
-                }
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            false
-        }
-    };
+    let directml_available = detect_directml_available(force_cpu);
+    let coreml_available = detect_coreml_available(force_cpu);
 
-    let coreml_available = if force_cpu {
-        false
-    } else {
-        #[cfg(target_vendor = "apple")]
-        {
-            let coreml = CoreMLExecutionProvider::default();
-            match coreml.is_available() {
-                Ok(true) => {
-                    info!("ONNX Runtime CoreML execution provider available");
-                    true
-                }
-                Ok(false) => {
-                    warn!("ONNX Runtime CoreML execution provider not available; falling back to CPU.");
-                    false
-                }
-                Err(err) => {
-                    warn!("Failed to query CoreML execution provider availability: {}", err);
-                    false
-                }
-            }
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            false
-        }
-    };
-
-    let (kinds, gpu_available) =
-        select_execution_provider_plan(require_gpu, cuda_available, directml_available, coreml_available)?;
+    let (kinds, gpu_available) = select_execution_provider_plan(
+        require_gpu,
+        cuda_available,
+        directml_available,
+        coreml_available,
+    )?;
 
     if gpu_available {
         info!(
@@ -713,9 +728,7 @@ fn resolve_model_dir() -> Result<PathBuf> {
     }
 
     let fallback = if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg)
-            .join("direct-play-nice")
-            .join("models")
+        PathBuf::from(xdg).join("direct-play-nice").join("models")
     } else if let Some(home) = env::var_os("HOME") {
         PathBuf::from(home)
             .join(".config")
@@ -761,6 +774,7 @@ fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(test)]
 fn ensure_model_file_with_values(
     model_dir: &Path,
     filename: &str,
@@ -901,7 +915,10 @@ impl SubtitleMuxer {
                     &mut self.last_written_dts,
                 )? {
                     let ts = packet_ts(&encoded, output_time_base);
-                    out.push(PendingPacket { ts, packet: encoded });
+                    out.push(PendingPacket {
+                        ts,
+                        packet: encoded,
+                    });
                 }
             }
         }
@@ -972,8 +989,12 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
 
     output_ctx.write_trailer()?;
 
-    fs::rename(&tmp_out, &output_path)
-        .with_context(|| format!("replacing '{}' after container remux", output_path.display()))?;
+    fs::rename(&tmp_out, &output_path).with_context(|| {
+        format!(
+            "replacing '{}' after container remux",
+            output_path.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -1005,8 +1026,14 @@ pub fn mux_text_tracks_from(
 
     let is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
     let is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
-    if is_mp4 && tracks.iter().any(|track| matches!(track.format, OcrFormat::Ass)) {
-        warn!("ASS OCR output is being remuxed into MP4; formatting will be downgraded to mov_text");
+    if is_mp4
+        && tracks
+            .iter()
+            .any(|track| matches!(track.format, OcrFormat::Ass))
+    {
+        warn!(
+            "ASS OCR output is being remuxed into MP4; formatting will be downgraded to mov_text"
+        );
     }
 
     let mut input_ctx = AVFormatContextInput::open(input_file)?;
@@ -1045,8 +1072,7 @@ pub fn mux_text_tracks_from(
 
     let mut pending = Vec::new();
     for muxer in subtitle_muxers.iter_mut() {
-        let output_time_base =
-            output_ctx.streams()[muxer.output_stream_index as usize].time_base;
+        let output_time_base = output_ctx.streams()[muxer.output_stream_index as usize].time_base;
         pending.extend(muxer.collect_packets(output_time_base)?);
     }
     pending.sort_by(|a, b| {
@@ -1158,11 +1184,7 @@ fn build_subtitle_muxer(
     })
 }
 
-fn select_subtitle_codec_id(
-    format: OcrFormat,
-    is_mp4: bool,
-    is_mkv: bool,
-) -> ffi::AVCodecID {
+fn select_subtitle_codec_id(format: OcrFormat, is_mp4: bool, is_mkv: bool) -> ffi::AVCodecID {
     if is_mp4 {
         ffi::AV_CODEC_ID_MOV_TEXT
     } else if is_mkv {
@@ -1181,7 +1203,10 @@ fn build_language_metadata(language: &str) -> Option<AVDictionary> {
     Some(AVDictionary::new(&key, &value, 0))
 }
 
-fn set_subtitle_codec_par(decode_context: &mut AVCodecContext, encode_context: &mut AVCodecContext) {
+fn set_subtitle_codec_par(
+    decode_context: &mut AVCodecContext,
+    encode_context: &mut AVCodecContext,
+) {
     encode_context.set_time_base(decode_context.time_base);
 
     if decode_context.subtitle_header_size > 0 {
@@ -1330,6 +1355,7 @@ fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ocr_single_stream(
     input_path: &str,
     stream_index: i32,
@@ -1345,7 +1371,7 @@ fn ocr_single_stream(
 
     let (stream_time_base, stream_codec_id) = ictx
         .streams()
-        .into_iter()
+        .iter()
         .find(|st| st.index == stream_index)
         .map(|st| (st.time_base, st.codecpar().codec_id))
         .ok_or_else(|| anyhow!("subtitle stream {} not found", stream_index))?;
@@ -1443,6 +1469,7 @@ fn ocr_single_stream(
     Ok(cues)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn subtitle_to_cues(
     subtitle: *const ffi::AVSubtitle,
     fallback_start_ms: i64,
@@ -1460,7 +1487,6 @@ fn subtitle_to_cues(
         return Ok(Vec::new());
     }
 
-    let start_ms;
     let mut end_ms;
     let sub = unsafe { &*subtitle };
 
@@ -1470,7 +1496,7 @@ fn subtitle_to_cues(
         fallback_start_ms
     };
 
-    start_ms = base_ms.saturating_add(sub.start_display_time as i64).max(0);
+    let start_ms = base_ms.saturating_add(sub.start_display_time as i64).max(0);
     end_ms = base_ms
         .saturating_add(sub.end_display_time as i64)
         .max(start_ms);
@@ -1500,8 +1526,8 @@ fn subtitle_to_cues(
     match ocr_format {
         OcrFormat::Srt => {
             let merged = lines
-                .into_iter()
-                .map(|line| line.text)
+                .iter()
+                .map(|line| line.text.as_str())
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -1522,8 +1548,12 @@ fn subtitle_to_cues(
                 }
                 if let Some(bbox) = line.bbox {
                     let (pos_x, pos_y) = ass_position_from_bbox(&bbox, video_dimensions);
-                    let ass_text =
-                        format_ass_text_with_style(&line.text, Some((pos_x, pos_y)), line.color, line.italic);
+                    let ass_text = format_ass_text_with_style(
+                        &line.text,
+                        Some((pos_x, pos_y)),
+                        line.color,
+                        line.italic,
+                    );
                     cues.push(SubtitleCue {
                         start_ms,
                         end_ms,
@@ -1789,11 +1819,11 @@ fn run_external_ocr_command(
         .output()
         .with_context(|| {
             format!(
-            "running OCR external command on '{}' with DPN_OCR_LANGUAGE={}",
-            image_path.display(),
-            language
-        )
-    })?;
+                "running OCR external command on '{}' with DPN_OCR_LANGUAGE={}",
+                image_path.display(),
+                language
+            )
+        })?;
 
     if !output.status.success() {
         bail!(
@@ -1937,7 +1967,11 @@ fn write_srt(path: &Path, cues: &[SubtitleCue]) -> Result<()> {
     Ok(())
 }
 
-fn write_ass(path: &Path, cues: &[SubtitleCue], video_dimensions: Option<(u32, u32)>) -> Result<()> {
+fn write_ass(
+    path: &Path,
+    cues: &[SubtitleCue],
+    video_dimensions: Option<(u32, u32)>,
+) -> Result<()> {
     let (play_res_x, play_res_y) = video_dimensions.unwrap_or((1920, 1080));
     let mut body = String::new();
     body.push_str("[Script Info]\n");
@@ -1952,7 +1986,9 @@ fn write_ass(path: &Path, cues: &[SubtitleCue], video_dimensions: Option<(u32, u
     body.push_str("Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n");
     body.push('\n');
     body.push_str("[Events]\n");
-    body.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+    body.push_str(
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+    );
 
     for cue in cues {
         body.push_str(&format!(
@@ -2089,6 +2125,7 @@ fn parse_ass_color(text: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
+#[cfg(test)]
 fn intersection_over_union(a: &OcrBoundingBox, b: &OcrBoundingBox) -> f32 {
     let x_left = a.left.max(b.left);
     let y_top = a.top.max(b.top);
@@ -2109,6 +2146,7 @@ fn intersection_over_union(a: &OcrBoundingBox, b: &OcrBoundingBox) -> f32 {
     inter_area / (area_a + area_b - inter_area)
 }
 
+#[cfg(test)]
 fn rgb_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
     let dr = a.0 as f32 - b.0 as f32;
     let dg = a.1 as f32 - b.1 as f32;
@@ -2116,6 +2154,8 @@ fn rgb_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
     (dr * dr + dg * dg + db * db).sqrt()
 }
 
+#[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 fn word_error_rate(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
@@ -2213,7 +2253,7 @@ fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
         return without_bbox;
     }
 
-    with_bbox.sort_by(|a, b| sort_ocr_lines(a, b));
+    with_bbox.sort_by(sort_ocr_lines);
 
     struct LineGroup {
         items: Vec<OcrLine>,
@@ -2319,7 +2359,7 @@ fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
     }
 
     merged.extend(without_bbox);
-    merged.sort_by(|a, b| sort_ocr_lines(a, b));
+    merged.sort_by(sort_ocr_lines);
     merged
 }
 
@@ -2510,7 +2550,7 @@ fn list_tesseract_languages() -> Result<HashSet<String>> {
 }
 
 fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
-    let cached = TESSERACT_LANG_CACHE.get_or_init(|| list_tesseract_languages());
+    let cached = TESSERACT_LANG_CACHE.get_or_init(list_tesseract_languages);
     cached.as_ref().ok()
 }
 
@@ -2550,8 +2590,8 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::ptr;
-    use tempfile::TempDir;
     use strsim::jaro_winkler;
+    use tempfile::TempDir;
 
     fn normalize_text_for_word_similarity(input: &str) -> String {
         input
@@ -2569,6 +2609,7 @@ mod tests {
             .collect()
     }
 
+    #[allow(clippy::needless_range_loop)]
     fn char_error_rate(expected: &str, actual: &str) -> f32 {
         let expected_chars: Vec<char> = expected.chars().collect();
         let actual_chars: Vec<char> = actual.chars().collect();
@@ -2643,8 +2684,8 @@ mod tests {
     #[test]
     fn resolve_language_prefers_stream_metadata_then_config_then_system_then_english() {
         let available = ["eng", "spa", "fra"]
-            .into_iter()
-            .map(|s| s.to_string())
+            .iter()
+            .map(|s| (*s).to_string())
             .collect::<HashSet<_>>();
 
         assert_eq!(
@@ -2688,13 +2729,7 @@ mod tests {
         let available = HashSet::<String>::new();
 
         assert_eq!(
-            resolve_ocr_language(
-                Some("jpn"),
-                None,
-                None,
-                &available,
-                OcrEngine::PpOcrV4
-            ),
+            resolve_ocr_language(Some("jpn"), None, None, &available, OcrEngine::PpOcrV4),
             "jpn"
         );
         assert_eq!(
@@ -2766,8 +2801,13 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("model.onnx");
-        download_model_with_values(&path, &format!("{}/model.onnx", server.url()), &hash, "model.onnx")
-            .expect("download should succeed");
+        download_model_with_values(
+            &path,
+            &format!("{}/model.onnx", server.url()),
+            &hash,
+            "model.onnx",
+        )
+        .expect("download should succeed");
 
         mock.assert();
         let metadata = fs::metadata(&path).unwrap();
@@ -2854,20 +2894,19 @@ mod tests {
     #[test]
     fn test_onnx_session_initializes_with_fallbacks() {
         init_ort_environment().unwrap();
-        assert!(ORT_ENV_INIT.get().is_some(), "ORT environment not initialized");
+        assert!(
+            ORT_ENV_INIT.get().is_some(),
+            "ORT environment not initialized"
+        );
     }
 
     #[test]
     fn test_gpu_requirement_env_gate() {
-        if std::env::var("DPN_OCR_REQUIRE_GPU")
-            .ok()
-            .as_deref()
-            != Some("1")
-        {
+        if std::env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() != Some("1") {
             return;
         }
-        let selection = build_execution_providers()
-            .expect("GPU execution providers required but unavailable");
+        let selection =
+            build_execution_providers().expect("GPU execution providers required but unavailable");
         assert!(
             selection.providers.len() > 1,
             "Expected at least one GPU execution provider plus CPU"

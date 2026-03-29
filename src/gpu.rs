@@ -355,7 +355,7 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
                 };
                 let mt = media_type_to_str((*codec).type_);
                 let is_video = mt == "video";
-                if !(only_video && !is_video) {
+                if !only_video || is_video {
                     print!("  - {:<22} {:<40} [{}]", name, long_name, mt);
                 }
                 let mut i = 0;
@@ -386,7 +386,7 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
                 if has_hw {
                     println!("  [hw: {}]", hw_entries.join(", "));
                 } else {
-                    println!("");
+                    println!();
                 }
             }
         }

@@ -329,9 +329,7 @@ fn should_apply_profile_option(encoder_name: &str) -> bool {
 
 fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
     let lower = encoder_name.to_ascii_lowercase();
-    if lower.contains("nvenc") {
-        level.ffmpeg_name().to_string()
-    } else if lower.contains("amf") || lower.contains("qsv") {
+    if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
         level.ffmpeg_name().to_string()
     } else {
         (level as i32).to_string()
@@ -490,9 +488,8 @@ fn verify_output_h264_profile_level(
     used_hw_encoder: bool,
 ) -> Result<H264Verification> {
     let display_path = output_path.display().to_string();
-    let input_ctx = AVFormatContextInput::open(output_file).with_context(|| {
-        format!("Opening '{}' to verify H.264 profile/level", display_path)
-    })?;
+    let input_ctx = AVFormatContextInput::open(output_file)
+        .with_context(|| format!("Opening '{}' to verify H.264 profile/level", display_path))?;
 
     let mut actual_profile: Option<H264Profile> = None;
     let mut actual_level: Option<H264Level> = None;
@@ -1126,7 +1123,7 @@ fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
             has_hw_frames
         );
         if log::log_enabled!(Level::Debug) {
-            if let Some(detail) = build_encoder_debug_dump(raw as *const ffi::AVCodecContext) {
+            if let Some(detail) = build_encoder_debug_dump(raw) {
                 debug!(
                     "Encoder {} [{}] raw codec state:\n{}",
                     encoder_name, stage, detail
@@ -1145,7 +1142,7 @@ fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
         return Some(num);
     }
     let level = match trimmed.to_ascii_lowercase().as_str() {
-        "quiet" => ffi::AV_LOG_QUIET as i32,
+        "quiet" => ffi::AV_LOG_QUIET,
         "panic" => ffi::AV_LOG_PANIC as i32,
         "fatal" => ffi::AV_LOG_FATAL as i32,
         "error" => ffi::AV_LOG_ERROR as i32,
@@ -1161,7 +1158,7 @@ fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
 
 fn ffmpeg_log_level_name(level: i32) -> &'static str {
     match level {
-        x if x <= ffi::AV_LOG_QUIET as i32 => "quiet",
+        x if x <= ffi::AV_LOG_QUIET => "quiet",
         x if x <= ffi::AV_LOG_PANIC as i32 => "panic",
         x if x <= ffi::AV_LOG_FATAL as i32 => "fatal",
         x if x <= ffi::AV_LOG_ERROR as i32 => "error",
@@ -1391,10 +1388,7 @@ mod video_tests {
 
     fn ffmpeg_present() -> bool {
         let out = Command::new("ffmpeg").arg("-version").output();
-        match out {
-            Ok(o) if o.status.success() => true,
-            _ => false,
-        }
+        matches!(out, Ok(o) if o.status.success())
     }
 
     #[test]
@@ -1928,7 +1922,7 @@ fn nearest_video_preset(width: i32, height: i32, bitrate: i64) -> &'static str {
 
 fn nearest_audio_preset(bitrate: i64) -> &'static str {
     let bitrate = if bitrate > 0 { bitrate } else { 192_000 };
-    const PRESETS: &[(i64, &'static str)] = &[
+    const PRESETS: &[(i64, &str)] = &[
         (96_000, "96k"),
         (128_000, "128k"),
         (160_000, "160k"),
@@ -2163,11 +2157,19 @@ struct Args {
     ocr_format: OcrFormat,
 
     /// Shell command used when --ocr-engine=external. The command receives DPN_OCR_IMAGE and DPN_OCR_LANGUAGE env vars and must print recognized text to stdout.
-    #[arg(long = "ocr-external-command", id = "ocr_external_command", hide = true)]
+    #[arg(
+        long = "ocr-external-command",
+        id = "ocr_external_command",
+        hide = true
+    )]
     ocr_external_command: Option<String>,
 
     /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
-    #[arg(long = "skip-codec-check", default_value_t = false, id = "skip_codec_check")]
+    #[arg(
+        long = "skip-codec-check",
+        default_value_t = false,
+        id = "skip_codec_check"
+    )]
     skip_codec_check: bool,
 
     /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
@@ -2222,7 +2224,7 @@ impl Args {
             ));
         }
 
-        let numeric = number_str.replace(',', "").replace('_', "");
+        let numeric = number_str.replace([',', '_'], "");
         let value: f64 = numeric
             .parse()
             .map_err(|_| format!("Failed to parse bitrate '{}': invalid number", input))?;
@@ -2501,10 +2503,10 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
         }
     }
 
-    if !cli_value_provided(matches, "primary_video_stream_index") {
-        if cfg.primary_video_stream_index.is_some() {
-            args.primary_video_stream_index = cfg.primary_video_stream_index;
-        }
+    if !cli_value_provided(matches, "primary_video_stream_index")
+        && cfg.primary_video_stream_index.is_some()
+    {
+        args.primary_video_stream_index = cfg.primary_video_stream_index;
     }
 
     if !cli_value_provided(matches, "primary_video_criteria") {
@@ -2573,9 +2575,9 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
 }
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
-    if frame.format == ffi::AV_PIX_FMT_CUDA as i32 {
+    if frame.format == ffi::AV_PIX_FMT_CUDA {
         let mut sw_frame = AVFrame::new();
-        sw_frame.set_format(ffi::AV_PIX_FMT_NV12 as i32);
+        sw_frame.set_format(ffi::AV_PIX_FMT_NV12);
         sw_frame.set_width(frame.width);
         sw_frame.set_height(frame.height);
         sw_frame.set_pts(frame.pts);
@@ -2777,8 +2779,8 @@ fn process_audio_stream(
         )
         .context("Create samples buffer failed.")?;
 
-        match &mut stream_processing_context.resample_context {
-            Some(resampler) => unsafe {
+        if let Some(resampler) = &mut stream_processing_context.resample_context {
+            unsafe {
                 resampler
                     .convert(
                         output_samples.audio_data.as_mut_ptr(),
@@ -2787,8 +2789,7 @@ fn process_audio_stream(
                         frame.nb_samples,
                     )
                     .context("Could not convert input samples")?;
-            },
-            None => {}
+            }
         }
 
         add_samples_to_fifo(fifo, &output_samples, frame.nb_samples)?;
@@ -3092,6 +3093,7 @@ fn configure_video_timing(
     output_stream.set_time_base(encode_time_base);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -3193,6 +3195,7 @@ fn set_h264_video_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_hevc_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -3374,6 +3377,7 @@ impl ConversionOutcome {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assess_direct_play_compatibility(
     input_file: &CStr,
     target_is_mp4: bool,
@@ -3391,7 +3395,7 @@ fn assess_direct_play_compatibility(
     let primary_idx =
         select_primary_video_stream_index(&ictx, primary_video_stream_index, primary_criteria)?;
 
-    let streams: Vec<_> = ictx.streams().into_iter().collect();
+    let streams: Vec<_> = ictx.streams().iter().collect();
     let video_stream = streams.get(primary_idx).ok_or_else(|| {
         anyhow!(
             "Primary video stream index {} out of range while checking direct-play compatibility",
@@ -3403,7 +3407,7 @@ fn assess_direct_play_compatibility(
     let video_par = video_stream.codecpar();
 
     for stream in &streams {
-        let disposition_flags = unsafe { (*stream.as_ptr()).disposition as i32 };
+        let disposition_flags = unsafe { (*stream.as_ptr()).disposition };
         if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
             reasons.push("input contains an attached picture stream".to_string());
             break;
@@ -3602,6 +3606,7 @@ mod direct_play_tests {
 }
 
 /// Takes input video files and outputs direct-play-compatible video files
+#[allow(clippy::too_many_arguments)]
 fn convert_video_file(
     input_file: &CStr,
     output_file: &CStr,
@@ -3636,11 +3641,6 @@ fn convert_video_file(
         .to_str()
         .map_err(|_| anyhow!("Output path is not valid UTF-8"))?;
     let output_path = Path::new(output_path_str);
-    let output_extension = output_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase());
-    let target_is_mp4 = matches!(output_extension.as_deref(), Some("mp4") | Some("m4v"));
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
@@ -3718,7 +3718,7 @@ fn convert_video_file(
         }
 
         // Skip attached picture (cover art) streams; treat them like metadata.
-        let disposition_flags = unsafe { (*stream.as_ptr()).disposition as i32 };
+        let disposition_flags = unsafe { (*stream.as_ptr()).disposition };
         if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
             info!(
                 "Skipping attached-picture stream {} ({}).",
@@ -3833,10 +3833,7 @@ fn convert_video_file(
             }
         }
 
-        let mut decoder_open_error = match decode_context.open(None) {
-            Ok(_) => None,
-            Err(err) => Some(err),
-        };
+        let mut decoder_open_error = decode_context.open(None).err();
 
         if hw_decoder_active {
             if let Some(open_err) = decoder_open_error.take() {
@@ -3860,10 +3857,7 @@ fn convert_video_file(
                     if let Some(framerate) = stream.guess_framerate() {
                         decode_context.set_framerate(framerate);
                     }
-                    fallback_error = match decode_context.open(None) {
-                        Ok(_) => None,
-                        Err(err) => Some(err),
-                    };
+                    fallback_error = decode_context.open(None).err();
                     hw_decoder_active = false;
                     if hw_decode_blacklist.insert(input_codec_id) {
                         debug!(
@@ -4696,7 +4690,7 @@ fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
         let (stream_id, disp_default, disp_forced, disp_hi, disp_vi) = unsafe {
             let s_ptr = st.as_ptr();
             let id = (*s_ptr).id;
-            let d = (*s_ptr).disposition as i32;
+            let d = (*s_ptr).disposition;
             (
                 id,
                 (d & ffi::AV_DISPOSITION_DEFAULT as i32) != 0,
@@ -4818,7 +4812,7 @@ fn gather_streams_info_json(input_file: &CStr, filter: StreamsFilter) -> Result<
         let (stream_id, disp_default, disp_forced, disp_hi, disp_vi) = unsafe {
             let s_ptr = st.as_ptr();
             let id = (*s_ptr).id;
-            let d = (*s_ptr).disposition as i32;
+            let d = (*s_ptr).disposition;
             (
                 id,
                 (d & ffi::AV_DISPOSITION_DEFAULT as i32) != 0,
@@ -5160,13 +5154,11 @@ fn run_conversion(
 
     let input_file = args
         .input_file
-        .as_ref()
-        .map(|s| s.as_c_str())
+        .as_deref()
         .expect("INPUT_FILE is required unless using --probe-* flags");
     let output_file = args
         .output_file
-        .as_ref()
-        .map(|s| s.as_c_str())
+        .as_deref()
         .expect("OUTPUT_FILE is required unless using --probe-* flags");
     let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
     let output_extension = output_path
@@ -5229,10 +5221,7 @@ fn run_conversion(
     } else {
         None
     };
-    let conversion_output_file = temp_output_cstring
-        .as_ref()
-        .map(|c| c.as_c_str())
-        .unwrap_or(output_file);
+    let conversion_output_file = temp_output_cstring.as_deref().unwrap_or(output_file);
     let mut conversion_result = if needs_conversion {
         let _conversion_slot = acquire_slot()?;
         convert_video_file(
@@ -5425,6 +5414,7 @@ fn run_conversion(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn post_process_ocr_subtitles(
     input_file: &CStr,
     mux_source_file: &CStr,
@@ -5476,23 +5466,4 @@ fn post_process_ocr_subtitles(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_video_stream_conversion_fix() {
-        // Test for the video stream conversion fix
-        // This test verifies that video stream conversion works correctly
-        // with the fix applied.
-
-        // Add your specific test cases here
-        // Example:
-        // let stream = create_test_video_stream();
-        // let result = convert_video_stream(stream);
-        // assert_eq!(result.width, expected_width);
-        // assert_eq!(result.height, expected_height);
-    }
 }

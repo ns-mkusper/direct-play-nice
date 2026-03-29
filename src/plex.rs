@@ -294,10 +294,11 @@ mod tests {
 
     #[test]
     fn refresher_uses_config_defaults() {
-        let mut plex_cfg = PlexSettings::default();
-        plex_cfg.refresh = Some(true);
-        plex_cfg.url = Some("http://localhost:3777".to_string());
-        plex_cfg.token = Some("token-from-config".to_string());
+        let plex_cfg = PlexSettings {
+            refresh: Some(true),
+            url: Some("http://localhost:3777".to_string()),
+            token: Some("token-from-config".to_string()),
+        };
 
         let refresher = PlexRefresher::from_sources(Some(&plex_cfg), false, None, None)
             .unwrap()
@@ -309,10 +310,11 @@ mod tests {
 
     #[test]
     fn cli_overrides_config() {
-        let mut plex_cfg = PlexSettings::default();
-        plex_cfg.refresh = Some(true);
-        plex_cfg.url = Some("http://localhost:3777".to_string());
-        plex_cfg.token = Some("token-from-config".to_string());
+        let plex_cfg = PlexSettings {
+            refresh: Some(true),
+            url: Some("http://localhost:3777".to_string()),
+            token: Some("token-from-config".to_string()),
+        };
 
         let refresher = PlexRefresher::from_sources(
             Some(&plex_cfg),
