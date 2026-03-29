@@ -38,7 +38,8 @@
 | CUDA13.2/cuDNN9.20/ORT1.24.4 | `139` | 50s | 25% | 37.56W | 105MB | No |
 | CUDA11.8/cuDNN8.4.1/ORT1.14.1 | `139` | 87s | 0% | 11.79W | 13MB | No |
 | CUDA11.8/cuDNN8.4.1/ORT1.15.1 | `139` | 33s | n/a | n/a | n/a | No |
-| CUDA11.4/cuDNN8.2.4/ORT1.13.1 | `139` | 75s | 21% | 35.95W | n/a | No |
+| CUDA11.4/cuDNN8.2.4/ORT1.13.1 + PP-OCRv4 | `139` | 32s | 21% | 36.13W | n/a | No |
+| CUDA11.4/cuDNN8.2.4/ORT1.13.1 + PP-OCRv3 | `139` | 32s | 21% | 36.24W | n/a | No |
 
 ### Notes
 
@@ -52,9 +53,11 @@
 - A 2026-03-29 single-GPU run (CUDA_VISIBLE_DEVICES=0) with CUDA
   11.8/cuDNN 8.4.1/ORT 1.15.1 also segfaulted (`139`) after ~33s.
 - A 2026-03-29 single-GPU run with CUDA 11.4/cuDNN 8.2.4/ORT 1.13.1 hit
-  ~21% GPU utilization and peaked at ~35.95W, but still segfaulted.
+  ~21% GPU utilization and peaked above 36W, but still segfaulted with
+  both PP-OCRv4 and PP-OCRv3 models.
 - Conclusion: GTX 960 (Maxwell) is hardware-incompatible with PP-OCRv4
-  CUDA execution (illegal instruction / provider init failure).
+  and PP-OCRv3 CUDA execution (illegal instruction / provider init
+  failure).
 
 ## CPU-only slice (PP-OCRv4 vs Tesseract)
 
