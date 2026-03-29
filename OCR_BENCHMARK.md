@@ -10,11 +10,11 @@
 
 ## Performance (full movie)
 
-| Engine | Runtime (s) | Avg W | Peak W | GPU Util (avg/peak) |
+| Engine | Runtime (s) | Avg W | Peak W | GPU util (avg/peak) |
 | --- | ---: | ---: | ---: | ---: |
-| Legacy (bitmap passthrough) | 3768.84 | 9.46 | 11.89 | 2.50% / 5.00% |
-| Tesseract (LSTM) | 6401.81 | 14.47 | 26.83 | 0.60% / 6.00% |
-| PP-OCRv4 (ONNX Runtime) | 4628.22 | 9.47 | 11.89 | 2.50% / 5.00% |
+| Legacy (bitmap) | 3768.84 | 9.46 | 11.89 | 2.50%/5.00% |
+| Tesseract (LSTM) | 6401.81 | 14.47 | 26.83 | 0.60%/6.00% |
+| PP-OCRv4 (ORT) | 4628.22 | 9.47 | 11.89 | 2.50%/5.00% |
 
 ### Comparison summary
 
@@ -23,31 +23,30 @@
 
 ### Notes
 
-- The original PP-OCRv4 run on `plexserver` reported CUDA EP availability
+- The original PP-OCRv4 run on `plexserver` reported CUDA EP availability,
   but GPU utilization remained ~0%, so inference appeared CPU-bound.
 - `check_gpu_env.sh` confirmed `libcudnn.so` was missing; cuDNN was
   installed via ALA (`cudnn-9.20.0.48-1`).
-- A 10-second idle sample on `plexserver` measured GPU0 at ~11.84W peak/
-  avg. The older idle log in `silence_full/idle_power.csv` is invalid due
-  to a bad query string.
+- A 10-second idle sample on `plexserver` measured GPU0 at ~11.84W
+  peak/avg. The older idle log in `silence_full/idle_power.csv` is invalid
+  due to a bad query string.
 
-## GPU attempt (5-minute slice, GTX 960)
+## GPU attempts (5-minute slice, GTX 960)
 
-| Metric | Value |
-| --- | --- |
-| Status | `139` (segfault) |
-| Runtime | 50s |
-| Max GPU util | 25% (GPU0) |
-| Max power | 37.56W (GPU0) |
-| Max VRAM | 105MB (GPU0) |
-| Output SRT | Not produced (crash after OCR init) |
+| Stack | Status | Runtime | Max GPU util | Max power | Max VRAM | Output SRT |
+| --- | --- | --- | --- | --- | --- | --- |
+| CUDA13.2/cuDNN9.20/ORT1.24.4 | `139` | 50s | 25% | 37.56W | 105MB | No |
+| CUDA11.8/cuDNN8.4.1/ORT1.14.1 | `139` | 87s | 0% | 11.79W | 13MB | No |
 
-Notes
+### Notes
 
-- `onnxruntime-cuda 1.24.4-4` installed successfully with `nccl` and
-  `onednn` only.
-- CUDA EP initialized, but the OCR process segfaulted before any
-  provider-specific error surfaced in logs.
+- The legacy stack was a zero-config run with all `DPN_OCR_*` and
+  `ORT_CUDA_FLAGS` unset (except `DPN_OCR_REQUIRE_GPU=1`).
+- CUDA EP initialized in both cases, but the OCR process segfaulted
+  before provider-specific errors surfaced in logs.
+- No `NVRM` XID entries appeared in `dmesg` during the legacy run.
+- A 2026-03-29 zero-config rerun with CUDA 11.8/cuDNN 8.4.1/ORT 1.14.1
+  still segfaulted (`139`) after ~32s with no GPU utilization.
 
 ## Accuracy (5-minute slice, stream 0)
 
@@ -58,7 +57,7 @@ same slice.
 | --- | ---: | ---: | ---: |
 | Legacy (bitmap passthrough) | N/A | N/A | N/A |
 | Tesseract (LSTM) | 49 | 949 | 1.000 (baseline) |
-| PP-OCRv4 + spacing fallback | 60 | 1 | 0.165 |
+| PP-OCRv4 (spacing) | 60 | 1 | 0.165 |
 
 ## Troubleshooting (GPU 0% util)
 
@@ -76,6 +75,8 @@ same slice.
 - A previous full upgrade attempt led to downtime. We switched to ALA
   and installed only `cudnn` and `onnxruntime-cuda` without touching
   `glibc` or `gcc-libs`.
+- The final legacy stack used for GPU tests was CUDA 11.8, cuDNN 8.4.1,
+  and ONNX Runtime 1.14.1.
 - `pacman -Qk` reported missing files under `bind` and permission errors
   on `/var/named/*.zone`. These should be corrected before further
   system updates.

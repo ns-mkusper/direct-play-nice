@@ -22,9 +22,8 @@ feature and seamless to the end user (ie. Direct Play selected by default).
 - Can be used standalone or as a Custom Script Connection with
   [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts),
   [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc.
-- Allows for achieving
-  [Direct Play](https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/)
-  with all videos in a way seamless to the end user.
+- Allows for achieving [Direct Play][direct-play] with all videos in a
+  way seamless to the end user.
 - Offers intuitive quality presets (match-source, 360p through 2160p + audio
   caps) so you can keep output sizes in check for fast starts on Plex and other
   direct-play servers.
@@ -179,14 +178,14 @@ direct_play_nice --probe-streams --output json input.mkv
 
 ### Subtitle OCR
 
-Bitmap subtitles (PGS/VobSub/DVD) are not compatible with MP4 direct‑play. When the
-output container is MP4, `direct_play_nice` can OCR those bitmap streams into text
-subtitles.
+Bitmap subtitles (PGS/VobSub/DVD) are not compatible with MP4 direct‑play.
+When the output container is MP4, `direct_play_nice` can OCR those bitmap
+streams into text subtitles.
 
 Defaults:
 
-- `--sub-mode auto` (default): only bitmap subtitle streams are OCR‑converted; text
-  subtitles are preserved when possible.
+- `--sub-mode auto` (default): only bitmap subtitle streams are
+  OCR‑converted; text subtitles are preserved when possible.
 - `--ocr-engine auto` (default): prefers PP‑OCRv4 when a GPU execution
   provider is available; otherwise falls back to Tesseract.
 - `--ocr-format srt` (default): emits simple text subtitles (SRT/MOV_TEXT).
@@ -194,10 +193,12 @@ Defaults:
 
 Enable/override behavior:
 
-- `--sub-mode=skip` disables all subtitle processing (no OCR, no subtitle output).
-- `--sub-mode=force` keeps subtitle processing enabled even if you usually skip it.
-- `--ocr-default-language <lang>` sets a fallback language code (e.g. `eng`, `spa`)
-  when a subtitle stream is missing language metadata.
+- `--sub-mode=skip` disables all subtitle processing (no OCR, no subtitle
+  output).
+- `--sub-mode=force` keeps subtitle processing enabled even if you usually
+  skip it.
+- `--ocr-default-language <lang>` sets a fallback language code (e.g.
+  `eng`, `spa`) when a subtitle stream is missing language metadata.
 - `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is
   downgraded to `mov_text`; use an MKV output if you want to preserve full
   ASS styling.
@@ -210,17 +211,20 @@ PP‑OCRv4 (ONNX Runtime):
   toolkit + cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS).
   Missing runtimes fall back to CPU automatically.
 - On Linux, the CUDA EP must match the `libonnxruntime.so` build. Run
-  `./check_gpu_env.sh` (or run `ldd` against the ONNX Runtime `.so`) to
+  `./check_gpu_env.sh` (or `ldd` against the ONNX Runtime `.so`) to
   confirm which `libcudnn.so.*` is required and that it is discoverable
   via `LD_LIBRARY_PATH`/`ldconfig`.
-- For containers, install the NVIDIA Container Toolkit and expose the CUDA/cuDNN
-  libraries to the container (`--gpus all` or equivalent).
-- `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if unavailable).
-- `DPN_OCR_FORCE_CPU=1` disables GPU execution providers and forces CPU-only OCR.
+- For containers, install the NVIDIA Container Toolkit and expose the
+  CUDA/cuDNN libraries to the container (`--gpus all` or equivalent).
+- `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if
+  unavailable).
+- `DPN_OCR_FORCE_CPU=1` disables GPU execution providers and forces
+  CPU-only OCR.
 - Models auto‑download into `models/` next to the executable, or
-  `~/.config/direct-play-nice/models/` on Linux (override with `DPN_OCR_MODEL_DIR`).
-- To swap models, drop replacement `.onnx` files into the model directory with the
-  same filenames: `ch_PP-OCRv4_det_infer.onnx`,
+  `~/.config/direct-play-nice/models/` on Linux (override with
+  `DPN_OCR_MODEL_DIR`).
+- To swap models, drop replacement `.onnx` files into the model directory
+  with the same filenames: `ch_PP-OCRv4_det_infer.onnx`,
   `ch_ppocr_mobile_v2.0_cls_infer.onnx`, `en_PP-OCRv4_rec_infer.onnx`.
 
 System stability note (Arch Linux):
@@ -229,9 +233,16 @@ System stability note (Arch Linux):
   Archive if you want to avoid a full system upgrade.
 - Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
   onnxruntime build.
-- On `plexserver` (GTX 960, CUDA 13.2), the CUDA EP initialized but OCR
-  segfaulted during model setup. This likely requires an older CUDA stack
-  or a GPU with newer compute capability.
+- On `plexserver` (GTX 960, driver 580xx), both CUDA 13.2 and the legacy
+  CUDA 11.8 + cuDNN 8.4.1 + ORT 1.14.1 stack still segfault during OCR
+  initialization. Use CPU OCR on this host for now.
+
+Legacy hardware support (Maxwell / GTX 960):
+
+- PP‑OCRv4 CUDA execution providers initialize but segfault during OCR
+  on GTX 960. No `NVRM` XID entries were observed.
+- For reliable runs, leave `DPN_OCR_REQUIRE_GPU` unset or set
+  `DPN_OCR_FORCE_CPU=1` to force CPU OCR.
 
 Config file equivalents:
 
@@ -304,7 +315,7 @@ optionally a custom server URL) via CLI flags or environment variables:
   `DIRECT_PLAY_NICE_CONFIG` environment variable.
 - Need a Plex token? Follow Plex’s official guide on locating your
   `X-Plex-Token` in their
-  [support article](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+  [support article][plex-token-support].
 
 The tool looks up the Plex library section that contains the converted file
 and invokes the server’s refresh endpoint for that directory, eliminating the
@@ -334,7 +345,13 @@ Only the `[plex]` section is consumed today; the top-level keys mirror CLI
 flags so you can keep preferred defaults documented alongside your Plex
 credentials.
 
-![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
+![Running as a custom script in Sonarr][sonarr-script-img]
+
+<!-- markdownlint-disable MD013 -->
+[direct-play]: https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/
+[plex-token-support]: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+<!-- markdownlint-enable MD013 -->
+[sonarr-script-img]: media/readme/sonarr-add-custom-script.png
 
 ### Quality Controls
 
