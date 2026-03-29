@@ -488,50 +488,6 @@ fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
         .join(", ")
 }
 
-fn cuda_conv_search() -> CuDNNConvAlgorithmSearch {
-    if let Ok(val) = env::var("DPN_OCR_CUDNN_CONV_SEARCH") {
-        let normalized = val.trim().to_ascii_lowercase();
-        let choice = match normalized.as_str() {
-            "default" | "def" => Some(CuDNNConvAlgorithmSearch::Default),
-            "heuristic" | "heur" | "heurstic" => Some(CuDNNConvAlgorithmSearch::Heuristic),
-            "exhaustive" | "exh" => Some(CuDNNConvAlgorithmSearch::Exhaustive),
-            _ => None,
-        };
-        if let Some(selection) = choice {
-            info!(
-                "cuDNN convolution search overridden via DPN_OCR_CUDNN_CONV_SEARCH={}",
-                val
-            );
-            return selection;
-        }
-        warn!(
-            "Ignoring invalid DPN_OCR_CUDNN_CONV_SEARCH value '{}'; defaulting to heuristic.",
-            val
-        );
-    }
-    CuDNNConvAlgorithmSearch::Heuristic
-}
-
-fn cuda_conv_max_workspace_override() -> Option<bool> {
-    match env::var("DPN_OCR_CUDNN_MAX_WORKSPACE") {
-        Ok(val) => {
-            let normalized = val.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "1" | "true" | "yes" | "on" => Some(true),
-                "0" | "false" | "no" | "off" => Some(false),
-                _ => {
-                    warn!(
-                        "Ignoring invalid DPN_OCR_CUDNN_MAX_WORKSPACE value '{}'; expected true/false.",
-                        val
-                    );
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    }
-}
-
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvider {
     let flags = match env::var("ORT_CUDA_FLAGS") {
@@ -569,27 +525,6 @@ fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvi
                     );
                 }
             }
-            "arena_extend_strategy" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                let strategy = match normalized.as_str() {
-                    "ksameasrequested" | "sameasrequested" => {
-                        Some(ArenaExtendStrategy::SameAsRequested)
-                    }
-                    "knextpoweroftwo" | "nextpoweroftwo" => {
-                        Some(ArenaExtendStrategy::NextPowerOfTwo)
-                    }
-                    _ => None,
-                };
-                if let Some(strategy) = strategy {
-                    ep = ep.with_arena_extend_strategy(strategy);
-                    info!("Applied ORT_CUDA_FLAGS arena_extend_strategy={}", value);
-                } else {
-                    warn!(
-                        "Invalid ORT_CUDA_FLAGS arena_extend_strategy '{}'; ignoring.",
-                        value
-                    );
-                }
-            }
             _ => {}
         }
     }
@@ -599,17 +534,14 @@ fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvi
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
-    let mut ep = CUDAExecutionProvider::default()
-        .with_conv_algorithm_search(cuda_conv_search())
-        .with_cuda_graph(false);
-    if let Some(enable) = cuda_conv_max_workspace_override() {
-        ep = ep.with_conv_max_workspace(enable);
-        info!(
-            "cuDNN max workspace override via DPN_OCR_CUDNN_MAX_WORKSPACE={}",
-            enable
-        );
-    }
+    let mut ep = CUDAExecutionProvider::default();
     ep = apply_cuda_env_overrides(ep);
+    ep = ep
+        .with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic)
+        .with_cuda_graph(false)
+        .with_conv_max_workspace(false)
+        .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested);
+    info!("CUDA EP safety brakes enabled for Maxwell-class GPUs.");
     let mut ep = ep.build();
     if require_gpu {
         ep = ep.error_on_failure();

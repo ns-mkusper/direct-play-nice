@@ -37,6 +37,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | CUDA13.2/cuDNN9.20/ORT1.24.4 | `139` | 50s | 25% | 37.56W | 105MB | No |
 | CUDA11.8/cuDNN8.4.1/ORT1.14.1 | `139` | 87s | 0% | 11.79W | 13MB | No |
+| CUDA11.8/cuDNN8.4.1/ORT1.15.1 | `139` | 33s | n/a | n/a | n/a | No |
 
 ### Notes
 
@@ -47,6 +48,8 @@
 - No `NVRM` XID entries appeared in `dmesg` during the legacy run.
 - A 2026-03-29 zero-config rerun with CUDA 11.8/cuDNN 8.4.1/ORT 1.14.1
   still segfaulted (`139`) after ~32s with no GPU utilization.
+- A 2026-03-29 single-GPU run (CUDA_VISIBLE_DEVICES=0) with CUDA
+  11.8/cuDNN 8.4.1/ORT 1.15.1 also segfaulted (`139`) after ~33s.
 
 ## Accuracy (5-minute slice, stream 0)
 
