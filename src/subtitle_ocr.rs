@@ -84,8 +84,39 @@ struct ExternalEngine {
     command: String,
 }
 
-struct PpOcrV4Engine {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PpOcrVariant {
+    V3,
+    V4,
+}
+
+impl PpOcrVariant {
+    fn label(self) -> &'static str {
+        match self {
+            PpOcrVariant::V3 => "PP-OCRv3",
+            PpOcrVariant::V4 => "PP-OCRv4",
+        }
+    }
+
+    fn model_specs(self) -> (&'static ModelSpec, &'static ModelSpec, &'static ModelSpec) {
+        match self {
+            PpOcrVariant::V3 => (
+                &PPOCR_V3_DET_MODEL,
+                &PPOCR_V3_CLS_MODEL,
+                &PPOCR_V3_REC_MODEL,
+            ),
+            PpOcrVariant::V4 => (
+                &PPOCR_V4_DET_MODEL,
+                &PPOCR_V4_CLS_MODEL,
+                &PPOCR_V4_REC_MODEL,
+            ),
+        }
+    }
+}
+
+struct PpOcrEngine {
     ocr: OcrLite,
+    variant: PpOcrVariant,
 }
 
 impl SubtitleConverter for TesseractEngine {
@@ -124,13 +155,13 @@ impl SubtitleConverter for ExternalEngine {
     }
 }
 
-impl SubtitleConverter for PpOcrV4Engine {
+impl SubtitleConverter for PpOcrEngine {
     fn extract_lines(&mut self, image_path: &Path, _language: &str) -> Result<OcrOutput> {
         let img = load_image(image_path)?;
         let result = self
             .ocr
             .detect(&img, 50, 1024, 0.5, 0.3, 1.6, false, false)
-            .map_err(|err| anyhow!("PP-OCRv4 failed: {}", err))?;
+            .map_err(|err| anyhow!("{} failed: {}", self.variant.label(), err))?;
 
         let mut lines = Vec::with_capacity(result.text_blocks.len());
         for block in result.text_blocks {
@@ -266,27 +297,48 @@ fn build_ocr_engine(
                 .to_string();
             Ok((OcrEngine::External, Box::new(ExternalEngine { command })))
         }
-        OcrEngine::PpOcrV4 => {
+        OcrEngine::PpOcrV3 => {
+            let variant = PpOcrVariant::V3;
             let gpu_available = init_ort_environment()?;
             if !gpu_available {
                 warn!(
-                    "PP-OCRv4 running without GPU acceleration. \
-                     Install the CUDA/DirectML/CoreML runtime or set DPN_OCR_REQUIRE_GPU=1 to fail if GPU is required."
+                    "{} running without GPU acceleration. \
+                     Install the CUDA/DirectML/CoreML runtime or set DPN_OCR_REQUIRE_GPU=1 to fail if GPU is required.",
+                    variant.label(),
                 );
             }
             let model_dir = resolve_model_dir()?;
-            let engine = init_ppocr_engine(&model_dir, require_gpu())?;
+            let engine = init_ppocr_engine(&model_dir, require_gpu(), variant)?;
+            Ok((OcrEngine::PpOcrV3, Box::new(engine)))
+        }
+        OcrEngine::PpOcrV4 => {
+            let variant = PpOcrVariant::V4;
+            let gpu_available = init_ort_environment()?;
+            if !gpu_available {
+                warn!(
+                    "{} running without GPU acceleration. \
+                     Install the CUDA/DirectML/CoreML runtime or set DPN_OCR_REQUIRE_GPU=1 to fail if GPU is required.",
+                    variant.label(),
+                );
+            }
+            let model_dir = resolve_model_dir()?;
+            let engine = init_ppocr_engine(&model_dir, require_gpu(), variant)?;
             Ok((OcrEngine::PpOcrV4, Box::new(engine)))
         }
         OcrEngine::Auto => {
             let require_gpu = require_gpu();
+            let variant = PpOcrVariant::V4;
             let gpu_available = match init_ort_environment() {
                 Ok(available) => available,
                 Err(err) => {
                     if require_gpu {
                         return Err(err);
                     }
-                    warn!("PP-OCRv4 unavailable; falling back to Tesseract: {}", err);
+                    warn!(
+                        "{} unavailable; falling back to Tesseract: {}",
+                        variant.label(),
+                        err
+                    );
                     return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
                 }
             };
@@ -296,19 +348,26 @@ fn build_ocr_engine(
                 return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
             }
 
-            match (|| -> Result<PpOcrV4Engine> {
+            match (|| -> Result<PpOcrEngine> {
                 let model_dir = resolve_model_dir()?;
-                init_ppocr_engine(&model_dir, require_gpu)
+                init_ppocr_engine(&model_dir, require_gpu, variant)
             })() {
                 Ok(engine) => {
-                    info!("Auto-selected PP-OCRv4 engine with GPU acceleration");
+                    info!(
+                        "Auto-selected {} engine with GPU acceleration",
+                        variant.label()
+                    );
                     Ok((OcrEngine::PpOcrV4, Box::new(engine)))
                 }
                 Err(err) => {
                     if require_gpu {
                         return Err(err);
                     }
-                    warn!("PP-OCRv4 unavailable; falling back to Tesseract: {}", err);
+                    warn!(
+                        "{} unavailable; falling back to Tesseract: {}",
+                        variant.label(),
+                        err
+                    );
                     Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)))
                 }
             }
@@ -324,37 +383,54 @@ fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
     }
 }
 
-fn ppocr_require_gpu_error(err: impl std::fmt::Display) -> anyhow::Error {
+fn ppocr_require_gpu_error(variant: PpOcrVariant, err: impl std::fmt::Display) -> anyhow::Error {
     anyhow!(
-        "PP-OCRv4 failed to initialize with DPN_OCR_REQUIRE_GPU=1. \
+        "{} failed to initialize with DPN_OCR_REQUIRE_GPU=1. \
          Verify CUDA/ONNX Runtime GPU libraries are installed. Underlying error: {}",
+        variant.label(),
         err
     )
 }
 
-fn init_ppocr_engine(model_dir: &Path, require_gpu: bool) -> Result<PpOcrV4Engine> {
-    match PpOcrV4Engine::new(model_dir) {
+fn init_ppocr_engine(
+    model_dir: &Path,
+    require_gpu: bool,
+    variant: PpOcrVariant,
+) -> Result<PpOcrEngine> {
+    let skip_cls = skip_ppocr_cls(variant, require_gpu);
+    if skip_cls {
+        info!(
+            "{} classifier model is disabled (DPN_OCR_SKIP_CLS or Maxwell GPU mode).",
+            variant.label()
+        );
+    }
+    match PpOcrEngine::new(model_dir, variant, skip_cls) {
         Ok(engine) => Ok(engine),
         Err(err) => {
             if require_gpu {
-                return Err(ppocr_require_gpu_error(err));
+                return Err(ppocr_require_gpu_error(variant, err));
             }
             if force_cpu_execution_providers() {
                 return Err(err);
             }
             warn!(
-                "PP-OCRv4 failed to initialize with GPU providers; retrying with CPU-only providers: {}",
+                "{} failed to initialize with GPU providers; retrying with CPU-only providers: {}",
+                variant.label(),
                 err
             );
             FORCE_CPU_EP.store(true, Ordering::Relaxed);
-            match PpOcrV4Engine::new(model_dir) {
+            match PpOcrEngine::new(model_dir, variant, skip_cls) {
                 Ok(engine) => {
-                    info!("PP-OCRv4 initialized with CPU-only execution provider");
+                    info!(
+                        "{} initialized with CPU-only execution provider",
+                        variant.label()
+                    );
                     Ok(engine)
                 }
                 Err(retry_err) => {
                     warn!(
-                        "PP-OCRv4 CPU-only initialization failed; falling back: {}",
+                        "{} CPU-only initialization failed; falling back: {}",
+                        variant.label(),
                         retry_err
                     );
                     Err(err)
@@ -369,10 +445,7 @@ fn init_ort_environment() -> Result<bool> {
         return Ok(*ORT_ENV_GPU_AVAILABLE.get().unwrap_or(&false));
     }
     let selection = build_execution_providers()?;
-    match ort::init()
-        .with_execution_providers(selection.providers)
-        .commit()
-    {
+    match ort::init().commit() {
         Ok(true) => info!("Initialized ONNX Runtime environment for OCR execution providers"),
         Ok(false) => debug!("ONNX Runtime environment already initialized; skipping reconfigure"),
         Err(err) => {
@@ -393,40 +466,68 @@ struct ModelSpec {
     sha256: &'static str,
 }
 
-const PPOCR_DET_MODEL: ModelSpec = ModelSpec {
+const PPOCR_V4_DET_MODEL: ModelSpec = ModelSpec {
     filename: "ch_PP-OCRv4_det_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx",
     sha256: "D2A7720D45A54257208B1E13E36A8479894CB74155A5EFE29462512D42F49DA9",
 };
-const PPOCR_CLS_MODEL: ModelSpec = ModelSpec {
+const PPOCR_V4_CLS_MODEL: ModelSpec = ModelSpec {
     filename: "ch_ppocr_mobile_v2.0_cls_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_infer.onnx",
     sha256: "E47ACEDF663230F8863FF1AB0E64DD2D82B838FCEB5957146DAB185A89D6215C",
 };
-const PPOCR_REC_MODEL: ModelSpec = ModelSpec {
+const PPOCR_V4_REC_MODEL: ModelSpec = ModelSpec {
     filename: "en_PP-OCRv4_rec_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/rec/en_PP-OCRv4_rec_infer.onnx",
     sha256: "E8770C967605983D1570CDF5352041DFB68FA0C21664F49F47B155ABD3E0E318",
 };
 
+const PPOCR_V3_DET_MODEL: ModelSpec = ModelSpec {
+    filename: "ch_PP-OCRv3_det_infer.onnx",
+    url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_PP-OCRv3_det_infer.onnx?download=true",
+    sha256: "3439588C030FAEA393A54515F51E983D8E155B19A2E8ABA7891934C1CF0DE526",
+};
+const PPOCR_V3_CLS_MODEL: ModelSpec = ModelSpec {
+    filename: "ch_ppocr_mobile_v2.0_cls_train.onnx",
+    url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_ppocr_mobile_v2.0_cls_train.onnx?download=true",
+    sha256: "70581B300B83BABD9E0DD1D7D74C5B006869E8796DA277A70C2E405BF9D77C82",
+};
+const PPOCR_V3_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "en_PP-OCRv3_rec_infer.onnx",
+    url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/en_PP-OCRv3_rec_infer.onnx?download=true",
+    sha256: "EF7ABD8BD3629AE57EA2C28B425C1BD258A871B93FD2FE7C433946ADE9B5D9EA",
+};
+
 struct PpOcrModels {
     det: PathBuf,
-    cls: PathBuf,
+    cls: Option<PathBuf>,
     rec: PathBuf,
 }
 
-impl PpOcrV4Engine {
-    fn new(model_dir: &Path) -> Result<Self> {
-        let models = ensure_ppocr_models(model_dir)?;
+impl PpOcrEngine {
+    fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
+        let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
+        info!(
+            "Initializing {} models (det='{}', cls='{}', rec='{}')",
+            variant.label(),
+            models.det.display(),
+            models
+                .cls
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<skipped>".to_string()),
+            models.rec.display()
+        );
         let mut ocr = OcrLite::new();
-        ocr.init_models_custom(
+        let cls_owned = models.cls.as_ref().map(|p| p.to_string_lossy().to_string());
+        ocr.init_models_custom_optional_cls(
             models.det.to_string_lossy().as_ref(),
-            models.cls.to_string_lossy().as_ref(),
+            cls_owned.as_deref(),
             models.rec.to_string_lossy().as_ref(),
             configure_ort_builder,
         )
-        .map_err(|err| anyhow!("failed to initialize PP-OCRv4 models: {}", err))?;
-        Ok(Self { ocr })
+        .map_err(|err| anyhow!("failed to initialize {} models: {}", variant.label(), err))?;
+        Ok(Self { ocr, variant })
     }
 }
 
@@ -471,6 +572,28 @@ struct ExecutionProviderSelection {
 
 fn require_gpu() -> bool {
     env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() == Some("1")
+}
+
+fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
+    let configured = env::var("DPN_OCR_SKIP_CLS").ok().and_then(|v| {
+        let v = v.trim();
+        if v.eq_ignore_ascii_case("1")
+            || v.eq_ignore_ascii_case("true")
+            || v.eq_ignore_ascii_case("yes")
+            || v.eq_ignore_ascii_case("on")
+        {
+            Some(true)
+        } else if v.eq_ignore_ascii_case("0")
+            || v.eq_ignore_ascii_case("false")
+            || v.eq_ignore_ascii_case("no")
+            || v.eq_ignore_ascii_case("off")
+        {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    configured.unwrap_or(matches!(variant, PpOcrVariant::V3) && require_gpu)
 }
 
 fn force_cpu_execution_providers() -> bool {
@@ -797,10 +920,19 @@ fn resolve_model_dir() -> Result<PathBuf> {
     Ok(fallback)
 }
 
-fn ensure_ppocr_models(model_dir: &Path) -> Result<PpOcrModels> {
-    let det = ensure_model_file(model_dir, &PPOCR_DET_MODEL)?;
-    let cls = ensure_model_file(model_dir, &PPOCR_CLS_MODEL)?;
-    let rec = ensure_model_file(model_dir, &PPOCR_REC_MODEL)?;
+fn ensure_ppocr_models(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+    skip_cls: bool,
+) -> Result<PpOcrModels> {
+    let (det_spec, cls_spec, rec_spec) = variant.model_specs();
+    let det = ensure_model_file(model_dir, det_spec)?;
+    let cls = if skip_cls {
+        None
+    } else {
+        Some(ensure_model_file(model_dir, cls_spec)?)
+    };
+    let rec = ensure_model_file(model_dir, rec_spec)?;
     Ok(PpOcrModels { det, cls, rec })
 }
 
@@ -1338,7 +1470,19 @@ fn encode_subtitle_packet(
     encoded_packet.set_stream_index(output_stream_index);
     encoded_packet.set_pts(pts);
     encoded_packet.set_dts(dts);
-    encoded_packet.set_duration(packet.duration);
+    let mut duration = packet.duration;
+    if duration == ffi::AV_NOPTS_VALUE || duration <= 0 {
+        let display_ms = i64::from(subtitle.end_display_time)
+            .saturating_sub(i64::from(subtitle.start_display_time));
+        if display_ms > 0 {
+            duration =
+                unsafe { ffi::av_rescale_q(display_ms, ra(1, 1_000), encode_context.time_base) };
+        }
+    }
+    if duration <= 0 || duration == ffi::AV_NOPTS_VALUE {
+        duration = 1;
+    }
+    encoded_packet.set_duration(duration);
     encoded_packet.set_flags(packet.flags);
 
     encoded_packet.rescale_ts(encode_context.time_base, output_time_base);
@@ -1707,7 +1851,7 @@ fn extract_subtitle_lines(
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
         let mut output = engine.extract_lines(&pgm_path, language)?;
-        if matches!(ocr_engine, OcrEngine::PpOcrV4)
+        if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
             && ppocr_spacing_needs_fallback(&output.lines)
         {
@@ -2452,7 +2596,10 @@ fn resolve_ocr_language(
     available: &HashSet<String>,
     ocr_engine: OcrEngine,
 ) -> String {
-    if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::External) {
+    if matches!(
+        ocr_engine,
+        OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3 | OcrEngine::External
+    ) {
         if let Some(code) = tag.and_then(map_language_tag_to_tesseract) {
             return code;
         }
@@ -2785,6 +2932,10 @@ mod tests {
         assert_eq!(
             resolve_ocr_language(Some("jpn"), None, None, &available, OcrEngine::PpOcrV4),
             "jpn"
+        );
+        assert_eq!(
+            resolve_ocr_language(Some("eng"), None, None, &available, OcrEngine::PpOcrV3),
+            "eng"
         );
         assert_eq!(
             resolve_ocr_language(None, None, None, &available, OcrEngine::External),
@@ -3181,7 +3332,7 @@ mod tests {
             }
         };
 
-        let mut engine = match PpOcrV4Engine::new(&model_dir) {
+        let mut engine = match PpOcrEngine::new(&model_dir, PpOcrVariant::V4, false) {
             Ok(engine) => engine,
             Err(err) => {
                 eprintln!("OCR engine unavailable: {err}. Skipping.");
@@ -3270,5 +3421,38 @@ mod tests {
         if found == 0 {
             eprintln!("Golden dataset empty; skipping.");
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_manual_ppocr_v3_single_image_probe() {
+        if std::env::var("DPN_OCR_MANUAL_PPOCR_V3").ok().as_deref() != Some("1") {
+            eprintln!("Skipping manual PP-OCRv3 probe (set DPN_OCR_MANUAL_PPOCR_V3=1 to enable).");
+            return;
+        }
+
+        let model_dir = resolve_model_dir().expect("resolve model dir");
+        let gpu_available = init_ort_environment().expect("init ORT environment");
+        eprintln!(
+            "ORT environment initialized; gpu_available={}",
+            gpu_available
+        );
+
+        let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
+            .expect("init PP-OCRv3 engine");
+
+        let tmp_dir = tempfile::tempdir().expect("create temp dir");
+        let image_path = tmp_dir.path().join("manual_probe.png");
+        let img = image::RgbImage::from_pixel(1280, 720, image::Rgb([0, 0, 0]));
+        img.save(&image_path).expect("save probe image");
+
+        let output = engine
+            .extract_lines(&image_path, "eng")
+            .expect("run PP-OCRv3 inference");
+        eprintln!(
+            "PP-OCRv3 probe completed: lines={}, avg_conf={:.4}",
+            output.lines.len(),
+            output.average_confidence
+        );
     }
 }

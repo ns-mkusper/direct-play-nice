@@ -20,8 +20,13 @@ cstr = "0.2.12"
 env_logger = "0.11.3"
 log = "0.4.22"
 image = "0.25"
-paddle-ocr-rs = "0.6.1"
-ort = { version = "=2.0.0-rc.10" }
+paddle-ocr-rs = { version = "0.6.1", default-features = false }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+  "std",
+  "ndarray",
+  "tracing",
+  "load-dynamic",
+] }
 sha2 = "0.10"
 serde_json = "1.0"
 # rsmpeg/rusty_ffmpeg track FFmpeg 8 as of 0.18/0.16.
@@ -42,13 +47,13 @@ roxmltree = "0.20.0"
 ureq = { version = "2.9.7", features = ["tls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["cuda"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["cuda", "directml"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda", "directml"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-ort = { version = "=2.0.0-rc.10", features = ["coreml"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["coreml"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -111,3 +116,7 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
 ]
+
+[patch.crates-io]
+paddle-ocr-rs = { path = "vendor/paddle-ocr-rs" }
+ort = { path = "vendor/ort" }

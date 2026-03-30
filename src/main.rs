@@ -1743,6 +1743,7 @@ pub enum SubMode {
 pub enum OcrEngine {
     Auto,
     Tesseract,
+    PpOcrV3,
     PpOcrV4,
     External,
 }
@@ -2388,6 +2389,10 @@ fn encode_and_write_frame(
             Err(RsmpegError::EncoderDrainError) | Err(RsmpegError::EncoderFlushedError) => {
                 break;
             }
+            Err(e) if is_eagain_error(&e) => {
+                // Some FFmpeg/rsmpeg combinations surface EAGAIN as ReceivePacketError(-11).
+                break;
+            }
             Err(e) => bail!(e),
         };
 
@@ -2407,6 +2412,11 @@ fn encode_and_write_frame(
     }
 
     Ok(())
+}
+
+fn is_eagain_error(err: &RsmpegError) -> bool {
+    let raw = err.raw_error().unwrap_or_default();
+    raw == ffi::AVERROR(ffi::EAGAIN) || raw == -(ffi::EAGAIN as i32)
 }
 
 fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMatches) {
@@ -2616,6 +2626,7 @@ fn process_video_stream(
         .send_packet(Some(packet))
     {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+        Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
@@ -2637,6 +2648,13 @@ fn process_video_stream(
                         stream_processing_context.stream_index
                     );
                 }
+                break;
+            }
+            Err(e) if is_eagain_error(&e) => {
+                debug!(
+                    "Video decoder returned EAGAIN for stream {}",
+                    stream_processing_context.stream_index
+                );
                 break;
             }
             Err(e) => {
@@ -2735,6 +2753,7 @@ fn process_audio_stream(
         .send_packet(Some(packet))
     {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+        Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
@@ -2756,6 +2775,13 @@ fn process_audio_stream(
                         stream_processing_context.stream_index
                     );
                 }
+                break;
+            }
+            Err(e) if is_eagain_error(&e) => {
+                debug!(
+                    "Audio decoder returned EAGAIN for stream {}",
+                    stream_processing_context.stream_index
+                );
                 break;
             }
             Err(e) => {
