@@ -203,10 +203,12 @@ Enable/override behavior:
   downgraded to `mov_text`; use an MKV output if you want to preserve full
   ASS styling.
 
-PP‑OCRv4 (ONNX Runtime):
+ONNX OCR engines (PP‑OCR):
 
-- `--ocr-engine=pp-ocr-v4` uses a native ONNX Runtime pipeline (PP‑OCRv4)
-  with execution provider fallback: CUDA → DirectML → CoreML → CPU.
+- `--ocr-engine=pp-ocr-v4` uses the PP‑OCRv4 ONNX pipeline with execution
+  provider fallback: CUDA → DirectML → CoreML → CPU.
+- `--ocr-engine=pp-ocr-v3` uses the PP‑OCRv3 ONNX pipeline. This is useful
+  for older GPUs where newer model/runtime combos are unstable.
 - GPU execution providers require the matching runtime libraries (CUDA
   toolkit + cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS).
   Missing runtimes fall back to CPU automatically.
@@ -224,8 +226,11 @@ PP‑OCRv4 (ONNX Runtime):
   `~/.config/direct-play-nice/models/` on Linux (override with
   `DPN_OCR_MODEL_DIR`).
 - To swap models, drop replacement `.onnx` files into the model directory
-  with the same filenames: `ch_PP-OCRv4_det_infer.onnx`,
-  `ch_ppocr_mobile_v2.0_cls_infer.onnx`, `en_PP-OCRv4_rec_infer.onnx`.
+  with the same filenames. v4 defaults:
+  `ch_PP-OCRv4_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_infer.onnx`,
+  `en_PP-OCRv4_rec_infer.onnx`. v3 defaults:
+  `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
+  `en_PP-OCRv3_rec_infer.onnx`.
 
 System stability note (Arch Linux):
 
@@ -233,26 +238,27 @@ System stability note (Arch Linux):
   Archive if you want to avoid a full system upgrade.
 - Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
   onnxruntime build.
-- On `plexserver` (GTX 960, driver 580xx), PP-OCR v3/v4 CUDA execution
-  segfaults during initialization, even with CUDA 11.4 + cuDNN 8.2.4 +
-  ONNX Runtime 1.13.1. The hardware is incompatible with the model
-  kernels. The tool automatically falls back to CPU OCR on this host.
+- On older Maxwell GPUs (e.g. GTX 960), prebuilt ONNX Runtime CUDA
+  binaries were unstable during OCR model initialization.
+- The validated legacy path in this branch is: custom ONNX Runtime build
+  targeting `sm_52` + `--ocr-engine pp-ocr-v3`.
+- If that custom runtime is unavailable, leave `DPN_OCR_REQUIRE_GPU`
+  unset so automatic fallback can use CPU OCR.
 
 Legacy hardware support (Maxwell / GTX 960):
 
-- PP‑OCR v3/v4 CUDA execution providers initialize but segfault during
-  OCR on GTX 960. No `NVRM` XID entries were observed.
-- CPU fallback runs at ~80 FPS on the 5‑minute slice and achieves a
-  0.9414 word-level similarity score versus the Tesseract baseline.
-- For reliable runs, leave `DPN_OCR_REQUIRE_GPU` unset or set
-  `DPN_OCR_FORCE_CPU=1` to force CPU OCR.
+- GTX 960 achieved a stable GPU run with `pp-ocr-v3` using a custom
+  ONNX Runtime build (see `OCR_BENCHMARK.md`).
+- Prebuilt runtime stacks remained unstable for `pp-ocr-v4` on this host.
+- CPU fallback reference remains available: PP‑OCRv4 CPU ran at ~80 FPS
+  on the 5-minute slice with 0.9414 similarity vs Tesseract.
 
 Config file equivalents:
 
 ```toml
 sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
-ocr_engine = "auto"         # auto | tesseract | ppocrv4 | external
+ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
 ocr_format = "srt"          # srt | ass
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```

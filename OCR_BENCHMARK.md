@@ -3,7 +3,7 @@
 ## Scope and inputs
 
 - Full-movie runs (02:41:09) used for performance metrics: legacy,
-  Tesseract, PP-OCRv4 (`*_new2` runs).
+  Tesseract, PP-OCRv4 (`*_new2` runs), and the patched PP-OCRv3 run.
 - 5-minute slice (00:15:00–00:20:00) used for accuracy and side-by-side
   text comparisons.
 - GPU stats are from GPU0 `nvidia-smi` logs captured during runs.
@@ -79,7 +79,7 @@ Notes
   peak/avg. The older idle log in `silence_full/idle_power.csv` is invalid
   due to a bad query string.
 
-## GPU attempts (5-minute slice, GTX 960)
+## GPU attempts (5-minute slice, GTX 960, prebuilt stacks)
 
 | Stack | Status | Runtime | Max GPU util | Max power | Max VRAM | Output SRT |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -103,9 +103,11 @@ Notes
 - A 2026-03-29 single-GPU run with CUDA 11.4/cuDNN 8.2.4/ORT 1.13.1 hit
   ~21% GPU utilization and peaked above 36W, but still segfaulted with
   both PP-OCRv4 and PP-OCRv3 models.
-- Conclusion: GTX 960 (Maxwell) is hardware-incompatible with PP-OCRv4
-  and PP-OCRv3 CUDA execution (illegal instruction / provider init
-  failure).
+- Conclusion for prebuilt stacks: GTX 960 was unstable for PP-OCRv3/v4
+  CUDA execution.
+- Custom-compiled ONNX Runtime targeting `sm_52` changed this outcome:
+  PP-OCRv3 completed successfully on the same host (see full-movie stress
+  section above).
 
 ## CPU-only slice (PP-OCRv4 vs Tesseract)
 
@@ -151,8 +153,11 @@ same slice.
 - A previous full upgrade attempt led to downtime. We switched to ALA
   and installed only `cudnn` and `onnxruntime-cuda` without touching
   `glibc` or `gcc-libs`.
-- The final legacy stack used for GPU tests was CUDA 11.8, cuDNN 8.4.1,
-  and ONNX Runtime 1.14.1.
+- Prebuilt stack experiments included CUDA 13.2/cuDNN 9.20/ORT 1.24.4,
+  CUDA 11.8/cuDNN 8.4.1/ORT 1.14.1, and CUDA 11.4/cuDNN 8.2.4/ORT 1.13.1.
+- The successful patched run used CUDA 11.4, cuDNN 8.2.4, and a
+  custom-built ONNX Runtime targeting Maxwell (`sm_52`) with
+  `--ocr-engine pp-ocr-v3`.
 - `pacman -Qk` reported missing files under `bind` and permission errors
   on `/var/named/*.zone`. These should be corrected before further
   system updates.
