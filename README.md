@@ -232,26 +232,20 @@ ONNX OCR engines (PP‑OCR):
   `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
   `en_PP-OCRv3_rec_infer.onnx`.
 
-System stability note (Arch Linux):
+Linux GPU runtime notes:
 
-- Prefer installing `cudnn` and `onnxruntime-cuda` from the Arch Linux
-  Archive if you want to avoid a full system upgrade.
-- Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
-  onnxruntime build.
-- On older Maxwell GPUs (e.g. GTX 960), prebuilt ONNX Runtime CUDA
-  binaries were unstable during OCR model initialization.
-- The validated legacy path in this branch is: custom ONNX Runtime build
-  targeting `sm_52` + `--ocr-engine pp-ocr-v3`.
-- If that custom runtime is unavailable, leave `DPN_OCR_REQUIRE_GPU`
-  unset so automatic fallback can use CPU OCR.
-
-Legacy hardware support (Maxwell / GTX 960):
-
-- GTX 960 achieved a stable GPU run with `pp-ocr-v3` using a custom
-  ONNX Runtime build (see `OCR_BENCHMARK.md`).
-- Prebuilt runtime stacks remained unstable for `pp-ocr-v4` on this host.
-- CPU fallback reference remains available: PP‑OCRv4 CPU ran at ~80 FPS
-  on the 5-minute slice with 0.9414 similarity vs Tesseract.
+- Install matching NVIDIA driver, CUDA runtime, cuDNN, and ONNX Runtime
+  CUDA provider versions.
+- Keep CUDA/cuDNN/onnxruntime packages aligned. Partial upgrades can break
+  provider loading.
+- If your runtime libraries are in a non-standard path, set
+  `ORT_DYLIB_PATH=/path/to/libonnxruntime.so`.
+- For modern GPUs, `--ocr-engine auto` or `--ocr-engine pp-ocr-v4` is the
+  preferred path.
+- For legacy NVIDIA GPUs, `--ocr-engine pp-ocr-v3` can be more stable than
+  v4 on older driver/runtime combinations.
+- If GPU must be used, set `DPN_OCR_REQUIRE_GPU=1` to fail fast when no GPU
+  execution provider is available.
 
 Config file equivalents:
 
@@ -298,6 +292,32 @@ Example Sonarr command that keeps all defaults (resulting in
 
 ```bash
 /path/to/direct_play_nice
+```
+
+Autopilot wrapper for Sonarr/Cron (GPU OCR + config file defaults):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
+export DPN_OCR_REQUIRE_GPU=1
+export DPN_OCR_MODEL_DIR=/var/lib/direct_play_nice/models
+
+exec /usr/local/bin/direct_play_nice \
+  --config /etc/direct_play_nice/config.toml \
+  --video-quality match-source \
+  --audio-quality match-source \
+  "$@"
+```
+
+Example `/etc/direct_play_nice/config.toml` for unattended runs:
+
+```toml
+skip_codec_check = true
+sub_mode = "auto"
+ocr_engine = "auto"   # use "ppocrv3" on legacy GPUs if needed
+ocr_format = "srt"
 ```
 
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
