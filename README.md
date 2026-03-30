@@ -202,6 +202,8 @@ Enable/override behavior:
 - `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is
   downgraded to `mov_text`; use an MKV output if you want to preserve full
   ASS styling.
+- `--ocr-write-srt-sidecar` optionally writes `.srt` sidecars next to the
+  output file. Default is embedded-only subtitle output.
 
 ONNX OCR engines (PP‑OCR):
 
@@ -254,6 +256,7 @@ sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
 ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
 ocr_format = "srt"          # srt | ass
+ocr_write_srt_sidecar = false
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```
 
@@ -325,6 +328,7 @@ skip_codec_check = true
 sub_mode = "auto"
 ocr_engine = "auto"   # use "ppocrv3" on legacy GPUs if needed
 ocr_format = "srt"
+ocr_write_srt_sidecar = false
 ```
 
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If
