@@ -3367,11 +3367,32 @@ mod tests {
             }
         };
 
-        let mut engine = match PpOcrEngine::new(&model_dir, PpOcrVariant::V4, false) {
-            Ok(engine) => engine,
-            Err(err) => {
+        let engine_result =
+            std::panic::catch_unwind(|| PpOcrEngine::new(&model_dir, PpOcrVariant::V4, false));
+        let mut engine = match engine_result {
+            Ok(Ok(engine)) => engine,
+            Ok(Err(err)) => {
                 eprintln!("OCR engine unavailable: {err}. Skipping.");
                 return;
+            }
+            Err(payload) => {
+                let panic_msg = if let Some(msg) = payload.downcast_ref::<&str>() {
+                    *msg
+                } else if let Some(msg) = payload.downcast_ref::<String>() {
+                    msg.as_str()
+                } else {
+                    "unknown panic payload"
+                };
+                if panic_msg.contains("libonnxruntime.so")
+                    && panic_msg.contains("cannot open shared object file")
+                {
+                    eprintln!(
+                        "Skipping golden OCR quality test because ONNX Runtime shared library is unavailable: {}",
+                        panic_msg
+                    );
+                    return;
+                }
+                std::panic::resume_unwind(payload);
             }
         };
 
