@@ -300,9 +300,8 @@ Autopilot wrapper for Sonarr/Cron (GPU OCR + config file defaults):
 #!/usr/bin/env bash
 set -euo pipefail
 
-export ORT_DYLIB_PATH=/usr/lib/libonnxruntime.so
-export DPN_OCR_REQUIRE_GPU=1
 export DPN_OCR_MODEL_DIR=/var/lib/direct_play_nice/models
+export TMPDIR=/var/tmp/direct_play_nice
 
 exec /usr/local/bin/direct_play_nice \
   --config-file /etc/direct_play_nice/config.toml \
@@ -310,6 +309,14 @@ exec /usr/local/bin/direct_play_nice \
   --audio-quality match-source \
   "$@"
 ```
+
+Notes:
+
+- `ORT_DYLIB_PATH` is only needed when `libonnxruntime.so` is not on the
+  default library path (or when multiple versions are installed and you want
+  to pin one).
+- `DPN_OCR_REQUIRE_GPU=1` is optional. Set it only if you want strict fail-fast
+  behavior when GPU OCR libraries are missing.
 
 Example `/etc/direct_play_nice/config.toml` for unattended runs:
 
