@@ -22,9 +22,8 @@ feature and seamless to the end user (ie. Direct Play selected by default).
 - Can be used standalone or as a Custom Script Connection with
   [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts),
   [Radarr](https://wiki.servarr.com/radarr/custom-scripts), etc.
-- Allows for achieving
-  [Direct Play](https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/)
-  with all videos in a way seamless to the end user.
+- Allows for achieving [Direct Play][direct-play] with all videos in a
+  way seamless to the end user.
 - Offers intuitive quality presets (match-source, 360p through 2160p + audio
   caps) so you can keep output sizes in check for fast starts on Plex and other
   direct-play servers.
@@ -81,6 +80,8 @@ Options:
           Maximum video bitrate (e.g. 8M, 4800k, 5.5mbps)
       --max-audio-bitrate <MAX_AUDIO_BITRATE>
           Maximum audio bitrate (e.g. 320k, 0.2M)
+      --skip-codec-check
+          Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams)
       --unsupported-video-policy <POLICY>
           How to handle unsupported/extra video streams: convert|ignore|fail
           (default: ignore)
@@ -175,6 +176,93 @@ direct_play_nice --probe-streams input.mkv
 direct_play_nice --probe-streams --output json input.mkv
 ```
 
+### Subtitle OCR
+
+Bitmap subtitles (PGS/VobSub/DVD) are not compatible with MP4 direct‑play.
+When the output container is MP4, `direct_play_nice` can OCR those bitmap
+streams into text subtitles.
+
+Defaults:
+
+- `--sub-mode auto` (default): only bitmap subtitle streams are
+  OCR‑converted; text subtitles are preserved when possible.
+- `--ocr-engine auto` (default): prefers PP‑OCRv4 when a GPU execution
+  provider is available; otherwise falls back to Tesseract.
+- `--ocr-format srt` (default): emits simple text subtitles (SRT/MOV_TEXT).
+- If no bitmap subtitles are present, no OCR pass is performed.
+
+Enable/override behavior:
+
+- `--sub-mode=skip` disables all subtitle processing (no OCR, no subtitle
+  output).
+- `--sub-mode=force` keeps subtitle processing enabled even if you usually
+  skip it.
+- `--ocr-default-language <lang>` sets a fallback language code (e.g.
+  `eng`, `spa`) when a subtitle stream is missing language metadata.
+- `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is
+  downgraded to `mov_text`; use an MKV output if you want to preserve full
+  ASS styling.
+
+ONNX OCR engines (PP‑OCR):
+
+- `--ocr-engine=pp-ocr-v4` uses the PP‑OCRv4 ONNX pipeline with execution
+  provider fallback: CUDA → DirectML → CoreML → CPU.
+- `--ocr-engine=pp-ocr-v3` uses the PP‑OCRv3 ONNX pipeline. This is useful
+  for older GPUs where newer model/runtime combos are unstable.
+- GPU execution providers require the matching runtime libraries (CUDA
+  toolkit + cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS).
+  Missing runtimes fall back to CPU automatically.
+- On Linux, the CUDA EP must match the `libonnxruntime.so` build. Run
+  `./check_gpu_env.sh` (or `ldd` against the ONNX Runtime `.so`) to
+  confirm which `libcudnn.so.*` is required and that it is discoverable
+  via `LD_LIBRARY_PATH`/`ldconfig`.
+- For containers, install the NVIDIA Container Toolkit and expose the
+  CUDA/cuDNN libraries to the container (`--gpus all` or equivalent).
+- `DPN_OCR_REQUIRE_GPU=1` forces GPU execution providers (fail fast if
+  unavailable).
+- `DPN_OCR_FORCE_CPU=1` disables GPU execution providers and forces
+  CPU-only OCR.
+- Models auto‑download into `models/` next to the executable, or
+  `~/.config/direct-play-nice/models/` on Linux (override with
+  `DPN_OCR_MODEL_DIR`).
+- To swap models, drop replacement `.onnx` files into the model directory
+  with the same filenames. v4 defaults:
+  `ch_PP-OCRv4_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_infer.onnx`,
+  `en_PP-OCRv4_rec_infer.onnx`. v3 defaults:
+  `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
+  `en_PP-OCRv3_rec_infer.onnx`.
+
+System stability note (Arch Linux):
+
+- Prefer installing `cudnn` and `onnxruntime-cuda` from the Arch Linux
+  Archive if you want to avoid a full system upgrade.
+- Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
+  onnxruntime build.
+- On older Maxwell GPUs (e.g. GTX 960), prebuilt ONNX Runtime CUDA
+  binaries were unstable during OCR model initialization.
+- The validated legacy path in this branch is: custom ONNX Runtime build
+  targeting `sm_52` + `--ocr-engine pp-ocr-v3`.
+- If that custom runtime is unavailable, leave `DPN_OCR_REQUIRE_GPU`
+  unset so automatic fallback can use CPU OCR.
+
+Legacy hardware support (Maxwell / GTX 960):
+
+- GTX 960 achieved a stable GPU run with `pp-ocr-v3` using a custom
+  ONNX Runtime build (see `OCR_BENCHMARK.md`).
+- Prebuilt runtime stacks remained unstable for `pp-ocr-v4` on this host.
+- CPU fallback reference remains available: PP‑OCRv4 CPU ran at ~80 FPS
+  on the 5-minute slice with 0.9414 similarity vs Tesseract.
+
+Config file equivalents:
+
+```toml
+sub_mode = "auto"           # auto | force | skip
+ocr_default_language = "eng"
+ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
+ocr_format = "srt"          # srt | ass
+ocr_external_command = "python3 /opt/ocr/run.py"
+```
+
 ### Sonarr / Radarr
 
 When running via Sonarr, Radarr, etc you can use this program to convert each
@@ -236,7 +324,7 @@ optionally a custom server URL) via CLI flags or environment variables:
   `DIRECT_PLAY_NICE_CONFIG` environment variable.
 - Need a Plex token? Follow Plex’s official guide on locating your
   `X-Plex-Token` in their
-  [support article](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+  [support article][plex-token-support].
 
 The tool looks up the Plex library section that contains the converted file
 and invokes the server’s refresh endpoint for that directory, eliminating the
@@ -266,7 +354,13 @@ Only the `[plex]` section is consumed today; the top-level keys mirror CLI
 flags so you can keep preferred defaults documented alongside your Plex
 credentials.
 
-![Running as a custom script in Sonarr](media/readme/sonarr-add-custom-script.png)
+![Running as a custom script in Sonarr][sonarr-script-img]
+
+<!-- markdownlint-disable MD013 -->
+[direct-play]: https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/
+[plex-token-support]: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+<!-- markdownlint-enable MD013 -->
+[sonarr-script-img]: media/readme/sonarr-add-custom-script.png
 
 ### Quality Controls
 
@@ -285,6 +379,13 @@ files ahead of Plex / Jellyfin direct play, mix and match:
 
 Need something custom? Use `--max-video-bitrate` and/or `--max-audio-bitrate` to
 override the presets with any value such as `4800k`, `6M`, or `12.5mbps`.
+
+### Troubleshooting
+
+- H.264 profile/level verification can fail on non-standard streams or older
+  hardware encoders. Use `--skip-codec-check` to bypass the verification step
+  (or set `skip_codec_check = true` in `config.toml`) so the conversion can
+  proceed without forcing a fallback.
 
 ## Building
 
@@ -332,11 +433,12 @@ git -C "$VCPKG_ROOT" checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
 cargo test
 ```
 
-End‑to‑end conversion tests that synthesize media require the `ffmpeg` CLI and
-are marked `#[ignore]`. To run them explicitly:
+Integration tests that synthesize media depend on the `ffmpeg` CLI. They are
+gated behind the `ffmpeg-cli-tests` feature and are run in CI only. To run
+them locally:
 
 ```bash
-VCPKG_ROOT=/opt/vcpkg cargo test -- --ignored
+VCPKG_ROOT=/opt/vcpkg cargo test --features ffmpeg-cli-tests
 ```
 
 ### Optional: NVENC regression suite

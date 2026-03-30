@@ -118,9 +118,39 @@ jobs:
           submodules: recursive
       - name: "Install vcpkg build dependencies"
         run: "sudo apt-get --assume-yes install nasm"
+      - name: "Cache cargo-vcpkg binary"
+        id: cargo-vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-vcpkg
+          key: cargo-vcpkg-${{ runner.os }}-v1
       - name: "Install vcpkg"
+        if: steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'
         run: "cargo install cargo-vcpkg"
+      - name: "Cache vcpkg workspace"
+        id: vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-root-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            vcpkg-root-${{ runner.os }}-
       - name: "Build vcpkg dependencies"
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
         run: "cargo vcpkg --verbose build"
       - name: Install cargo-dist
         run: ${{ matrix.install_dist }}

@@ -27,6 +27,8 @@ jobs:
         with:
           globs: |
             **/*.md
+            !vendor/**/*.md
+            !tmp_crates/**/*.md
 
       - name: Check links in Markdown
         uses: lycheeverse/lychee-action@v1
@@ -35,7 +37,8 @@ jobs:
           args: >-
             --no-progress --verbose --max-concurrency 4
             --exclude-path target
+            --exclude-path vendor
+            --exclude-path tmp_crates
             **/*.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

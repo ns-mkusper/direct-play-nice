@@ -135,6 +135,7 @@ pub fn acquire_slot() -> Result<SlotGuard> {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&spec.path)
                 .with_context(|| format!("Failed to open lock file '{}'.", spec.path.display()))?;
 

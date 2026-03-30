@@ -1,0 +1,564 @@
+name: CI (Full)
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-full-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Linux) (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      max-parallel: 1
+      matrix:
+        toolchain:
+          - stable
+          - beta
+          - nightly
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt
+
+      - name: Set up sccache
+        id: sccache-setup
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install nasm autoconf autoconf-archive automake libtool
+
+      - name: Set job-level RUSTC_WRAPPER
+        if: steps.sccache-setup.outcome == 'success'
+        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+      - if: steps.sccache-setup.outcome == 'failure'
+        run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+
+      - name: Cache cargo-vcpkg binary
+        id: cargo-vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-vcpkg
+          key: cargo-vcpkg-linux-v1
+
+      - name: Install cargo-vcpkg
+        if: steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo install cargo-vcpkg --locked
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: linux-vcpkg-v3-ffmpeg8
+
+      - name: Cache OCR models
+        uses: actions/cache@v4
+        with:
+          path: target/ocr-models
+          key: ocr-models-linux-v1
+
+      - name: Cache vcpkg workspace (cross-branch)
+        id: vcpkg-root-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            vcpkg-root-linux-v2-
+
+      - name: Validate vcpkg cache origin
+        run: |
+          cache_invalid=0
+          expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          if [ -e "target/vcpkg" ] && [ ! -e "target/vcpkg/.git" ]; then
+            echo "vcpkg root missing .git; clearing cache entry"
+            rm -rf target/vcpkg
+            cache_invalid=1
+          fi
+          for dir in target/vcpkg target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
+            if [ -e "$dir/.git" ]; then
+              origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+              if [ -z "$origin" ]; then
+                echo "Failed to read vcpkg origin in $dir; clearing cache entry"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
+                echo "Unexpected vcpkg origin in : $origin"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ -n "$expected_rev" ]; then
+                if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
+                  echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
+                  rm -rf "$dir"
+                  cache_invalid=1
+                fi
+              fi
+            fi
+          done
+          if [ "$cache_invalid" -eq 1 ]; then
+            echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Use cached vcpkg workspace
+        if: steps.vcpkg-root-cache.outputs.cache-hit == 'true' && env.VCPKG_CACHE_INVALID != '1'
+        run: echo "vcpkg workspace cache hit; skipping dependency rebuild."
+
+      - name: Build vcpkg dependencies
+        if: steps.vcpkg-root-cache.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1'
+        env:
+          VCPKG_BUILD_TYPE: release
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo vcpkg --verbose build
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
+
+      - name: Upload vcpkg logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs
+          path: |
+            target/vcpkg/buildtrees/**/*.log
+            target/vcpkg/buildtrees/**/*.txt
+          retention-days: 7
+
+      - name: Run tests (stable)
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_GOLDEN: "1"
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
+        run: |
+          start=$(date +%s)
+          cargo test -q --timings
+          end=$(date +%s)
+          echo "### Linux stable runtime" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Toolchain: stable" >> "$GITHUB_STEP_SUMMARY"
+          echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compile tests (beta/nightly)
+        if: matrix.toolchain != 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          start=$(date +%s)
+          cargo test --no-run -q --timings
+          end=$(date +%s)
+          echo "### Linux compatibility runtime" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Toolchain: ${{ matrix.toolchain }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload cargo timings
+        if: matrix.toolchain == 'stable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-linux-stable
+          path: target/cargo-timings
+          retention-days: 7
+
+      - name: sccache stats
+        if: ${{ env.RUSTC_WRAPPER == 'sccache' }}
+        run: sccache --show-stats || true
+
+  windows-test:
+    name: Test (Windows MSVC)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: write
+    env:
+      CARGO_TERM_COLOR: always
+      VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+      VCPKGRS_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Set up sccache
+        id: sccache-setup
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Set job-level RUSTC_WRAPPER
+        if: steps.sccache-setup.outcome == 'success'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER=sccache"
+      - name: Clear RUSTC_WRAPPER on sccache failure
+        if: steps.sccache-setup.outcome == 'failure'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER="
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          choco install --no-progress ninja
+
+      - name: Cache cargo-vcpkg binary
+        id: cargo-vcpkg-cache-win
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-vcpkg.exe
+          key: cargo-vcpkg-windows-v1
+
+      - name: Install cargo-vcpkg
+        if: steps.cargo-vcpkg-cache-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo install cargo-vcpkg --locked
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-vcpkg-v3-ffmpeg8
+
+      - name: Cache OCR models
+        uses: actions/cache@v4
+        with:
+          path: target/ocr-models
+          key: ocr-models-windows-v1
+
+      - name: Restore vcpkg workspace (cross-branch)
+        id: vcpkg-root-cache-win
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+            target/vcpkg/vcpkg.exe
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            vcpkg-root-windows-v3-
+
+      - name: Validate vcpkg cache origin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cacheInvalid = $false
+          $expectedRev = $null
+          $revLine = Select-String -Path Cargo.toml -Pattern '^rev = "' | Select-Object -First 1
+          if ($revLine) {
+            $expectedRev = $revLine.Line -replace '^rev = "' -replace '"$',''
+          }
+          if ((Test-Path "target/vcpkg") -and -not (Test-Path "target/vcpkg/.git")) {
+            Write-Host "vcpkg root missing .git; clearing cache entry"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
+            $cacheInvalid = $true
+          }
+          $dirs = @("target/vcpkg", "target/vcpkg/.vcpkg-root")
+          foreach ($dir in $dirs) {
+            try {
+              if (Test-Path "$dir/.git") {
+                $origin = git -C $dir remote get-url origin 2>$null
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($origin)) {
+                  Write-Host "Failed to read vcpkg origin in $dir; clearing cache entry"
+                  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                  $cacheInvalid = $true
+                  continue
+                }
+                if ($origin -ne "https://github.com/microsoft/vcpkg.git" -and $origin -ne "https://github.com/microsoft/vcpkg") {
+                  Write-Host "Unexpected vcpkg origin in : $origin"
+                  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                  $cacheInvalid = $true
+                  continue
+                }
+                if ($expectedRev) {
+                  git -C $dir cat-file -e "$expectedRev^{tree}" 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Missing vcpkg rev $expectedRev in $dir; clearing cache entry"
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+                    $cacheInvalid = $true
+                  }
+                }
+              }
+            } catch {
+              Write-Host "Failed to validate vcpkg origin in : $($_.Exception.Message)"
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+              $cacheInvalid = $true
+            }
+          }
+          if ($cacheInvalid) {
+            Add-Content $env:GITHUB_ENV "VCPKG_CACHE_INVALID=1"
+          }
+          exit 0
+
+      - name: Use cached vcpkg workspace
+        if: steps.vcpkg-root-cache-win.outputs.cache-hit == 'true' && env.VCPKG_CACHE_INVALID != '1'
+        shell: pwsh
+        run: Write-Host "vcpkg workspace cache hit; skipping dependency rebuild."
+
+      - name: Build vcpkg dependencies
+        if: steps.vcpkg-root-cache-win.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1'
+        shell: pwsh
+        env:
+          VCPKG_FEATURE_FLAGS: manifests
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: |
+          $maxAttempts = 3
+          if (-not (Test-Path "target/vcpkg")) {
+            New-Item -ItemType Directory -Path "target/vcpkg" | Out-Null
+          }
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "vcpkg build attempt $attempt/$maxAttempts"
+            cargo vcpkg --verbose build
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "vcpkg build succeeded"
+              break
+            }
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
+            New-Item -ItemType Directory -Path "target/vcpkg" | Out-Null
+            if ($attempt -eq $maxAttempts) {
+              Write-Host "vcpkg build failed after $maxAttempts attempts"
+              exit $LASTEXITCODE
+            }
+            $sleepSeconds = 30 * $attempt
+            Write-Host "vcpkg build failed (exit $LASTEXITCODE). Retrying in $sleepSeconds seconds..."
+            Start-Sleep -Seconds $sleepSeconds
+          }
+
+      - name: Save vcpkg workspace cache
+        if: (steps.vcpkg-root-cache-win.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1') && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+            target/vcpkg/vcpkg.exe
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
+
+      - name: Upload vcpkg logs on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-windows
+          path: |
+            target/vcpkg/buildtrees/**/*.log
+            target/vcpkg/buildtrees/**/*.txt
+          retention-days: 7
+
+      - name: Run tests
+        shell: pwsh
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_GOLDEN: "1"
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
+        run: |
+          $start = Get-Date
+          cargo test -q
+          $elapsed = (Get-Date) - $start
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-win.outputs.cache-hit }}"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- Duration: {0}s" -f [int]$elapsed.TotalSeconds)
+
+      - name: sccache stats
+        if: ${{ env.RUSTC_WRAPPER == 'sccache' }}
+        shell: pwsh
+        run: sccache --show-stats; if ($LASTEXITCODE -ne 0) { exit 0 }
+
+  ffmpeg-cli-tests:
+    name: Test (FFmpeg CLI)
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Set up sccache
+        id: sccache-setup
+        uses: mozilla-actions/sccache-action@v0.0.5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install nasm ffmpeg autoconf autoconf-archive automake libtool
+
+      - name: Set job-level RUSTC_WRAPPER
+        if: steps.sccache-setup.outcome == 'success'
+        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+      - if: steps.sccache-setup.outcome == 'failure'
+        run: echo "RUSTC_WRAPPER=" >> $GITHUB_ENV
+
+      - name: Cache cargo-vcpkg binary
+        id: cargo-vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-vcpkg
+          key: cargo-vcpkg-linux-v1
+
+      - name: Install cargo-vcpkg
+        if: steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo install cargo-vcpkg --locked
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: linux-vcpkg-v3-ffmpeg8
+
+      - name: Cache OCR models
+        uses: actions/cache@v4
+        with:
+          path: target/ocr-models
+          key: ocr-models-linux-v1
+
+      - name: Cache vcpkg workspace (cross-branch)
+        id: vcpkg-root-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            vcpkg-root-linux-v2-
+
+      - name: Validate vcpkg cache origin
+        run: |
+          cache_invalid=0
+          expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          if [ -e "target/vcpkg" ] && [ ! -e "target/vcpkg/.git" ]; then
+            echo "vcpkg root missing .git; clearing cache entry"
+            rm -rf target/vcpkg
+            cache_invalid=1
+          fi
+          for dir in target/vcpkg target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
+            if [ -e "$dir/.git" ]; then
+              origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+              if [ -z "$origin" ]; then
+                echo "Failed to read vcpkg origin in $dir; clearing cache entry"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
+                echo "Unexpected vcpkg origin in : $origin"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ -n "$expected_rev" ]; then
+                if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
+                  echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
+                  rm -rf "$dir"
+                  cache_invalid=1
+                fi
+              fi
+            fi
+          done
+          if [ "$cache_invalid" -eq 1 ]; then
+            echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Use cached vcpkg workspace
+        if: steps.vcpkg-root-cache.outputs.cache-hit == 'true' && env.VCPKG_CACHE_INVALID != '1'
+        run: echo "vcpkg workspace cache hit; skipping dependency rebuild."
+
+      - name: Build vcpkg dependencies
+        if: steps.vcpkg-root-cache.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1'
+        env:
+          VCPKG_BUILD_TYPE: release
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo vcpkg --verbose build
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
+
+      - name: Run FFmpeg CLI tests
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_GOLDEN: "1"
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
+        run: cargo test -q --features ffmpeg-cli-tests
+
+      - name: sccache stats
+        if: ${{ env.RUSTC_WRAPPER == 'sccache' }}
+        run: sccache --show-stats || true

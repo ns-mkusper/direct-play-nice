@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 mod common;
 
 use assert_cmd::Command;

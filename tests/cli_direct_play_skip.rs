@@ -1,3 +1,5 @@
+#![cfg(feature = "ffmpeg-cli-tests")]
+
 //! Integration tests covering the direct-play compatibility preflight.
 
 use assert_cmd::prelude::*;
