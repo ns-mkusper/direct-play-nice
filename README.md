@@ -305,7 +305,7 @@ export DPN_OCR_REQUIRE_GPU=1
 export DPN_OCR_MODEL_DIR=/var/lib/direct_play_nice/models
 
 exec /usr/local/bin/direct_play_nice \
-  --config /etc/direct_play_nice/config.toml \
+  --config-file /etc/direct_play_nice/config.toml \
   --video-quality match-source \
   --audio-quality match-source \
   "$@"
