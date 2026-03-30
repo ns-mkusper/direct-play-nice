@@ -21,7 +21,7 @@
 - PP-OCRv4 (Auto) is ~27% faster than Tesseract with ~99.8% fewer
   empty-text warnings.
 
-### Notes
+### CPU Notes
 
 - The original PP-OCRv4 run on `plexserver` reported CUDA EP availability,
   but GPU utilization remained ~0%, so inference appeared CPU-bound.

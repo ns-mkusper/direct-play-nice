@@ -228,7 +228,7 @@ jobs:
       actions: write
     env:
       CARGO_TERM_COLOR: always
-      VCPKG_ROOT: ${{ github.workspace }}\\target\\vcpkg
+      VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v4
@@ -292,6 +292,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
+            target/vcpkg/vcpkg.exe
           key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
             vcpkg-root-windows-v3-
@@ -311,7 +312,7 @@ jobs:
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
             $cacheInvalid = $true
           }
-          $dirs = @("target/vcpkg", "target/vcpkg/.vcpkg-root", "target/vcpkg/vcpkg")
+          $dirs = @("target/vcpkg", "target/vcpkg/.vcpkg-root")
           foreach ($dir in $dirs) {
             try {
               if (Test-Path "$dir/.git") {
@@ -363,6 +364,9 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: |
           $maxAttempts = 3
+          if (-not (Test-Path "target/vcpkg")) {
+            New-Item -ItemType Directory -Path "target/vcpkg" | Out-Null
+          }
           for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             Write-Host "vcpkg build attempt $attempt/$maxAttempts"
             cargo vcpkg --verbose build
@@ -370,6 +374,8 @@ jobs:
               Write-Host "vcpkg build succeeded"
               break
             }
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg"
+            New-Item -ItemType Directory -Path "target/vcpkg" | Out-Null
             if ($attempt -eq $maxAttempts) {
               Write-Host "vcpkg build failed after $maxAttempts attempts"
               exit $LASTEXITCODE
@@ -393,6 +399,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
+            target/vcpkg/vcpkg.exe
           key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
 
       - name: Force regenerate rusty_ffmpeg bindings

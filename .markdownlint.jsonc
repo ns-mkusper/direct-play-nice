@@ -1,4 +1,8 @@
 {
+  "ignores": [
+    "vendor/**",
+    "tmp_crates/**"
+  ],
   "MD013": {
     "line_length": 80,
     "code_blocks": false,
