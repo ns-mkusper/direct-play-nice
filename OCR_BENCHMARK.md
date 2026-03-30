@@ -15,11 +15,59 @@
 | Legacy (bitmap) | 3768.84 | 9.46 | 11.89 | 2.50%/5.00% |
 | Tesseract (LSTM) | 6401.81 | 14.47 | 26.83 | 0.60%/6.00% |
 | PP-OCRv4 (ORT) | 4628.22 | 9.47 | 11.89 | 2.50%/5.00% |
+| PP-OCRv3 (patched GTX 960) | 1359.00 | 43.36 | 83.20 | 27.86%/99.00% |
 
 ### Comparison summary
 
 - PP-OCRv4 (Auto) is ~27% faster than Tesseract with ~99.8% fewer
   empty-text warnings.
+- Full-movie stress run with patched ORT + CUDA on GTX 960 completed at
+  ~7.12x realtime (`1359s` for `9669.5s` media).
+
+## Full-movie stress test (patched Maxwell path)
+
+- Date: 2026-03-30
+- Input: `/home/mkusper/dpn_tmp/silence_full_stress_input_sanitized_pts.mkv`
+- Output: `/home/mkusper/dpn_tmp/silence_full_stress_patched_pts_out.mp4`
+- Binary: `/home/mkusper/dpn_tmp/direct_play_nice_test_new2_patched`
+- Engine: `--ocr-engine pp-ocr-v3 --sub-mode force --skip-codec-check`
+
+### Throughput and GPU telemetry
+
+| Metric | Value |
+| --- | ---: |
+| Exit status | 0 |
+| Wall runtime | 1359s (22m39s) |
+| Output duration | 9669.525s (2h41m09s) |
+| Video packets | 231,828 |
+| Effective throughput | 170.59 FPS |
+| Realtime factor | 7.12x |
+| GPU0 avg util | 27.86% |
+| GPU0 peak util | 99% |
+| GPU0 avg power | 43.36W |
+| GPU0 peak power | 83.20W |
+| GPU0 max VRAM | 564 MiB |
+| GPU0 max temp | 73C |
+| GPU1 avg util | 0.00% |
+| GPU1 avg power | 7.14W |
+
+### OCR quality signals (same stress run)
+
+| Signal | Value |
+| --- | ---: |
+| Cues emitted | 1480 |
+| Empty cues | 0 |
+| Spacing fallback hits | 1093 |
+| Avg chars per cue | 29.10 |
+| `\|` marker lines | 127 |
+| Suspect no-space lines | 115 |
+
+Notes
+
+- Spacing fallback count comes from log entries:
+  `PP-OCRv4 spacing fallback: using Tesseract(eng) text ...`.
+- `|` markers and no-space lines indicate residual OCR cleanup debt in
+  long-dialogue segments; timing remained intact (1480 non-empty cues).
 
 ### CPU Notes
 
