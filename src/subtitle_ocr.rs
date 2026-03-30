@@ -1853,49 +1853,82 @@ fn extract_subtitle_lines(
         let mut output = engine.extract_lines(&pgm_path, language)?;
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
-            && ppocr_spacing_needs_fallback(&output.lines)
+            && ppocr_needs_quality_fallback(&output.lines, language)
         {
+            let ppocr_text = lines_text_for_quality(&output.lines);
+            let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
+            let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
             if let Some(fallback_language) = resolve_tesseract_fallback_language(language) {
-                match run_tesseract(&pgm_path, &fallback_language) {
-                    Ok(text) if !text.is_empty() => {
-                        let bbox: Option<OcrBoundingBox> = output
-                            .lines
-                            .iter()
-                            .filter_map(|line| line.bbox.as_ref())
-                            .fold(None, |acc, b| match acc {
-                                Some(mut current) => {
-                                    current.left = current.left.min(b.left);
-                                    current.right = current.right.max(b.right);
-                                    current.top = current.top.min(b.top);
-                                    current.bottom = current.bottom.max(b.bottom);
-                                    Some(current)
-                                }
-                                None => Some(b.clone()),
-                            });
-                        output.lines = vec![OcrLine {
-                            text,
-                            bbox,
-                            score: None,
-                            color: None,
-                            italic: false,
-                        }];
-                        info!(
-                            "PP-OCRv4 spacing fallback: using Tesseract({}) text for subtitle stream {} packet {} rect {}",
-                            fallback_language, stream_index, packet_seq, i
-                        );
+                match run_tesseract_best_effort(&pgm_path, &fallback_language) {
+                    Ok(candidate) if !candidate.text.is_empty() => {
+                        // Prefer fallback only when it is at least slightly better than PP-OCR.
+                        if candidate.quality + 0.03 >= ppocr_quality {
+                            let bbox: Option<OcrBoundingBox> = output
+                                .lines
+                                .iter()
+                                .filter_map(|line| line.bbox.as_ref())
+                                .fold(None, |acc, b| match acc {
+                                    Some(mut current) => {
+                                        current.left = current.left.min(b.left);
+                                        current.right = current.right.max(b.right);
+                                        current.top = current.top.min(b.top);
+                                        current.bottom = current.bottom.max(b.bottom);
+                                        Some(current)
+                                    }
+                                    None => Some(b.clone()),
+                                });
+                            output.lines = vec![OcrLine {
+                                text: candidate.text,
+                                bbox,
+                                score: None,
+                                color: None,
+                                italic: false,
+                            }];
+                            info!(
+                                "{} quality fallback: using Tesseract({}) psm={} for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
+                                ppocr_engine_label(ocr_engine),
+                                fallback_language,
+                                candidate.psm,
+                                stream_index,
+                                packet_seq,
+                                i,
+                                candidate.quality,
+                                ppocr_quality,
+                                ppocr_confidence
+                            );
+                        } else {
+                            debug!(
+                                "{} quality fallback skipped: keeping model output for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
+                                ppocr_engine_label(ocr_engine),
+                                stream_index,
+                                packet_seq,
+                                i,
+                                candidate.quality,
+                                ppocr_quality,
+                                ppocr_confidence
+                            );
+                        }
                     }
                     Ok(_) => {}
                     Err(err) => {
                         warn!(
-                            "PP-OCRv4 spacing fallback failed for subtitle stream {} packet {} rect {} (lang={}): {}",
-                            stream_index, packet_seq, i, fallback_language, err
+                            "{} quality fallback failed for subtitle stream {} packet {} rect {} (lang={}): {}",
+                            ppocr_engine_label(ocr_engine),
+                            stream_index,
+                            packet_seq,
+                            i,
+                            fallback_language,
+                            err
                         );
                     }
                 }
             } else {
                 warn!(
-                    "PP-OCRv4 spacing fallback skipped (no Tesseract languages available) for subtitle stream {} packet {} rect {}",
-                    stream_index, packet_seq, i
+                    "{} quality fallback skipped (no Tesseract languages available) for subtitle stream {} packet {} rect {}",
+                    ppocr_engine_label(ocr_engine),
+                    stream_index,
+                    packet_seq,
+                    i
                 );
             }
         }
@@ -1972,21 +2005,206 @@ fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     has_letters && long_token && !has_spaces
 }
 
+fn lines_text_for_quality(lines: &[OcrLine]) -> String {
+    normalize_utf8_text(
+        &lines
+            .iter()
+            .map(|line| line.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn ppocr_average_confidence(lines: &[OcrLine]) -> Option<f32> {
+    let mut sum = 0.0f32;
+    let mut count = 0usize;
+    for score in lines.iter().filter_map(|line| line.score) {
+        if score.is_finite() {
+            sum += score;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        None
+    } else {
+        Some(sum / count as f32)
+    }
+}
+
+fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
+    let text = normalize_utf8_text(text);
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let mut letters = 0usize;
+    let mut digits = 0usize;
+    let mut spaces = 0usize;
+    let mut punctuation = 0usize;
+    let mut noise = 0usize;
+
+    for ch in text.chars() {
+        if ch.is_alphabetic() {
+            letters += 1;
+        } else if ch.is_ascii_digit() {
+            digits += 1;
+        } else if ch.is_whitespace() {
+            spaces += 1;
+        } else if ch.is_ascii_punctuation() || "“”‘’…".contains(ch) {
+            punctuation += 1;
+        } else {
+            noise += 1;
+        }
+    }
+
+    let total = (letters + digits + spaces + punctuation + noise).max(1) as f32;
+    let mut score = 1.0f32;
+
+    let noise_ratio = noise as f32 / total;
+    if noise_ratio > 0.0 {
+        score -= noise_ratio * 1.2;
+    }
+
+    if text.contains("@&") {
+        score -= 0.18;
+    }
+    if text.contains('|') {
+        score -= 0.12;
+    }
+
+    let words_vec = text.split_whitespace().collect::<Vec<_>>();
+    let word_count = words_vec.len().max(1);
+    let avg_word_len = letters as f32 / word_count as f32;
+    let long_word_count = words_vec.iter().filter(|word| word.len() >= 14).count();
+
+    if language_uses_spaces(language) {
+        if letters >= 12 && word_count <= 1 {
+            score -= 0.2;
+        }
+        if avg_word_len > 8.5 {
+            score -= 0.12;
+        }
+        if long_word_count > 0 {
+            score -= (long_word_count as f32 * 0.04).min(0.2);
+        }
+    }
+
+    if letters == 0 && digits == 0 {
+        score -= 0.3;
+    }
+
+    // Slightly reward candidates with enough character coverage.
+    let coverage_bonus = (letters as f32 / 24.0).min(0.2);
+    (score + coverage_bonus).clamp(0.0, 1.0)
+}
+
+fn ppocr_needs_quality_fallback(lines: &[OcrLine], language: &str) -> bool {
+    if lines.is_empty() {
+        return false;
+    }
+    if ppocr_spacing_needs_fallback(lines) {
+        return true;
+    }
+
+    let quality = ocr_text_quality_score(&lines_text_for_quality(lines), language);
+    quality < 0.45
+}
+
+#[derive(Debug, Clone)]
+struct TesseractCandidate {
+    text: String,
+    psm: u8,
+    quality: f32,
+}
+
+fn ppocr_engine_label(ocr_engine: OcrEngine) -> &'static str {
+    match ocr_engine {
+        OcrEngine::PpOcrV3 => "PP-OCRv3",
+        OcrEngine::PpOcrV4 => "PP-OCRv4",
+        _ => "PP-OCR",
+    }
+}
+
 fn run_tesseract(image_path: &Path, language: &str) -> Result<String> {
+    Ok(run_tesseract_best_effort(image_path, language)?.text)
+}
+
+fn run_tesseract_best_effort(image_path: &Path, language: &str) -> Result<TesseractCandidate> {
+    let psm_modes: &[u8] = if language_uses_spaces(language) {
+        &[6, 7]
+    } else {
+        &[6]
+    };
+
+    let mut best: Option<TesseractCandidate> = None;
+    let mut last_error = None;
+
+    for psm in psm_modes {
+        match run_tesseract_with_psm(image_path, language, *psm) {
+            Ok(text) if !text.is_empty() => {
+                let quality = ocr_text_quality_score(&text, language);
+                let candidate = TesseractCandidate {
+                    text,
+                    psm: *psm,
+                    quality,
+                };
+                let should_replace = best
+                    .as_ref()
+                    .map(|current| candidate.quality > current.quality + 0.10)
+                    .unwrap_or(true);
+                if should_replace {
+                    best = Some(candidate);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+
+    if let Some(candidate) = best {
+        return Ok(candidate);
+    }
+    if let Some(err) = last_error {
+        return Err(err);
+    }
+    Ok(TesseractCandidate {
+        text: String::new(),
+        psm: *psm_modes.first().unwrap_or(&6),
+        quality: 0.0,
+    })
+}
+
+fn run_tesseract_with_psm(image_path: &Path, language: &str, psm: u8) -> Result<String> {
     let output = Command::new("tesseract")
         .arg(image_path)
         .arg("stdout")
         .arg("-l")
         .arg(language)
+        .arg("--oem")
+        .arg("1")
         .arg("--psm")
-        .arg("6")
+        .arg(psm.to_string())
+        .arg("-c")
+        .arg("preserve_interword_spaces=1")
         .output()
-        .with_context(|| format!("running tesseract on '{}'", image_path.display()))?;
+        .with_context(|| {
+            format!(
+                "running tesseract on '{}' (lang={}, psm={})",
+                image_path.display(),
+                language,
+                psm
+            )
+        })?;
 
     if !output.status.success() {
         bail!(
-            "tesseract OCR failed for '{}': {}",
+            "tesseract OCR failed for '{}' (lang={}, psm={}): {}",
             image_path.display(),
+            language,
+            psm,
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -3315,6 +3533,52 @@ mod tests {
             italic: false,
         }];
         assert!(ppocr_spacing_needs_fallback(&lines));
+    }
+
+    #[test]
+    fn test_quality_score_penalizes_noise() {
+        let clean = "By this time, I observed that the rain had stopped.";
+        let noisy = "Bythistime,I0bserved @&| the rain had st0pped";
+        let clean_score = ocr_text_quality_score(clean, "eng");
+        let noisy_score = ocr_text_quality_score(noisy, "eng");
+        assert!(
+            clean_score > noisy_score,
+            "expected clean score ({clean_score}) > noisy score ({noisy_score})"
+        );
+    }
+
+    #[test]
+    fn test_quality_fallback_detection_triggers_on_noisy_text() {
+        let lines = vec![OcrLine {
+            text: "BythistimeI0bserved@&|".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 100,
+                top: 0,
+                bottom: 10,
+            }),
+            score: Some(0.95),
+            color: None,
+            italic: false,
+        }];
+        assert!(ppocr_needs_quality_fallback(&lines, "eng"));
+    }
+
+    #[test]
+    fn test_quality_fallback_detection_avoids_good_english_text() {
+        let lines = vec![OcrLine {
+            text: "By this time, I observed the village from afar.".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 200,
+                top: 0,
+                bottom: 12,
+            }),
+            score: Some(0.93),
+            color: None,
+            italic: false,
+        }];
+        assert!(!ppocr_needs_quality_fallback(&lines, "eng"));
     }
 
     #[test]
