@@ -303,8 +303,16 @@ Autopilot wrapper for Sonarr/Cron (GPU OCR + config file defaults):
 #!/usr/bin/env bash
 set -euo pipefail
 
-export DPN_OCR_MODEL_DIR=/var/lib/direct_play_nice/models
-export TMPDIR=/var/tmp/direct_play_nice
+# Optional: pinned ONNX runtime bundle.
+RUNTIME_DIR=/opt/direct-play-nice/ort116-runtime
+export ORT_DYLIB_PATH="$RUNTIME_DIR/lib/libonnxruntime.so"
+export LD_LIBRARY_PATH="$RUNTIME_DIR/lib:/usr/lib:/opt/cuda/lib64"
+
+# Keep cross-user lock files out of sticky /tmp.
+export DIRECT_PLAY_NICE_LOCK_DIR=/var/lib/direct-play-nice/locks
+
+# Maxwell-safe default (override if needed).
+export DPN_OCR_SKIP_CLS=1
 
 exec /usr/local/bin/direct_play_nice \
   --config-file /etc/direct_play_nice/config.toml \
@@ -320,13 +328,19 @@ Notes:
   to pin one).
 - `DPN_OCR_REQUIRE_GPU=1` is optional. Set it only if you want strict fail-fast
   behavior when GPU OCR libraries are missing.
+- Keep the wrapper as the stable entry point for Sonarr/Radarr. Do not call a
+  second binary path directly unless you also set `ORT_DYLIB_PATH` and
+  `LD_LIBRARY_PATH`.
+- For repeatable deployments, keep a manifest of runtime URLs and checksums
+  next to the pinned runtime directory (example:
+  `/opt/direct-play-nice/ort116-runtime/STACK_MANIFEST.txt`).
 
 Example `/etc/direct_play_nice/config.toml` for unattended runs:
 
 ```toml
 skip_codec_check = true
 sub_mode = "auto"
-ocr_engine = "auto"   # use "ppocrv3" on legacy GPUs if needed
+ocr_engine = "ppocrv3" # recommended default for legacy NVIDIA GPUs
 ocr_format = "srt"
 ocr_write_srt_sidecar = false
 ```
