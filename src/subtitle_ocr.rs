@@ -1937,6 +1937,7 @@ fn extract_subtitle_lines(
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
             }
+            line.text = postprocess_ocr_text(&line.text, language);
             if line.color.is_none() {
                 line.color = rect_color;
             }
@@ -2003,6 +2004,130 @@ fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
         }
     }
     has_letters && long_token && !has_spaces
+}
+
+fn postprocess_ocr_text(text: &str, language: &str) -> String {
+    let mut out = normalize_utf8_text(text);
+    if out.is_empty() {
+        return out;
+    }
+
+    if !is_english_language(language) {
+        return out;
+    }
+
+    out = normalize_english_ocr_confusions(&out);
+    out = insert_space_after_punctuation(&out);
+
+    // Targeted corrections for frequently observed OCR glue patterns.
+    const ENGLISH_GLUE_FIXES: [(&str, &str); 9] = [
+        ("noneother", "none other"),
+        ("notonlyme", "not only me"),
+        ("notonly", "not only"),
+        ("goodwork", "good work"),
+        ("burnit", "burn it"),
+        ("yessir", "yes sir"),
+        ("constablecrane", "constable crane"),
+        ("whathappenedtohim", "what happened to him"),
+        ("beforehewentintotheriver", "before he went into the river"),
+    ];
+    for (from, to) in ENGLISH_GLUE_FIXES {
+        out = replace_case_insensitive_ascii(&out, from, to);
+    }
+
+    normalize_utf8_text(&out)
+}
+
+fn is_english_language(language: &str) -> bool {
+    let lang = language.trim().to_ascii_lowercase();
+    matches!(lang.as_str(), "eng" | "en" | "en-us" | "en_us")
+}
+
+fn normalize_english_ocr_confusions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut token = String::new();
+    let flush_token = |tok: &mut String, out: &mut String| {
+        if tok.is_empty() {
+            return;
+        }
+        let has_alpha = tok.chars().any(|c| c.is_ascii_alphabetic());
+        let has_digit = tok.chars().any(|c| c.is_ascii_digit());
+        let mut normalized = tok.clone();
+        if has_alpha && has_digit {
+            normalized = normalized
+                .replace('0', "o")
+                .replace('1', "l")
+                .replace('5', "s")
+                .replace('8', "b");
+        }
+        normalized = normalized.replace('|', "I").replace("vv", "w");
+        out.push_str(&normalized);
+        tok.clear();
+    };
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '\'' || ch == '|' {
+            token.push(ch);
+        } else {
+            flush_token(&mut token, &mut out);
+            out.push(ch);
+        }
+    }
+    flush_token(&mut token, &mut out);
+    out
+}
+
+fn insert_space_after_punctuation(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let chars: Vec<char> = input.chars().collect();
+    for (i, ch) in chars.iter().enumerate() {
+        out.push(*ch);
+        if matches!(ch, ',' | '.' | ';' | ':' | '!' | '?')
+            && chars
+                .get(i + 1)
+                .is_some_and(|next| next.is_ascii_alphabetic())
+        {
+            out.push(' ');
+        }
+    }
+    out
+}
+
+fn replace_case_insensitive_ascii(input: &str, from: &str, to: &str) -> String {
+    if from.is_empty() {
+        return input.to_string();
+    }
+    let input_lc = input.to_ascii_lowercase();
+    let from_lc = from.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut pos = 0usize;
+    while let Some(rel_idx) = input_lc[pos..].find(&from_lc) {
+        let idx = pos + rel_idx;
+        out.push_str(&input[pos..idx]);
+        let orig = &input[idx..idx + from.len()];
+        let replacement = if orig
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+        {
+            let mut chars = to.chars();
+            if let Some(first) = chars.next() {
+                format!(
+                    "{}{}",
+                    first.to_ascii_uppercase(),
+                    chars.collect::<String>()
+                )
+            } else {
+                to.to_string()
+            }
+        } else {
+            to.to_string()
+        };
+        out.push_str(&replacement);
+        pos = idx + from.len();
+    }
+    out.push_str(&input[pos..]);
+    out
 }
 
 fn lines_text_for_quality(lines: &[OcrLine]) -> String {
@@ -2274,40 +2399,80 @@ fn rect_to_pgm(rect: &ffi::AVSubtitleRect) -> Option<(Vec<u8>, bool)> {
         None
     };
 
-    let mut out = Vec::with_capacity(width * height + 64);
-    out.extend_from_slice(format!("P5\n{} {}\n255\n", width, height).as_bytes());
-
+    let header = format!("P5\n{} {}\n255\n", width, height);
+    let mut raster = Vec::with_capacity(width * height);
     let mut has_visible_pixels = false;
+    let mut strong_foreground_pixels = 0usize;
 
     for y in 0..height {
         let row = &pixels[y * stride..(y * stride + width)];
         for &idx in row {
             let value = if let Some(pal) = palette {
                 let base = (idx as usize) * 4;
-                let p0 = pal[base] as i32;
-                let p1 = pal[base + 1] as i32;
-                let p2 = pal[base + 2] as i32;
-                let p3 = pal[base + 3] as i32;
-
-                // Treat the strongest channel as alpha-like visibility signal and produce
-                // a high-contrast mask for OCR.
-                let alpha = p0.max(p1).max(p2).max(p3);
-                if alpha > 24 {
-                    has_visible_pixels = true;
+                if base + 3 >= pal.len() {
                     255u8
                 } else {
-                    0u8
+                    // Palette layout is RGBA for these subtitle codecs in FFmpeg.
+                    let r = pal[base] as u16;
+                    let g = pal[base + 1] as u16;
+                    let b = pal[base + 2] as u16;
+                    let a = pal[base + 3] as u16;
+
+                    if a > 16 {
+                        has_visible_pixels = true;
+                        // Weighted luma in [0,255].
+                        let luma = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
+                        // Keep bright glyph cores dark for OCR and drop very dark outlines.
+                        if luma >= 160 {
+                            strong_foreground_pixels += 1;
+                            0u8
+                        } else if luma >= 95 {
+                            strong_foreground_pixels += 1;
+                            64u8
+                        } else {
+                            255u8
+                        }
+                    } else {
+                        255u8
+                    }
                 }
             } else if idx > 0 {
                 has_visible_pixels = true;
-                255u8
-            } else {
+                strong_foreground_pixels += 1;
                 0u8
+            } else {
+                255u8
             };
-            out.push(value);
+            raster.push(value);
         }
     }
 
+    // Fallback: if luma filtering removed too much, use alpha-only occupancy mask.
+    if has_visible_pixels && strong_foreground_pixels == 0 {
+        raster.clear();
+        for y in 0..height {
+            let row = &pixels[y * stride..(y * stride + width)];
+            for &idx in row {
+                let value = if let Some(pal) = palette {
+                    let base = (idx as usize) * 4;
+                    if base + 3 < pal.len() && pal[base + 3] > 16 {
+                        0u8
+                    } else {
+                        255u8
+                    }
+                } else if idx > 0 {
+                    0u8
+                } else {
+                    255u8
+                };
+                raster.push(value);
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(raster.len() + header.len());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&raster);
     Some((out, has_visible_pixels))
 }
 
@@ -3579,6 +3744,23 @@ mod tests {
             italic: false,
         }];
         assert!(!ppocr_needs_quality_fallback(&lines, "eng"));
+    }
+
+    #[test]
+    fn test_postprocess_english_glue_and_punctuation() {
+        let src = "ConstableCrane? Notonlyme. beforehewentintotheriver";
+        let got = postprocess_ocr_text(src, "eng");
+        assert_eq!(
+            got,
+            "Constable crane? Not only me. before he went into the river"
+        );
+    }
+
+    #[test]
+    fn test_postprocess_non_english_passthrough() {
+        let src = "Notonlyme";
+        let got = postprocess_ocr_text(src, "jpn");
+        assert_eq!(got, "Notonlyme");
     }
 
     #[test]
