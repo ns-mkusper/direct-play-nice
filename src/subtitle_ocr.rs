@@ -4712,6 +4712,13 @@ mod tests {
     }
 
     #[test]
+    fn test_postprocess_english_fixes_silence_glue_cases() {
+        let src = "to be as dark as itis now. Whylost? He'salive?";
+        let got = postprocess_ocr_text(src, "eng");
+        assert_eq!(got, "to be as dark as it is now. Why lost? He's alive?");
+    }
+
+    #[test]
     fn test_split_glued_token_dp_segmentation() {
         assert_eq!(
             split_glued_ascii_token("Ibegpardon").as_deref(),
