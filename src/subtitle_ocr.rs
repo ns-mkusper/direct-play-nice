@@ -1931,10 +1931,12 @@ fn extract_subtitle_lines(
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
         let mut output = engine.extract_lines(&pgm_path, language)?;
+        let force_tesseract_non_english =
+            !is_english_language(language) && language_uses_spaces(language);
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
             && !disable_tesseract_quality_fallback()
-            && ppocr_needs_quality_fallback(&output.lines, language)
+            && (force_tesseract_non_english || ppocr_needs_quality_fallback(&output.lines, language))
         {
             let ppocr_text = lines_text_for_quality(&output.lines);
             let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
@@ -1942,8 +1944,9 @@ fn extract_subtitle_lines(
             if let Some(fallback_language) = resolve_tesseract_fallback_language(language) {
                 match run_tesseract_best_effort(&pgm_path, &fallback_language) {
                     Ok(candidate) if !candidate.text.is_empty() => {
-                        // Prefer fallback only when it is at least slightly better than PP-OCR.
-                        if candidate.quality + 0.03 >= ppocr_quality {
+                        // For non-English streams, prefer language-specific Tesseract
+                        // because the bundled PP-OCR recognizer is English-focused.
+                        if force_tesseract_non_english || candidate.quality + 0.03 >= ppocr_quality {
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -1965,18 +1968,33 @@ fn extract_subtitle_lines(
                                 color: None,
                                 italic: false,
                             }];
-                            info!(
-                                "{} quality fallback: using Tesseract({}) psm={} for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
-                                ppocr_engine_label(ocr_engine),
-                                fallback_language,
-                                candidate.psm,
-                                stream_index,
-                                packet_seq,
-                                i,
-                                candidate.quality,
-                                ppocr_quality,
-                                ppocr_confidence
-                            );
+                            if force_tesseract_non_english {
+                                info!(
+                                    "{} language fallback: using Tesseract({}) psm={} for non-English subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
+                                    ppocr_engine_label(ocr_engine),
+                                    fallback_language,
+                                    candidate.psm,
+                                    stream_index,
+                                    packet_seq,
+                                    i,
+                                    candidate.quality,
+                                    ppocr_quality,
+                                    ppocr_confidence
+                                );
+                            } else {
+                                info!(
+                                    "{} quality fallback: using Tesseract({}) psm={} for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
+                                    ppocr_engine_label(ocr_engine),
+                                    fallback_language,
+                                    candidate.psm,
+                                    stream_index,
+                                    packet_seq,
+                                    i,
+                                    candidate.quality,
+                                    ppocr_quality,
+                                    ppocr_confidence
+                                );
+                            }
                         } else {
                             debug!(
                                 "{} quality fallback skipped: keeping model output for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
@@ -4071,13 +4089,23 @@ fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
 
 fn resolve_tesseract_fallback_language(language: &str) -> Option<String> {
     let langs = tesseract_languages_cached()?;
-    if langs.contains(language) {
-        return Some(language.to_string());
+    resolve_tesseract_fallback_language_with_available(language, langs)
+}
+
+fn resolve_tesseract_fallback_language_with_available(
+    language: &str,
+    langs: &HashSet<String>,
+) -> Option<String> {
+    let mapped = map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_string());
+    if langs.contains(&mapped) {
+        return Some(mapped);
     }
-    if langs.contains("eng") {
+    // Do not silently fall back non-English streams to English OCR;
+    // that degrades quality for languages like French/Spanish.
+    if is_english_language(&mapped) && langs.contains("eng") {
         return Some("eng".to_string());
     }
-    langs.iter().next().cloned()
+    None
 }
 
 fn codec_name(codec_id: ffi::AVCodecID) -> String {
@@ -4254,6 +4282,41 @@ mod tests {
         assert_eq!(
             resolve_ocr_language(None, None, None, &available, OcrEngine::External),
             "eng"
+        );
+    }
+
+    #[test]
+    fn non_english_fallback_requires_matching_tesseract_pack() {
+        let available = ["eng"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(
+            resolve_tesseract_fallback_language_with_available("spa", &available),
+            None
+        );
+        assert_eq!(
+            resolve_tesseract_fallback_language_with_available("fre", &available),
+            None
+        );
+    }
+
+    #[test]
+    fn english_fallback_prefers_eng_when_available() {
+        let available = ["eng"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(
+            resolve_tesseract_fallback_language_with_available("eng", &available),
+            Some("eng".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_uses_mapped_language_code_when_available() {
+        let available = ["fra", "spa"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(
+            resolve_tesseract_fallback_language_with_available("fre", &available),
+            Some("fra".to_string())
+        );
+        assert_eq!(
+            resolve_tesseract_fallback_language_with_available("es", &available),
+            Some("spa".to_string())
         );
     }
 

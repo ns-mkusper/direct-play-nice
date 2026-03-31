@@ -2181,7 +2181,8 @@ struct Args {
     )]
     skip_codec_check: bool,
 
-    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
+    /// Delete the source file after a successful conversion for direct CLI runs.
+    /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.
     #[arg(
         long = "delete-source",
         value_name = "BOOL",
