@@ -8,6 +8,7 @@
 
 use assert_cmd::prelude::*;
 use predicates::str;
+use std::env;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
@@ -31,6 +32,16 @@ fn mk_subs_file(path: &PathBuf) {
     writeln!(
         f,
         "1\n00:00:00,000 --> 00:00:00,800\nhello bitmap\n\n2\n00:00:01,000 --> 00:00:01,600\nsecond line\n"
+    )
+    .unwrap();
+}
+
+fn mk_subs_file_with_text(path: &PathBuf, first: &str, second: &str) {
+    let mut f = File::create(path).expect("create srt");
+    writeln!(
+        f,
+        "1\n00:00:00,000 --> 00:00:00,800\n{}\n\n2\n00:00:01,000 --> 00:00:01,600\n{}\n",
+        first, second
     )
     .unwrap();
 }
@@ -156,6 +167,128 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64, bool) {
     (input, dur_ms, used_text_subs)
 }
 
+fn gen_multi_stream_bitmap_input(tmp: &TempDir) -> Option<PathBuf> {
+    let dir = tmp.path();
+    let video = dir.join("v_multi.mkv");
+    let audio = dir.join("a_multi.mp2");
+    let subs_eng = dir.join("subs_eng.srt");
+    let subs_spa = dir.join("subs_spa.srt");
+    let input = dir.join("input_multi_bitmap.mkv");
+
+    mk_subs_file_with_text(&subs_eng, "hello world", "second english line");
+    mk_subs_file_with_text(&subs_spa, "hola mundo", "segunda linea");
+
+    let status_v = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x120:rate=25:duration=2",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "mpeg4",
+            &video.to_string_lossy(),
+        ])
+        .status()
+        .expect("run ffmpeg video");
+    assert!(status_v.success(), "ffmpeg video generation failed");
+
+    let status_a = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=44100:duration=2",
+            "-c:a",
+            "mp2",
+            &audio.to_string_lossy(),
+        ])
+        .status()
+        .expect("run ffmpeg audio");
+    assert!(status_a.success(), "ffmpeg audio generation failed");
+
+    let candidates = ["hdmv_pgs_subtitle", "dvdsub", "dvb_subtitle"];
+    for codec in candidates {
+        let status_mux = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-i",
+                &subs_eng.to_string_lossy(),
+                "-i",
+                &subs_spa.to_string_lossy(),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:s",
+                codec,
+                "-metadata:s:s:0",
+                "language=eng",
+                "-metadata:s:s:1",
+                "language=spa",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:0",
+                "-map",
+                "3:0",
+                &input.to_string_lossy(),
+            ])
+            .status()
+            .expect("run ffmpeg mux bitmap subs");
+        if status_mux.success() {
+            return Some(input);
+        }
+    }
+
+    None
+}
+
+fn is_bitmap_subtitle_codec(codec_id: ffi::AVCodecID) -> bool {
+    matches!(
+        codec_id,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AV_CODEC_ID_XSUB
+    )
+}
+
+fn count_bitmap_subtitle_streams(path: &PathBuf) -> Result<usize, Box<dyn std::error::Error>> {
+    let path_cstr = CString::new(path.to_string_lossy().to_string())?;
+    let ictx = AVFormatContextInput::open(path_cstr.as_c_str())?;
+    Ok(ictx
+        .streams()
+        .into_iter()
+        .filter(|st| {
+            let cp = st.codecpar();
+            cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && is_bitmap_subtitle_codec(cp.codec_id)
+        })
+        .count())
+}
+
+fn count_mov_text_streams(path: &PathBuf) -> Result<usize, Box<dyn std::error::Error>> {
+    let path_cstr = CString::new(path.to_string_lossy().to_string())?;
+    let ictx = AVFormatContextInput::open(path_cstr.as_c_str())?;
+    Ok(ictx
+        .streams()
+        .into_iter()
+        .filter(|st| {
+            let cp = st.codecpar();
+            cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && cp.codec_id == ffi::AV_CODEC_ID_MOV_TEXT
+        })
+        .count())
+}
+
 fn probe_duration_ms(path: &PathBuf) -> u64 {
     let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
@@ -265,6 +398,58 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
             out_dur_ms
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn cli_ai_ocr_processes_all_bitmap_subtitle_streams() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+
+    if env::var("DPN_OCR_AI_E2E").ok().as_deref() != Some("1") {
+        eprintln!("Skipping AI all-stream OCR test (set DPN_OCR_AI_E2E=1 to enable).");
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let Some(input) = gen_multi_stream_bitmap_input(&tmp) else {
+        eprintln!("No bitmap subtitle encoder available; skipping AI all-stream OCR test.");
+        return Ok(());
+    };
+    let output = tmp.path().join("out_ai_all_streams.mp4");
+
+    let input_bitmap_count = count_bitmap_subtitle_streams(&input)?;
+    assert!(
+        input_bitmap_count >= 2,
+        "expected at least two bitmap subtitle streams, got {}",
+        input_bitmap_count
+    );
+
+    let run = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .env("DPN_OCR_FORCE_CPU", "1")
+        .env("DPN_OCR_SKIP_CLS", "1")
+        .arg("--sub-mode")
+        .arg("force")
+        .arg("--ocr-engine")
+        .arg("pp-ocr-v3")
+        .arg("--skip-codec-check")
+        .arg(&input)
+        .arg(&output)
+        .output()?;
+
+    assert!(
+        run.status.success(),
+        "AI OCR run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let output_sub_count = count_mov_text_streams(&output)?;
+    assert_eq!(
+        output_sub_count, input_bitmap_count,
+        "expected all bitmap subtitle streams to be OCR-converted ({}), got {}",
+        input_bitmap_count, output_sub_count
+    );
 
     Ok(())
 }

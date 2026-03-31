@@ -14,7 +14,7 @@ use rsmpeg::swscale::SwsContext;
 use serde::{Deserialize, Serialize};
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::TryFrom,
     env,
     ffi::{c_char, CStr, CString},
@@ -2165,6 +2165,14 @@ struct Args {
     )]
     ocr_external_command: Option<String>,
 
+    /// Also write OCR subtitle sidecar .srt files next to the output file.
+    #[arg(
+        long = "ocr-write-srt-sidecar",
+        default_value_t = false,
+        id = "ocr_write_srt_sidecar"
+    )]
+    ocr_write_srt_sidecar: bool,
+
     /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
     #[arg(
         long = "skip-codec-check",
@@ -2173,7 +2181,8 @@ struct Args {
     )]
     skip_codec_check: bool,
 
-    /// Delete the source file after a successful conversion (ignored for Sonarr/Radarr integrations). Pass --delete-source=false to override config.
+    /// Delete the source file after a successful conversion for direct CLI runs.
+    /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.
     #[arg(
         long = "delete-source",
         value_name = "BOOL",
@@ -2564,6 +2573,12 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
     if !cli_value_provided(matches, "ocr_external_command") {
         if let Some(ocr_external_command) = cfg.ocr_external_command.as_ref() {
             args.ocr_external_command = Some(ocr_external_command.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "ocr_write_srt_sidecar") {
+        if let Some(ocr_write_srt_sidecar) = cfg.ocr_write_srt_sidecar {
+            args.ocr_write_srt_sidecar = ocr_write_srt_sidecar;
         }
     }
 
@@ -5354,6 +5369,7 @@ fn run_conversion(
                 args.ocr_engine,
                 args.ocr_format,
                 args.ocr_external_command.as_deref(),
+                args.ocr_write_srt_sidecar,
             )?;
             Ok(outcome)
         });
@@ -5450,6 +5466,7 @@ fn post_process_ocr_subtitles(
     ocr_engine: OcrEngine,
     ocr_format: OcrFormat,
     ocr_external_command: Option<&str>,
+    ocr_write_srt_sidecar: bool,
 ) -> Result<()> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(());
@@ -5482,6 +5499,7 @@ fn post_process_ocr_subtitles(
         ocr_external_command,
     )?;
     subtitle_ocr::mux_text_tracks_from(mux_source_file, output_file, &tracks)?;
+    write_ocr_srt_sidecars(output_file, &tracks, ocr_write_srt_sidecar)?;
 
     if let Err(err) = fs::remove_dir_all(&ocr_work_dir) {
         debug!(
@@ -5492,4 +5510,134 @@ fn post_process_ocr_subtitles(
     }
 
     Ok(())
+}
+
+fn sanitize_sidecar_language(language: &str) -> String {
+    let normalized: String = language
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if normalized.is_empty() {
+        "und".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn sidecar_path_for_track(
+    output_path: &Path,
+    language: &str,
+    language_occurrence: usize,
+) -> PathBuf {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("output");
+    let suffix = if language_occurrence <= 1 {
+        format!("{stem}.{language}.srt")
+    } else {
+        format!("{stem}.{language}.{language_occurrence}.srt")
+    };
+    parent.join(suffix)
+}
+
+fn write_ocr_srt_sidecars(
+    output_file: &CStr,
+    tracks: &[subtitle_ocr::OcrSubtitleTrack],
+    enabled: bool,
+) -> Result<()> {
+    if !enabled || tracks.is_empty() {
+        return Ok(());
+    }
+
+    let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
+    let mut language_counts: HashMap<String, usize> = HashMap::new();
+
+    for track in tracks {
+        if !matches!(track.format, OcrFormat::Srt) {
+            warn!(
+                "Skipping OCR sidecar write for '{}' because format is {:?} (SRT required).",
+                track.subtitle_path.display(),
+                track.format
+            );
+            continue;
+        }
+
+        let language = sanitize_sidecar_language(&track.language);
+        let occurrence = {
+            let count = language_counts.entry(language.clone()).or_insert(0);
+            *count += 1;
+            *count
+        };
+        let sidecar_path = sidecar_path_for_track(&output_path, &language, occurrence);
+        fs::copy(&track.subtitle_path, &sidecar_path).with_context(|| {
+            format!(
+                "writing OCR sidecar '{}' from '{}'",
+                sidecar_path.display(),
+                track.subtitle_path.display()
+            )
+        })?;
+        info!(
+            "Wrote OCR sidecar subtitle '{}' (language={}, source='{}').",
+            sidecar_path.display(),
+            language,
+            track.subtitle_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod ocr_sidecar_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn sidecar_paths_are_stable_and_language_scoped() {
+        let output = PathBuf::from("/tmp/movie.fixed.mp4");
+        let p1 = sidecar_path_for_track(&output, "eng", 1);
+        let p2 = sidecar_path_for_track(&output, "eng", 2);
+        let p3 = sidecar_path_for_track(&output, "fra", 1);
+        assert_eq!(p1, PathBuf::from("/tmp/movie.fixed.eng.srt"));
+        assert_eq!(p2, PathBuf::from("/tmp/movie.fixed.eng.2.srt"));
+        assert_eq!(p3, PathBuf::from("/tmp/movie.fixed.fra.srt"));
+    }
+
+    #[test]
+    fn sidecar_writer_copies_only_srt_tracks() {
+        let dir = tempdir().expect("tmpdir");
+        let output_path = dir.path().join("sample.mp4");
+        fs::write(&output_path, b"placeholder").expect("write output placeholder");
+
+        let srt_src = dir.path().join("stream-2.srt");
+        let ass_src = dir.path().join("stream-3.ass");
+        fs::write(&srt_src, b"1\n00:00:00,000 --> 00:00:01,000\nhello\n\n").expect("write srt");
+        fs::write(&ass_src, b"[Script Info]\n").expect("write ass");
+
+        let tracks = vec![
+            subtitle_ocr::OcrSubtitleTrack {
+                language: "eng".to_string(),
+                subtitle_path: srt_src.clone(),
+                format: OcrFormat::Srt,
+            },
+            subtitle_ocr::OcrSubtitleTrack {
+                language: "eng".to_string(),
+                subtitle_path: ass_src,
+                format: OcrFormat::Ass,
+            },
+        ];
+
+        let output_cstr = CString::new(output_path.to_string_lossy().to_string()).unwrap();
+        write_ocr_srt_sidecars(output_cstr.as_c_str(), &tracks, true).expect("write sidecars");
+
+        let sidecar = dir.path().join("sample.eng.srt");
+        assert!(sidecar.exists(), "expected sidecar to be written");
+        let content = fs::read_to_string(sidecar).expect("read sidecar");
+        assert!(content.contains("hello"));
+        assert!(!dir.path().join("sample.eng.2.srt").exists());
+    }
 }

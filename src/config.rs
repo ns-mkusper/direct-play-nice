@@ -33,6 +33,7 @@ pub struct Config {
     pub ocr_engine: Option<OcrEngine>,
     pub ocr_format: Option<OcrFormat>,
     pub ocr_external_command: Option<String>,
+    pub ocr_write_srt_sidecar: Option<bool>,
     pub skip_codec_check: Option<bool>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
@@ -215,6 +216,7 @@ mod tests {
             ocr_engine = "external"
             ocr_format = "ass"
             ocr_external_command = "python3 /opt/ocr/run.py"
+            ocr_write_srt_sidecar = true
             "#
         )
         .unwrap();
@@ -228,5 +230,6 @@ mod tests {
             cfg.ocr_external_command.as_deref(),
             Some("python3 /opt/ocr/run.py")
         );
+        assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
     }
 }

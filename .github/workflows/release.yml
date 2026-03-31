@@ -117,7 +117,10 @@ jobs:
         with:
           submodules: recursive
       - name: "Install vcpkg build dependencies"
-        run: "sudo apt-get --assume-yes install nasm"
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install \
+            nasm autoconf autoconf-archive automake libtool
       - name: "Cache cargo-vcpkg binary"
         id: cargo-vcpkg-cache
         uses: actions/cache@v4

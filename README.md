@@ -127,8 +127,9 @@ Notes:
   defaults to creating `Episode.fixed.<ext>` (with the extension derived from
   the conversion output).
 - Use `--delete-source` if you want the original input removed after a
-  successful conversion (ignored during Sonarr/Radarr runs because the tool
-  already swaps the file in place).
+  successful conversion in direct CLI runs.
+- In Sonarr/Radarr mode, successful replacement removes the original
+  automatically, while failures restore the original from backup.
 - The binary self-throttles: no more than two conversions run at once across all
   processes. Additional invocations wait until a slot is free.
 - Tune concurrency via environment variables: set `DIRECT_PLAY_NICE_MAX_JOBS`
@@ -202,6 +203,8 @@ Enable/override behavior:
 - `--ocr-format=ass` emits positioned/colored ASS. For MP4 outputs, ASS is
   downgraded to `mov_text`; use an MKV output if you want to preserve full
   ASS styling.
+- `--ocr-write-srt-sidecar` optionally writes `.srt` sidecars next to the
+  output file. Default is embedded-only subtitle output.
 
 ONNX OCR engines (PP‑OCR):
 
@@ -232,26 +235,20 @@ ONNX OCR engines (PP‑OCR):
   `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
   `en_PP-OCRv3_rec_infer.onnx`.
 
-System stability note (Arch Linux):
+Linux GPU runtime notes:
 
-- Prefer installing `cudnn` and `onnxruntime-cuda` from the Arch Linux
-  Archive if you want to avoid a full system upgrade.
-- Avoid partial upgrades; keep `glibc`/`gcc-libs` aligned with the
-  onnxruntime build.
-- On older Maxwell GPUs (e.g. GTX 960), prebuilt ONNX Runtime CUDA
-  binaries were unstable during OCR model initialization.
-- The validated legacy path in this branch is: custom ONNX Runtime build
-  targeting `sm_52` + `--ocr-engine pp-ocr-v3`.
-- If that custom runtime is unavailable, leave `DPN_OCR_REQUIRE_GPU`
-  unset so automatic fallback can use CPU OCR.
-
-Legacy hardware support (Maxwell / GTX 960):
-
-- GTX 960 achieved a stable GPU run with `pp-ocr-v3` using a custom
-  ONNX Runtime build (see `OCR_BENCHMARK.md`).
-- Prebuilt runtime stacks remained unstable for `pp-ocr-v4` on this host.
-- CPU fallback reference remains available: PP‑OCRv4 CPU ran at ~80 FPS
-  on the 5-minute slice with 0.9414 similarity vs Tesseract.
+- Install matching NVIDIA driver, CUDA runtime, cuDNN, and ONNX Runtime
+  CUDA provider versions.
+- Keep CUDA/cuDNN/onnxruntime packages aligned. Partial upgrades can break
+  provider loading.
+- If your runtime libraries are in a non-standard path, set
+  `ORT_DYLIB_PATH=/path/to/libonnxruntime.so`.
+- For modern GPUs, `--ocr-engine auto` or `--ocr-engine pp-ocr-v4` is the
+  preferred path.
+- For legacy NVIDIA GPUs, `--ocr-engine pp-ocr-v3` can be more stable than
+  v4 on older driver/runtime combinations.
+- If GPU must be used, set `DPN_OCR_REQUIRE_GPU=1` to fail fast when no GPU
+  execution provider is available.
 
 Config file equivalents:
 
@@ -260,6 +257,7 @@ sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
 ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
 ocr_format = "srt"          # srt | ass
+ocr_write_srt_sidecar = false
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```
 
@@ -298,6 +296,54 @@ Example Sonarr command that keeps all defaults (resulting in
 
 ```bash
 /path/to/direct_play_nice
+```
+
+Autopilot wrapper for Sonarr/Cron (GPU OCR + config file defaults):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Optional: pinned ONNX runtime bundle.
+RUNTIME_DIR=/opt/direct-play-nice/ort116-runtime
+export ORT_DYLIB_PATH="$RUNTIME_DIR/lib/libonnxruntime.so"
+export LD_LIBRARY_PATH="$RUNTIME_DIR/lib:/usr/lib:/opt/cuda/lib64"
+
+# Keep cross-user lock files out of sticky /tmp.
+export DIRECT_PLAY_NICE_LOCK_DIR=/var/lib/direct-play-nice/locks
+
+# Maxwell-safe default (override if needed).
+export DPN_OCR_SKIP_CLS=1
+
+exec /usr/local/bin/direct_play_nice \
+  --config-file /etc/direct_play_nice/config.toml \
+  --video-quality match-source \
+  --audio-quality match-source \
+  "$@"
+```
+
+Notes:
+
+- `ORT_DYLIB_PATH` is only needed when `libonnxruntime.so` is not on the
+  default library path (or when multiple versions are installed and you want
+  to pin one).
+- `DPN_OCR_REQUIRE_GPU=1` is optional. Set it only if you want strict fail-fast
+  behavior when GPU OCR libraries are missing.
+- Keep the wrapper as the stable entry point for Sonarr/Radarr. Do not call a
+  second binary path directly unless you also set `ORT_DYLIB_PATH` and
+  `LD_LIBRARY_PATH`.
+- For repeatable deployments, keep a manifest of runtime URLs and checksums
+  next to the pinned runtime directory (example:
+  `/opt/direct-play-nice/ort116-runtime/STACK_MANIFEST.txt`).
+
+Example `/etc/direct_play_nice/config.toml` for unattended runs:
+
+```toml
+skip_codec_check = true
+sub_mode = "auto"
+ocr_engine = "ppocrv3" # recommended default for legacy NVIDIA GPUs
+ocr_format = "srt"
+ocr_write_srt_sidecar = false
 ```
 
 > Tip: Sonarr/Radarr will see the new filename on their next library scan. If

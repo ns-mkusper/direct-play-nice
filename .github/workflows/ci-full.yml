@@ -159,8 +159,7 @@ jobs:
             target/vcpkg/buildtrees/**/*.txt
           retention-days: 7
 
-      - name: Run tests (stable)
-        if: matrix.toolchain == 'stable'
+      - name: Run unit/bin tests
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
@@ -168,25 +167,14 @@ jobs:
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
         run: |
           start=$(date +%s)
-          cargo test -q --timings
+          cargo test -q --lib --bins --timings
+          cargo test -q --features ffmpeg-cli-tests --no-run --timings
           end=$(date +%s)
-          echo "### Linux stable runtime" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Toolchain: stable" >> "$GITHUB_STEP_SUMMARY"
-          echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Compile tests (beta/nightly)
-        if: matrix.toolchain != 'stable'
-        env:
-          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
-          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
-        run: |
-          start=$(date +%s)
-          cargo test --no-run -q --timings
-          end=$(date +%s)
-          echo "### Linux compatibility runtime" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Linux test runtime" >> "$GITHUB_STEP_SUMMARY"
           echo "- Toolchain: ${{ matrix.toolchain }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Test command: cargo test --lib --bins" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run" >> "$GITHUB_STEP_SUMMARY"
           echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload cargo timings
@@ -407,11 +395,14 @@ jobs:
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
         run: |
           $start = Get-Date
-          cargo test -q
+          cargo test -q --lib --bins
+          cargo test -q --features ffmpeg-cli-tests --no-run
           $elapsed = (Get-Date) - $start
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-win.outputs.cache-hit }}"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Test command: cargo test --lib --bins"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- Duration: {0}s" -f [int]$elapsed.TotalSeconds)
 
       - name: sccache stats
