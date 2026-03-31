@@ -426,11 +426,14 @@ jobs:
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
         run: |
           $start = Get-Date
-          cargo test -q
+          cargo test -q --lib --bins
+          cargo test -q --features ffmpeg-cli-tests --no-run
           $elapsed = (Get-Date) - $start
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-win.outputs.cache-hit }}"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Test command: cargo test --lib --bins"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- Duration: {0}s" -f [int]$elapsed.TotalSeconds)
 
       - name: sccache stats
