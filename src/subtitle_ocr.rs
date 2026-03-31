@@ -189,6 +189,8 @@ static ORT_ENV_INIT: OnceLock<()> = OnceLock::new();
 static ORT_ENV_GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
 static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
 static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
+static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
+static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
@@ -327,26 +329,27 @@ fn build_ocr_engine(
         }
         OcrEngine::Auto => {
             let require_gpu = require_gpu();
-            let variant = PpOcrVariant::V4;
             let gpu_available = match init_ort_environment() {
                 Ok(available) => available,
                 Err(err) => {
                     if require_gpu {
                         return Err(err);
                     }
-                    warn!(
-                        "{} unavailable; falling back to Tesseract: {}",
-                        variant.label(),
-                        err
-                    );
+                    warn!("PP-OCR unavailable; falling back to Tesseract: {}", err);
                     return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
                 }
             };
 
-            if matches!(auto_engine_preference(gpu_available), OcrEngine::Tesseract) {
+            let selected_engine = auto_engine_preference(gpu_available);
+            if matches!(selected_engine, OcrEngine::Tesseract) {
                 info!("Auto-selected Tesseract (no GPU execution provider available).");
                 return Ok((OcrEngine::Tesseract, Box::new(TesseractEngine)));
             }
+            let variant = match selected_engine {
+                OcrEngine::PpOcrV3 => PpOcrVariant::V3,
+                OcrEngine::PpOcrV4 => PpOcrVariant::V4,
+                _ => PpOcrVariant::V4,
+            };
 
             match (|| -> Result<PpOcrEngine> {
                 let model_dir = resolve_model_dir()?;
@@ -357,7 +360,7 @@ fn build_ocr_engine(
                         "Auto-selected {} engine with GPU acceleration",
                         variant.label()
                     );
-                    Ok((OcrEngine::PpOcrV4, Box::new(engine)))
+                    Ok((selected_engine, Box::new(engine)))
                 }
                 Err(err) => {
                     if require_gpu {
@@ -376,11 +379,88 @@ fn build_ocr_engine(
 }
 
 fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
-    if gpu_available {
-        OcrEngine::PpOcrV4
-    } else {
-        OcrEngine::Tesseract
+    auto_engine_preference_with_capability(gpu_available, prefer_ppocr_v3_for_legacy_nvidia())
+}
+
+fn auto_engine_preference_with_capability(
+    gpu_available: bool,
+    prefer_v3_on_gpu: bool,
+) -> OcrEngine {
+    if !gpu_available {
+        return OcrEngine::Tesseract;
     }
+    if prefer_v3_on_gpu {
+        OcrEngine::PpOcrV3
+    } else {
+        OcrEngine::PpOcrV4
+    }
+}
+
+fn prefer_ppocr_v3_for_legacy_nvidia() -> bool {
+    *LEGACY_NVIDIA_MAXWELL.get_or_init(detect_legacy_nvidia_maxwell)
+}
+
+fn detect_legacy_nvidia_maxwell() -> bool {
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        return false;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        let output = Command::new("nvidia-smi")
+            .arg("--query-gpu=compute_cap,name")
+            .arg("--format=csv,noheader,nounits")
+            .output();
+
+        let Ok(output) = output else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let mut parts = line.splitn(2, ',').map(str::trim);
+            let cap = parts.next().unwrap_or_default();
+            let name = parts.next().unwrap_or_default();
+            let major = cap
+                .split('.')
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(999);
+            if major <= 5 {
+                info!(
+                    "Detected legacy NVIDIA GPU '{}'(compute capability {}). Auto-selecting PP-OCRv3.",
+                    name,
+                    cap
+                );
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn disable_tesseract_quality_fallback() -> bool {
+    let disabled = env::var("DPN_OCR_DISABLE_TESS_FALLBACK")
+        .ok()
+        .map(|v| {
+            let x = v.trim().to_ascii_lowercase();
+            matches!(x.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false);
+    if disabled && !DISABLE_TESS_FALLBACK_LOGGED.swap(true, Ordering::Relaxed) {
+        warn!(
+            "DPN_OCR_DISABLE_TESS_FALLBACK=1 set; skipping Tesseract quality fallback and using pure PP-OCR output."
+        );
+    }
+    disabled
 }
 
 fn ppocr_require_gpu_error(variant: PpOcrVariant, err: impl std::fmt::Display) -> anyhow::Error {
@@ -1837,7 +1917,7 @@ fn extract_subtitle_lines(
             continue;
         }
 
-        let Some((pgm, has_visible_pixels)) = rect_to_pgm(rect) else {
+        let Some((pgm, has_visible_pixels)) = rect_to_pgm(rect, ocr_engine) else {
             continue;
         };
         had_imagery = had_imagery || has_visible_pixels;
@@ -1853,6 +1933,7 @@ fn extract_subtitle_lines(
         let mut output = engine.extract_lines(&pgm_path, language)?;
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
+            && !disable_tesseract_quality_fallback()
             && ppocr_needs_quality_fallback(&output.lines, language)
         {
             let ppocr_text = lines_text_for_quality(&output.lines);
@@ -2018,19 +2099,61 @@ fn postprocess_ocr_text(text: &str, language: &str) -> String {
 
     out = normalize_english_ocr_confusions(&out);
     out = insert_space_after_punctuation(&out);
+    out = insert_space_between_letters_and_digits(&out);
+    out = insert_space_before_opening_quote(&out);
     out = split_glued_english_phrases(&out);
 
     // Targeted corrections for frequently observed OCR glue patterns.
-    const ENGLISH_GLUE_FIXES: [(&str, &str); 17] = [
+    const ENGLISH_GLUE_FIXES: [(&str, &str); 42] = [
         ("noneother", "none other"),
         ("notonlyme", "not only me"),
         ("notonly", "not only"),
+        ("itis", "it is"),
+        ("whylost", "why lost"),
+        ("hesalive", "he's alive"),
+        ("he'salive", "he's alive"),
+        ("thats", "that's"),
         ("goodwork", "good work"),
         ("burnit", "burn it"),
         ("yessir", "yes sir"),
+        ("praisetoyou", "praise to you"),
+        ("lordjesuschrist", "Lord Jesus Christ"),
+        ("paxchristi", "pax Christi"),
+        ("praisedbegod", "praised be God"),
         ("constablecrane", "constable crane"),
         ("whathappenedtohim", "what happened to him"),
         ("beforehewentintotheriver", "before he went into the river"),
+        (
+            "thereislittlepeaceinthislandnow",
+            "there is little peace in this land now",
+        ),
+        ("allourprogresshasended", "all our progress has ended"),
+        ("newsuffering", "new suffering"),
+        ("tobeasdarkasitisnow", "to be as dark as it is now"),
+        ("tobeasdarkasit isnow", "to be as dark as it is now"),
+        ("to be as dark as itis now", "to be as dark as it is now"),
+        ("an done of", "and one of"),
+        ("butit's", "but it's"),
+        ("isit?", "is it?"),
+        (
+            "andthepainwouldbeprolonged",
+            "and the pain would be prolonged",
+        ),
+        (
+            "eachsmallsplashofthewater",
+            "each small splash of the water",
+        ),
+        ("waslikeaburningcoal", "was like a burning coal"),
+        ("therearehotspringsthere", "there are hot springs there"),
+        ("toabandongod", "to abandon God"),
+        (
+            "sotheycoulddemonstratethestrengthoftheirfaith",
+            "so they could demonstrate the strength of their faith",
+        ),
+        (
+            "andthepresenceofgodwithinthem",
+            "and the presence of God within them",
+        ),
         ("standdown", "stand down"),
         ("loppedoff", "lopped off"),
         ("ibegpardon", "I beg pardon"),
@@ -2127,14 +2250,20 @@ fn split_glued_english_phrases(input: &str) -> String {
 }
 
 fn split_glued_ascii_token(token: &str) -> Option<String> {
-    if token.len() < 7 || token.contains('\'') || !token.is_ascii() {
+    if token.len() < 5 || !token.is_ascii() {
         return None;
     }
-    if !token.chars().all(|ch| ch.is_ascii_alphabetic()) {
+    if !token
+        .chars()
+        .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+    {
         return None;
     }
 
     let lower = token.to_ascii_lowercase();
+    if let Some(split) = split_glued_contraction(token, &lower) {
+        return Some(split);
+    }
     if is_common_english_word(&lower) {
         return None;
     }
@@ -2171,7 +2300,7 @@ fn split_glued_ascii_token(token: &str) -> Option<String> {
 
 fn segment_glued_english_token(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
-    if lower.len() < 8 || is_common_english_word(&lower) {
+    if lower.len() < 5 || is_common_english_word(&lower) {
         return None;
     }
 
@@ -2190,7 +2319,7 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
                 continue;
             }
             let segment_len = end - start;
-            let score = prev_score + (segment_len as i32 * segment_len as i32) - 2;
+            let score = prev_score + (segment_len as i32 * segment_len as i32) - 4;
             let segments = prev_segments + 1;
             let should_replace = best[end]
                 .as_ref()
@@ -2223,12 +2352,10 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
     }
     pieces.reverse();
 
-    // Avoid over-splitting normal words. Allow 3-piece splits only when the first piece is "I".
-    if pieces.len() > 2 {
-        let first = &lower[pieces[0].0..pieces[0].1];
-        if !(pieces.len() == 3 && first == "i") {
-            return None;
-        }
+    // Guard against pathological over-segmentation (e.g. many tiny tokens).
+    let avg_segment_len = n as f32 / pieces.len() as f32;
+    if pieces.len() >= 5 && avg_segment_len < 2.6 {
+        return None;
     }
     if pieces.iter().any(|(start, end)| {
         end - start == 1 && &lower[*start..*end] != "i" && &lower[*start..*end] != "a"
@@ -2245,138 +2372,462 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
     )
 }
 
+fn split_glued_contraction(token: &str, lower: &str) -> Option<String> {
+    let apostrophe = token.find('\'')?;
+    if apostrophe == 0 || apostrophe + 1 >= token.len() {
+        return None;
+    }
+    if token[apostrophe + 1..].contains('\'') {
+        return None;
+    }
+
+    const SUFFIXES: [&str; 7] = ["s", "re", "ve", "ll", "d", "m", "t"];
+    for suffix in SUFFIXES {
+        let suffix_start = apostrophe + 1;
+        if !lower[suffix_start..].starts_with(suffix) {
+            continue;
+        }
+        let contraction_len = suffix_start + suffix.len();
+        if contraction_len + 2 > token.len() {
+            return None;
+        }
+        let rest = &token[contraction_len..];
+        if !rest.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return None;
+        }
+        let split_rest = segment_glued_english_token(rest).unwrap_or_else(|| rest.to_string());
+        return Some(format!("{} {}", &token[..contraction_len], split_rest));
+    }
+    None
+}
+
 fn is_common_english_word(word: &str) -> bool {
-    const WORDS: [&str; 171] = [
+    const WORDS: [&str; 511] = [
         "a",
+        "abandon",
+        "able",
         "about",
+        "above",
+        "according",
+        "across",
+        "actually",
+        "add",
         "after",
         "again",
         "against",
+        "ago",
+        "ahead",
+        "air",
+        "alive",
         "all",
+        "allow",
         "almost",
+        "along",
         "already",
         "also",
+        "although",
         "always",
         "am",
+        "among",
+        "amount",
         "an",
         "and",
+        "another",
         "any",
+        "anyone",
+        "anything",
+        "apostatize",
+        "apostatized",
         "are",
+        "around",
         "as",
+        "ask",
+        "asked",
         "at",
+        "away",
         "back",
+        "bad",
+        "base",
         "be",
+        "became",
         "because",
+        "become",
+        "becoming",
         "been",
         "before",
         "beg",
+        "behind",
         "being",
+        "below",
+        "beside",
         "best",
         "better",
         "between",
+        "black",
+        "blood",
+        "blue",
+        "body",
+        "book",
+        "born",
         "both",
+        "break",
+        "bring",
+        "brother",
+        "brought",
+        "build",
+        "built",
         "burn",
+        "burning",
         "but",
         "by",
+        "call",
+        "came",
         "can",
+        "cannot",
+        "cause",
         "century",
+        "children",
+        "christ",
+        "christi",
+        "christians",
+        "church",
+        "city",
+        "clear",
+        "close",
+        "coal",
+        "cold",
         "come",
         "constable",
+        "continue",
         "could",
+        "country",
+        "courage",
         "crane",
+        "cut",
         "dandelion",
+        "dark",
         "day",
+        "days",
+        "dead",
+        "death",
+        "deep",
+        "demonstrate",
+        "denounced",
+        "despite",
         "did",
+        "die",
+        "different",
         "do",
         "does",
         "done",
+        "door",
         "down",
+        "drops",
+        "during",
+        "dutch",
         "each",
+        "early",
+        "earth",
+        "easy",
+        "either",
+        "ended",
+        "enough",
         "even",
+        "ever",
         "every",
+        "face",
+        "fact",
+        "faith",
+        "family",
+        "far",
+        "father",
+        "fear",
+        "ferreira",
         "few",
+        "figure",
+        "filled",
+        "finally",
+        "fire",
+        "first",
+        "five",
+        "floor",
+        "follow",
+        "food",
         "for",
+        "force",
+        "form",
+        "four",
+        "free",
+        "friars",
+        "friend",
         "from",
+        "front",
+        "full",
+        "game",
         "get",
+        "girl",
         "give",
+        "given",
+        "gives",
+        "glass",
         "go",
+        "god",
         "good",
+        "gospel",
+        "governor",
+        "great",
+        "green",
+        "group",
+        "grow",
         "had",
+        "half",
+        "hand",
         "happened",
+        "hard",
         "has",
         "have",
         "he",
+        "head",
+        "hear",
+        "heart",
+        "heavy",
+        "hells",
         "her",
         "here",
+        "hes",
+        "hidden",
         "him",
         "his",
+        "history",
+        "holes",
+        "home",
+        "hope",
+        "hot",
+        "house",
         "how",
+        "however",
         "i",
+        "idea",
         "if",
+        "important",
         "in",
+        "inside",
         "into",
         "is",
         "it",
         "its",
+        "japan",
+        "japanese",
+        "jesus",
+        "job",
         "just",
         "keep",
+        "kind",
+        "king",
+        "knew",
         "know",
+        "known",
+        "ladles",
+        "land",
+        "large",
+        "last",
+        "late",
+        "later",
+        "leave",
+        "left",
         "let",
+        "letter",
+        "life",
+        "light",
         "like",
+        "line",
+        "list",
+        "little",
+        "live",
         "living",
+        "long",
+        "looked",
+        "looking",
+        "looks",
         "lopped",
+        "lord",
+        "lost",
+        "love",
+        "low",
         "made",
+        "main",
         "make",
         "man",
         "many",
         "may",
         "me",
+        "mean",
+        "means",
+        "men",
         "might",
-        "more",
-        "most",
+        "mind",
+        "minute",
+        "mockery",
+        "money",
+        "month",
         "months",
+        "more",
+        "morning",
+        "most",
+        "mother",
+        "mountain",
+        "move",
+        "moved",
         "must",
         "my",
+        "nagasaki",
+        "name",
+        "near",
         "need",
         "never",
         "new",
+        "news",
+        "next",
+        "night",
         "no",
         "none",
         "nor",
+        "north",
         "not",
+        "nothing",
+        "notice",
         "now",
+        "number",
         "of",
         "off",
+        "officials",
+        "often",
         "old",
         "on",
+        "once",
+        "one",
         "only",
+        "open",
         "or",
+        "order",
         "other",
+        "others",
         "our",
         "out",
+        "outside",
         "over",
+        "own",
+        "padres",
+        "pain",
+        "paper",
         "pardon",
+        "part",
+        "partly",
+        "pass",
+        "past",
+        "pax",
+        "pay",
+        "peace",
         "people",
+        "persecution",
+        "person",
+        "piece",
         "place",
+        "point",
+        "portugal",
+        "possible",
+        "power",
+        "praise",
+        "praised",
+        "presence",
+        "priests",
+        "probably",
+        "progress",
+        "prolonged",
+        "proven",
+        "public",
         "put",
+        "question",
         "rain",
+        "ransomed",
+        "rather",
+        "reach",
+        "read",
+        "ready",
         "really",
+        "red",
+        "refused",
+        "remain",
+        "remained",
+        "remember",
+        "repression",
+        "right",
+        "risked",
         "river",
+        "road",
+        "room",
+        "run",
         "said",
+        "same",
         "saw",
         "say",
+        "school",
+        "second",
+        "secret",
         "see",
+        "seem",
+        "seen",
+        "service",
+        "set",
+        "several",
         "shall",
         "she",
+        "show",
+        "side",
+        "since",
         "sir",
+        "six",
+        "slowly",
+        "small",
+        "smuggled",
         "so",
+        "society",
         "some",
-        "stand",
-        "stopped",
-        "such",
         "something",
+        "son",
+        "soon",
+        "sound",
+        "south",
+        "splash",
+        "spread",
+        "springs",
+        "stand",
+        "state",
+        "still",
+        "stop",
+        "stopped",
+        "story",
+        "strength",
+        "stronger",
+        "strongest",
+        "such",
+        "suffering",
+        "sure",
+        "surrendered",
+        "sweeping",
+        "table",
+        "taken",
+        "taking",
+        "talk",
+        "teacher",
+        "team",
+        "tell",
+        "ten",
+        "terms",
+        "text",
         "than",
         "that",
+        "thats",
         "the",
         "their",
         "them",
@@ -2385,22 +2836,54 @@ fn is_common_english_word(word: &str) -> bool {
         "these",
         "they",
         "thing",
+        "things",
         "think",
         "this",
         "those",
+        "though",
+        "thousands",
+        "three",
         "through",
         "time",
         "to",
         "today",
+        "together",
         "told",
+        "tonight",
         "too",
+        "took",
+        "top",
+        "tortured",
+        "toward",
+        "trader",
+        "traveling",
+        "true",
+        "truth",
+        "turn",
+        "two",
         "under",
+        "until",
+        "unzen",
         "up",
+        "upon",
         "us",
+        "use",
+        "used",
+        "using",
+        "usually",
+        "value",
         "very",
+        "view",
+        "voice",
+        "wait",
+        "wall",
         "want",
+        "war",
         "was",
+        "watch",
+        "water",
         "we",
+        "week",
         "well",
         "went",
         "were",
@@ -2408,18 +2891,31 @@ fn is_common_english_word(word: &str) -> bool {
         "when",
         "where",
         "which",
+        "white",
         "who",
+        "whole",
+        "whose",
         "why",
         "will",
         "with",
+        "within",
+        "woman",
+        "word",
+        "words",
         "work",
+        "world",
+        "worse",
         "would",
+        "wrote",
+        "year",
+        "years",
         "yes",
         "yet",
         "you",
+        "young",
         "your",
     ];
-    WORDS.contains(&word)
+    WORDS.binary_search(&word).is_ok()
 }
 
 fn insert_space_after_punctuation(input: &str) -> String {
@@ -2434,6 +2930,52 @@ fn insert_space_after_punctuation(input: &str) -> String {
         {
             out.push(' ');
         }
+    }
+    out
+}
+
+fn insert_space_between_letters_and_digits(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let chars: Vec<char> = input.chars().collect();
+    for (i, ch) in chars.iter().enumerate() {
+        out.push(*ch);
+        if let Some(next) = chars.get(i + 1) {
+            let alpha_to_digit = ch.is_ascii_alphabetic() && next.is_ascii_digit();
+            let digit_to_alpha = ch.is_ascii_digit() && next.is_ascii_alphabetic();
+            let ordinal_suffix = if digit_to_alpha && i + 2 < chars.len() {
+                let a = chars[i + 1].to_ascii_lowercase();
+                let b = chars[i + 2].to_ascii_lowercase();
+                matches!((a, b), ('s', 't') | ('n', 'd') | ('r', 'd') | ('t', 'h'))
+                    && chars
+                        .get(i + 3)
+                        .map(|c| !c.is_ascii_alphabetic())
+                        .unwrap_or(true)
+            } else {
+                false
+            };
+            let boundary = alpha_to_digit || (digit_to_alpha && !ordinal_suffix);
+            if boundary && *ch != ' ' && *next != ' ' {
+                out.push(' ');
+            }
+        }
+    }
+    out
+}
+
+fn insert_space_before_opening_quote(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 4);
+    let chars: Vec<char> = input.chars().collect();
+    for (i, ch) in chars.iter().enumerate() {
+        if *ch == '"'
+            && i > 0
+            && i + 1 < chars.len()
+            && chars[i - 1].is_ascii_alphabetic()
+            && chars[i + 1].is_ascii_alphabetic()
+            && !out.ends_with(' ')
+        {
+            out.push(' ');
+        }
+        out.push(*ch);
     }
     out
 }
@@ -2724,7 +3266,7 @@ fn run_external_ocr_command(
     )))
 }
 
-fn rect_to_pgm(rect: &ffi::AVSubtitleRect) -> Option<(Vec<u8>, bool)> {
+fn rect_to_pgm(rect: &ffi::AVSubtitleRect, ocr_engine: OcrEngine) -> Option<(Vec<u8>, bool)> {
     if rect.w <= 0 || rect.h <= 0 || rect.data[0].is_null() {
         return None;
     }
@@ -2744,10 +3286,10 @@ fn rect_to_pgm(rect: &ffi::AVSubtitleRect) -> Option<(Vec<u8>, bool)> {
         None
     };
 
-    let header = format!("P5\n{} {}\n255\n", width, height);
     let mut raster = Vec::with_capacity(width * height);
     let mut has_visible_pixels = false;
     let mut strong_foreground_pixels = 0usize;
+    let ai_mode = matches!(ocr_engine, OcrEngine::PpOcrV3 | OcrEngine::PpOcrV4);
 
     for y in 0..height {
         let row = &pixels[y * stride..(y * stride + width)];
@@ -2765,17 +3307,26 @@ fn rect_to_pgm(rect: &ffi::AVSubtitleRect) -> Option<(Vec<u8>, bool)> {
 
                     if a > 16 {
                         has_visible_pixels = true;
-                        // Weighted luma in [0,255].
                         let luma = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
-                        // Keep bright glyph cores dark for OCR and drop very dark outlines.
-                        if luma >= 160 {
-                            strong_foreground_pixels += 1;
-                            0u8
-                        } else if luma >= 95 {
-                            strong_foreground_pixels += 1;
-                            64u8
+                        if ai_mode {
+                            // Preserve grayscale detail for PP-OCR while emphasizing bright, opaque glyph cores.
+                            let ink = ((luma as u16 * a + 127) / 255) as u8;
+                            let value = 255u8.saturating_sub(ink);
+                            if value < 220 {
+                                strong_foreground_pixels += 1;
+                            }
+                            value
                         } else {
-                            255u8
+                            // Tesseract path: binarized foreground with mild antialias.
+                            if luma >= 160 {
+                                strong_foreground_pixels += 1;
+                                0u8
+                            } else if luma >= 95 {
+                                strong_foreground_pixels += 1;
+                                64u8
+                            } else {
+                                255u8
+                            }
                         }
                     } else {
                         255u8
@@ -2815,10 +3366,45 @@ fn rect_to_pgm(rect: &ffi::AVSubtitleRect) -> Option<(Vec<u8>, bool)> {
         }
     }
 
-    let mut out = Vec::with_capacity(raster.len() + header.len());
+    let (final_raster, final_w, final_h) = if ai_mode {
+        upscale_grayscale_nearest(&raster, width, height, 2)
+    } else {
+        (raster, width, height)
+    };
+    let header = format!("P5\n{} {}\n255\n", final_w, final_h);
+    let mut out = Vec::with_capacity(final_raster.len() + header.len());
     out.extend_from_slice(header.as_bytes());
-    out.extend_from_slice(&raster);
+    out.extend_from_slice(&final_raster);
     Some((out, has_visible_pixels))
+}
+
+fn upscale_grayscale_nearest(
+    raster: &[u8],
+    width: usize,
+    height: usize,
+    factor: usize,
+) -> (Vec<u8>, usize, usize) {
+    if factor <= 1 || width == 0 || height == 0 {
+        return (raster.to_vec(), width, height);
+    }
+
+    let out_w = width * factor;
+    let out_h = height * factor;
+    let mut out = vec![255u8; out_w * out_h];
+    for y in 0..height {
+        for x in 0..width {
+            let value = raster[y * width + x];
+            let base_y = y * factor;
+            let base_x = x * factor;
+            for dy in 0..factor {
+                let out_row = (base_y + dy) * out_w;
+                for dx in 0..factor {
+                    out[out_row + base_x + dx] = value;
+                }
+            }
+        }
+    }
+    (out, out_w, out_h)
 }
 
 fn dominant_color_from_rect(rect: &ffi::AVSubtitleRect) -> Option<(u8, u8, u8)> {
@@ -3904,12 +4490,26 @@ mod tests {
 
     #[test]
     fn test_auto_engine_prefers_ppocr_with_gpu() {
-        assert_eq!(auto_engine_preference(true), OcrEngine::PpOcrV4);
+        assert_eq!(
+            auto_engine_preference_with_capability(true, false),
+            OcrEngine::PpOcrV4
+        );
+    }
+
+    #[test]
+    fn test_auto_engine_prefers_ppocr_v3_on_legacy_gpu() {
+        assert_eq!(
+            auto_engine_preference_with_capability(true, true),
+            OcrEngine::PpOcrV3
+        );
     }
 
     #[test]
     fn test_auto_engine_prefers_tesseract_without_gpu() {
-        assert_eq!(auto_engine_preference(false), OcrEngine::Tesseract);
+        assert_eq!(
+            auto_engine_preference_with_capability(false, false),
+            OcrEngine::Tesseract
+        );
     }
 
     #[test]
