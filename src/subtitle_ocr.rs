@@ -2018,9 +2018,10 @@ fn postprocess_ocr_text(text: &str, language: &str) -> String {
 
     out = normalize_english_ocr_confusions(&out);
     out = insert_space_after_punctuation(&out);
+    out = split_glued_english_phrases(&out);
 
     // Targeted corrections for frequently observed OCR glue patterns.
-    const ENGLISH_GLUE_FIXES: [(&str, &str); 9] = [
+    const ENGLISH_GLUE_FIXES: [(&str, &str); 17] = [
         ("noneother", "none other"),
         ("notonlyme", "not only me"),
         ("notonly", "not only"),
@@ -2030,6 +2031,14 @@ fn postprocess_ocr_text(text: &str, language: &str) -> String {
         ("constablecrane", "constable crane"),
         ("whathappenedtohim", "what happened to him"),
         ("beforehewentintotheriver", "before he went into the river"),
+        ("standdown", "stand down"),
+        ("loppedoff", "lopped off"),
+        ("ibegpardon", "I beg pardon"),
+        ("ihavenot", "I have not"),
+        ("ishall", "I shall"),
+        ("begpardon", "beg pardon"),
+        ("havenot", "have not"),
+        ("l9th", "19th"),
     ];
     for (from, to) in ENGLISH_GLUE_FIXES {
         out = replace_case_insensitive_ascii(&out, from, to);
@@ -2060,6 +2069,17 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
                 .replace('5', "s")
                 .replace('8', "b");
         }
+        let normalized_lc = normalized.to_ascii_lowercase();
+        if let Some(rest) = normalized_lc.strip_prefix('l') {
+            if rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+                && (rest.ends_with("st")
+                    || rest.ends_with("nd")
+                    || rest.ends_with("rd")
+                    || rest.ends_with("th"))
+            {
+                normalized.replace_range(0..1, "1");
+            }
+        }
         normalized = normalized.replace('|', "I").replace("vv", "w");
         out.push_str(&normalized);
         tok.clear();
@@ -2075,6 +2095,331 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
     }
     flush_token(&mut token, &mut out);
     out
+}
+
+fn split_glued_english_phrases(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut token = String::new();
+
+    let flush_token = |tok: &mut String, out: &mut String| {
+        if tok.is_empty() {
+            return;
+        }
+        if let Some(split) = split_glued_ascii_token(tok) {
+            out.push_str(&split);
+        } else {
+            out.push_str(tok);
+        }
+        tok.clear();
+    };
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphabetic() || ch == '\'' {
+            token.push(ch);
+        } else {
+            flush_token(&mut token, &mut out);
+            out.push(ch);
+        }
+    }
+    flush_token(&mut token, &mut out);
+
+    out
+}
+
+fn split_glued_ascii_token(token: &str) -> Option<String> {
+    if token.len() < 7 || token.contains('\'') || !token.is_ascii() {
+        return None;
+    }
+    if !token.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    let lower = token.to_ascii_lowercase();
+    if is_common_english_word(&lower) {
+        return None;
+    }
+
+    if matches!(token.chars().next(), Some('I' | 'i')) && token.len() >= 5 {
+        const I_PREFIX_CONTINUATIONS: [&str; 16] = [
+            "am", "have", "had", "shall", "will", "beg", "think", "know", "need", "must", "want",
+            "did", "do", "was", "were", "would",
+        ];
+        let rest = &lower[1..];
+        if I_PREFIX_CONTINUATIONS
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+        {
+            let split_rest =
+                segment_glued_english_token(&token[1..]).unwrap_or_else(|| token[1..].to_string());
+            return Some(format!("{} {}", &token[..1], split_rest));
+        }
+    }
+
+    for suffix in [
+        "down", "off", "out", "up", "in", "on", "over", "under", "away", "back",
+    ] {
+        if lower.ends_with(suffix) {
+            let split = token.len() - suffix.len();
+            if split >= 4 && is_common_english_word(&lower[..split]) {
+                return Some(format!("{} {}", &token[..split], &token[split..]));
+            }
+        }
+    }
+
+    segment_glued_english_token(token)
+}
+
+fn segment_glued_english_token(token: &str) -> Option<String> {
+    let lower = token.to_ascii_lowercase();
+    if lower.len() < 8 || is_common_english_word(&lower) {
+        return None;
+    }
+
+    // Dynamic programming split over common English words.
+    let n = lower.len();
+    let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1]; // (score, prev_idx, segments)
+    best[0] = Some((0, 0, 0));
+    for end in 1..=n {
+        let start_min = end.saturating_sub(12);
+        for start in start_min..end {
+            let Some((prev_score, _prev_idx, prev_segments)) = best[start] else {
+                continue;
+            };
+            let candidate = &lower[start..end];
+            if !is_common_english_word(candidate) {
+                continue;
+            }
+            let segment_len = end - start;
+            let score = prev_score + (segment_len as i32 * segment_len as i32) - 2;
+            let segments = prev_segments + 1;
+            let should_replace = best[end]
+                .as_ref()
+                .map(|(current_score, _, current_segments)| {
+                    score > *current_score
+                        || (score == *current_score && segments < *current_segments)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                best[end] = Some((score, start, segments));
+            }
+        }
+    }
+
+    let Some((_score, _prev, segment_count)) = best[n] else {
+        return None;
+    };
+    if segment_count < 2 {
+        return None;
+    }
+
+    let mut pieces = Vec::new();
+    let mut idx = n;
+    while idx > 0 {
+        let Some((_score, prev_idx, _segments)) = best[idx] else {
+            return None;
+        };
+        pieces.push((prev_idx, idx));
+        idx = prev_idx;
+    }
+    pieces.reverse();
+
+    // Avoid over-splitting normal words. Allow 3-piece splits only when the first piece is "I".
+    if pieces.len() > 2 {
+        let first = &lower[pieces[0].0..pieces[0].1];
+        if !(pieces.len() == 3 && first == "i") {
+            return None;
+        }
+    }
+    if pieces.iter().any(|(start, end)| {
+        end - start == 1 && &lower[*start..*end] != "i" && &lower[*start..*end] != "a"
+    }) {
+        return None;
+    }
+
+    Some(
+        pieces
+            .into_iter()
+            .map(|(start, end)| token[start..end].to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn is_common_english_word(word: &str) -> bool {
+    const WORDS: [&str; 171] = [
+        "a",
+        "about",
+        "after",
+        "again",
+        "against",
+        "all",
+        "almost",
+        "already",
+        "also",
+        "always",
+        "am",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "back",
+        "be",
+        "because",
+        "been",
+        "before",
+        "beg",
+        "being",
+        "best",
+        "better",
+        "between",
+        "both",
+        "burn",
+        "but",
+        "by",
+        "can",
+        "century",
+        "come",
+        "constable",
+        "could",
+        "crane",
+        "dandelion",
+        "day",
+        "did",
+        "do",
+        "does",
+        "done",
+        "down",
+        "each",
+        "even",
+        "every",
+        "few",
+        "for",
+        "from",
+        "get",
+        "give",
+        "go",
+        "good",
+        "had",
+        "happened",
+        "has",
+        "have",
+        "he",
+        "her",
+        "here",
+        "him",
+        "his",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "just",
+        "keep",
+        "know",
+        "let",
+        "like",
+        "living",
+        "lopped",
+        "made",
+        "make",
+        "man",
+        "many",
+        "may",
+        "me",
+        "might",
+        "more",
+        "most",
+        "months",
+        "must",
+        "my",
+        "need",
+        "never",
+        "new",
+        "no",
+        "none",
+        "nor",
+        "not",
+        "now",
+        "of",
+        "off",
+        "old",
+        "on",
+        "only",
+        "or",
+        "other",
+        "our",
+        "out",
+        "over",
+        "pardon",
+        "people",
+        "place",
+        "put",
+        "rain",
+        "really",
+        "river",
+        "said",
+        "saw",
+        "say",
+        "see",
+        "shall",
+        "she",
+        "sir",
+        "so",
+        "some",
+        "stand",
+        "stopped",
+        "such",
+        "something",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "thing",
+        "think",
+        "this",
+        "those",
+        "through",
+        "time",
+        "to",
+        "today",
+        "told",
+        "too",
+        "under",
+        "up",
+        "us",
+        "very",
+        "want",
+        "was",
+        "we",
+        "well",
+        "went",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "work",
+        "would",
+        "yes",
+        "yet",
+        "you",
+        "your",
+    ];
+    WORDS.contains(&word)
 }
 
 fn insert_space_after_punctuation(input: &str) -> String {
@@ -3752,8 +4097,31 @@ mod tests {
         let got = postprocess_ocr_text(src, "eng");
         assert_eq!(
             got,
-            "Constable crane? Not only me. before he went into the river"
+            "Constable Crane? Not only me. before he went into the river"
         );
+    }
+
+    #[test]
+    fn test_postprocess_english_deglues_common_tokens() {
+        let src = "Ibegpardon. Standdown! Ihavenot Loppedoff? Ishall return in the l9th century.";
+        let got = postprocess_ocr_text(src, "eng");
+        assert_eq!(
+            got,
+            "I beg pardon. Stand down! I have not Lopped off? I shall return in the 19th century."
+        );
+    }
+
+    #[test]
+    fn test_split_glued_token_dp_segmentation() {
+        assert_eq!(
+            split_glued_ascii_token("Ibegpardon").as_deref(),
+            Some("I beg pardon")
+        );
+        assert_eq!(
+            split_glued_ascii_token("Standdown").as_deref(),
+            Some("Stand down")
+        );
+        assert_eq!(split_glued_ascii_token("Tonight"), None);
     }
 
     #[test]
