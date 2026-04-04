@@ -73,6 +73,21 @@ jobs:
       - name: Export VCPKG_ROOT
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> $GITHUB_ENV
 
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Generate release notes preview
+        run: |
+          ./scripts/generate_release_notes.sh RELEASE_NOTES.md
+
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-preview
+          path: RELEASE_NOTES.md
+
       - name: Run release-plz (release)
         uses: MarcoIeni/release-plz-action@v0.5
         with:
