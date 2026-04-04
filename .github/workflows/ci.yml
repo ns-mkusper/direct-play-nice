@@ -152,6 +152,19 @@ jobs:
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
 
+      - name: Rust format check
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+        run: cargo fmt --all -- --check
+
+      - name: Clippy strict
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
@@ -162,7 +175,7 @@ jobs:
             target/vcpkg/buildtrees/**/*.txt
           retention-days: 7
 
-      - name: Run unit/bin tests
+      - name: Run concurrent tests
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
@@ -170,13 +183,13 @@ jobs:
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
         run: |
           start=$(date +%s)
-          cargo test -q --lib --bins --timings
+          ./scripts/test-concurrent.sh
           cargo test -q --features ffmpeg-cli-tests --no-run --timings
           end=$(date +%s)
           echo "### Linux test runtime" >> "$GITHUB_STEP_SUMMARY"
           echo "- Toolchain: ${{ matrix.toolchain }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Test command: cargo test --lib --bins" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Test command: ./scripts/test-concurrent.sh" >> "$GITHUB_STEP_SUMMARY"
           echo "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run" >> "$GITHUB_STEP_SUMMARY"
           echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
 

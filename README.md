@@ -32,7 +32,9 @@ feature and seamless to the end user (ie. Direct Play selected by default).
 
 ### Supported Streaming Devices
 
-See [SUPPORTED_DEVICES.md](SUPPORTED_DEVICES.md) for the full up-to-date matrix of:
+See [SUPPORTED_DEVICES.md](SUPPORTED_DEVICES.md) for the full up-to-date
+matrix of:
+
 - model IDs
 - family/group targets (`chromecast`, `roku`, `apple_tv`, `fire_tv`)
 - container, codec, and bitrate constraints

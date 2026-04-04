@@ -1,12 +1,15 @@
 # Supported Devices
 
-`direct-play-nice` supports selecting either device families (for example `--device roku`) or specific model ids (for example `--device roku_ultra`).
+`direct-play-nice` supports selecting either device families (for example
+`--device roku`) or specific model ids (for example `--device roku_ultra`).
 
-When `--device all` is used (or omitted), the tool computes a strict least-common-denominator target that is compatible across every device listed below.
+When `--device all` is used (or omitted), the tool computes a strict
+least-common-denominator target that is compatible across every device listed
+below.
 
 ## Chromecast Family
 
-Source: https://developers.google.com/cast/docs/media
+Source: [Google Cast media][cast-media]
 
 | Model ID | Device | Containers | Video Codecs | Audio Codecs | Max Resolution | Max FPS | Max Video Bitrate | Max Audio Bitrate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -21,7 +24,7 @@ Source: https://developers.google.com/cast/docs/media
 
 ## Roku Family
 
-Source: https://developer.roku.com/docs/specs/media/streaming-specifications.md
+Source: [Roku streaming specifications][roku-media]
 
 | Model ID | Device | Containers | Video Codecs | Audio Codecs | Max Resolution | Max FPS | Max Video Bitrate | Max Audio Bitrate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -32,7 +35,8 @@ Source: https://developer.roku.com/docs/specs/media/streaming-specifications.md
 ## Apple TV Family
 
 Sources:
-- https://developer.apple.com/library/archive/technotes/tn2429/_index.html
+
+- [Apple TN2429][apple-tn2429]
 - tvOS media format documentation
 
 | Model ID | Device | Containers | Video Codecs | Audio Codecs | Max Resolution | Max FPS | Max Video Bitrate | Max Audio Bitrate |
@@ -44,10 +48,15 @@ Sources:
 
 ## Fire TV Family
 
-Source: https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html
+Source: [Amazon Fire TV device specs][amazon-firetv]
 
 | Model ID | Device | Containers | Video Codecs | Audio Codecs | Max Resolution | Max FPS | Max Video Bitrate | Max Audio Bitrate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `fire_tv_stick_4k` | Fire TV Stick 4K | MP4, MKV | H.264, HEVC, AV1 | AAC, AC3, EAC3, FLAC | 2160p | 60 | 35 Mbps | 1024 kbps |
 | `fire_tv_stick_4k_max` | Fire TV Stick 4K Max | MP4, MKV | H.264, HEVC, AV1 | AAC, AC3, EAC3, FLAC | 2160p | 60 | 40 Mbps | 1024 kbps |
 | `fire_tv_cube_3rd_gen` | Fire TV Cube (3rd gen) | MP4, MKV | H.264, HEVC, AV1 | AAC, AC3, EAC3, FLAC | 2160p | 60 | 40 Mbps | 1024 kbps |
+
+[cast-media]: https://developers.google.com/cast/docs/media
+[roku-media]: https://developer.roku.com/docs/specs/media/streaming-specifications.md
+[apple-tn2429]: https://developer.apple.com/library/archive/technotes/tn2429/_index.html
+[amazon-firetv]: https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html
