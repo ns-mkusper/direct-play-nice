@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::parser::ValueSource;
 use clap::{value_parser, ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
+use devices::{ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice};
 use libc::EINVAL;
 use log::{debug, error, info, trace, warn, Level};
 use logging::log_relevant_env;
@@ -24,14 +25,13 @@ use std::{
     ptr,
     sync::atomic::{AtomicI64, Ordering},
 };
-use streaming_devices::{H264Level, H264Profile, Resolution, StreamingDevice};
 
 mod config;
+mod devices;
 mod gpu;
 mod logging;
 mod plex;
 mod servarr;
-mod streaming_devices;
 mod subtitle_ocr;
 mod throttle;
 
@@ -189,7 +189,7 @@ fn configure_cuda_hw_decoder(
 fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
     devices
         .iter()
-        .all(|device| device.video_codec.contains(&Some(codec)))
+        .all(|device| device.video_codecs.contains(&codec))
 }
 
 fn describe_h264_profile(profile: i32) -> String {
@@ -1552,7 +1552,7 @@ mod video_tests {
 
     #[test]
     fn parse_new_device_models() {
-        let models = streaming_devices::STREAMING_DEVICES
+        let models = devices::STREAMING_DEVICES
             .iter()
             .map(|d| d.model)
             .collect::<Vec<_>>();
@@ -1560,8 +1560,10 @@ mod video_tests {
             "chromecast_3rd_gen",
             "chromecast_google_tv",
             "google_tv_streamer",
-            "nest_hub",
             "nest_hub_max",
+            "roku_ultra",
+            "apple_tv_4k_2nd_gen",
+            "fire_tv_cube_3rd_gen",
         ] {
             assert!(
                 models.contains(&required),
@@ -1573,8 +1575,8 @@ mod video_tests {
 
     #[test]
     fn min_level_respects_strictest_device() {
-        use streaming_devices::StreamingDevice;
-        let devices = streaming_devices::STREAMING_DEVICES;
+        use devices::StreamingDevice;
+        let devices = devices::STREAMING_DEVICES;
         let third_gen = devices
             .iter()
             .find(|d| d.model == "chromecast_3rd_gen")
@@ -1594,6 +1596,15 @@ mod video_tests {
             }
             _ => panic!("Expected model selection"),
         }
+    }
+
+    #[test]
+    fn parse_device_selection_accepts_families() {
+        let selection = Args::parse_device_selection("roku").unwrap();
+        assert!(matches!(
+            selection,
+            StreamingDeviceSelection::Family(DeviceFamily::Roku)
+        ));
     }
 }
 
@@ -1988,18 +1999,21 @@ impl ProgressTracker {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum StreamingDeviceSelection {
     All,
-    Model(&'static streaming_devices::StreamingDevice),
+    Family(DeviceFamily),
+    Model(&'static devices::StreamingDevice),
 }
 
 #[derive(Parser, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// List of StreamingDevice models, or "all" (default) to target every supported device
+    /// Target device family/model, or "all" (default). Examples: chromecast, roku, apple_tv, fire_tv.
     #[arg(
-        short,
-        long,
+        short = 'd',
+        visible_short_alias = 's',
+        long = "device",
+        visible_alias = "streaming-devices",
         value_delimiter = ',',
-        value_name = "STREAMING_DEVICE",
+        value_name = "DEVICE",
         value_parser = Args::parse_device_selection
     )]
     streaming_devices: Option<Vec<StreamingDeviceSelection>>,
@@ -2282,19 +2296,27 @@ impl Args {
             return Ok(StreamingDeviceSelection::All);
         }
 
-        streaming_devices::STREAMING_DEVICES
-            .iter()
-            .find(|device| device.model.eq_ignore_ascii_case(normalized))
+        if let Some(family) = DeviceFamily::from_identifier(normalized) {
+            return Ok(StreamingDeviceSelection::Family(family));
+        }
+
+        devices::find_by_model(normalized)
             .map(StreamingDeviceSelection::Model)
             .ok_or_else(|| {
-                let available = streaming_devices::STREAMING_DEVICES
-                    .iter()
-                    .map(|device| device.model)
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let families = [
+                    DeviceFamily::Chromecast,
+                    DeviceFamily::Roku,
+                    DeviceFamily::AppleTv,
+                    DeviceFamily::FireTv,
+                ]
+                .iter()
+                .map(|f| f.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+                let models = devices::supported_model_ids().join(", ");
                 format!(
-                    "Provided streaming device model '{}' not found. Valid values: all, {}",
-                    input, available
+                    "Provided device '{}' not found. Valid values: all, device families [{}], and model ids [{}]",
+                    input, families, models
                 )
             })
     }
@@ -3428,6 +3450,7 @@ fn assess_direct_play_compatibility(
     h264_constraints: Option<(H264Profile, H264Level)>,
     max_fps: u32,
     device_cap: (u32, u32),
+    supported_containers: &[ContainerFormat],
     quality_limits: &QualityLimits,
     primary_video_stream_index: Option<usize>,
     primary_criteria: PrimaryVideoCriteria,
@@ -3446,6 +3469,27 @@ fn assess_direct_play_compatibility(
 
     let mut reasons = Vec::new();
     let video_par = video_stream.codecpar();
+    let input_path = PathBuf::from(input_file.to_string_lossy().into_owned());
+    let input_ext = input_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    let input_container = ContainerFormat::from_extension(&input_ext);
+    match input_container {
+        Some(container) => {
+            if !supported_containers.contains(&container) {
+                reasons.push(format!(
+                    "input container '{}' is not supported by all selected devices",
+                    container.as_str()
+                ));
+            }
+        }
+        None => reasons.push(format!(
+            "input container '{}' is unknown; cannot confirm compatibility",
+            input_ext
+        )),
+    }
 
     for stream in &streams {
         let disposition_flags = unsafe { (*stream.as_ptr()).disposition };
@@ -5106,13 +5150,14 @@ fn run_conversion(
         .iter()
         .any(|selection| matches!(selection, StreamingDeviceSelection::All))
     {
-        streaming_devices::STREAMING_DEVICES.iter().collect()
+        devices::STREAMING_DEVICES.iter().collect()
     } else {
         selections
             .into_iter()
-            .filter_map(|selection| match selection {
-                StreamingDeviceSelection::Model(device) => Some(device),
-                StreamingDeviceSelection::All => None,
+            .flat_map(|selection| match selection {
+                StreamingDeviceSelection::Model(device) => vec![device],
+                StreamingDeviceSelection::Family(family) => devices::devices_for_family(family),
+                StreamingDeviceSelection::All => Vec::new(),
             })
             .collect()
     };
@@ -5124,8 +5169,11 @@ fn run_conversion(
         bail!("No streaming devices resolved from CLI arguments.");
     }
 
+    let resolved_profile = devices::resolve_target_profile(&streaming_devices)?;
+    let common_containers = StreamingDevice::get_common_containers(&streaming_devices)?;
+
     let target_video_codec = match args.video_codec {
-        VideoCodecPreference::Auto => StreamingDevice::get_common_video_codec(&streaming_devices)?,
+        VideoCodecPreference::Auto => resolved_profile.video_codec,
         VideoCodecPreference::H264 => {
             if devices_support_codec(&streaming_devices, ffi::AV_CODEC_ID_H264) {
                 ffi::AV_CODEC_ID_H264
@@ -5145,18 +5193,32 @@ fn run_conversion(
             }
         }
     };
-    let common_audio_codec = StreamingDevice::get_common_audio_codec(&streaming_devices)?;
+    let common_audio_codec = resolved_profile.audio_codec;
     let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
-        Some((
-            StreamingDevice::get_min_h264_profile(&streaming_devices)?,
-            StreamingDevice::get_min_h264_level(&streaming_devices)?,
-        ))
+        resolved_profile.h264_constraints
     } else {
         None
     };
-    let min_fps = StreamingDevice::get_min_fps(&streaming_devices)?;
-    let min_resolution = StreamingDevice::get_min_resolution(&streaming_devices)?;
+    let min_fps = resolved_profile.max_fps;
+    let min_resolution = resolved_profile.max_resolution;
     let device_cap = resolution_to_dimensions(min_resolution);
+
+    if let Some(device_video_limit) = resolved_profile.max_video_bitrate {
+        quality_limits.max_video_bitrate = Some(
+            quality_limits
+                .max_video_bitrate
+                .map(|value| value.min(device_video_limit))
+                .unwrap_or(device_video_limit),
+        );
+    }
+    if let Some(device_audio_limit) = resolved_profile.max_audio_bitrate {
+        quality_limits.max_audio_bitrate = Some(
+            quality_limits
+                .max_audio_bitrate
+                .map(|value| value.min(device_audio_limit))
+                .unwrap_or(device_audio_limit),
+        );
+    }
 
     let device_names = streaming_devices
         .iter()
@@ -5180,6 +5242,14 @@ fn run_conversion(
         "Audio quality preset: {} (bitrate {})",
         args.audio_quality,
         describe_bitrate(quality_limits.max_audio_bitrate)
+    );
+    info!(
+        "Common output containers: {}",
+        common_containers
+            .iter()
+            .map(|c| c.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     if let Some((profile, level)) = h264_constraints {
         info!(
@@ -5207,6 +5277,32 @@ fn run_conversion(
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
+    let requested_container = match output_extension.as_str() {
+        "mka" | "mks" => Some(ContainerFormat::Mkv),
+        other => ContainerFormat::from_extension(other),
+    };
+    let requested_container = requested_container.ok_or_else(|| {
+        anyhow!(
+            "Unsupported output extension '{}'. Supported by selected devices: {}",
+            output_extension,
+            common_containers
+                .iter()
+                .map(|container| container.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    if !common_containers.contains(&requested_container) {
+        bail!(
+            "Output container '{}' is not compatible with all selected devices. Supported common containers: {}",
+            requested_container.as_str(),
+            common_containers
+                .iter()
+                .map(|container| container.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let target_is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
     let output_is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
     let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
@@ -5221,6 +5317,7 @@ fn run_conversion(
         h264_constraints,
         min_fps,
         device_cap,
+        &common_containers,
         &quality_limits,
         args.primary_video_stream_index,
         args.primary_video_criteria,

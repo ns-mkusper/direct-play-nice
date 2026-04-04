@@ -1,3 +1,4 @@
+pub mod devices;
 pub mod gpu;
 
 // Simple scoring helper to test primary selection criteria
