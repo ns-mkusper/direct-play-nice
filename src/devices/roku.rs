@@ -63,5 +63,3 @@ pub const ROKU_ULTRA: StreamingDevice = StreamingDevice {
     max_video_bitrate: Some(40_000_000),
     max_audio_bitrate: Some(1_536_000),
 };
-
-pub const ROKU_DEVICES: &[StreamingDevice] = &[ROKU_EXPRESS, ROKU_STREAMING_STICK_4K, ROKU_ULTRA];

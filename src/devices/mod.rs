@@ -4,6 +4,7 @@ pub mod device_profile;
 pub mod fire_tv;
 pub mod roku;
 
+#[allow(unused_imports)]
 pub use device_profile::{
     plan_output_profile, resolve_target_profile, ContainerFormat, DeviceFamily, H264Level,
     H264Profile, InputMediaProfile, PlannedOutputProfile, Resolution, ResolvedTargetProfile,
@@ -46,11 +47,6 @@ pub fn devices_for_family(family: DeviceFamily) -> Vec<&'static StreamingDevice>
 
 pub fn supported_model_ids() -> Vec<&'static str> {
     STREAMING_DEVICES.iter().map(|d| d.model).collect()
-}
-
-pub fn resolve_all_profile() -> anyhow::Result<ResolvedTargetProfile> {
-    let all: Vec<&StreamingDevice> = STREAMING_DEVICES.iter().collect();
-    resolve_target_profile(&all)
 }
 
 #[cfg(test)]

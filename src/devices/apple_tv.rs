@@ -84,10 +84,3 @@ pub const APPLE_TV_4K_3RD_GEN: StreamingDevice = StreamingDevice {
     max_video_bitrate: Some(40_000_000),
     max_audio_bitrate: Some(768_000),
 };
-
-pub const APPLE_TV_DEVICES: &[StreamingDevice] = &[
-    APPLE_TV_HD,
-    APPLE_TV_4K_1ST_GEN,
-    APPLE_TV_4K_2ND_GEN,
-    APPLE_TV_4K_3RD_GEN,
-];

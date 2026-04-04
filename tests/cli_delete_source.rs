@@ -7,7 +7,7 @@ use common::{ensure_ffmpeg_present, gen_problem_input};
 use predicates::str;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -16,7 +16,7 @@ fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     Ok(source)
 }
 
-fn run_cli(input: &PathBuf, output: &PathBuf, extra_args: &[&str]) -> Result<(), Box<dyn Error>> {
+fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen")

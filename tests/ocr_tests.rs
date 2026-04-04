@@ -6,11 +6,11 @@ mod common;
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-fn mk_subs_file(path: &PathBuf) {
+fn mk_subs_file(path: &Path) {
     let mut f = fs::File::create(path).expect("create srt");
     use std::io::Write;
     writeln!(

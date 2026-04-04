@@ -150,7 +150,7 @@ fn nvenc_end_to_end_matrix() -> Result<(), Box<dyn Error>> {
         let input_path = generate_input_clip(temp.path(), case.input)?;
         let output_path = temp.path().join(format!("{}.mp4", case.name));
 
-        let mut cmd_args: Vec<&str> = case.extra_args.iter().copied().collect();
+        let mut cmd_args: Vec<&str> = case.extra_args.to_vec();
         cmd_args.push(input_path.to_str().unwrap());
         cmd_args.push(output_path.to_str().unwrap());
 

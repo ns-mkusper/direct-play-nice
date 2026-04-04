@@ -146,14 +146,3 @@ pub const NEST_HUB_MAX: StreamingDevice = StreamingDevice {
     max_video_bitrate: Some(12_000_000),
     max_audio_bitrate: Some(256_000),
 };
-
-pub const CHROMECAST_DEVICES: &[StreamingDevice] = &[
-    CHROMECAST_1ST_GEN,
-    CHROMECAST_2ND_GEN,
-    CHROMECAST_3RD_GEN,
-    CHROMECAST_ULTRA,
-    CHROMECAST_GOOGLE_TV,
-    GOOGLE_TV_STREAMER,
-    NEST_HUB,
-    NEST_HUB_MAX,
-];

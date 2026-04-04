@@ -33,7 +33,7 @@ fn cli_sub_mode_skip_drops_all_subtitle_streams() -> Result<(), Box<dyn std::err
 
     let subtitle_count = octx
         .streams()
-        .into_iter()
+        .iter()
         .filter(|st| st.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE)
         .count();
 

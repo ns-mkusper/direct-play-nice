@@ -14,7 +14,7 @@ use rsmpeg::ffi;
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
-        Ok(o) if o.status.success() => return,
+        Ok(o) if o.status.success() => (),
         _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
     }
 }

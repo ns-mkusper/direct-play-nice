@@ -22,7 +22,7 @@ pub fn ensure_ffmpeg_present() {
     }
 }
 
-fn mk_subs_file(path: &PathBuf) {
+fn mk_subs_file(path: &Path) {
     let mut f = File::create(path).expect("create srt");
     writeln!(
         f,
@@ -135,10 +135,10 @@ pub fn gen_odd_width_input(tmp: &TempDir) -> (PathBuf, u64) {
     (input, dur_ms)
 }
 
-pub fn probe_duration_ms(path: &PathBuf) -> u64 {
+pub fn probe_duration_ms(path: &Path) -> u64 {
     let input_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
-    (ictx.duration as i64 / 1000).max(0) as u64
+    (ictx.duration / 1000).max(0) as u64
 }
 
 pub fn assert_cli_success(mut cmd: Command) {

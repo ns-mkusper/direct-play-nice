@@ -10,7 +10,7 @@ use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -20,7 +20,7 @@ use rsmpeg::ffi;
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
-        Ok(o) if o.status.success() => return,
+        Ok(o) if o.status.success() => (),
         _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
     }
 }
@@ -95,7 +95,7 @@ fn gen_tiny_input(tmp: &TempDir) -> PathBuf {
     input
 }
 
-fn assert_output_basic(output: &PathBuf) {
+fn assert_output_basic(output: &Path) {
     let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
     let octx = AVFormatContextInput::open(output_cstr.as_c_str()).expect("open output");
 

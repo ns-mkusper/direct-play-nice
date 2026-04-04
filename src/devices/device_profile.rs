@@ -250,6 +250,7 @@ pub struct StreamingDevice {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedTargetProfile {
+    #[allow(dead_code)]
     pub container: ContainerFormat,
     pub video_codec: ffi::AVCodecID,
     pub audio_codec: ffi::AVCodecID,
@@ -261,6 +262,7 @@ pub struct ResolvedTargetProfile {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct InputMediaProfile {
     pub container: Option<ContainerFormat>,
     pub video_codec: ffi::AVCodecID,
@@ -270,6 +272,7 @@ pub struct InputMediaProfile {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct PlannedOutputProfile {
     pub container: ContainerFormat,
     pub video_codec: ffi::AVCodecID,
@@ -413,6 +416,7 @@ pub fn resolve_target_profile(devices: &[&StreamingDevice]) -> Result<ResolvedTa
     })
 }
 
+#[allow(dead_code)]
 pub fn plan_output_profile(
     devices: &[&StreamingDevice],
     input: &InputMediaProfile,
@@ -474,6 +478,7 @@ pub fn plan_output_profile(
 }
 
 impl ResolvedTargetProfile {
+    #[allow(dead_code)]
     pub fn is_compatible_with_device(&self, device: &StreamingDevice) -> bool {
         let h264_ok = if let Some((profile, level)) = self.h264_constraints {
             profile <= device.max_h264_profile && level <= device.max_h264_level

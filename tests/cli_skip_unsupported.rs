@@ -9,7 +9,7 @@
 use assert_cmd::prelude::*;
 use predicates::str;
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -19,15 +19,15 @@ use rsmpeg::ffi;
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
-        Ok(o) if o.status.success() => return,
+        Ok(o) if o.status.success() => (),
         _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
     }
 }
 
-fn probe_duration_ms(path: &PathBuf) -> u64 {
+fn probe_duration_ms(path: &Path) -> u64 {
     let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
-    (ictx.duration as i64 / 1000).max(0) as u64
+    (ictx.duration / 1000).max(0) as u64
 }
 
 #[test]
@@ -137,11 +137,7 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
     assert!(saw_v && saw_a, "missing A/V streams in output");
 
     let out_ms = probe_duration_ms(&output);
-    let diff = if out_ms > in_ms {
-        out_ms - in_ms
-    } else {
-        in_ms - out_ms
-    };
+    let diff = out_ms.abs_diff(in_ms);
     assert!(
         diff <= 200,
         "duration drift too large: in={}ms out={}ms",

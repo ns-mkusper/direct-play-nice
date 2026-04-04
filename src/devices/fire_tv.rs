@@ -67,6 +67,3 @@ pub const FIRE_TV_CUBE_3RD_GEN: StreamingDevice = StreamingDevice {
     max_video_bitrate: Some(40_000_000),
     max_audio_bitrate: Some(1_024_000),
 };
-
-pub const FIRE_TV_DEVICES: &[StreamingDevice] =
-    &[FIRE_TV_STICK_4K, FIRE_TV_STICK_4K_MAX, FIRE_TV_CUBE_3RD_GEN];

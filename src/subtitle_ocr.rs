@@ -1936,7 +1936,8 @@ fn extract_subtitle_lines(
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
             && !disable_tesseract_quality_fallback()
-            && (force_tesseract_non_english || ppocr_needs_quality_fallback(&output.lines, language))
+            && (force_tesseract_non_english
+                || ppocr_needs_quality_fallback(&output.lines, language))
         {
             let ppocr_text = lines_text_for_quality(&output.lines);
             let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
@@ -1946,7 +1947,8 @@ fn extract_subtitle_lines(
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // For non-English streams, prefer language-specific Tesseract
                         // because the bundled PP-OCR recognizer is English-focused.
-                        if force_tesseract_non_english || candidate.quality + 0.03 >= ppocr_quality {
+                        if force_tesseract_non_english || candidate.quality + 0.03 >= ppocr_quality
+                        {
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -2352,9 +2354,7 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
         }
     }
 
-    let Some((_score, _prev, segment_count)) = best[n] else {
-        return None;
-    };
+    let (_score, _prev, segment_count) = best[n]?;
     if segment_count < 2 {
         return None;
     }
@@ -2362,9 +2362,7 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
     let mut pieces = Vec::new();
     let mut idx = n;
     while idx > 0 {
-        let Some((_score, prev_idx, _segments)) = best[idx] else {
-            return None;
-        };
+        let (_score, prev_idx, _segments) = best[idx]?;
         pieces.push((prev_idx, idx));
         idx = prev_idx;
     }
