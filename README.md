@@ -515,11 +515,27 @@ Then run `direnv allow` once in the repo.
 
 Versioning and release publication are automated on merges to `main`:
 
-- `.github/workflows/cd.yml` runs `release-plz` with `release-plz.toml`.
-- `release-plz` uses `cliff.toml` to aggregate commits since the last tag into
-  changelog/release notes.
+- `.github/workflows/cd.yml` runs `release-plz update` first (to bump
+  `Cargo.toml`/`Cargo.lock` and `CHANGELOG.md`), commits those release metadata
+  updates, then runs `release-plz release` to publish tags/releases.
+- `release-plz.toml` controls release behavior, and `cliff.toml` controls how
+  commits are grouped/rendered into changelog/release notes.
 - `scripts/generate_release_notes.sh` generates a `RELEASE_NOTES.md` preview in
   CI, uploaded as an artifact before the release step.
+
+### Version bump rules
+
+By default, `release-plz` follows Conventional Commit semantics:
+
+- `feat:` -> minor bump
+- `fix:` (and non-breaking maintenance changes) -> patch bump
+- `!` marker or `BREAKING CHANGE` footer -> major bump
+
+So bump control lives in:
+
+- commit messages in merged PRs
+- `release-plz.toml` (release behavior)
+- `cliff.toml` (what changes are included/displayed in notes)
 
 ## Contributions / Support
 
