@@ -2672,6 +2672,17 @@ fn process_video_stream(
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
+            error!(
+                "Video decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
+                stream_processing_context.stream_index,
+                stream_processing_context.decoder_name,
+                packet.pts,
+                packet.dts,
+                packet.duration,
+                stream_processing_context.decode_context.time_base.num,
+                stream_processing_context.decode_context.time_base.den,
+                e
+            );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
                 stream_processing_context.stream_index,
@@ -2702,6 +2713,17 @@ fn process_video_stream(
                 break;
             }
             Err(e) => {
+                error!(
+                    "Video decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
+                    stream_processing_context.stream_index,
+                    stream_processing_context.decoder_name,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration,
+                    stream_processing_context.decode_context.time_base.num,
+                    stream_processing_context.decode_context.time_base.den,
+                    e
+                );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
                     stream_processing_context.stream_index,
@@ -2802,6 +2824,17 @@ fn process_audio_stream(
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
+            error!(
+                "Audio decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
+                stream_processing_context.stream_index,
+                stream_processing_context.decoder_name,
+                packet.pts,
+                packet.dts,
+                packet.duration,
+                stream_processing_context.decode_context.time_base.num,
+                stream_processing_context.decode_context.time_base.den,
+                e
+            );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
                 stream_processing_context.stream_index,
@@ -2832,6 +2865,17 @@ fn process_audio_stream(
                 break;
             }
             Err(e) => {
+                error!(
+                    "Audio decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
+                    stream_processing_context.stream_index,
+                    stream_processing_context.decoder_name,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration,
+                    stream_processing_context.decode_context.time_base.num,
+                    stream_processing_context.decode_context.time_base.den,
+                    e
+                );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
                     stream_processing_context.stream_index,
