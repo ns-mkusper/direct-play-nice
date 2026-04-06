@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get --assume-yes install nasm autoconf autoconf-archive automake libtool
+          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
@@ -246,7 +246,7 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
-        run: choco install nasm strawberryperl -y
+        run: choco install ffmpeg nasm strawberryperl -y
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-win
