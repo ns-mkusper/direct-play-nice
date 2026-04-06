@@ -2630,8 +2630,34 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
+        let transfer_format = unsafe {
+            let hw_frames_ctx = (*frame.as_ptr()).hw_frames_ctx;
+            if hw_frames_ctx.is_null() {
+                warn!(
+                    "CUDA frame is missing hw_frames_ctx; falling back to NV12 transfer format."
+                );
+                ffi::AV_PIX_FMT_NV12
+            } else {
+                let frames_ctx_ptr = (*hw_frames_ctx).data as *const ffi::AVHWFramesContext;
+                if frames_ctx_ptr.is_null() {
+                    warn!("CUDA frame hw_frames_ctx has null data; falling back to NV12.");
+                    ffi::AV_PIX_FMT_NV12
+                } else {
+                    let sw_format = (*frames_ctx_ptr).sw_format;
+                    if sw_format == ffi::AV_PIX_FMT_NONE {
+                        warn!(
+                            "CUDA frame reports AV_PIX_FMT_NONE sw_format; falling back to NV12."
+                        );
+                        ffi::AV_PIX_FMT_NV12
+                    } else {
+                        sw_format
+                    }
+                }
+            }
+        };
+
         let mut sw_frame = AVFrame::new();
-        sw_frame.set_format(ffi::AV_PIX_FMT_NV12);
+        sw_frame.set_format(transfer_format);
         sw_frame.set_width(frame.width);
         sw_frame.set_height(frame.height);
         sw_frame.set_pts(frame.pts);
@@ -2647,6 +2673,13 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
             (*sw_frame.as_mut_ptr()).best_effort_timestamp =
                 (*frame.as_ptr()).best_effort_timestamp;
         }
+        debug!(
+            "Transferred CUDA frame {}x{} from {} to software format {}",
+            frame.width,
+            frame.height,
+            pix_fmt_name(frame.format as ffi::AVPixelFormat),
+            pix_fmt_name(transfer_format)
+        );
         Ok(sw_frame)
     } else {
         Ok(frame)
