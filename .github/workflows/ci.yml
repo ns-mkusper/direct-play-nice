@@ -97,6 +97,8 @@ jobs:
             vcpkg-root-linux-v2-
 
       - name: Validate vcpkg cache origin
+        env:
+          STRICT_VCPKG_REV: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
         run: |
           cache_invalid=0
           expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
@@ -120,7 +122,7 @@ jobs:
                 cache_invalid=1
                 continue
               fi
-              if [ -n "$expected_rev" ]; then
+              if [ -n "$expected_rev" ] && [ "$STRICT_VCPKG_REV" = "1" ]; then
                 if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
                   echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
                   rm -rf "$dir"
@@ -301,6 +303,8 @@ jobs:
             vcpkg-root-windows-v3-
 
       - name: Validate vcpkg cache origin
+        env:
+          STRICT_VCPKG_REV: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -332,7 +336,7 @@ jobs:
                   $cacheInvalid = $true
                   continue
                 }
-                if ($expectedRev) {
+                if ($expectedRev -and $env:STRICT_VCPKG_REV -eq '1') {
                   git -C $dir cat-file -e "$expectedRev^{tree}" 2>$null
                   if ($LASTEXITCODE -ne 0) {
                     Write-Host "Missing vcpkg rev $expectedRev in $dir; clearing cache entry"
