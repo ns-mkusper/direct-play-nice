@@ -77,6 +77,13 @@ fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRati
     }
 }
 
+fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
+    // Fail fast on broken bitstreams instead of writing partially decoded output.
+    unsafe {
+        (*ctx.as_mut_ptr()).err_recognition |= ffi::AV_EF_EXPLODE as i32;
+    }
+}
+
 const AV1_HW_DECODER_NAMES: &[&str] = &["av1_cuvid", "av1_nvdec"];
 const AV1_SW_DECODER_NAMES: &[&str] = &["libdav1d", "libaom-av1", "av1"];
 const H264_HW_DECODER_NAMES: &[&str] = &["h264_cuvid"];
@@ -2695,8 +2702,11 @@ fn process_video_stream(
                 break;
             }
             Err(e) => {
-                error!("Decoder receive frame error: {}", e);
-                break;
+                return Err(anyhow!(DecoderError::new(
+                    stream_processing_context.decoder_name.clone(),
+                    stream_processing_context.stream_index,
+                    format!("receive_frame failed: {}", e),
+                )));
             }
         };
 
@@ -2822,8 +2832,11 @@ fn process_audio_stream(
                 break;
             }
             Err(e) => {
-                error!("Decoder receive frame error: {}", e);
-                break;
+                return Err(anyhow!(DecoderError::new(
+                    stream_processing_context.decoder_name.clone(),
+                    stream_processing_context.stream_index,
+                    format!("receive_frame failed: {}", e),
+                )));
             }
         };
 
@@ -3851,6 +3864,7 @@ fn convert_video_file(
         );
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
+        enable_strict_decode_failure(&mut decode_context);
         decode_context.set_time_base(stream.time_base); // TODO: needed?
         if let Some(framerate) = stream.guess_framerate() {
             decode_context.set_framerate(framerate);
@@ -3906,6 +3920,7 @@ fn convert_video_file(
                 );
                 decode_context = AVCodecContext::new(&decoder);
                 decode_context.apply_codecpar(&input_stream_codecpar)?;
+                enable_strict_decode_failure(&mut decode_context);
                 decode_context.set_time_base(stream.time_base);
                 if let Some(framerate) = stream.guess_framerate() {
                     decode_context.set_framerate(framerate);
@@ -3938,6 +3953,7 @@ fn convert_video_file(
                     );
                     decode_context = AVCodecContext::new(&decoder);
                     decode_context.apply_codecpar(&input_stream_codecpar)?;
+                    enable_strict_decode_failure(&mut decode_context);
                     decode_context.set_time_base(stream.time_base);
                     if let Some(framerate) = stream.guess_framerate() {
                         decode_context.set_framerate(framerate);

@@ -201,6 +201,15 @@ jobs:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
         run: cargo test -q --lib --bins --tests -- --test-threads="$(nproc)"
 
+      - name: Run ffmpeg regression tests (Linux stable)
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: |
+          cargo test -q --features ffmpeg-cli-tests cli_fails_fast_on_corrupted_hevc_input
+          cargo test -q --features ffmpeg-cli-tests sonarr_download_failure_restores_original_and_cleans_temp_files
+
       - name: Upload cargo timings
         if: matrix.toolchain == 'stable'
         uses: actions/upload-artifact@v4
