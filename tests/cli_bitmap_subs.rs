@@ -449,3 +449,56 @@ fn cli_ai_ocr_processes_all_bitmap_subtitle_streams() -> Result<(), Box<dyn std:
 
     Ok(())
 }
+
+#[test]
+fn cli_ai_ocr_gpu_processes_all_bitmap_subtitle_streams() -> Result<(), Box<dyn std::error::Error>>
+{
+    ensure_ffmpeg_present();
+
+    if env::var("DPN_OCR_GPU_E2E").ok().as_deref() != Some("1") {
+        eprintln!("Skipping GPU OCR test (set DPN_OCR_GPU_E2E=1 to enable).");
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let Some(input) = gen_multi_stream_bitmap_input(&tmp) else {
+        eprintln!("No bitmap subtitle encoder available; skipping GPU OCR test.");
+        return Ok(());
+    };
+    let output = tmp.path().join("out_ai_gpu_all_streams.mp4");
+
+    let input_bitmap_count = count_bitmap_subtitle_streams(&input)?;
+    assert!(
+        input_bitmap_count >= 2,
+        "expected at least two bitmap subtitle streams, got {}",
+        input_bitmap_count
+    );
+
+    let run = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .env("DPN_OCR_REQUIRE_GPU", "1")
+        .env("DPN_OCR_SKIP_CLS", "1")
+        .arg("--sub-mode")
+        .arg("force")
+        .arg("--ocr-engine")
+        .arg("auto")
+        .arg("--skip-codec-check")
+        .arg(&input)
+        .arg(&output)
+        .output()?;
+
+    assert!(
+        run.status.success(),
+        "GPU OCR run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let output_sub_count = count_mov_text_streams(&output)?;
+    assert_eq!(
+        output_sub_count, input_bitmap_count,
+        "expected all bitmap subtitle streams to be OCR-converted ({}), got {}",
+        input_bitmap_count, output_sub_count
+    );
+
+    Ok(())
+}

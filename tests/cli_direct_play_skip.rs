@@ -97,7 +97,7 @@ fn cli_skips_when_input_already_direct_play() -> Result<(), Box<dyn std::error::
 
     cmd.assert()
         .success()
-        .stderr(str::contains("Input is already direct-play compatible"));
+        .stderr(str::contains("Input is direct-play compatible"));
 
     assert!(
         !output.exists(),
@@ -194,7 +194,7 @@ fn cli_skips_when_quality_caps_are_met() -> Result<(), Box<dyn std::error::Error
 
     cmd.assert()
         .success()
-        .stderr(str::contains("Input is already direct-play compatible"));
+        .stderr(str::contains("Input is direct-play compatible"));
 
     assert!(!output.exists(), "skip path should not emit an output file");
 

@@ -176,22 +176,30 @@ jobs:
           retention-days: 7
 
       - name: Run concurrent tests
+        if: matrix.toolchain == 'stable'
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
           DPN_OCR_GOLDEN: "1"
+          DPN_OCR_AI_E2E: "1"
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
         run: |
           start=$(date +%s)
           ./scripts/test-concurrent.sh
-          cargo test -q --features ffmpeg-cli-tests --no-run --timings
           end=$(date +%s)
           echo "### Linux test runtime" >> "$GITHUB_STEP_SUMMARY"
           echo "- Toolchain: ${{ matrix.toolchain }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Test command: ./scripts/test-concurrent.sh" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Includes ffmpeg-cli-tests runtime execution: yes" >> "$GITHUB_STEP_SUMMARY"
           echo "- Duration: $((end-start))s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run smoke tests (beta/nightly)
+        if: matrix.toolchain != 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: cargo test -q --lib --bins --tests -- --test-threads="$(nproc)"
 
       - name: Upload cargo timings
         if: matrix.toolchain == 'stable'
@@ -407,20 +415,61 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
           DPN_OCR_GOLDEN: "1"
+          DPN_OCR_AI_E2E: "1"
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
         run: |
           $start = Get-Date
           cargo test -q --lib --bins
-          cargo test -q --features ffmpeg-cli-tests --no-run
+          cargo test -q --features ffmpeg-cli-tests --tests -- --test-threads 4
           $elapsed = (Get-Date) - $start
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-win.outputs.cache-hit }}"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Test command: cargo test --lib --bins"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ffmpeg-cli-tests runtime execution: cargo test --features ffmpeg-cli-tests --tests"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- Duration: {0}s" -f [int]$elapsed.TotalSeconds)
 
       - name: sccache stats
         if: ${{ env.RUSTC_WRAPPER == 'sccache' }}
         shell: pwsh
         run: sccache --show-stats; if ($LASTEXITCODE -ne 0) { exit 0 }
+
+  ocr-gpu-self-hosted:
+    name: OCR GPU (Self-Hosted)
+    if: ${{ vars.ENABLE_GPU_CI == '1' && (github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]'))) }}
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+      DPN_OCR_REQUIRE_GPU: "1"
+      DPN_OCR_GPU_E2E: "1"
+      DPN_OCR_AI_E2E: "1"
+      DPN_OCR_GOLDEN: "1"
+      DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install nasm ffmpeg autoconf autoconf-archive automake libtool
+      - name: Install cargo-vcpkg
+        run: cargo install cargo-vcpkg --locked
+      - name: Build vcpkg dependencies
+        env:
+          VCPKG_BUILD_TYPE: release
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: cargo vcpkg --verbose build
+      - name: Run GPU OCR smoke tests
+        run: |
+          cargo test -q --lib --bins test_gpu_requirement_env_gate -- --nocapture
+          cargo test -q --features ffmpeg-cli-tests --test cli_bitmap_subs cli_ai_ocr_gpu_processes_all_bitmap_subtitle_streams -- --nocapture
