@@ -77,6 +77,13 @@ fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRati
     }
 }
 
+fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
+    // Fail fast on broken bitstreams instead of writing partially decoded output.
+    unsafe {
+        (*ctx.as_mut_ptr()).err_recognition |= ffi::AV_EF_EXPLODE as i32;
+    }
+}
+
 const AV1_HW_DECODER_NAMES: &[&str] = &["av1_cuvid", "av1_nvdec"];
 const AV1_SW_DECODER_NAMES: &[&str] = &["libdav1d", "libaom-av1", "av1"];
 const H264_HW_DECODER_NAMES: &[&str] = &["h264_cuvid"];
@@ -2623,8 +2630,32 @@ fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMa
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
+        let transfer_format = unsafe {
+            let hw_frames_ctx = (*frame.as_ptr()).hw_frames_ctx;
+            if hw_frames_ctx.is_null() {
+                warn!("CUDA frame is missing hw_frames_ctx; falling back to NV12 transfer format.");
+                ffi::AV_PIX_FMT_NV12
+            } else {
+                let frames_ctx_ptr = (*hw_frames_ctx).data as *const ffi::AVHWFramesContext;
+                if frames_ctx_ptr.is_null() {
+                    warn!("CUDA frame hw_frames_ctx has null data; falling back to NV12.");
+                    ffi::AV_PIX_FMT_NV12
+                } else {
+                    let sw_format = (*frames_ctx_ptr).sw_format;
+                    if sw_format == ffi::AV_PIX_FMT_NONE {
+                        warn!(
+                            "CUDA frame reports AV_PIX_FMT_NONE sw_format; falling back to NV12."
+                        );
+                        ffi::AV_PIX_FMT_NV12
+                    } else {
+                        sw_format
+                    }
+                }
+            }
+        };
+
         let mut sw_frame = AVFrame::new();
-        sw_frame.set_format(ffi::AV_PIX_FMT_NV12);
+        sw_frame.set_format(transfer_format);
         sw_frame.set_width(frame.width);
         sw_frame.set_height(frame.height);
         sw_frame.set_pts(frame.pts);
@@ -2640,6 +2671,13 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
             (*sw_frame.as_mut_ptr()).best_effort_timestamp =
                 (*frame.as_ptr()).best_effort_timestamp;
         }
+        debug!(
+            "Transferred CUDA frame {}x{} from {} to software format {}",
+            frame.width,
+            frame.height,
+            pix_fmt_name(frame.format as ffi::AVPixelFormat),
+            pix_fmt_name(transfer_format)
+        );
         Ok(sw_frame)
     } else {
         Ok(frame)
@@ -2665,6 +2703,17 @@ fn process_video_stream(
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
+            error!(
+                "Video decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
+                stream_processing_context.stream_index,
+                stream_processing_context.decoder_name,
+                packet.pts,
+                packet.dts,
+                packet.duration,
+                stream_processing_context.decode_context.time_base.num,
+                stream_processing_context.decode_context.time_base.den,
+                e
+            );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
                 stream_processing_context.stream_index,
@@ -2695,8 +2744,22 @@ fn process_video_stream(
                 break;
             }
             Err(e) => {
-                error!("Decoder receive frame error: {}", e);
-                break;
+                error!(
+                    "Video decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
+                    stream_processing_context.stream_index,
+                    stream_processing_context.decoder_name,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration,
+                    stream_processing_context.decode_context.time_base.num,
+                    stream_processing_context.decode_context.time_base.den,
+                    e
+                );
+                return Err(anyhow!(DecoderError::new(
+                    stream_processing_context.decoder_name.clone(),
+                    stream_processing_context.stream_index,
+                    format!("receive_frame failed: {}", e),
+                )));
             }
         };
 
@@ -2792,6 +2855,17 @@ fn process_audio_stream(
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
+            error!(
+                "Audio decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
+                stream_processing_context.stream_index,
+                stream_processing_context.decoder_name,
+                packet.pts,
+                packet.dts,
+                packet.duration,
+                stream_processing_context.decode_context.time_base.num,
+                stream_processing_context.decode_context.time_base.den,
+                e
+            );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
                 stream_processing_context.stream_index,
@@ -2822,8 +2896,22 @@ fn process_audio_stream(
                 break;
             }
             Err(e) => {
-                error!("Decoder receive frame error: {}", e);
-                break;
+                error!(
+                    "Audio decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
+                    stream_processing_context.stream_index,
+                    stream_processing_context.decoder_name,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration,
+                    stream_processing_context.decode_context.time_base.num,
+                    stream_processing_context.decode_context.time_base.den,
+                    e
+                );
+                return Err(anyhow!(DecoderError::new(
+                    stream_processing_context.decoder_name.clone(),
+                    stream_processing_context.stream_index,
+                    format!("receive_frame failed: {}", e),
+                )));
             }
         };
 
@@ -3851,6 +3939,7 @@ fn convert_video_file(
         );
         let mut decode_context = AVCodecContext::new(&decoder);
         decode_context.apply_codecpar(&input_stream_codecpar)?;
+        enable_strict_decode_failure(&mut decode_context);
         decode_context.set_time_base(stream.time_base); // TODO: needed?
         if let Some(framerate) = stream.guess_framerate() {
             decode_context.set_framerate(framerate);
@@ -3906,6 +3995,7 @@ fn convert_video_file(
                 );
                 decode_context = AVCodecContext::new(&decoder);
                 decode_context.apply_codecpar(&input_stream_codecpar)?;
+                enable_strict_decode_failure(&mut decode_context);
                 decode_context.set_time_base(stream.time_base);
                 if let Some(framerate) = stream.guess_framerate() {
                     decode_context.set_framerate(framerate);
@@ -3938,6 +4028,7 @@ fn convert_video_file(
                     );
                     decode_context = AVCodecContext::new(&decoder);
                     decode_context.apply_codecpar(&input_stream_codecpar)?;
+                    enable_strict_decode_failure(&mut decode_context);
                     decode_context.set_time_base(stream.time_base);
                     if let Some(framerate) = stream.guess_framerate() {
                         decode_context.set_framerate(framerate);

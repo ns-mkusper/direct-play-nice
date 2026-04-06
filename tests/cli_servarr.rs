@@ -4,6 +4,8 @@
 mod common;
 
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
@@ -326,5 +328,85 @@ fn radarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> 
     cmd.env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path())
         .env("radarr_eventtype", "Test");
     common::assert_cli_success(cmd);
+    Ok(())
+}
+
+#[test]
+fn sonarr_download_failure_restores_original_and_cleans_temp_files(
+) -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("episode_corrupt.mkv");
+    let temp_path = append_suffix(&input, ".direct-play-nice.tmp");
+    let backup_path = append_suffix(&input, ".direct-play-nice.bak");
+    let final_path = input.with_file_name("episode_corrupt.fixed.mp4");
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1280x720:rate=24:duration=12",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=48000:duration=12",
+                "-c:v",
+                "libx265",
+                "-preset",
+                "medium",
+                "-x265-params",
+                "log-level=error",
+                "-c:a",
+                "aac",
+                input.to_string_lossy().as_ref(),
+            ])
+            .status()
+            .expect("generate hevc source")
+            .success(),
+        "ffmpeg failed to generate source"
+    );
+
+    let mut f = OpenOptions::new().read(true).write(true).open(&input)?;
+    let len = f.metadata()?.len();
+    f.seek(SeekFrom::Start(len / 2))?;
+    f.write_all(&vec![0xAAu8; 64 * 1024])?;
+    f.flush()?;
+
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    let status = cmd
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("sonarr_eventtype", "Download")
+        .env("sonarr_episodefile_path", &input)
+        .env("sonarr_series_title", "Example Series")
+        .status()?;
+
+    assert!(
+        !status.success(),
+        "expected conversion to fail on corrupt input"
+    );
+    assert!(
+        input.exists(),
+        "original source should remain after failure"
+    );
+    assert!(
+        !temp_path.exists(),
+        "temporary conversion file should be removed after failure"
+    );
+    assert!(
+        !backup_path.exists(),
+        "backup should not remain after failure"
+    );
+    assert!(
+        !final_path.exists(),
+        "final promoted output should not exist after failure"
+    );
+
     Ok(())
 }
