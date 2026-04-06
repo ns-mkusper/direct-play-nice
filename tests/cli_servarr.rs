@@ -387,8 +387,14 @@ fn sonarr_download_failure_restores_original_and_cleans_temp_files(
         .env("sonarr_series_title", "Example Series")
         .status()?;
 
-    assert!(!status.success(), "expected conversion to fail on corrupt input");
-    assert!(input.exists(), "original source should remain after failure");
+    assert!(
+        !status.success(),
+        "expected conversion to fail on corrupt input"
+    );
+    assert!(
+        input.exists(),
+        "original source should remain after failure"
+    );
     assert!(
         !temp_path.exists(),
         "temporary conversion file should be removed after failure"

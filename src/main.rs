@@ -2633,9 +2633,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
         let transfer_format = unsafe {
             let hw_frames_ctx = (*frame.as_ptr()).hw_frames_ctx;
             if hw_frames_ctx.is_null() {
-                warn!(
-                    "CUDA frame is missing hw_frames_ctx; falling back to NV12 transfer format."
-                );
+                warn!("CUDA frame is missing hw_frames_ctx; falling back to NV12 transfer format.");
                 ffi::AV_PIX_FMT_NV12
             } else {
                 let frames_ctx_ptr = (*hw_frames_ctx).data as *const ffi::AVHWFramesContext;
