@@ -7,7 +7,7 @@ use predicates::str;
 use std::ffi::CString;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -16,12 +16,12 @@ use rsmpeg::avformat::AVFormatContextInput;
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
-        Ok(o) if o.status.success() => return,
+        Ok(o) if o.status.success() => (),
         _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
     }
 }
 
-fn mk_subs_file(path: &PathBuf) {
+fn mk_subs_file(path: &Path) {
     let mut f = fs::File::create(path).expect("create srt");
     writeln!(
         f,
@@ -117,7 +117,7 @@ fn parse_timestamp_ms(raw: &str) -> Option<i64> {
     Some(h * 3_600_000 + m * 60_000 + s * 1_000 + ms)
 }
 
-fn parse_srt_times(path: &PathBuf) -> Vec<(i64, i64)> {
+fn parse_srt_times(path: &Path) -> Vec<(i64, i64)> {
     let contents = fs::read_to_string(path).expect("read srt");
     let mut out = Vec::new();
     let mut iter = contents.lines();
@@ -174,7 +174,7 @@ fn cli_ocr_preserves_subtitle_timing() -> Result<(), Box<dyn std::error::Error>>
     let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
     let has_subs = octx
         .streams()
-        .into_iter()
+        .iter()
         .any(|st| st.codecpar().codec_type == rsmpeg::ffi::AVMEDIA_TYPE_SUBTITLE);
     assert!(has_subs, "expected subtitle stream in output");
 

@@ -28,24 +28,17 @@ feature and seamless to the end user (ie. Direct Play selected by default).
   caps) so you can keep output sizes in check for fast starts on Plex and other
   direct-play servers.
 - Targets every supported streaming device by default, or narrow the profile
-  with `--streaming-devices`.
+  with `--device`.
 
 ### Supported Streaming Devices
 
-| Device Name                    | Release Year | Video Codecs                                       | Audio Codecs                                                                                  | Resolution Support |
-| ------------------------------ | ------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------- | ------------------ |
-| Chromecast                     | 2013         | H.264, VP8                                         | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                       | Up to 1080p        |
-| Chromecast 2                   | 2015         | H.264, VP8                                         | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                       | Up to 1080p        |
-| Chromecast Audio               | 2015         | N/A                                                | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC                                                 | N/A                |
-| Chromecast Ultra               | 2016         | H.264, VP8, VP9, HEVC                              | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC                                                 | Up to 4K           |
-| Chromecast 3                   | 2018         | H.264, VP8, VP9                                    | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM)                                                       | Up to 1080p        |
-| Chromecast with Google TV      | 2020         | H.264, VP8, VP9, HEVC, Dolby Vision, HDR10, HDR10+ | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos | Up to 4K HDR       |
-| Chromecast with Google TV (HD) | 2022         | H.264, VP8, VP9, HEVC, HDR10, HDR10+               | HE-AAC, LC-AAC, MP3, Vorbis, WAV (LPCM), FLAC, Dolby Digital, Dolby Digital Plus, Dolby Atmos | Up to 1080p HDR    |
+See [SUPPORTED_DEVICES.md](SUPPORTED_DEVICES.md) for the full up-to-date
+matrix of:
 
-Each device above exposes a model identifier (e.g. `chromecast_ultra`). The CLI
-assumes every device by default; supply
-`--streaming-devices chromecast_ultra,chromecast_1st_gen` or
-`--streaming-devices all` to override.
+- model IDs
+- family/group targets (`chromecast`, `roku`, `apple_tv`, `fire_tv`)
+- container, codec, and bitrate constraints
+- official source links for each ecosystem
 
 ## Usage
 
@@ -56,16 +49,17 @@ Connection with [Sonarr](https://wiki.servarr.com/sonarr/custom-scripts) or
 ### CLI
 
 ```bash
-Usage: direct_play_nice.exe [OPTIONS] <INPUT_FILE> <OUTPUT_FILE>
+Usage: direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 Arguments:
-  <INPUT_FILE>   Video file to convert
-  <OUTPUT_FILE>  Our output direct-play-compatible video file
+  [INPUT_FILE]   Video file to convert (required unless probing)
+  [OUTPUT_FILE]  Our output direct-play-compatible video file (required unless probing)
 
 Options:
-  -s, --streaming-devices <STREAMING_DEVICES>
-          Comma-separated device models or 'all'. When omitted or set to 'all',
-          assumes all known devices.
+  -d, --device <DEVICE>
+          Target device family/model, or 'all' (default). Examples:
+          chromecast, roku, apple_tv, fire_tv
+          [aliases: -s, --streaming-devices]
   -c, --config-file <CONFIG_FILE>
           Path to the configuration file
       --video-quality <VIDEO_QUALITY>
@@ -120,7 +114,7 @@ Notes:
 - In probe modes (`--probe-hw`, `--probe-codecs`, `--probe-streams`), the
   positional `<INPUT_FILE> <OUTPUT_FILE>` are not required (except
   `--probe-streams`, which requires `<INPUT_FILE>`).
-- `-s all` has the same effect as omitting `-s`: the tool computes a
+- `--device all` has the same effect as omitting `--device`: the tool computes a
   direct-play profile compatible across all known devices.
 - Combine `--servarr-output-extension` and `--servarr-output-suffix` to control
   how Sonarr/Radarr replacements are named. When run from Sonarr, the CLI
@@ -141,27 +135,26 @@ Notes:
   `DIRECT_PLAY_NICE_MAX_JOBS` manually if you want more parallelism on AMD or
   CPU-only hosts.
 
-#### Device model strings for `-s`
+#### Device selection
 
-- `chromecast_1st_gen`
-- `chromecast_2nd_gen`
-- `chromecast_ultra`
+Use family targets such as `--device chromecast`, `--device roku`,
+`--device apple_tv`, `--device fire_tv`, or leave unset / use `--device all`
+to target every supported device.
 
-You can pass multiple, e.g. `-s chromecast_1st_gen,chromecast_2nd_gen`, or just
-use `-s all`.
+For exact model IDs, see [SUPPORTED_DEVICES.md](SUPPORTED_DEVICES.md).
 
 ### Examples
 
-Convert for all devices (same as omitting `-s`):
+Convert for all devices (same as omitting `--device`):
 
 ```bash
-direct_play_nice -s all input.mkv out.mp4
+direct_play_nice --device all input.mkv out.mp4
 ```
 
 Convert for specific devices (intersection of capabilities):
 
 ```bash
-direct_play_nice -s chromecast_1st_gen,chromecast_2nd_gen input.mkv out.mp4
+direct_play_nice --device chromecast,roku input.mkv out.mp4
 ```
 
 Probe hardware and codec availability (JSON):
@@ -479,6 +472,12 @@ git -C "$VCPKG_ROOT" checkout 21012a516c9e5fa547baf212f2d937cd8d15dcb5
 cargo test
 ```
 
+For explicit parallel execution across profiles/devices, run:
+
+```bash
+./scripts/test-concurrent.sh
+```
+
 Integration tests that synthesize media depend on the `ffmpeg` CLI. They are
 gated behind the `ffmpeg-cli-tests` feature and are run in CI only. To run
 them locally:
@@ -511,6 +510,32 @@ export RUST_LOG=${RUST_LOG:-WARN}
 ```
 
 Then run `direnv allow` once in the repo.
+
+## Release Automation
+
+Versioning and release publication are automated on merges to `main`:
+
+- `.github/workflows/cd.yml` runs `release-plz update` first (to bump
+  `Cargo.toml`/`Cargo.lock` and `CHANGELOG.md`), commits those release metadata
+  updates, then runs `release-plz release` to publish tags/releases.
+- `release-plz.toml` controls release behavior, and `cliff.toml` controls how
+  commits are grouped/rendered into changelog/release notes.
+- `scripts/generate_release_notes.sh` generates a `RELEASE_NOTES.md` preview in
+  CI, uploaded as an artifact before the release step.
+
+### Version bump rules
+
+By default, `release-plz` follows Conventional Commit semantics:
+
+- `feat:` -> minor bump
+- `fix:` (and non-breaking maintenance changes) -> patch bump
+- `!` marker or `BREAKING CHANGE` footer -> major bump
+
+So bump control lives in:
+
+- commit messages in merged PRs
+- `release-plz.toml` (release behavior)
+- `cliff.toml` (what changes are included/displayed in notes)
 
 ## Contributions / Support
 

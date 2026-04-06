@@ -12,7 +12,7 @@ use std::env;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -22,12 +22,12 @@ use rsmpeg::ffi;
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
     match out {
-        Ok(o) if o.status.success() => return,
+        Ok(o) if o.status.success() => (),
         _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
     }
 }
 
-fn mk_subs_file(path: &PathBuf) {
+fn mk_subs_file(path: &Path) {
     let mut f = File::create(path).expect("create srt");
     writeln!(
         f,
@@ -36,7 +36,7 @@ fn mk_subs_file(path: &PathBuf) {
     .unwrap();
 }
 
-fn mk_subs_file_with_text(path: &PathBuf, first: &str, second: &str) {
+fn mk_subs_file_with_text(path: &Path, first: &str, second: &str) {
     let mut f = File::create(path).expect("create srt");
     writeln!(
         f,
@@ -163,7 +163,7 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64, bool) {
 
     let input_cstr = CString::new(input.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
-    let dur_ms = (ictx.duration as i64 / 1000).max(0) as u64;
+    let dur_ms = (ictx.duration / 1000).max(0) as u64;
     (input, dur_ms, used_text_subs)
 }
 
@@ -263,12 +263,12 @@ fn is_bitmap_subtitle_codec(codec_id: ffi::AVCodecID) -> bool {
     )
 }
 
-fn count_bitmap_subtitle_streams(path: &PathBuf) -> Result<usize, Box<dyn std::error::Error>> {
+fn count_bitmap_subtitle_streams(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let path_cstr = CString::new(path.to_string_lossy().to_string())?;
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str())?;
     Ok(ictx
         .streams()
-        .into_iter()
+        .iter()
         .filter(|st| {
             let cp = st.codecpar();
             cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && is_bitmap_subtitle_codec(cp.codec_id)
@@ -276,12 +276,12 @@ fn count_bitmap_subtitle_streams(path: &PathBuf) -> Result<usize, Box<dyn std::e
         .count())
 }
 
-fn count_mov_text_streams(path: &PathBuf) -> Result<usize, Box<dyn std::error::Error>> {
+fn count_mov_text_streams(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let path_cstr = CString::new(path.to_string_lossy().to_string())?;
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str())?;
     Ok(ictx
         .streams()
-        .into_iter()
+        .iter()
         .filter(|st| {
             let cp = st.codecpar();
             cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && cp.codec_id == ffi::AV_CODEC_ID_MOV_TEXT
@@ -289,10 +289,10 @@ fn count_mov_text_streams(path: &PathBuf) -> Result<usize, Box<dyn std::error::E
         .count())
 }
 
-fn probe_duration_ms(path: &PathBuf) -> u64 {
+fn probe_duration_ms(path: &Path) -> u64 {
     let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
-    (ictx.duration as i64 / 1000).max(0) as u64
+    (ictx.duration / 1000).max(0) as u64
 }
 
 #[test]
@@ -375,11 +375,7 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     }
 
     let out_dur_ms = probe_duration_ms(&output);
-    let diff = if out_dur_ms > in_dur_ms {
-        out_dur_ms - in_dur_ms
-    } else {
-        in_dur_ms - out_dur_ms
-    };
+    let diff = out_dur_ms.abs_diff(in_dur_ms);
     if !used_text_subs {
         assert!(
             diff <= 200,
@@ -440,6 +436,59 @@ fn cli_ai_ocr_processes_all_bitmap_subtitle_streams() -> Result<(), Box<dyn std:
     assert!(
         run.status.success(),
         "AI OCR run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let output_sub_count = count_mov_text_streams(&output)?;
+    assert_eq!(
+        output_sub_count, input_bitmap_count,
+        "expected all bitmap subtitle streams to be OCR-converted ({}), got {}",
+        input_bitmap_count, output_sub_count
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cli_ai_ocr_gpu_processes_all_bitmap_subtitle_streams() -> Result<(), Box<dyn std::error::Error>>
+{
+    ensure_ffmpeg_present();
+
+    if env::var("DPN_OCR_GPU_E2E").ok().as_deref() != Some("1") {
+        eprintln!("Skipping GPU OCR test (set DPN_OCR_GPU_E2E=1 to enable).");
+        return Ok(());
+    }
+
+    let tmp = TempDir::new()?;
+    let Some(input) = gen_multi_stream_bitmap_input(&tmp) else {
+        eprintln!("No bitmap subtitle encoder available; skipping GPU OCR test.");
+        return Ok(());
+    };
+    let output = tmp.path().join("out_ai_gpu_all_streams.mp4");
+
+    let input_bitmap_count = count_bitmap_subtitle_streams(&input)?;
+    assert!(
+        input_bitmap_count >= 2,
+        "expected at least two bitmap subtitle streams, got {}",
+        input_bitmap_count
+    );
+
+    let run = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .env("DPN_OCR_REQUIRE_GPU", "1")
+        .env("DPN_OCR_SKIP_CLS", "1")
+        .arg("--sub-mode")
+        .arg("force")
+        .arg("--ocr-engine")
+        .arg("auto")
+        .arg("--skip-codec-check")
+        .arg(&input)
+        .arg(&output)
+        .output()?;
+
+    assert!(
+        run.status.success(),
+        "GPU OCR run failed:\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );

@@ -9,7 +9,7 @@ use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
 use std::ffi::CString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -48,7 +48,7 @@ fn run_no_config_conversion(
 }
 
 fn assert_no_config_output_sane(
-    output: &PathBuf,
+    output: &Path,
     in_dur_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     assert!(
@@ -97,7 +97,7 @@ fn assert_no_config_output_sane(
 
     if bit_rate <= 0 {
         let duration_s = (octx.duration as f64 / ffi::AV_TIME_BASE as f64).max(0.1);
-        let size_bytes = fs::metadata(&output)?.len() as f64;
+        let size_bytes = fs::metadata(output)?.len() as f64;
         bit_rate = ((size_bytes * 8.0) / duration_s).round() as i64;
     }
     assert!(
@@ -110,12 +110,8 @@ fn assert_no_config_output_sane(
         bit_rate
     );
 
-    let out_dur_ms = common::probe_duration_ms(&output);
-    let diff = if out_dur_ms > in_dur_ms {
-        out_dur_ms - in_dur_ms
-    } else {
-        in_dur_ms - out_dur_ms
-    };
+    let out_dur_ms = common::probe_duration_ms(output);
+    let diff = out_dur_ms.abs_diff(in_dur_ms);
     assert!(
         diff <= 200,
         "duration drift too large: input={}ms output={}ms",
