@@ -131,6 +131,9 @@ jobs:
           name: release-notes-preview
           path: RELEASE_NOTES.md
 
+      - name: Clean release notes preview file
+        run: rm -f RELEASE_NOTES.md
+
       - name: Run release-plz (update)
         uses: MarcoIeni/release-plz-action@v0.5
         with:
