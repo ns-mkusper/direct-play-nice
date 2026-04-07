@@ -580,7 +580,7 @@ const PPOCR_V3_REC_MODEL: ModelSpec = ModelSpec {
 
 struct PpOcrModels {
     det: PathBuf,
-    cls: Option<PathBuf>,
+    cls: PathBuf,
     rec: PathBuf,
 }
 
@@ -591,18 +591,13 @@ impl PpOcrEngine {
             "Initializing {} models (det='{}', cls='{}', rec='{}')",
             variant.label(),
             models.det.display(),
-            models
-                .cls
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "<skipped>".to_string()),
+            models.cls.display(),
             models.rec.display()
         );
         let mut ocr = OcrLite::new();
-        let cls_owned = models.cls.as_ref().map(|p| p.to_string_lossy().to_string());
-        ocr.init_models_custom_optional_cls(
+        ocr.init_models_custom(
             models.det.to_string_lossy().as_ref(),
-            cls_owned.as_deref(),
+            models.cls.to_string_lossy().as_ref(),
             models.rec.to_string_lossy().as_ref(),
             configure_ort_builder,
         )
@@ -1006,12 +1001,13 @@ fn ensure_ppocr_models(
     skip_cls: bool,
 ) -> Result<PpOcrModels> {
     let (det_spec, cls_spec, rec_spec) = variant.model_specs();
+    if skip_cls {
+        debug!(
+            "Skipping classifier is requested, but this build uses mandatory classifier initialization; loading cls model."
+        );
+    }
     let det = ensure_model_file(model_dir, det_spec)?;
-    let cls = if skip_cls {
-        None
-    } else {
-        Some(ensure_model_file(model_dir, cls_spec)?)
-    };
+    let cls = ensure_model_file(model_dir, cls_spec)?;
     let rec = ensure_model_file(model_dir, rec_spec)?;
     Ok(PpOcrModels { det, cls, rec })
 }
