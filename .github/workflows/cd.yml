@@ -49,6 +49,7 @@ jobs:
         with:
           path: |
             target/vcpkg/.vcpkg-root
+            target/vcpkg/.git
             target/vcpkg/downloads
             target/vcpkg/installed
             target/vcpkg/packages
@@ -56,12 +57,53 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            vcpkg-root-linux-
+            vcpkg-root-linux-v2-
+
+      - name: Validate vcpkg cache origin
+        run: |
+          cache_invalid=0
+          expected_rev="$(grep -E '^rev = "' Cargo.toml | head -n1 | awk -F'"' '{print $2}')"
+          if [ -e "target/vcpkg" ] && [ ! -e "target/vcpkg/.git" ]; then
+            echo "vcpkg root missing .git; clearing cache entry"
+            rm -rf target/vcpkg
+            cache_invalid=1
+          fi
+          for dir in target/vcpkg target/vcpkg/.vcpkg-root target/vcpkg/vcpkg; do
+            if [ -e "$dir/.git" ]; then
+              origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+              if [ -z "$origin" ]; then
+                echo "Failed to read vcpkg origin in $dir; clearing cache entry"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ "$origin" != "https://github.com/microsoft/vcpkg.git" ] && [ "$origin" != "https://github.com/microsoft/vcpkg" ]; then
+                echo "Unexpected vcpkg origin in $dir: $origin"
+                rm -rf "$dir"
+                cache_invalid=1
+                continue
+              fi
+              if [ -n "$expected_rev" ]; then
+                if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
+                  echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
+                  rm -rf "$dir"
+                  cache_invalid=1
+                fi
+              fi
+            fi
+          done
+          if [ "$cache_invalid" -eq 1 ]; then
+            echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Use cached vcpkg workspace
+        if: steps.vcpkg-cache.outputs.cache-hit == 'true' && env.VCPKG_CACHE_INVALID != '1'
+        run: echo "vcpkg workspace cache hit; skipping dependency rebuild."
 
       - name: Build vcpkg dependencies
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1'
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
