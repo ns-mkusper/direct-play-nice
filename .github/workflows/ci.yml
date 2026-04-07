@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
+      STRICT_VCPKG_REV: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
     permissions:
       contents: read
       actions: write
@@ -121,7 +122,7 @@ jobs:
                 cache_invalid=1
                 continue
               fi
-              if [ -n "$expected_rev" ]; then
+              if [ "$STRICT_VCPKG_REV" = "1" ] && [ -n "$expected_rev" ]; then
                 if ! git -C "$dir" cat-file -e "${expected_rev}^{tree}" 2>/dev/null; then
                   echo "Missing vcpkg rev $expected_rev in $dir; clearing cache entry"
                   rm -rf "$dir"
@@ -226,6 +227,7 @@ jobs:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
       VCPKGRS_TRIPLET: x64-windows-static-md
+      STRICT_VCPKG_REV: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -325,7 +327,7 @@ jobs:
                   $cacheInvalid = $true
                   continue
                 }
-                if ($expectedRev) {
+                if ($env:STRICT_VCPKG_REV -eq "1" -and $expectedRev) {
                   git -C $dir cat-file -e "$expectedRev^{tree}" 2>$null
                   if ($LASTEXITCODE -ne 0) {
                     Write-Host "Missing vcpkg rev $expectedRev in $dir; clearing cache entry"
