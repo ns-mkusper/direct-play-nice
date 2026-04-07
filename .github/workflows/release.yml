@@ -39,12 +39,10 @@ permissions:
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
 on:
+  pull_request:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   # Run 'cargo dist plan' (or host) to determine what tasks we need to do
@@ -78,7 +76,7 @@ jobs:
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
         run: |
-          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --allow-dirty --output-format=json > plan-dist-manifest.json
+          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
           echo "cargo dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -120,44 +118,40 @@ jobs:
         with:
           submodules: recursive
       - name: "Install vcpkg build dependencies"
-        run: |
-          sudo apt-get update -y
-          sudo apt-get --assume-yes install \
-            nasm autoconf autoconf-archive automake libtool
+        run: "sudo apt-get --assume-yes install nasm"
       - name: "Cache cargo-vcpkg binary"
-        id: cargo-vcpkg-cache
-        uses: actions/cache@v4
+        id: "cargo-vcpkg-cache"
+        uses: "actions/cache@v4"
         with:
-          path: ~/.cargo/bin/cargo-vcpkg
-          key: cargo-vcpkg-${{ runner.os }}-v1
+          "key": "cargo-vcpkg-${{ runner.os }}-v1"
+          "path": "~/.cargo/bin/cargo-vcpkg"
       - name: "Install vcpkg"
-        if: steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'
+        if: "steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'"
         run: "cargo install cargo-vcpkg"
       - name: "Cache vcpkg workspace"
-        id: vcpkg-cache
-        uses: actions/cache@v4
+        id: "vcpkg-cache"
+        uses: "actions/cache@v4"
         with:
-          path: |
-            target/vcpkg/.vcpkg-root
-            target/vcpkg/downloads
-            target/vcpkg/installed
-            target/vcpkg/packages
-            target/vcpkg/ports
-            target/vcpkg/scripts
-            target/vcpkg/triplets
-            target/vcpkg/vcpkg
-          key: vcpkg-root-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            vcpkg-root-${{ runner.os }}-
+          "key": "vcpkg-root-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}"
+          "path": target/vcpkg/.vcpkg-root
+target/vcpkg/downloads
+target/vcpkg/installed
+target/vcpkg/packages
+target/vcpkg/ports
+target/vcpkg/scripts
+target/vcpkg/triplets
+target/vcpkg/vcpkg
+
+          "restore-keys": "vcpkg-root-${{ runner.os }}-\n"
       - name: "Build vcpkg dependencies"
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        env:
-          VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
-          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
-          VCPKG_MAX_CONCURRENCY: 2
-          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
         run: "cargo vcpkg --verbose build"
+        env:
+          "CMAKE_BUILD_PARALLEL_LEVEL": 2
+          "VCPKG_BINARY_SOURCES": "clear;x-gha,readwrite"
+          "VCPKG_CMAKE_CONFIGURE_OPTIONS": "-Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW"
+          "VCPKG_FEATURE_FLAGS": "manifests,binarycaching"
+          "VCPKG_MAX_CONCURRENCY": 2
       - name: Install cargo-dist
         run: ${{ matrix.install_dist }}
       # Get the dist-manifest
@@ -274,7 +268,7 @@ jobs:
       - id: host
         shell: bash
         run: |
-          cargo dist host ${{ needs.plan.outputs.tag-flag }} --allow-dirty --steps=upload --steps=release --output-format=json > dist-manifest.json
+          cargo dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
           echo "artifacts uploaded and released successfully"
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
