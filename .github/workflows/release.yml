@@ -16,6 +16,8 @@
 name: Release
 permissions:
   "contents": "write"
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -76,7 +78,7 @@ jobs:
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
         run: |
-          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --output-format=json > plan-dist-manifest.json
+          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --allow-dirty --output-format=json > plan-dist-manifest.json
           echo "cargo dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -133,16 +135,17 @@ jobs:
         uses: "actions/cache@v4"
         with:
           "key": "vcpkg-root-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}"
-          "path": target/vcpkg/.vcpkg-root
-target/vcpkg/downloads
-target/vcpkg/installed
-target/vcpkg/packages
-target/vcpkg/ports
-target/vcpkg/scripts
-target/vcpkg/triplets
-target/vcpkg/vcpkg
-
-          "restore-keys": "vcpkg-root-${{ runner.os }}-\n"
+          "path": |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/downloads
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/ports
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          "restore-keys": |
+            vcpkg-root-${{ runner.os }}-
       - name: "Build vcpkg dependencies"
         if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
         run: "cargo vcpkg --verbose build"
@@ -167,7 +170,7 @@ target/vcpkg/vcpkg
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "cargo dist ran successfully"
       - id: cargo-dist
         name: Post-build
@@ -219,7 +222,7 @@ target/vcpkg/vcpkg
       - id: cargo-dist
         shell: bash
         run: |
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --output-format=json "--artifacts=global" > dist-manifest.json
           echo "cargo dist ran successfully"
 
           # Parse out what we just built and upload it to scratch storage
@@ -268,7 +271,7 @@ target/vcpkg/vcpkg
       - id: host
         shell: bash
         run: |
-          cargo dist host ${{ needs.plan.outputs.tag-flag }} --steps=upload --steps=release --output-format=json > dist-manifest.json
+          cargo dist host ${{ needs.plan.outputs.tag-flag }} --allow-dirty --steps=upload --steps=release --output-format=json > dist-manifest.json
           echo "artifacts uploaded and released successfully"
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
