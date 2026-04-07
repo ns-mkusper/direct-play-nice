@@ -8,6 +8,19 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [0.1.0-alpha.4] - 2026-04-07
+
+### 📌 Release Delta Summary
+
+- Fixed 30x duration inflation from incorrect FPS detection.
+- Pinned vcpkg SHA to restore reproducible dependency builds.
+- Fixed all-devices mode skipping conversion without configuration file.
+- Added OCR subtitle conversion modes for flexible subtitle workflows.
+- Improved OCR accuracy and unblocked broken main deployment pipeline.
+- Added Roku, Apple TV, and Fire TV device support.
+- Prevented corrupted output by failing fast on decoder errors.
+- Added CI regression test coverage for FFmpeg corruption scenarios.
+
 ## [0.1.0-alpha.3] - 2025-11-06
 
 ### 🛠 Fixes
