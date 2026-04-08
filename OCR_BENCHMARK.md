@@ -73,8 +73,8 @@ Notes
 
 - The original PP-OCRv4 run on `plexserver` reported CUDA EP availability,
   but GPU utilization remained ~0%, so inference appeared CPU-bound.
-- `scripts/ocr-tools/check_gpu_env.sh` confirmed `libcudnn.so` was missing; cuDNN was
-  installed via ALA (`cudnn-9.20.0.48-1`).
+- `scripts/ocr-tools/check_gpu_env.sh` confirmed `libcudnn.so` was
+  missing; cuDNN was installed via ALA (`cudnn-9.20.0.48-1`).
 - A 10-second idle sample on `plexserver` measured GPU0 at ~11.84W
   peak/avg. The older idle log in `silence_full/idle_power.csv` is invalid
   due to a bad query string.
