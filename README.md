@@ -209,7 +209,7 @@ ONNX OCR engines (PP‑OCR):
   toolkit + cuDNN for NVIDIA, DirectML on Windows, CoreML on macOS).
   Missing runtimes fall back to CPU automatically.
 - On Linux, the CUDA EP must match the `libonnxruntime.so` build. Run
-  `./check_gpu_env.sh` (or `ldd` against the ONNX Runtime `.so`) to
+  `./scripts/ocr-tools/check_gpu_env.sh` (or `ldd` against the ONNX Runtime `.so`) to
   confirm which `libcudnn.so.*` is required and that it is discoverable
   via `LD_LIBRARY_PATH`/`ldconfig`.
 - For containers, install the NVIDIA Container Toolkit and expose the
