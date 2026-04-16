@@ -28,6 +28,13 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
       - name: Install system dependencies
         run: |
@@ -118,6 +125,14 @@ jobs:
 
       - name: Export VCPKG_ROOT
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> $GITHUB_ENV
+
+      - name: Clippy strict
+        env:
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo audit
+        run: cargo audit
 
       - name: Install git-cliff
         uses: taiki-e/install-action@v2

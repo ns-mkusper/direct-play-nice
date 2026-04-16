@@ -27,7 +27,9 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
     info!("{}", header);
     for (key, value) in entries {
         let lower = key.to_ascii_lowercase();
-        let display_value = if lower.ends_with("_path") || lower.contains("_path_") {
+        let display_value = if should_redact_env_value(&lower) {
+            "<redacted>".to_string()
+        } else if lower.ends_with("_path") || lower.contains("_path_") {
             value
         } else if value.len() > 200 {
             format!("{}…", &value[..200])
@@ -36,5 +38,33 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
         };
         let line = format!("  {} = {}", key, display_value);
         info!("{}", line);
+    }
+}
+
+fn should_redact_env_value(key_lower: &str) -> bool {
+    key_lower.contains("token")
+        || key_lower.contains("password")
+        || key_lower.contains("secret")
+        || key_lower.contains("api_key")
+        || key_lower.contains("apikey")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_redact_env_value;
+
+    #[test]
+    fn redacts_sensitive_keys() {
+        assert!(should_redact_env_value("sonarr_apikey"));
+        assert!(should_redact_env_value("radarr_api_key"));
+        assert!(should_redact_env_value("sonarr_token"));
+        assert!(should_redact_env_value("radarr_password"));
+        assert!(should_redact_env_value("radarr_secret_value"));
+    }
+
+    #[test]
+    fn keeps_non_sensitive_keys() {
+        assert!(!should_redact_env_value("sonarr_series_path"));
+        assert!(!should_redact_env_value("radarr_movie_title"));
     }
 }

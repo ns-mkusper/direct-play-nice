@@ -106,8 +106,10 @@ impl ReplacePlan {
     pub fn finalize_success(self) -> Result<PathBuf> {
         use std::fs;
 
+        let had_original = self.input_path.exists();
+
         // Move the original file aside
-        if self.input_path.exists() {
+        if had_original {
             fs::rename(&self.input_path, &self.backup_path).with_context(|| {
                 format!(
                     "{} integration failed to move original file '{}' to backup '{}'",
@@ -119,14 +121,30 @@ impl ReplacePlan {
         }
 
         // Promote the converted temp file into place
-        fs::rename(&self.temp_output_path, &self.final_output_path).with_context(|| {
-            format!(
-                "{} integration could not promote '{}' to '{}'",
-                self.kind.label(),
-                self.temp_output_path.display(),
-                self.final_output_path.display()
-            )
-        })?;
+        if let Err(promote_err) = fs::rename(&self.temp_output_path, &self.final_output_path) {
+            if had_original && self.backup_path.exists() && !self.input_path.exists() {
+                if let Err(restore_err) = fs::rename(&self.backup_path, &self.input_path) {
+                    return Err(promote_err).with_context(|| {
+                        format!(
+                            "{} integration could not promote '{}' to '{}' and failed to restore backup '{}': {}",
+                            self.kind.label(),
+                            self.temp_output_path.display(),
+                            self.final_output_path.display(),
+                            self.input_path.display(),
+                            restore_err
+                        )
+                    });
+                }
+            }
+            return Err(promote_err).with_context(|| {
+                format!(
+                    "{} integration could not promote '{}' to '{}'",
+                    self.kind.label(),
+                    self.temp_output_path.display(),
+                    self.final_output_path.display()
+                )
+            });
+        }
 
         match fs::remove_file(&self.backup_path) {
             Ok(_) => {}
@@ -713,6 +731,7 @@ fn get_env_paths(keys: &[&str]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -964,5 +983,37 @@ mod tests {
 
         env::remove_var("radarr_eventtype");
         env::remove_var("radarr_moviefile_path");
+    }
+
+    #[test]
+    fn finalize_success_restores_original_when_promote_fails() {
+        let tmp = tempdir().unwrap();
+        let input = tmp.path().join("Episode.mkv");
+        let backup = tmp.path().join("Episode.backup.mkv");
+        let temp_output = tmp.path().join("Episode.tmp.mp4");
+        let final_output = tmp.path().join("missing").join("Episode.mp4");
+
+        std::fs::write(&input, b"original").unwrap();
+        std::fs::write(&temp_output, b"converted").unwrap();
+
+        let plan = ReplacePlan {
+            kind: IntegrationKind::Sonarr,
+            event_type: "Download".to_string(),
+            display_name: None,
+            is_upgrade: None,
+            input_path: input.clone(),
+            final_output_path: final_output,
+            temp_output_path: temp_output.clone(),
+            backup_path: backup.clone(),
+            input_cstring: CString::new(input.to_string_lossy().to_string()).unwrap(),
+            temp_output_cstring: CString::new(temp_output.to_string_lossy().to_string()).unwrap(),
+        };
+
+        let err = plan
+            .finalize_success()
+            .expect_err("promotion should fail when target parent directory is missing");
+        assert!(err.to_string().contains("could not promote"));
+        assert!(input.exists(), "original input should be restored");
+        assert!(!backup.exists(), "backup should not remain after restore");
     }
 }

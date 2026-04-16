@@ -3243,15 +3243,9 @@ fn run_external_ocr_command(
     language: &str,
     ocr_external_command: &str,
 ) -> Result<String> {
-    let mut cmd = if cfg!(windows) {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(ocr_external_command);
-        cmd
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-lc").arg(ocr_external_command);
-        cmd
-    };
+    let argv = parse_external_ocr_argv(ocr_external_command)?;
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
 
     let output = cmd
         .env("DPN_OCR_IMAGE", image_path)
@@ -3276,6 +3270,16 @@ fn run_external_ocr_command(
     Ok(normalize_utf8_text(&String::from_utf8_lossy(
         &output.stdout,
     )))
+}
+
+fn parse_external_ocr_argv(ocr_external_command: &str) -> Result<Vec<String>> {
+    let argv = shlex::split(ocr_external_command).ok_or_else(|| {
+        anyhow!("Invalid --ocr-external-command value: could not parse command/arguments safely")
+    })?;
+    if argv.is_empty() {
+        bail!("--ocr-external-command must include a program name");
+    }
+    Ok(argv)
 }
 
 fn rect_to_pgm(rect: &ffi::AVSubtitleRect, ocr_engine: OcrEngine) -> Option<(Vec<u8>, bool)> {
@@ -4177,6 +4181,22 @@ mod tests {
             }
         }
         dp[m][n] as f32 / expected_chars.len() as f32
+    }
+
+    #[test]
+    fn external_ocr_command_parser_requires_program_name() {
+        assert!(parse_external_ocr_argv("").is_err());
+        assert!(parse_external_ocr_argv("   ").is_err());
+    }
+
+    #[test]
+    fn external_ocr_command_parser_splits_args_without_shell() {
+        let argv = parse_external_ocr_argv("python3 /opt/ocr/run.py --mode fast")
+            .expect("parser should accept executable + args");
+        assert_eq!(argv[0], "python3");
+        assert_eq!(argv[1], "/opt/ocr/run.py");
+        assert_eq!(argv[2], "--mode");
+        assert_eq!(argv[3], "fast");
     }
 
     #[test]

@@ -23,7 +23,7 @@ use std::{
     os::raw::c_void,
     path::{Path, PathBuf},
     ptr,
-    sync::atomic::{AtomicI64, Ordering},
+    sync::atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
 mod config;
@@ -2178,7 +2178,7 @@ struct Args {
     )]
     ocr_format: OcrFormat,
 
-    /// Shell command used when --ocr-engine=external. The command receives DPN_OCR_IMAGE and DPN_OCR_LANGUAGE env vars and must print recognized text to stdout.
+    /// Executable and arguments used when --ocr-engine=external. Values are parsed without a shell. The command receives DPN_OCR_IMAGE and DPN_OCR_LANGUAGE env vars and must print recognized text to stdout.
     #[arg(
         long = "ocr-external-command",
         id = "ocr_external_command",
@@ -5660,26 +5660,11 @@ fn post_process_ocr_subtitles(
         return Ok(());
     }
 
-    let mut ocr_work_dir = std::env::temp_dir();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    ocr_work_dir.push(format!(
-        "direct-play-nice-ocr-{}-{}",
-        std::process::id(),
-        now
-    ));
-    fs::create_dir_all(&ocr_work_dir).with_context(|| {
-        format!(
-            "creating OCR temporary directory '{}'",
-            ocr_work_dir.display()
-        )
-    })?;
+    let ocr_work_dir = OcrWorkDir::create()?;
 
     let tracks = subtitle_ocr::convert_bitmap_subtitles(
         input_file,
-        &ocr_work_dir,
+        ocr_work_dir.path(),
         sub_mode,
         default_ocr_language,
         ocr_engine,
@@ -5689,15 +5674,49 @@ fn post_process_ocr_subtitles(
     subtitle_ocr::mux_text_tracks_from(mux_source_file, output_file, &tracks)?;
     write_ocr_srt_sidecars(output_file, &tracks, ocr_write_srt_sidecar)?;
 
-    if let Err(err) = fs::remove_dir_all(&ocr_work_dir) {
-        debug!(
-            "Failed to clean OCR temporary directory '{}': {}",
-            ocr_work_dir.display(),
-            err
-        );
+    Ok(())
+}
+
+struct OcrWorkDir {
+    path: PathBuf,
+}
+
+static OCR_WORK_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl OcrWorkDir {
+    fn create() -> Result<Self> {
+        let mut path = std::env::temp_dir();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let nonce = OCR_WORK_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        path.push(format!(
+            "direct-play-nice-ocr-{}-{}-{}",
+            std::process::id(),
+            now,
+            nonce
+        ));
+        fs::create_dir(&path)
+            .with_context(|| format!("creating OCR temporary directory '{}'", path.display()))?;
+        Ok(Self { path })
     }
 
-    Ok(())
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for OcrWorkDir {
+    fn drop(&mut self) {
+        if let Err(err) = fs::remove_dir_all(&self.path) {
+            debug!(
+                "Failed to clean OCR temporary directory '{}': {}",
+                self.path.display(),
+                err
+            );
+        }
+    }
 }
 
 fn sanitize_sidecar_language(language: &str) -> String {
