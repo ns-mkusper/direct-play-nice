@@ -38,7 +38,13 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-          components: rustfmt
+          components: rustfmt, clippy
+
+      - name: Install cargo-audit
+        if: matrix.toolchain == 'stable'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
       - name: Set up sccache
         id: sccache-setup
@@ -165,6 +171,10 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo audit
+        if: matrix.toolchain == 'stable'
+        run: cargo audit
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}

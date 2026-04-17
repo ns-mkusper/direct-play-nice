@@ -4,6 +4,9 @@ use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod servarr_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrationKind {
     Sonarr,
@@ -106,8 +109,10 @@ impl ReplacePlan {
     pub fn finalize_success(self) -> Result<PathBuf> {
         use std::fs;
 
+        let had_original = self.input_path.exists();
+
         // Move the original file aside
-        if self.input_path.exists() {
+        if had_original {
             fs::rename(&self.input_path, &self.backup_path).with_context(|| {
                 format!(
                     "{} integration failed to move original file '{}' to backup '{}'",
@@ -119,14 +124,30 @@ impl ReplacePlan {
         }
 
         // Promote the converted temp file into place
-        fs::rename(&self.temp_output_path, &self.final_output_path).with_context(|| {
-            format!(
-                "{} integration could not promote '{}' to '{}'",
-                self.kind.label(),
-                self.temp_output_path.display(),
-                self.final_output_path.display()
-            )
-        })?;
+        if let Err(promote_err) = fs::rename(&self.temp_output_path, &self.final_output_path) {
+            if had_original && self.backup_path.exists() && !self.input_path.exists() {
+                if let Err(restore_err) = fs::rename(&self.backup_path, &self.input_path) {
+                    return Err(promote_err).with_context(|| {
+                        format!(
+                            "{} integration could not promote '{}' to '{}' and failed to restore backup '{}': {}",
+                            self.kind.label(),
+                            self.temp_output_path.display(),
+                            self.final_output_path.display(),
+                            self.input_path.display(),
+                            restore_err
+                        )
+                    });
+                }
+            }
+            return Err(promote_err).with_context(|| {
+                format!(
+                    "{} integration could not promote '{}' to '{}'",
+                    self.kind.label(),
+                    self.temp_output_path.display(),
+                    self.final_output_path.display()
+                )
+            });
+        }
 
         match fs::remove_file(&self.backup_path) {
             Ok(_) => {}
@@ -708,261 +729,4 @@ fn get_env_paths(keys: &[&str]) -> Option<Vec<String>> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-    use tempfile::tempdir;
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn append_suffix_preserves_extension() {
-        let base = PathBuf::from("Episode.mkv");
-        let suffixed = append_suffix(&base, ".tmp");
-        assert_eq!(suffixed, PathBuf::from("Episode.tmp.mkv"));
-    }
-
-    #[test]
-    fn resolve_output_path_match_input() {
-        let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "match-input", "").unwrap();
-        assert_eq!(resolved, base);
-    }
-
-    #[test]
-    fn resolve_output_path_custom_extension() {
-        let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "mp4", "").unwrap();
-        assert_eq!(resolved, PathBuf::from("Movie.mp4"));
-    }
-
-    #[test]
-    fn resolve_output_path_with_suffix_and_extension() {
-        let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "mp4", ".fixed").unwrap();
-        assert_eq!(resolved, PathBuf::from("Movie.fixed.mp4"));
-    }
-
-    #[test]
-    fn resolve_output_path_with_suffix_and_match_input() {
-        let base = PathBuf::from("Episode.mkv");
-        let resolved = resolve_output_path(&base, "match-input", "fixed").unwrap();
-        assert_eq!(resolved, PathBuf::from("Episode.fixed.mkv"));
-    }
-
-    #[test]
-    fn resolve_media_path_uses_sonarr_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("sonarr_episodefile_path");
-        env::remove_var("sonarr_episodefile_paths");
-        env::set_var("sonarr_series_path", "/tmp/show");
-        env::set_var("sonarr_episodefile_relativepath", "Season 1/episode.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(
-            resolved,
-            Path::new("/tmp/show").join("Season 1/episode.mkv")
-        );
-
-        env::remove_var("sonarr_episodefile_relativepath");
-        env::remove_var("sonarr_series_path");
-    }
-
-    #[test]
-    fn resolve_media_path_uses_sonarr_source_only() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("sonarr_episodefile_path");
-        env::remove_var("sonarr_episodefile_relativepath");
-        env::remove_var("sonarr_series_path");
-        env::set_var("sonarr_episodefile_sourcepath", "/tmp/source/episode.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/source/episode.mkv"));
-
-        env::remove_var("sonarr_episodefile_sourcepath");
-    }
-
-    #[test]
-    fn resolve_media_path_uses_sonarr_episodefile_paths() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("sonarr_episodefile_path");
-        env::set_var("sonarr_episodefile_paths", "/tmp/show/Season 1/episode.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Sonarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/show/Season 1/episode.mkv"));
-
-        env::remove_var("sonarr_episodefile_paths");
-    }
-
-    #[test]
-    fn resolve_media_paths_handles_multiple_sonarr_entries() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("sonarr_episodefile_path");
-        env::set_var(
-            "sonarr_episodefile_paths",
-            "/tmp/show/Season 1/episode1.mkv|/tmp/show/Season 1/episode2.mkv",
-        );
-
-        let resolved = resolve_media_paths(IntegrationKind::Sonarr).unwrap();
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(
-            resolved[0],
-            PathBuf::from("/tmp/show/Season 1/episode1.mkv")
-        );
-        assert_eq!(
-            resolved[1],
-            PathBuf::from("/tmp/show/Season 1/episode2.mkv")
-        );
-
-        env::remove_var("sonarr_episodefile_paths");
-    }
-
-    #[test]
-    fn resolve_media_path_uses_radarr_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("radarr_moviefile_path");
-        env::remove_var("radarr_moviefile_paths");
-        env::set_var("radarr_movie_path", "/tmp/movie");
-        env::set_var("radarr_moviefile_relativepath", "movie.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Radarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(resolved, Path::new("/tmp/movie").join("movie.mkv"));
-
-        env::remove_var("radarr_moviefile_relativepath");
-        env::remove_var("radarr_movie_path");
-    }
-
-    #[test]
-    fn resolve_media_path_uses_radarr_source_only() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("radarr_moviefile_path");
-        env::remove_var("radarr_moviefile_relativepath");
-        env::remove_var("radarr_movie_path");
-        env::set_var("radarr_moviefile_sourcepath", "/tmp/source/movie.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Radarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/source/movie.mkv"));
-
-        env::remove_var("radarr_moviefile_sourcepath");
-    }
-
-    #[test]
-    fn resolve_media_path_uses_radarr_moviefile_paths() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("radarr_moviefile_path");
-        env::set_var("radarr_moviefile_paths", "/tmp/movie/movie.mkv");
-
-        let resolved = resolve_media_paths(IntegrationKind::Radarr)
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/movie/movie.mkv"));
-
-        env::remove_var("radarr_moviefile_paths");
-    }
-
-    #[test]
-    fn resolve_media_paths_handles_multiple_radarr_entries() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        env::remove_var("radarr_moviefile_path");
-        env::set_var(
-            "radarr_moviefile_paths",
-            "/tmp/movie/part1.mkv|/tmp/movie/part2.mkv",
-        );
-
-        let resolved = resolve_media_paths(IntegrationKind::Radarr).unwrap();
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0], PathBuf::from("/tmp/movie/part1.mkv"));
-        assert_eq!(resolved[1], PathBuf::from("/tmp/movie/part2.mkv"));
-
-        env::remove_var("radarr_moviefile_paths");
-    }
-
-    #[test]
-    fn sonarr_default_suffix_is_fixed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let tmp = tempdir().unwrap();
-        let input = tmp.path().join("Episode.mkv");
-        std::fs::write(&input, b"dummy").unwrap();
-
-        env::set_var("sonarr_eventtype", "Download");
-        env::set_var("sonarr_episodefile_path", &input);
-
-        let view = ArgsView {
-            has_input: false,
-            has_output: false,
-            desired_extension: "mp4",
-            desired_suffix: "",
-        };
-
-        let prep = prepare_from_env(view).unwrap();
-        let IntegrationPreparation::Replace(plan) = prep else {
-            panic!("expected replace plan");
-        };
-        let file_name = plan
-            .final_output_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap();
-        assert_eq!(file_name, "Episode.fixed.mp4");
-
-        env::remove_var("sonarr_eventtype");
-        env::remove_var("sonarr_episodefile_path");
-    }
-
-    #[test]
-    fn radarr_default_suffix_is_empty() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let tmp = tempdir().unwrap();
-        let input = tmp.path().join("Movie.mkv");
-        std::fs::write(&input, b"dummy").unwrap();
-
-        env::set_var("radarr_eventtype", "Download");
-        env::set_var("radarr_moviefile_path", &input);
-
-        let view = ArgsView {
-            has_input: false,
-            has_output: false,
-            desired_extension: "mp4",
-            desired_suffix: "",
-        };
-
-        let prep = prepare_from_env(view).unwrap();
-        let IntegrationPreparation::Replace(plan) = prep else {
-            panic!("expected replace plan");
-        };
-        let file_name = plan
-            .final_output_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap();
-        assert_eq!(file_name, "Movie.mp4");
-
-        env::remove_var("radarr_eventtype");
-        env::remove_var("radarr_moviefile_path");
-    }
 }
