@@ -657,7 +657,9 @@ fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
     let mut groups: Vec<LineGroup> = Vec::new();
 
     for line in with_bbox {
-        let bbox = line.bbox.clone().expect("bbox missing");
+        let Some(bbox) = line.bbox.clone() else {
+            continue;
+        };
         let score = line.score;
         let height = (bbox.bottom - bbox.top).max(1) as f32;
         let center_y = (bbox.top + bbox.bottom) as f32 / 2.0;
@@ -705,10 +707,11 @@ fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
 
     let mut merged = Vec::new();
     for mut group in groups {
-        group.items.sort_by(|a, b| {
-            let a_box = a.bbox.as_ref().expect("bbox missing");
-            let b_box = b.bbox.as_ref().expect("bbox missing");
-            a_box.left.cmp(&b_box.left)
+        group.items.sort_by(|a, b| match (a.bbox.as_ref(), b.bbox.as_ref()) {
+            (Some(a_box), Some(b_box)) => a_box.left.cmp(&b_box.left),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         let avg_height = group.avg_height.max(1.0);
@@ -717,7 +720,9 @@ fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
         let mut prev_right: Option<i32> = None;
 
         for item in group.items {
-            let bbox = item.bbox.as_ref().expect("bbox missing");
+            let Some(bbox) = item.bbox.as_ref() else {
+                continue;
+            };
             if let Some(prev) = prev_right {
                 let gap = bbox.left - prev;
                 if (gap as f32) > space_threshold {
@@ -757,4 +762,3 @@ fn load_image(path: &Path) -> Result<image::RgbImage> {
     let img = image::open(path).with_context(|| format!("loading image '{}'", path.display()))?;
     Ok(img.to_rgb8())
 }
-
