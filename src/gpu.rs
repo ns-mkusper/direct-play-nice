@@ -72,7 +72,9 @@ pub fn find_hw_encoder(
         if !filter(encoder_name) {
             continue;
         }
-        let cname = CString::new(encoder_name).unwrap();
+        let Ok(cname) = CString::new(encoder_name) else {
+            continue;
+        };
         if let Some(encoder) = AVCodec::find_encoder_by_name(cname.as_c_str()) {
             let mut device_ref: Option<*mut ffi::AVBufferRef> = None;
             let mut success = dev_types.is_empty();
@@ -221,8 +223,10 @@ pub fn probe_hw_encoders(device_ok: &HashMap<&'static str, bool>) -> Vec<HwEncod
     ];
     let mut out = Vec::new();
     for (name, devs) in encs {
-        let cname = CString::new(*name).unwrap();
-        let present = AVCodec::find_encoder_by_name(cname.as_c_str()).is_some();
+        let present = match CString::new(*name) {
+            Ok(cname) => AVCodec::find_encoder_by_name(cname.as_c_str()).is_some(),
+            Err(_) => false,
+        };
         let usable = present
             && devs
                 .iter()
