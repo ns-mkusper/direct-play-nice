@@ -2,10 +2,10 @@
 
 ## Scope
 
-This document records the latest full-movie OCR stress benchmark on `plexserver`.
+This document records the latest full-movie OCR stress benchmark on a self-hosted Linux media server.
 
-- Host: `plexserver` (`mkusper@10.0.0.246:2204`)
-- Benchmark source archive: `/mnt/data4/benchmarks/ocr/silence_2016/source.mkv`
+- Host: self-hosted Linux media server (anonymized)
+- Benchmark source archive: `/benchmarks/ocr/silence_2016/source.mkv` (anonymized path)
 - Source size/duration: `38,405,520,626 bytes`, `9669.494s` (2h41m09s)
 - Command profile: `--ocr-engine pp-ocr-v3 --sub-mode force --skip-codec-check --delete-source=false`
 
@@ -24,7 +24,7 @@ This document records the latest full-movie OCR stress benchmark on `plexserver`
 
 ### Attempt A (failed)
 
-- Run dir: `/mnt/data4/benchmarks/ocr/silence_2016/run_20260417_221431`
+- Run dir: `/benchmarks/ocr/silence_2016/run_A` (anonymized path)
 - Start: `2026-04-17T22:14:31-05:00`
 - End: `2026-04-17T22:29:18-05:00`
 - Elapsed: `886s`
@@ -33,12 +33,12 @@ This document records the latest full-movie OCR stress benchmark on `plexserver`
 
 ### Attempt B (successful, final)
 
-- Run dir: `/mnt/data4/benchmarks/ocr/silence_2016/run_20260417_223648_ort116`
+- Run dir: `/benchmarks/ocr/silence_2016/run_B` (anonymized path)
 - Start: `2026-04-17T22:36:48-05:00`
 - End: `2026-04-17T23:44:08-05:00`
 - Elapsed: `4040s` (`67m20s`)
 - Exit status: `0`
-- Runtime override used: `LD_LIBRARY_PATH=/opt/direct-play-nice/ort116-runtime/lib`, `ORT_DYLIB_PATH=/opt/direct-play-nice/ort116-runtime/lib/libonnxruntime.so`
+- Runtime override used: custom ONNX Runtime CUDA library directory (anonymized absolute paths).
 
 ## Final performance metrics (Attempt B)
 
@@ -76,4 +76,4 @@ This document records the latest full-movie OCR stress benchmark on `plexserver`
 ## Notes
 
 - This source includes **four** bitmap subtitle streams (eng/eng-sdh/fre/spa). OCR load is materially higher than older one-stream stress runs.
-- Benchmark artifacts are intentionally stored off `/` under `/mnt/data4/benchmarks/ocr/silence_2016/`.
+- Benchmark artifacts are intentionally stored off `/` under a dedicated large-capacity benchmark volume.
