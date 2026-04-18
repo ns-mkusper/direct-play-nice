@@ -1,16 +1,17 @@
+use crate::transcoder::prelude::*;
 
-struct DirectPlayAssessment {
-    compatible: bool,
-    reasons: Vec<String>,
+pub(crate) struct DirectPlayAssessment {
+    pub(crate) compatible: bool,
+    pub(crate) reasons: Vec<String>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct ConversionOutcome {
-    h264_verification: Option<H264Verification>,
+    pub(crate) h264_verification: Option<H264Verification>,
 }
 
 impl ConversionOutcome {
-    fn profile_verified(&self) -> bool {
+    pub(crate) fn profile_verified(&self) -> bool {
         self.h264_verification
             .as_ref()
             .map(|check| check.is_valid())
@@ -19,7 +20,7 @@ impl ConversionOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn assess_direct_play_compatibility(
+pub(crate) fn assess_direct_play_compatibility(
     input_file: &CStr,
     target_is_mp4: bool,
     sub_mode: SubMode,
@@ -153,7 +154,9 @@ fn assess_direct_play_compatibility(
                 &mut reasons,
             );
         } else {
-            reasons.push("H.264 constraints unavailable; cannot confirm profile/level compatibility".into());
+            reasons.push(
+                "H.264 constraints unavailable; cannot confirm profile/level compatibility".into(),
+            );
         }
     }
 

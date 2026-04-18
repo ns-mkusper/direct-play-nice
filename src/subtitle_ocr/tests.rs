@@ -1,4 +1,4 @@
-use super::*;
+use crate::subtitle_ocr::*;
 use mockito::Server;
 use std::fs::File;
 use std::io::Write;

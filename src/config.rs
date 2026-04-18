@@ -117,7 +117,7 @@ fn resolve_default_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::config::*;
     use std::io::Write;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::NamedTempFile;

@@ -1,8 +1,6 @@
-use super::*;
-
 #[cfg(test)]
 mod rate_limit_tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn level_4_1_limits_match_table() {
@@ -14,7 +12,7 @@ mod rate_limit_tests {
 
 #[cfg(test)]
 mod video_tests {
-    use super::*;
+    use crate::*;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -242,7 +240,7 @@ mod video_tests {
 
 #[cfg(test)]
 mod direct_play_tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn rational_to_f64_handles_valid_fraction() {
@@ -264,7 +262,7 @@ mod direct_play_tests {
 
 #[cfg(test)]
 mod ocr_sidecar_tests {
-    use super::*;
+    use crate::*;
     use tempfile::tempdir;
 
     #[test]

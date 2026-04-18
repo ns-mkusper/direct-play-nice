@@ -1,3 +1,5 @@
+use crate::transcoder::prelude::*;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_video_file(
     input_file: &CStr,
@@ -355,7 +357,10 @@ pub(crate) fn convert_video_file(
                     Some(enc) => (enc, true),
                     None => (
                         AVCodec::find_encoder(target_video_codec).ok_or_else(|| {
-                            anyhow!("Could not find {} encoder", describe_codec(target_video_codec))
+                            anyhow!(
+                                "Could not find {} encoder",
+                                describe_codec(target_video_codec)
+                            )
                         })?,
                         false,
                     ),
@@ -499,8 +504,12 @@ pub(crate) fn convert_video_file(
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
-                let encoder = AVCodec::find_encoder(target_audio_codec)
-                    .ok_or_else(|| anyhow!("Could not find {} encoder", describe_codec(target_audio_codec)))?;
+                let encoder = AVCodec::find_encoder(target_audio_codec).ok_or_else(|| {
+                    anyhow!(
+                        "Could not find {} encoder",
+                        describe_codec(target_audio_codec)
+                    )
+                })?;
 
                 encode_context = AVCodecContext::new(&encoder);
                 media_type = ffi::AVMEDIA_TYPE_AUDIO;
@@ -856,4 +865,3 @@ pub(crate) fn convert_video_file(
 
     Ok(ConversionOutcome { h264_verification })
 }
-

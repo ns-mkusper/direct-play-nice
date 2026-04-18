@@ -1,3 +1,5 @@
+use crate::transcoder::prelude::*;
+
 pub(crate) struct H264RateLimit {
     pub(crate) max_bitrate_bits: i64,
     pub(crate) max_buffer_bits: i64,
@@ -117,7 +119,7 @@ pub(crate) fn level_option_value_for_encoder(encoder_name: &str, level: H264Leve
     }
 }
 
-fn apply_h264_profile_option(
+pub(crate) fn apply_h264_profile_option(
     ctx_ptr: *mut ffi::AVCodecContext,
     encoder_name: &str,
     profile: H264Profile,
@@ -200,7 +202,7 @@ pub(crate) struct HwEncoderInitError {
 }
 
 impl HwEncoderInitError {
-    fn new(encoder: String, message: String) -> Self {
+    pub(crate) fn new(encoder: String, message: String) -> Self {
         Self { encoder, message }
     }
 }
@@ -225,7 +227,7 @@ pub(crate) struct DecoderError {
 }
 
 impl DecoderError {
-    fn new(codec: String, stream_index: i32, message: String) -> Self {
+    pub(crate) fn new(codec: String, stream_index: i32, message: String) -> Self {
         Self {
             codec,
             stream_index,
@@ -255,7 +257,7 @@ pub(crate) struct H264Verification {
 }
 
 impl H264Verification {
-    fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         self.actual_profile == self.expected_profile && self.actual_level == self.expected_level
     }
 }
@@ -349,7 +351,11 @@ pub(crate) fn check_h264_profile_level_constraints(
     }
 }
 
-unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: &str) -> bool {
+pub(crate) unsafe fn set_codec_option_str(
+    ctx: *mut ffi::AVCodecContext,
+    key: &str,
+    value: &str,
+) -> bool {
     if ctx.is_null() {
         warn!(
             "Failed to set codec option {}='{}': encoder context is null",
@@ -390,7 +396,11 @@ unsafe fn set_codec_option_str(ctx: *mut ffi::AVCodecContext, key: &str, value: 
     }
 }
 
-unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: i64) -> bool {
+pub(crate) unsafe fn set_codec_option_i64(
+    ctx: *mut ffi::AVCodecContext,
+    key: &str,
+    value: i64,
+) -> bool {
     if ctx.is_null() {
         warn!(
             "Failed to set codec option {}={} (int): encoder context is null",
@@ -430,4 +440,3 @@ unsafe fn set_codec_option_i64(ctx: *mut ffi::AVCodecContext, key: &str, value: 
         }
     }
 }
-

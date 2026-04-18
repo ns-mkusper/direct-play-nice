@@ -1,3 +1,5 @@
+use crate::transcoder::prelude::*;
+
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let loaded_config = config::load(args.config_file.as_deref())?;
     if loaded_config.is_none() {

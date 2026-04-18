@@ -271,7 +271,7 @@ fn map_ureq_error(err: UreqError, context: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::plex::*;
 
     #[test]
     fn parse_boolish_true_values() {

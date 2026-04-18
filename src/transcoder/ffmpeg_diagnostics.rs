@@ -1,4 +1,6 @@
-fn av_error_to_string(err: i32) -> String {
+use crate::transcoder::prelude::*;
+
+pub(crate) fn av_error_to_string(err: i32) -> String {
     let mut buf = [0i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
     unsafe {
         if ffi::av_strerror(err, buf.as_mut_ptr(), buf.len()) == 0 {
@@ -9,7 +11,7 @@ fn av_error_to_string(err: i32) -> String {
     }
 }
 
-fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
+pub(crate) fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
     unsafe {
         let ptr = ffi::av_get_pix_fmt_name(fmt);
         if ptr.is_null() {
@@ -176,7 +178,7 @@ fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
     }
 }
 
-fn rational_to_string(r: ffi::AVRational) -> String {
+pub(crate) fn rational_to_string(r: ffi::AVRational) -> String {
     format!("{}/{}", r.num, r.den)
 }
 
@@ -437,7 +439,7 @@ fn build_encoder_debug_dump(raw: *const ffi::AVCodecContext) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
+pub(crate) fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
     unsafe {
         let raw = ctx.as_ptr();
         if raw.is_null() {

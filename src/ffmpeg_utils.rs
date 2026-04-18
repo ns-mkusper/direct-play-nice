@@ -1,4 +1,4 @@
-use super::*;
+use crate::*;
 
 pub(crate) struct ProgressTracker {
     duration_us: i64,

@@ -1,4 +1,4 @@
-use super::*;
+use crate::*;
 
 pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
     let ictx = AVFormatContextInput::open(input_file)?;

@@ -511,7 +511,7 @@ impl ResolvedTargetProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::devices::device_profile::*;
 
     #[test]
     fn h264_profile_try_from_accepts_known_profiles() {

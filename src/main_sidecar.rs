@@ -1,4 +1,4 @@
-use super::*;
+use crate::*;
 use std::sync::atomic::AtomicU64;
 
 #[allow(clippy::too_many_arguments)]
