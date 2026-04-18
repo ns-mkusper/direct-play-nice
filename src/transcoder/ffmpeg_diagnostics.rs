@@ -512,7 +512,7 @@ fn ffmpeg_log_level_name(level: i32) -> &'static str {
     }
 }
 
-fn configure_ffmpeg_logging() {
+pub(crate) fn configure_ffmpeg_logging() {
     let default_level = ffi::AV_LOG_WARNING as i32;
     let requested = env::var("FFMPEG_LOG_LEVEL").ok();
     let level = requested
@@ -664,4 +664,3 @@ pub(crate) fn apply_hw_encoder_quality(
         }
     }
 }
-

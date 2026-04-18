@@ -61,5 +61,19 @@ pub(crate) use transcoder::*;
 pub(crate) use types::*;
 
 fn main() -> Result<()> {
-    transcoder::run()
+    if env::var_os("RUST_LOG").is_none() {
+        env::set_var("RUST_LOG", "info");
+    }
+    let _ = env_logger::Builder::from_default_env()
+        .format_timestamp(None)
+        .target(env_logger::Target::Stderr)
+        .try_init();
+
+    configure_ffmpeg_logging();
+
+    let mut matches = Args::command().get_matches();
+    let matches_snapshot = matches.clone();
+    let args = Args::from_arg_matches_mut(&mut matches).context("Failed to parse CLI arguments")?;
+
+    transcoder::run(args, matches_snapshot)
 }

@@ -1,19 +1,4 @@
-pub(crate) fn run() -> Result<()> {
-    if env::var_os("RUST_LOG").is_none() {
-        env::set_var("RUST_LOG", "info");
-    }
-    let _ = env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .target(env_logger::Target::Stderr)
-        .try_init();
-
-    configure_ffmpeg_logging();
-
-    let mut matches = Args::command().get_matches();
-    let matches_snapshot = matches.clone();
-    let mut args = Args::from_arg_matches_mut(&mut matches)
-        .context("Failed to parse CLI arguments")?;
-
+pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let loaded_config = config::load(args.config_file.as_deref())?;
     if loaded_config.is_none() {
         warn!(
