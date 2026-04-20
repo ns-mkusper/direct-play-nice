@@ -1,6 +1,8 @@
 # OCR Benchmark Runbook
 
-This runbook captures the exact workflow for reproducible OCR stress benchmarks on the Plex server, including non-default ONNX Runtime/CUDA library wiring.
+This runbook captures the exact workflow for reproducible OCR stress
+benchmarks on the Plex server, including non-default ONNX Runtime/CUDA
+library wiring.
 
 ## 1) Build the benchmark binary
 

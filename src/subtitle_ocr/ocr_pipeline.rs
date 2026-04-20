@@ -49,7 +49,7 @@ impl OcrQualityBaseline {
     const WINDOW_MS: i64 = 3 * 60 * 1_000;
 
     fn observe(&mut self, quality: f32, confidence: f32, timestamp_ms: i64) {
-        if timestamp_ms < 0 || timestamp_ms > Self::WINDOW_MS {
+        if !(0..=Self::WINDOW_MS).contains(&timestamp_ms) {
             return;
         }
         if !quality.is_finite() || !confidence.is_finite() {
@@ -315,6 +315,7 @@ fn subtitle_to_cues(
     Ok(cues)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     language: &str,

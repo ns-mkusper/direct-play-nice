@@ -329,17 +329,16 @@ pub fn convert_bitmap_subtitles(
     } else {
         let total_tasks = tasks.len();
         drop(seed_engine);
-        run_ocr_tasks_parallel(
-            tasks,
-            worker_plan,
-            input_path.clone(),
-            work_dir.to_path_buf(),
+        let params = OcrParallelParams {
+            input_path: input_path.clone(),
+            work_dir: work_dir.to_path_buf(),
             ocr_format,
             video_dimensions,
             resolved_engine,
-            ocr_external_command.map(str::to_string),
+            ocr_external_command: ocr_external_command.map(str::to_string),
             total_tasks,
-        )?
+        };
+        run_ocr_tasks_parallel(tasks, worker_plan, params)?
     };
 
     finalize_ocr_outputs(outputs, ocr_format, video_dimensions)
@@ -554,9 +553,7 @@ fn detect_ocr_cuda_devices() -> Vec<i32> {
     detected
 }
 
-fn run_ocr_tasks_parallel(
-    tasks: Vec<OcrTask>,
-    worker_plan: OcrWorkerPlan,
+struct OcrParallelParams {
     input_path: String,
     work_dir: PathBuf,
     ocr_format: OcrFormat,
@@ -564,6 +561,12 @@ fn run_ocr_tasks_parallel(
     resolved_engine: OcrEngine,
     ocr_external_command: Option<String>,
     total_tasks: usize,
+}
+
+fn run_ocr_tasks_parallel(
+    tasks: Vec<OcrTask>,
+    worker_plan: OcrWorkerPlan,
+    params: OcrParallelParams,
 ) -> Result<Vec<OcrTaskOutput>> {
     let completed = Arc::new(AtomicUsize::new(0));
     let worker_count = worker_plan.worker_count.max(1);
@@ -583,12 +586,16 @@ fn run_ocr_tasks_parallel(
 
     let mut handles = Vec::with_capacity(worker_count);
     for (worker_idx, batch) in worker_batches.into_iter().enumerate() {
-        let input_path = input_path.clone();
-        let work_dir = work_dir.clone();
-        let command = ocr_external_command.clone();
+        let input_path = params.input_path.clone();
+        let work_dir = params.work_dir.clone();
+        let command = params.ocr_external_command.clone();
         let completed = Arc::clone(&completed);
         let assigned_device = batch.assigned_device;
         let worker_tasks = batch.tasks;
+        let ocr_format = params.ocr_format;
+        let video_dimensions = params.video_dimensions;
+        let resolved_engine = params.resolved_engine;
+        let total_tasks = params.total_tasks;
 
         handles.push(thread::spawn(move || -> Result<Vec<OcrTaskOutput>> {
             let _device_guard = set_thread_ocr_cuda_device(assigned_device);

@@ -41,4 +41,8 @@ Each multilingual fixture includes:
 
 Run with:
 
-`DPN_OCR_MULTILANG_FIXTURES=1 cargo test subtitle_ocr::tests::test_multilang_prerendered_fixture_accuracy_and_performance -- --nocapture`
+```bash
+DPN_OCR_MULTILANG_FIXTURES=1 cargo test \
+  subtitle_ocr::tests::test_multilang_prerendered_fixture_accuracy_and_performance \
+  -- --nocapture
+```
