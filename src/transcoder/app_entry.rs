@@ -389,8 +389,16 @@ fn run_conversion(
     };
     let conversion_output_file = temp_output_cstring.as_deref().unwrap_or(output_file);
     let mut conversion_result = if needs_conversion {
+        let disable_cuda_pin = should_ocr && ocr_multi_gpu_requested();
+        let prev_cuda_pin = if disable_cuda_pin {
+            let prev = std::env::var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN").ok();
+            std::env::set_var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN", "1");
+            Some(prev)
+        } else {
+            None
+        };
         let _conversion_slot = acquire_slot()?;
-        convert_video_file(
+        let result = convert_video_file(
             input_file,
             conversion_output_file,
             args.sub_mode,
@@ -407,7 +415,15 @@ fn run_conversion(
             args.audio_quality,
             args.skip_codec_check,
             args.hw_accel,
-        )
+        );
+        if let Some(prev) = prev_cuda_pin {
+            if let Some(value) = prev {
+                std::env::set_var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN", value);
+            } else {
+                std::env::remove_var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN");
+            }
+        }
+        result
     } else {
         Ok(ConversionOutcome::default())
     };
@@ -579,4 +595,15 @@ fn run_conversion(
         }
         (None, Err(err)) => Err(err),
     }
+}
+
+fn ocr_multi_gpu_requested() -> bool {
+    let Ok(raw) = std::env::var("DPN_OCR_CUDA_DEVICES") else {
+        return false;
+    };
+    let ids = raw
+        .split(',')
+        .filter_map(|part| part.trim().parse::<i32>().ok())
+        .collect::<Vec<_>>();
+    ids.len() > 1
 }
