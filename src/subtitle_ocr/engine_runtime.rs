@@ -18,6 +18,33 @@ fn init_ort_environment() -> Result<bool> {
     Ok(selection.gpu_available)
 }
 
+thread_local! {
+    static OCR_CUDA_DEVICE_ID: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) struct OcrCudaDeviceGuard {
+    previous: Option<i32>,
+}
+
+impl Drop for OcrCudaDeviceGuard {
+    fn drop(&mut self) {
+        OCR_CUDA_DEVICE_ID.with(|slot| slot.set(self.previous));
+    }
+}
+
+pub(super) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDeviceGuard {
+    let previous = OCR_CUDA_DEVICE_ID.with(|slot| {
+        let prev = slot.get();
+        slot.set(device_id);
+        prev
+    });
+    OcrCudaDeviceGuard { previous }
+}
+
+fn thread_ocr_cuda_device() -> Option<i32> {
+    OCR_CUDA_DEVICE_ID.with(|slot| slot.get())
+}
+
 struct ModelSpec {
     filename: &'static str,
     url: &'static str,
@@ -211,18 +238,55 @@ fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvi
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CUDAExecutionProvider::default();
-    ep = apply_cuda_env_overrides(ep);
-    ep = ep
-        .with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic)
-        .with_cuda_graph(false)
-        .with_conv_max_workspace(false)
-        .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested);
-    info!("CUDA EP safety brakes enabled for Maxwell-class GPUs.");
-    let mut ep = ep.build();
-    if require_gpu {
-        ep = ep.error_on_failure();
+    if let Some(device_id) = thread_ocr_cuda_device() {
+        ep = ep.with_device_id(device_id);
+        debug!("Assigning OCR worker to CUDA device {}", device_id);
     }
-    ep
+    ep = apply_cuda_env_overrides(ep);
+    let perf_profile = env_flag_enabled("DPN_OCR_CUDA_PERF_PROFILE");
+    let safety_brakes = !env_flag_enabled("DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES");
+    ep = if perf_profile {
+        info!("CUDA EP performance profile enabled (DPN_OCR_CUDA_PERF_PROFILE=1).");
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Exhaustive)
+            .with_cuda_graph(true)
+            .with_conv_max_workspace(true)
+            .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
+    } else if safety_brakes {
+        info!("CUDA EP safety brakes enabled for Maxwell-class GPUs.");
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic)
+            .with_cuda_graph(false)
+            .with_conv_max_workspace(false)
+            .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested)
+    } else {
+        info!(
+            "CUDA EP safety brakes disabled (DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=1); using balanced settings."
+        );
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Exhaustive)
+            .with_cuda_graph(false)
+            .with_conv_max_workspace(true)
+            .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
+    };
+    let strict_cuda = require_gpu || !env_flag_enabled("DPN_OCR_CUDA_FAIL_SILENT");
+    let ep = ep.build();
+    if strict_cuda {
+        ep.error_on_failure()
+    } else {
+        ep
+    }
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .map(|v| {
+            let x = v.trim().to_ascii_lowercase();
+            matches!(x.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn allow_legacy_cuda_maxwell() -> bool {
+    env_flag_enabled("DPN_OCR_ALLOW_LEGACY_CUDA")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -348,12 +412,39 @@ fn select_execution_provider_plan(
     Ok((kinds, gpu_available))
 }
 
+pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        return Vec::new();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        let output = match Command::new("nvidia-smi")
+            .arg("--query-gpu=index")
+            .arg("--format=csv,noheader")
+            .output()
+        {
+            Ok(out) if out.status.success() => out,
+            _ => return Vec::new(),
+        };
+
+        let mut indexes: Vec<i32> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<i32>().ok())
+            .collect();
+        indexes.sort_unstable();
+        indexes.dedup();
+        indexes
+    }
+}
+
 fn build_execution_providers() -> Result<ExecutionProviderSelection> {
     let require_gpu = require_gpu();
     if require_gpu {
         info!("DPN_OCR_REQUIRE_GPU=1; GPU execution provider is required.");
     }
-    let force_cpu = force_cpu_execution_providers();
+    let mut force_cpu = force_cpu_execution_providers();
     if force_cpu {
         warn!("DPN_OCR_FORCE_CPU=1; disabling GPU execution providers.");
     }
@@ -395,6 +486,27 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
 
     let directml_available = detect_directml_available(force_cpu);
     let coreml_available = detect_coreml_available(force_cpu);
+
+    // Modern ORT/CUDA builds are unreliable on legacy Maxwell cards (e.g., GTX 960).
+    // Default to CPU to avoid repeated GPU-init churn unless explicitly overridden.
+    if !force_cpu
+        && cuda_available
+        && prefer_ppocr_v3_for_legacy_nvidia()
+        && !allow_legacy_cuda_maxwell()
+    {
+        let msg = "Detected legacy NVIDIA Maxwell GPU. Disabling CUDA EP for OCR by default; \
+                   set DPN_OCR_ALLOW_LEGACY_CUDA=1 to force an experimental GPU attempt.";
+        if require_gpu {
+            bail!("{msg}");
+        }
+        warn!("{msg}");
+        FORCE_CPU_EP.store(true, Ordering::Relaxed);
+        force_cpu = true;
+    }
+
+    let cuda_available = if force_cpu { false } else { cuda_available };
+    let directml_available = if force_cpu { false } else { directml_available };
+    let coreml_available = if force_cpu { false } else { coreml_available };
 
     let (kinds, gpu_available) = select_execution_provider_plan(
         require_gpu,
@@ -439,4 +551,3 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
         gpu_available,
     })
 }
-
