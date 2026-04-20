@@ -92,6 +92,10 @@ struct PpOcrModels {
 impl PpOcrEngine {
     fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
+        let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
+        let japanese_rec = resolve_optional_japanese_rec_model(model_dir, variant)?;
+        let korean_rec = resolve_optional_korean_rec_model(model_dir, variant)?;
+        let cjk_rec = resolve_optional_cjk_rec_model(model_dir, variant)?;
         info!(
             "Initializing {} models (det='{}', cls='{}', rec='{}')",
             variant.label(),
@@ -99,23 +103,118 @@ impl PpOcrEngine {
             models.cls.display(),
             models.rec.display()
         );
-        let mut ocr = OcrLite::new();
-        ocr.init_models_custom(
-            models.det.to_string_lossy().as_ref(),
-            models.cls.to_string_lossy().as_ref(),
-            models.rec.to_string_lossy().as_ref(),
-            configure_ort_builder,
-        )
-        .map_err(|err| {
-            anyhow!(
-                "failed to initialize {} models: {} (debug: {:?})",
+        let english_ocr = init_ocr_lite(
+            variant,
+            "english",
+            &models.det,
+            &models.cls,
+            &models.rec,
+        )?;
+
+        let latin_ocr = if let Some(latin_rec_path) = latin_rec {
+            info!(
+                "Initializing {} latin rec model at '{}'",
                 variant.label(),
+                latin_rec_path.display()
+            );
+            match init_ocr_lite(variant, "latin", &models.det, &models.cls, &latin_rec_path) {
+                Ok(ocr) => Some(ocr),
+                Err(err) => {
+                    warn!(
+                        "{} latin rec model failed to initialize; falling back to english rec model only: {:#} (debug: {:?})",
+                        variant.label(),
+                        err,
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            info!(
+                "{} latin rec model not configured/found; using english rec model for all languages.",
+                variant.label()
+            );
+            None
+        };
+
+        let japanese_ocr =
+            init_optional_rec_profile(variant, "japanese", &models.det, &models.cls, japanese_rec);
+        let korean_ocr =
+            init_optional_rec_profile(variant, "korean", &models.det, &models.cls, korean_rec);
+        let cjk_ocr = init_optional_rec_profile(variant, "cjk", &models.det, &models.cls, cjk_rec);
+
+        Ok(Self {
+            english_ocr,
+            latin_ocr,
+            japanese_ocr,
+            korean_ocr,
+            cjk_ocr,
+            variant,
+        })
+    }
+}
+
+fn init_optional_rec_profile(
+    variant: PpOcrVariant,
+    profile_label: &'static str,
+    det: &Path,
+    cls: &Path,
+    rec_path: Option<PathBuf>,
+) -> Option<OcrLite> {
+    let Some(rec_path) = rec_path else {
+        info!(
+            "{} {} rec model not configured/found; fallback routing will use other rec profiles.",
+            variant.label(),
+            profile_label
+        );
+        return None;
+    };
+
+    info!(
+        "Initializing {} {} rec model at '{}'",
+        variant.label(),
+        profile_label,
+        rec_path.display()
+    );
+    match init_ocr_lite(variant, profile_label, det, cls, &rec_path) {
+        Ok(ocr) => Some(ocr),
+        Err(err) => {
+            warn!(
+                "{} {} rec model failed to initialize; routing will fall back to other rec profiles: {:#} (debug: {:?})",
+                variant.label(),
+                profile_label,
                 err,
                 err
-            )
-        })?;
-        Ok(Self { ocr, variant })
+            );
+            None
+        }
     }
+}
+
+fn init_ocr_lite(
+    variant: PpOcrVariant,
+    profile_label: &str,
+    det: &Path,
+    cls: &Path,
+    rec: &Path,
+) -> Result<OcrLite> {
+    let mut ocr = OcrLite::new();
+    ocr.init_models_custom(
+        det.to_string_lossy().as_ref(),
+        cls.to_string_lossy().as_ref(),
+        rec.to_string_lossy().as_ref(),
+        configure_ort_builder,
+    )
+    .map_err(|err| {
+        anyhow!(
+            "failed to initialize {} {} models: {} (debug: {:?})",
+            variant.label(),
+            profile_label,
+            err,
+            err
+        )
+    })?;
+    Ok(ocr)
 }
 
 fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
@@ -419,6 +518,84 @@ fn select_execution_provider_plan(
     Ok((kinds, gpu_available))
 }
 
+#[cfg(target_os = "linux")]
+fn library_visible_on_system(lib_prefix: &str) -> bool {
+    if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.lines().any(|line| line.contains(lib_prefix)) {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(ld_library_path) = env::var("LD_LIBRARY_PATH") {
+        for dir in ld_library_path.split(':').filter(|s| !s.trim().is_empty()) {
+            let path = Path::new(dir);
+            if !path.is_dir() {
+                continue;
+            }
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(lib_prefix)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    const COMMON_LIB_DIRS: [&str; 6] = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib",
+        "/usr/local/lib64",
+        "/usr/local/cuda/lib64",
+        "/opt/cuda/lib64",
+    ];
+    for dir in COMMON_LIB_DIRS {
+        let path = Path::new(dir);
+        if !path.is_dir() {
+            continue;
+        }
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(lib_prefix)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+    const REQUIRED: [&str; 4] = ["libcudart.so", "libcublas.so", "libcublasLt.so", "libcudnn.so"];
+    REQUIRED
+        .into_iter()
+        .filter(|lib| !library_visible_on_system(lib))
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+    Vec::new()
+}
+
 pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -490,6 +667,22 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
             false
         }
     };
+    if cuda_available {
+        let missing = missing_cuda_runtime_libraries();
+        if !missing.is_empty() {
+            let msg = format!(
+                "CUDA runtime appears incomplete (missing: {}). \
+                 Install CUDA/cuDNN runtime libraries and ensure they are on the linker path.",
+                missing.join(", ")
+            );
+            if require_gpu {
+                bail!("{msg}");
+            }
+            warn!("{msg} Falling back to CPU OCR.");
+            FORCE_CPU_EP.store(true, Ordering::Relaxed);
+            force_cpu = true;
+        }
+    }
 
     let directml_available = detect_directml_available(force_cpu);
     let coreml_available = detect_coreml_available(force_cpu);

@@ -1,0 +1,6 @@
+{
+  "language": "kor",
+  "expected_text": "지금 떠나야 해",
+  "min_similarity": 0.50,
+  "max_infer_ms": 3000
+}

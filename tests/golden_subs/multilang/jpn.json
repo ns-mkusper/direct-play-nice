@@ -1,0 +1,6 @@
+{
+  "language": "jpn",
+  "expected_text": "今出発しよう",
+  "min_similarity": 0.50,
+  "max_infer_ms": 3000
+}

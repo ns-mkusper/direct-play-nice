@@ -207,6 +207,26 @@ fn fallback_uses_mapped_language_code_when_available() {
 }
 
 #[test]
+fn rec_profile_routing_prefers_english_for_eng_and_latin_for_romance_langs() {
+    assert_eq!(rec_profile_for_language("eng"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("en"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("fra"), OcrRecProfile::Latin);
+    assert_eq!(rec_profile_for_language("fre"), OcrRecProfile::Latin);
+    assert_eq!(rec_profile_for_language("es"), OcrRecProfile::Latin);
+    assert_eq!(rec_profile_for_language("spa"), OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_routing_defaults_to_english_for_unknown_or_non_latin_codes() {
+    assert_eq!(rec_profile_for_language("jpn"), OcrRecProfile::Japanese);
+    assert_eq!(rec_profile_for_language("ja"), OcrRecProfile::Japanese);
+    assert_eq!(rec_profile_for_language("kor"), OcrRecProfile::Korean);
+    assert_eq!(rec_profile_for_language("ko"), OcrRecProfile::Korean);
+    assert_eq!(rec_profile_for_language("zho"), OcrRecProfile::Cjk);
+    assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::English);
+}
+
+#[test]
 fn plan_workers_ppocr_caps_by_gpu_capacity() {
     let plan =
         plan_ocr_workers_with_inputs(OcrEngine::PpOcrV3, 8, 32, None, 2, true, vec![1, 0, 1]);
@@ -723,18 +743,28 @@ fn test_quality_fallback_detection_avoids_good_english_text() {
 }
 
 #[test]
-fn test_ppocr_average_confidence_is_length_weighted() {
+fn test_ppocr_average_confidence_is_area_weighted() {
     let lines = vec![
         OcrLine {
-            text: "Hi".to_string(),
-            bbox: None,
+            text: "tiny".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 10,
+                top: 0,
+                bottom: 10,
+            }),
             score: Some(1.0),
             color: None,
             italic: false,
         },
         OcrLine {
-            text: "This should carry more weight".to_string(),
-            bbox: None,
+            text: "large".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 200,
+                top: 0,
+                bottom: 60,
+            }),
             score: Some(0.5),
             color: None,
             italic: false,
@@ -742,8 +772,8 @@ fn test_ppocr_average_confidence_is_length_weighted() {
     ];
     let avg = ppocr_average_confidence(&lines).expect("expected confidence");
     assert!(
-        avg < 0.6,
-        "expected weighted confidence to be dominated by longer text, got {avg}"
+        avg < 0.55,
+        "expected weighted confidence to be dominated by larger text area, got {avg}"
     );
 }
 
@@ -765,21 +795,67 @@ fn test_quality_fallback_detection_triggers_on_impossible_geometry() {
 }
 
 #[test]
+fn test_prune_impossible_geometry_discards_vertical_hallucinations() {
+    let mut lines = vec![
+        OcrLine {
+            text: "Hallucinated".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 8,
+                top: 0,
+                bottom: 80,
+            }),
+            score: Some(0.95),
+            color: None,
+            italic: false,
+        },
+        OcrLine {
+            text: "Valid subtitle".to_string(),
+            bbox: Some(OcrBoundingBox {
+                left: 0,
+                right: 120,
+                top: 0,
+                bottom: 18,
+            }),
+            score: Some(0.95),
+            color: None,
+            italic: false,
+        },
+    ];
+    let discarded = prune_impossible_geometry(&mut lines, "eng");
+    assert_eq!(discarded, 1);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].text, "Valid subtitle");
+}
+
+#[test]
 fn test_quality_thresholds_adapt_to_stream_baseline() {
     let mut baseline = OcrQualityBaseline::default();
-    for _ in 0..30 {
-        baseline.observe(0.70, 0.76);
+    for _ in 0..16 {
+        baseline.observe(0.80, 0.90, 120_000);
     }
-    let thresholds = quality_fallback_thresholds(&baseline);
+    let thresholds = quality_fallback_thresholds(&baseline).expect("baseline should be ready");
     assert!(
-        thresholds.quality < 0.78 && thresholds.quality >= 0.45,
+        thresholds.quality > 0.67 && thresholds.quality < 0.69,
         "unexpected quality threshold {}",
         thresholds.quality
     );
     assert!(
-        thresholds.confidence < 0.86 && thresholds.confidence >= 0.55,
+        thresholds.confidence > 0.75 && thresholds.confidence < 0.77,
         "unexpected confidence threshold {}",
         thresholds.confidence
+    );
+}
+
+#[test]
+fn test_quality_thresholds_ignore_samples_after_baseline_window() {
+    let mut baseline = OcrQualityBaseline::default();
+    for _ in 0..16 {
+        baseline.observe(0.82, 0.88, 210_000);
+    }
+    assert!(
+        quality_fallback_thresholds(&baseline).is_none(),
+        "expected no thresholds when all samples are outside baseline window"
     );
 }
 

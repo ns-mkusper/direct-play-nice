@@ -90,8 +90,21 @@ impl PpOcrVariant {
 }
 
 struct PpOcrEngine {
-    ocr: OcrLite,
+    english_ocr: OcrLite,
+    latin_ocr: Option<OcrLite>,
+    japanese_ocr: Option<OcrLite>,
+    korean_ocr: Option<OcrLite>,
+    cjk_ocr: Option<OcrLite>,
     variant: PpOcrVariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OcrRecProfile {
+    English,
+    Latin,
+    Japanese,
+    Korean,
+    Cjk,
 }
 
 impl SubtitleConverter for TesseractEngine {
@@ -131,15 +144,53 @@ impl SubtitleConverter for ExternalEngine {
 }
 
 impl SubtitleConverter for PpOcrEngine {
-    fn extract_lines(&mut self, image_path: &Path, _language: &str) -> Result<OcrOutput> {
+    fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
+        let rec_profile = rec_profile_for_language(language);
+        let (ocr, rec_label) = match rec_profile {
+            OcrRecProfile::Japanese => {
+                if let Some(japanese_ocr) = self.japanese_ocr.as_mut() {
+                    (japanese_ocr, "japanese")
+                } else if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
+                    (cjk_ocr, "cjk")
+                } else {
+                    (&mut self.english_ocr, "english")
+                }
+            }
+            OcrRecProfile::Korean => {
+                if let Some(korean_ocr) = self.korean_ocr.as_mut() {
+                    (korean_ocr, "korean")
+                } else if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
+                    (cjk_ocr, "cjk")
+                } else {
+                    (&mut self.english_ocr, "english")
+                }
+            }
+            OcrRecProfile::Cjk => {
+                if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
+                    (cjk_ocr, "cjk")
+                } else {
+                    (&mut self.english_ocr, "english")
+                }
+            }
+            OcrRecProfile::Latin => {
+                if let Some(latin_ocr) = self.latin_ocr.as_mut() {
+                    (latin_ocr, "latin")
+                } else {
+                    (&mut self.english_ocr, "english")
+                }
+            }
+            OcrRecProfile::English => (&mut self.english_ocr, "english"),
+        };
+
         let img = load_image(image_path)?;
-        let result = self
-            .ocr
+        let result = ocr
             .detect(&img, 50, 1024, 0.5, 0.3, 1.6, false, false)
             .map_err(|err| {
                 anyhow!(
-                    "{} failed: {} (debug: {:?})",
+                    "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
                     self.variant.label(),
+                    rec_label,
+                    language,
                     err,
                     err
                 )
@@ -164,6 +215,21 @@ impl SubtitleConverter for PpOcrEngine {
         let lines = merge_ocr_lines_with_spacing(lines);
 
         Ok(OcrOutput { lines })
+    }
+}
+
+fn rec_profile_for_language(language: &str) -> OcrRecProfile {
+    let normalized =
+        map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
+    match normalized.as_str() {
+        "eng" => OcrRecProfile::English,
+        "jpn" | "ja" => OcrRecProfile::Japanese,
+        "kor" | "ko" => OcrRecProfile::Korean,
+        "chi_sim" | "chi_tra" | "chi" | "zho" | "zh" => OcrRecProfile::Cjk,
+        "fra" | "fre" | "spa" | "deu" | "ger" | "ita" | "por" | "nld" | "swe" | "dan"
+        | "nor" | "fin" | "ron" | "pol" | "ces" | "slk" | "hun" | "tur" | "cat" | "glg"
+        | "ind" | "vie" => OcrRecProfile::Latin,
+        _ => OcrRecProfile::English,
     }
 }
 

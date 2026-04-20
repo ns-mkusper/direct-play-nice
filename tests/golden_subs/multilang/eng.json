@@ -1,0 +1,6 @@
+{
+  "language": "eng",
+  "expected_text": "WE SHOULD LEAVE NOW",
+  "min_similarity": 0.90,
+  "max_infer_ms": 2500
+}
