@@ -486,7 +486,21 @@ fn run_ocr_tasks_parallel(
 
         handles.push(thread::spawn(move || -> Result<Vec<OcrTaskOutput>> {
             let _device_guard = set_thread_ocr_cuda_device(assigned_device);
-            let mut engine = create_ocr_engine(resolved_engine, command.as_deref())?;
+            let mut engine = create_ocr_engine(resolved_engine, command.as_deref()).with_context(
+                || {
+                    if let Some(device_id) = assigned_device {
+                        format!(
+                            "failed to initialize OCR worker {} on CUDA device {}",
+                            worker_idx, device_id
+                        )
+                    } else {
+                        format!(
+                            "failed to initialize OCR worker {} (no explicit CUDA device)",
+                            worker_idx
+                        )
+                    }
+                },
+            )?;
             let mut local_outputs = Vec::with_capacity(worker_tasks.len());
             if let Some(device_id) = assigned_device {
                 info!(

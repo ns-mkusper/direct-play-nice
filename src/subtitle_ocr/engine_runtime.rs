@@ -106,7 +106,14 @@ impl PpOcrEngine {
             models.rec.to_string_lossy().as_ref(),
             configure_ort_builder,
         )
-        .map_err(|err| anyhow!("failed to initialize {} models: {}", variant.label(), err))?;
+        .map_err(|err| {
+            anyhow!(
+                "failed to initialize {} models: {} (debug: {:?})",
+                variant.label(),
+                err,
+                err
+            )
+        })?;
         Ok(Self { ocr, variant })
     }
 }
