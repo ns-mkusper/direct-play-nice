@@ -200,6 +200,7 @@ pub fn convert_bitmap_subtitles(
         .to_str()
         .map_err(|_| anyhow!("Input path must be valid UTF-8 for OCR side pass"))?
         .to_string();
+    apply_ocr_cuda_visible_devices_override();
     let system_language = detect_system_ocr_language();
     let video_dimensions = probe_video_dimensions(input_file);
 
@@ -276,6 +277,37 @@ pub fn convert_bitmap_subtitles(
     };
 
     finalize_ocr_outputs(outputs, ocr_format, video_dimensions)
+}
+
+fn apply_ocr_cuda_visible_devices_override() {
+    let Ok(raw) = env::var("DPN_OCR_CUDA_DEVICES") else {
+        return;
+    };
+    let parsed = parse_cuda_device_list(&raw);
+    if parsed.is_empty() {
+        return;
+    }
+    let normalized = parsed
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let current = env::var("CUDA_VISIBLE_DEVICES").ok();
+    if current.as_deref() == Some(normalized.as_str()) {
+        return;
+    }
+    if let Some(existing) = current {
+        warn!(
+            "Overriding CUDA_VISIBLE_DEVICES='{}' with DPN_OCR_CUDA_DEVICES='{}' for OCR initialization.",
+            existing, normalized
+        );
+    } else {
+        info!(
+            "Setting CUDA_VISIBLE_DEVICES='{}' from DPN_OCR_CUDA_DEVICES for OCR initialization.",
+            normalized
+        );
+    }
+    env::set_var("CUDA_VISIBLE_DEVICES", normalized);
 }
 
 impl OcrFormat {
