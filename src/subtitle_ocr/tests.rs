@@ -207,6 +207,83 @@ fn fallback_uses_mapped_language_code_when_available() {
 }
 
 #[test]
+fn plan_workers_ppocr_caps_by_gpu_capacity() {
+    let plan =
+        plan_ocr_workers_with_inputs(OcrEngine::PpOcrV3, 8, 32, None, 2, true, vec![1, 0, 1]);
+    assert_eq!(plan.worker_count, 4);
+    assert_eq!(plan.device_ids, vec![0, 1]);
+}
+
+#[test]
+fn plan_workers_ppocr_no_detected_devices_falls_back_to_one() {
+    let plan =
+        plan_ocr_workers_with_inputs(OcrEngine::PpOcrV4, 6, 16, Some(8), 1, true, Vec::new());
+    assert_eq!(plan.worker_count, 1);
+    assert!(plan.device_ids.is_empty());
+}
+
+#[test]
+fn plan_workers_non_ppocr_ignores_gpu_device_pool() {
+    let plan =
+        plan_ocr_workers_with_inputs(OcrEngine::Tesseract, 5, 64, Some(3), 4, true, vec![0, 1]);
+    assert_eq!(plan.worker_count, 3);
+    assert!(plan.device_ids.is_empty());
+}
+
+#[test]
+fn parse_cuda_device_list_deduplicates_and_ignores_invalid_entries() {
+    let parsed = parse_cuda_device_list("2,abc,1,2, ,0");
+    assert_eq!(parsed, vec![0, 1, 2]);
+}
+
+#[test]
+fn worker_batches_shard_streams_across_cuda_devices() {
+    let tasks = (0..4usize)
+        .map(|i| OcrTask {
+            order: i,
+            stream_index: i as i32,
+            language: "eng".to_string(),
+            subtitle_path: PathBuf::from(format!("stream-{}.srt", i)),
+        })
+        .collect::<Vec<_>>();
+    let batches = build_ocr_worker_batches(tasks, 4, &[0, 1]);
+    assert_eq!(batches.len(), 4);
+    assert_eq!(batches[0].assigned_device, Some(0));
+    assert_eq!(batches[1].assigned_device, Some(1));
+    assert_eq!(batches[2].assigned_device, Some(0));
+    assert_eq!(batches[3].assigned_device, Some(1));
+    assert_eq!(batches[0].tasks[0].stream_index, 0);
+    assert_eq!(batches[1].tasks[0].stream_index, 1);
+    assert_eq!(batches[2].tasks[0].stream_index, 2);
+    assert_eq!(batches[3].tasks[0].stream_index, 3);
+}
+
+#[test]
+fn worker_batches_round_robin_when_tasks_exceed_workers() {
+    let tasks = (0..5usize)
+        .map(|i| OcrTask {
+            order: i,
+            stream_index: i as i32,
+            language: "eng".to_string(),
+            subtitle_path: PathBuf::from(format!("stream-{}.srt", i)),
+        })
+        .collect::<Vec<_>>();
+    let batches = build_ocr_worker_batches(tasks, 2, &[0, 1]);
+    let w0_streams = batches[0]
+        .tasks
+        .iter()
+        .map(|task| task.stream_index)
+        .collect::<Vec<_>>();
+    let w1_streams = batches[1]
+        .tasks
+        .iter()
+        .map(|task| task.stream_index)
+        .collect::<Vec<_>>();
+    assert_eq!(w0_streams, vec![0, 2, 4]);
+    assert_eq!(w1_streams, vec![1, 3]);
+}
+
+#[test]
 fn bounding_box_to_ass_position() {
     let bbox = OcrBoundingBox {
         left: 80,
@@ -646,6 +723,67 @@ fn test_quality_fallback_detection_avoids_good_english_text() {
 }
 
 #[test]
+fn test_ppocr_average_confidence_is_length_weighted() {
+    let lines = vec![
+        OcrLine {
+            text: "Hi".to_string(),
+            bbox: None,
+            score: Some(1.0),
+            color: None,
+            italic: false,
+        },
+        OcrLine {
+            text: "This should carry more weight".to_string(),
+            bbox: None,
+            score: Some(0.5),
+            color: None,
+            italic: false,
+        },
+    ];
+    let avg = ppocr_average_confidence(&lines).expect("expected confidence");
+    assert!(
+        avg < 0.6,
+        "expected weighted confidence to be dominated by longer text, got {avg}"
+    );
+}
+
+#[test]
+fn test_quality_fallback_detection_triggers_on_impossible_geometry() {
+    let lines = vec![OcrLine {
+        text: "ThisIsClearlyHorizontalSubtitleText".to_string(),
+        bbox: Some(OcrBoundingBox {
+            left: 0,
+            right: 8,
+            top: 0,
+            bottom: 80,
+        }),
+        score: Some(0.96),
+        color: None,
+        italic: false,
+    }];
+    assert!(ppocr_needs_quality_fallback(&lines, "eng"));
+}
+
+#[test]
+fn test_quality_thresholds_adapt_to_stream_baseline() {
+    let mut baseline = OcrQualityBaseline::default();
+    for _ in 0..30 {
+        baseline.observe(0.70, 0.76);
+    }
+    let thresholds = quality_fallback_thresholds(&baseline);
+    assert!(
+        thresholds.quality < 0.78 && thresholds.quality >= 0.45,
+        "unexpected quality threshold {}",
+        thresholds.quality
+    );
+    assert!(
+        thresholds.confidence < 0.86 && thresholds.confidence >= 0.55,
+        "unexpected confidence threshold {}",
+        thresholds.confidence
+    );
+}
+
+#[test]
 fn test_postprocess_english_glue_and_punctuation() {
     let src = "ConstableCrane? Notonlyme. beforehewentintotheriver";
     let got = postprocess_ocr_text(src, "eng");
@@ -849,6 +987,130 @@ fn test_golden_dataset_quality() {
 
     if found == 0 {
         eprintln!("Golden dataset empty; skipping.");
+    }
+}
+
+#[test]
+fn test_multilang_prerendered_fixture_accuracy_and_performance() {
+    if std::env::var("DPN_OCR_MULTILANG_FIXTURES").ok().as_deref() != Some("1") {
+        eprintln!(
+            "Skipping multilingual fixture OCR test (set DPN_OCR_MULTILANG_FIXTURES=1 to enable)."
+        );
+        return;
+    }
+
+    let dataset_dir = PathBuf::from("tests/golden_subs/multilang");
+    if !dataset_dir.is_dir() {
+        eprintln!("Multilingual fixture directory not found; skipping.");
+        return;
+    }
+
+    let model_dir = match resolve_model_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("Model dir unavailable: {err}. Skipping.");
+            return;
+        }
+    };
+
+    let engine_result =
+        std::panic::catch_unwind(|| PpOcrEngine::new(&model_dir, PpOcrVariant::V3, false));
+    let mut engine = match engine_result {
+        Ok(Ok(engine)) => engine,
+        Ok(Err(err)) => {
+            eprintln!("OCR engine unavailable: {err}. Skipping.");
+            return;
+        }
+        Err(payload) => {
+            let panic_msg = if let Some(msg) = payload.downcast_ref::<&str>() {
+                *msg
+            } else if let Some(msg) = payload.downcast_ref::<String>() {
+                msg.as_str()
+            } else {
+                "unknown panic payload"
+            };
+            if is_skippable_ort_runtime_error(panic_msg) {
+                eprintln!(
+                    "Skipping multilingual fixture OCR test due to environment ORT runtime issue: {}",
+                    panic_msg
+                );
+                return;
+            }
+            std::panic::resume_unwind(payload);
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct MultiLangExpected {
+        language: String,
+        expected_text: String,
+        min_similarity: f32,
+        max_infer_ms: u64,
+    }
+
+    let mut fixture_count = 0usize;
+    for entry in fs::read_dir(&dataset_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("png") {
+            continue;
+        }
+        let json_path = path.with_extension("json");
+        if !json_path.exists() {
+            continue;
+        }
+        fixture_count += 1;
+        let json = fs::read_to_string(&json_path).unwrap();
+        let expected: MultiLangExpected = serde_json::from_str(&json).unwrap();
+
+        let start = std::time::Instant::now();
+        let output = engine.extract_lines(&path, &expected.language).unwrap();
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        assert!(
+            elapsed_ms <= expected.max_infer_ms,
+            "Fixture {:?} took too long: {}ms > {}ms",
+            path,
+            elapsed_ms,
+            expected.max_infer_ms
+        );
+
+        let actual_text = output
+            .lines
+            .iter()
+            .map(|line| line.text.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !actual_text.is_empty(),
+            "No OCR output text for fixture {:?}",
+            path
+        );
+
+        let expected_chars = normalize_text_for_char_similarity(&expected.expected_text);
+        let actual_chars = normalize_text_for_char_similarity(&actual_text);
+        let cer = char_error_rate(&expected_chars, &actual_chars);
+        let char_similarity = (1.0 - cer).clamp(0.0, 1.0);
+
+        let expected_words = normalize_text_for_word_similarity(&expected.expected_text);
+        let actual_words = normalize_text_for_word_similarity(&actual_text);
+        let wer = word_error_rate(&expected_words, &actual_words);
+        let word_similarity = (1.0 - wer).clamp(0.0, 1.0);
+
+        let similarity = char_similarity.max(word_similarity);
+        assert!(
+            similarity >= expected.min_similarity,
+            "Low OCR similarity for {:?}: got {:.3}, want >= {:.3}; expected='{}' actual='{}'",
+            path,
+            similarity,
+            expected.min_similarity,
+            expected.expected_text,
+            actual_text
+        );
+    }
+
+    if fixture_count == 0 {
+        eprintln!("Multilingual fixtures are empty; skipping.");
     }
 }
 

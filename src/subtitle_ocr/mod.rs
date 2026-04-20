@@ -26,9 +26,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, OnceLock,
 };
+use std::thread;
 
 use crate::{OcrEngine, OcrFormat, SubMode};
 use text_processing::{
