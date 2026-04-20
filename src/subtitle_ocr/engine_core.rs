@@ -136,7 +136,14 @@ impl SubtitleConverter for PpOcrEngine {
         let result = self
             .ocr
             .detect(&img, 50, 1024, 0.5, 0.3, 1.6, false, false)
-            .map_err(|err| anyhow!("{} failed: {}", self.variant.label(), err))?;
+            .map_err(|err| {
+                anyhow!(
+                    "{} failed: {} (debug: {:?})",
+                    self.variant.label(),
+                    err,
+                    err
+                )
+            })?;
 
         let mut lines = Vec::with_capacity(result.text_blocks.len());
         for block in result.text_blocks {
