@@ -469,6 +469,7 @@ fn run_ocr_tasks_parallel(
 ) -> Result<Vec<OcrTaskOutput>> {
     let completed = Arc::new(AtomicUsize::new(0));
     let worker_count = worker_plan.worker_count.max(1);
+    align_cuda_visible_devices_with_worker_plan(&worker_plan.device_ids);
     let worker_batches = build_ocr_worker_batches(tasks, worker_count, &worker_plan.device_ids);
     if !worker_plan.device_ids.is_empty() {
         info!(
@@ -552,6 +553,42 @@ fn run_ocr_tasks_parallel(
     }
     outputs.sort_by_key(|output| output.order);
     Ok(outputs)
+}
+
+fn align_cuda_visible_devices_with_worker_plan(device_ids: &[i32]) {
+    if device_ids.len() <= 1 {
+        return;
+    }
+
+    let planned = device_ids
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let current = env::var("CUDA_VISIBLE_DEVICES").ok();
+    let current_parsed = current
+        .as_deref()
+        .map(parse_cuda_device_list)
+        .unwrap_or_default();
+
+    let should_override = current_parsed.len() < device_ids.len()
+        || !device_ids.iter().all(|id| current_parsed.contains(id));
+    if !should_override {
+        return;
+    }
+
+    if let Some(raw) = current {
+        warn!(
+            "CUDA_VISIBLE_DEVICES='{}' does not expose all planned OCR devices {:?}; overriding to '{}'.",
+            raw, device_ids, planned
+        );
+    } else {
+        info!(
+            "CUDA_VISIBLE_DEVICES was unset; exposing planned OCR devices {:?} via CUDA_VISIBLE_DEVICES='{}'.",
+            device_ids, planned
+        );
+    }
+    env::set_var("CUDA_VISIBLE_DEVICES", planned);
 }
 
 #[derive(Debug)]
