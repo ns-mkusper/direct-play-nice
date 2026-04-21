@@ -18,12 +18,12 @@ legacy-NVIDIA logic in `auto` mode.
   `<= 5` (Maxwell-class and older), `--ocr-engine auto` prefers `pp-ocr-v3`
   and disables classifier for stability
 - Windows DirectML and Apple CoreML provider paths are wired and can be used
-  when runtimes are installed[^ort-ep]
+  when runtimes are installed[^ort-cuda-ep][^ort-directml-ep][^ort-coreml-ep]
 - CPU fallback is available (or forced with `DPN_OCR_FORCE_CPU=1`)
 
 ### OCR workload guidance by hardware class
 
-- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`[^cuda-gpus]
+- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`[^nvidia-cuda-gpus]
 - Newer NVIDIA families (Turing/Ampere/Ada): start with `--ocr-engine pp-ocr-v4`
 - Non-NVIDIA GPUs: use `auto` and verify provider availability with probe logs;
   if providers are unavailable, OCR falls back to CPU/Tesseract path
@@ -45,10 +45,10 @@ and HEVC output.
 ### Codec and hardware mapping implemented by the CLI
 
 - H.264 hardware encoders: `h264_nvenc`, `h264_qsv`, `h264_vaapi`,
-  `h264_videotoolbox`, `h264_amf`
+  `h264_videotoolbox`, `h264_amf`[^ffmpeg-nvenc][^ffmpeg-qsv][^ffmpeg-vaapi][^ffmpeg-videotoolbox][^ffmpeg-amf]
 - HEVC hardware encoders: `hevc_nvenc`, `hevc_qsv`, `hevc_vaapi`,
-  `hevc_videotoolbox`, `hevc_amf`
-- Backend availability is OS/build dependent and discovered at runtime[^ffmpeg-docs]
+  `hevc_videotoolbox`, `hevc_amf`[^ffmpeg-nvenc][^ffmpeg-qsv][^ffmpeg-vaapi][^ffmpeg-videotoolbox][^ffmpeg-amf]
+- Backend availability is OS/build dependent and discovered at runtime[^nvidia-codec-matrix][^intel-onevpl][^amd-amf-sdk][^apple-videotoolbox]
 
 You can inspect your current host/build support with:
 
@@ -66,6 +66,16 @@ direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 - Practical performance benefit is lower CPU pressure and higher conversion
   concurrency on hosts with working hardware encoders.
 
-[^ort-ep]: ONNX Runtime execution providers: <https://onnxruntime.ai/docs/execution-providers/>. CUDA EP: <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html>. DirectML EP: <https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html>. CoreML EP: <https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html>.
-[^cuda-gpus]: NVIDIA CUDA GPU list: <https://developer.nvidia.com/cuda-gpus>. CUDA docs: <https://docs.nvidia.com/cuda/>.
-[^ffmpeg-docs]: FFmpeg docs: <https://ffmpeg.org/ffmpeg.html>, codec docs: <https://ffmpeg.org/ffmpeg-codecs.html>. NVIDIA Video Codec SDK: <https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/read-me/index.html>, support matrix: <https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix>. Intel oneVPL supported hardware: <https://www.intel.com/content/www/us/en/docs/onevpl/upgrade-from-msdk/2021-3/supported-hardware.html>. AMD AMF SDK: <https://github.com/GPUOpen-LibrariesAndSDKs/AMF>. Apple VideoToolbox: <https://developer.apple.com/documentation/videotoolbox>.
+[^ort-cuda-ep]: ONNX Runtime CUDA execution provider: <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html>.
+[^ort-directml-ep]: ONNX Runtime DirectML execution provider: <https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html>.
+[^ort-coreml-ep]: ONNX Runtime CoreML execution provider: <https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html>.
+[^nvidia-cuda-gpus]: NVIDIA CUDA GPU compute capability list: <https://developer.nvidia.com/cuda-gpus/>.
+[^ffmpeg-nvenc]: FFmpeg `h264_nvenc` / `hevc_nvenc` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#9_002e29-nvenc>.
+[^ffmpeg-qsv]: FFmpeg `h264_qsv` / `hevc_qsv` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#QSV-Encoders>.
+[^ffmpeg-vaapi]: FFmpeg `h264_vaapi` / `hevc_vaapi` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#VAAPI-encoders>.
+[^ffmpeg-videotoolbox]: FFmpeg `h264_videotoolbox` / `hevc_videotoolbox` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#VideoToolbox-encoders>.
+[^ffmpeg-amf]: FFmpeg `h264_amf` / `hevc_amf` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#AMD-AMF-Video-encoders>.
+[^nvidia-codec-matrix]: NVIDIA Video encode/decode support matrix: <https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix>.
+[^intel-onevpl]: Intel oneVPL supported hardware: <https://www.intel.com/content/www/us/en/docs/onevpl/upgrade-from-msdk/2021-3/supported-hardware.html>.
+[^amd-amf-sdk]: AMD AMF SDK: <https://github.com/GPUOpen-LibrariesAndSDKs/AMF>.
+[^apple-videotoolbox]: Apple VideoToolbox framework: <https://developer.apple.com/documentation/videotoolbox>.
