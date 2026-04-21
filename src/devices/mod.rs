@@ -1,7 +1,14 @@
+//! Built-in streaming-device catalog and lookup helpers.
+
+/// Apple TV model definitions.
 pub mod apple_tv;
+/// Chromecast and Google TV model definitions.
 pub mod chromecast;
+/// Shared profile types and profile-planning logic.
 pub mod device_profile;
+/// Amazon Fire TV model definitions.
 pub mod fire_tv;
+/// Roku model definitions.
 pub mod roku;
 
 #[allow(unused_imports)]
@@ -11,6 +18,7 @@ pub use device_profile::{
     StreamingDevice,
 };
 
+/// All built-in streaming devices known by this crate.
 pub const STREAMING_DEVICES: &[StreamingDevice] = &[
     chromecast::CHROMECAST_1ST_GEN,
     chromecast::CHROMECAST_2ND_GEN,
@@ -32,12 +40,29 @@ pub const STREAMING_DEVICES: &[StreamingDevice] = &[
     fire_tv::FIRE_TV_CUBE_3RD_GEN,
 ];
 
+/// Finds a device by model id, case-insensitively.
+///
+/// # Examples
+///
+/// ```rust
+/// let maybe_device = direct_play_nice::devices::find_by_model("roku_ultra");
+/// assert!(maybe_device.is_some());
+/// ```
 pub fn find_by_model(model: &str) -> Option<&'static StreamingDevice> {
     STREAMING_DEVICES
         .iter()
         .find(|device| device.model.eq_ignore_ascii_case(model.trim()))
 }
 
+/// Returns all devices that belong to `family`.
+///
+/// # Examples
+///
+/// ```rust
+/// let rokus =
+///     direct_play_nice::devices::devices_for_family(direct_play_nice::devices::DeviceFamily::Roku);
+/// assert!(!rokus.is_empty());
+/// ```
 pub fn devices_for_family(family: DeviceFamily) -> Vec<&'static StreamingDevice> {
     STREAMING_DEVICES
         .iter()
@@ -45,6 +70,7 @@ pub fn devices_for_family(family: DeviceFamily) -> Vec<&'static StreamingDevice>
         .collect()
 }
 
+/// Returns supported model ids for all built-in devices.
 pub fn supported_model_ids() -> Vec<&'static str> {
     STREAMING_DEVICES.iter().map(|d| d.model).collect()
 }

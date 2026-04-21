@@ -1,3 +1,5 @@
+//! Apple TV model capability profiles.
+//!
 // Sources:
 // - https://developer.apple.com/library/archive/technotes/tn2429/_index.html
 // - https://developer.apple.com/documentation/tvos-release-notes/tvos-media-formats
@@ -21,6 +23,7 @@ const APPLE_TV_AUDIO: &[ffi::AVCodecID] = &[
     ffi::AV_CODEC_ID_EAC3,
 ];
 
+/// Capability profile for Apple TV HD.
 pub const APPLE_TV_HD: StreamingDevice = StreamingDevice {
     name: "Apple TV HD",
     model: "apple_tv_hd",
@@ -37,6 +40,7 @@ pub const APPLE_TV_HD: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(640_000),
 };
 
+/// Capability profile for Apple TV 4K (1st generation).
 pub const APPLE_TV_4K_1ST_GEN: StreamingDevice = StreamingDevice {
     name: "Apple TV 4K (1st gen)",
     model: "apple_tv_4k_1st_gen",
@@ -53,6 +57,7 @@ pub const APPLE_TV_4K_1ST_GEN: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(768_000),
 };
 
+/// Capability profile for Apple TV 4K (2nd generation).
 pub const APPLE_TV_4K_2ND_GEN: StreamingDevice = StreamingDevice {
     name: "Apple TV 4K (2nd gen)",
     model: "apple_tv_4k_2nd_gen",
@@ -69,6 +74,7 @@ pub const APPLE_TV_4K_2ND_GEN: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(768_000),
 };
 
+/// Capability profile for Apple TV 4K (3rd generation).
 pub const APPLE_TV_4K_3RD_GEN: StreamingDevice = StreamingDevice {
     name: "Apple TV 4K (3rd gen)",
     model: "apple_tv_4k_3rd_gen",

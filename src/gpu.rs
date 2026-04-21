@@ -1,3 +1,5 @@
+//! FFmpeg hardware-device and codec probing helpers.
+
 use clap::ValueEnum;
 use rsmpeg::avcodec::{AVCodec, AVCodecRef};
 use rsmpeg::ffi::{self};
@@ -7,16 +9,27 @@ use std::ffi::{c_void, CStr, CString};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// User-facing hardware-acceleration preference.
 pub enum HwAccel {
+    /// Auto-select hardware acceleration (prefers CUDA path in current logic).
     Auto,
+    /// Disable hardware acceleration.
     None,
+    /// NVIDIA NVENC-based acceleration.
     Nvenc,
+    /// VAAPI-based acceleration.
     Vaapi,
+    /// Intel Quick Sync Video acceleration.
     Qsv,
+    /// Apple VideoToolbox acceleration.
     Videotoolbox,
+    /// AMD AMF acceleration.
     Amf,
 }
 
+/// Attempts to create an FFmpeg hardware device by name.
+///
+/// Returns a retained `AVBufferRef` on success.
 pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> {
     unsafe {
         let c_name = CString::new(device_name).ok()?;
@@ -40,6 +53,7 @@ pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> 
     }
 }
 
+/// Acquires a hardware device based on the selected preference.
 pub fn acquire_hw_device(pref: HwAccel) -> Option<*mut ffi::AVBufferRef> {
     match pref {
         HwAccel::Auto | HwAccel::Nvenc => try_create_hw_device("cuda"),
@@ -51,6 +65,7 @@ pub fn acquire_hw_device(pref: HwAccel) -> Option<*mut ffi::AVBufferRef> {
     }
 }
 
+/// Finds a suitable hardware encoder and matching device context.
 pub fn find_hw_encoder(
     codec_id: ffi::AVCodecID,
     pref: HwAccel,
@@ -104,6 +119,7 @@ pub fn find_hw_encoder(
     (None, None)
 }
 
+/// Returns candidate hardware encoders for a codec id.
 pub fn encoder_candidates(
     codec_id: ffi::AVCodecID,
 ) -> &'static [(&'static str, &'static [&'static str])] {
@@ -169,6 +185,14 @@ const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])]
     ]
 }
 
+/// Probes availability of common FFmpeg hardware-device backends.
+///
+/// # Examples
+///
+/// ```rust
+/// let devices = direct_play_nice::gpu::probe_hw_devices();
+/// assert!(!devices.is_empty());
+/// ```
 pub fn probe_hw_devices() -> HashMap<&'static str, bool> {
     let types: &[&str] = &[
         "cuda",
@@ -195,19 +219,28 @@ pub fn probe_hw_devices() -> HashMap<&'static str, bool> {
 }
 
 #[derive(Serialize)]
+/// JSON-friendly hardware-device probe record.
 pub struct HwDeviceEntry {
+    /// Device backend name (for example, `"cuda"`).
     pub name: String,
+    /// Whether this backend was successfully initialized.
     pub available: bool,
 }
 
 #[derive(Serialize)]
+/// JSON-friendly hardware-encoder probe record.
 pub struct HwEncoderEntry {
+    /// FFmpeg encoder name.
     pub name: String,
+    /// Whether the encoder exists in the linked FFmpeg build.
     pub present: bool,
+    /// Hardware-device backends that can back this encoder.
     pub required_devices: Vec<String>,
+    /// Whether the encoder is both present and usable.
     pub available: bool,
 }
 
+/// Probes known hardware encoders and marks whether they are usable.
 pub fn probe_hw_encoders(device_ok: &HashMap<&'static str, bool>) -> Vec<HwEncoderEntry> {
     let encs: &[(&str, &[&str])] = &[
         ("h264_nvenc", &["cuda"]),
@@ -241,6 +274,7 @@ pub fn probe_hw_encoders(device_ok: &HashMap<&'static str, bool>) -> Vec<HwEncod
     out
 }
 
+/// Prints a concise hardware-device and hardware-encoder probe report.
 pub fn print_probe() {
     println!("Hardware Probe:\n");
     let devices = probe_hw_devices();
@@ -280,6 +314,7 @@ fn media_type_to_str(t: ffi::AVMediaType) -> &'static str {
     }
 }
 
+/// Prints FFmpeg encoder/decoder inventory with optional filtering.
 pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
     unsafe {
         let ver_codec = ffi::avcodec_version();
@@ -399,24 +434,44 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
 }
 
 #[derive(Serialize)]
+/// JSON-friendly codec inventory entry.
 pub struct CodecEntry {
+    /// FFmpeg codec short name.
     pub name: String,
+    /// Human-readable codec name.
     pub long_name: String,
+    /// `"encoder"` or `"decoder"`.
     pub kind: String,
+    /// Media type such as `"video"` or `"audio"`.
     pub media_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional decoder hardware-device list.
     pub hw_devices: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
+/// Structured summary of hardware and codec probe information.
 pub struct CodecProbeSummary {
+    /// FFmpeg version and configuration metadata.
     pub ffmpeg: serde_json::Value,
+    /// Hardware-device probe rows.
     pub devices: Vec<HwDeviceEntry>,
+    /// Hardware-encoder probe rows.
     pub hw_encoders: Vec<HwEncoderEntry>,
+    /// Encoder inventory rows.
     pub encoders: Vec<CodecEntry>,
+    /// Decoder inventory rows.
     pub decoders: Vec<CodecEntry>,
 }
 
+/// Builds a JSON-serializable probe summary.
+///
+/// # Examples
+///
+/// ```rust
+/// let summary = direct_play_nice::gpu::gather_probe_json(true, true, true, false);
+/// assert!(!summary.devices.is_empty());
+/// ```
 pub fn gather_probe_json(
     only_video: bool,
     only_hw: bool,

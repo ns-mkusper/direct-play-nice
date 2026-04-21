@@ -30,6 +30,13 @@ feature and seamless to the end user (ie. Direct Play selected by default).
 - Targets every supported streaming device by default, or narrow the profile
   with `--device`.
 
+## Documentation
+
+- CLI/operator guide (mdBook): `docs/` (build locally with
+  `mdbook build docs`).
+- Rust API docs: `cargo doc --no-deps` then open
+  `target/doc/direct_play_nice/index.html`.
+
 ### Supported Streaming Devices
 
 See [SUPPORTED_DEVICES.md](SUPPORTED_DEVICES.md) for the full up-to-date

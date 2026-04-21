@@ -8,15 +8,22 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Named output resolutions used for device constraints.
 pub enum Resolution {
+    /// 640x480.
     Resolution480p,
+    /// 1280x720.
     Resolution720p,
+    /// 1920x1080.
     Resolution1080p,
+    /// 2560x1440.
     Resolution1440p,
+    /// 3840x2160.
     Resolution2160p,
 }
 
 impl Resolution {
+    /// Returns canonical `(width, height)` dimensions.
     pub fn to_dimensions(self) -> (u32, u32) {
         match self {
             Resolution::Resolution480p => (640, 480),
@@ -27,6 +34,9 @@ impl Resolution {
         }
     }
 
+    /// Maps known dimensions to a [`Resolution`].
+    ///
+    /// Unknown values default to `1080p`.
     pub fn from_dimensions(x: u32, y: u32) -> Resolution {
         match (x, y) {
             (640, 480) => Resolution::Resolution480p,
@@ -40,22 +50,39 @@ impl Resolution {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, EnumIter)]
+/// H.264 level values used for compatibility checks.
 pub enum H264Level {
+    /// H.264 level 1.0.
     Level1 = 10,
+    /// H.264 level 1.1.
     Level1_1 = 11,
+    /// H.264 level 1.2.
     Level1_2 = 12,
+    /// H.264 level 1.3.
     Level1_3 = 13,
+    /// H.264 level 2.0.
     Level2 = 20,
+    /// H.264 level 2.1.
     Level2_1 = 21,
+    /// H.264 level 2.2.
     Level2_2 = 22,
+    /// H.264 level 3.0.
     Level3 = 30,
+    /// H.264 level 3.1.
     Level3_1 = 31,
+    /// H.264 level 3.2.
     Level3_2 = 32,
+    /// H.264 level 4.0.
     Level4 = 40,
+    /// H.264 level 4.1.
     Level4_1 = 41,
+    /// H.264 level 4.2.
     Level4_2 = 42,
+    /// H.264 level 5.0.
     Level5 = 50,
+    /// H.264 level 5.1.
     Level5_1 = 51,
+    /// H.264 level 5.2.
     Level5_2 = 52,
 }
 
@@ -98,6 +125,7 @@ impl TryFrom<i32> for H264Level {
 }
 
 impl H264Level {
+    /// Returns FFmpeg's textual representation for this level.
     pub fn ffmpeg_name(&self) -> &'static str {
         match self {
             H264Level::Level1 => "1",
@@ -122,13 +150,21 @@ impl H264Level {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// H.264 profile values used for compatibility checks.
 pub enum H264Profile {
+    /// Baseline profile.
     Baseline = ffi::AV_PROFILE_H264_BASELINE as isize,
+    /// Main profile.
     Main = ffi::AV_PROFILE_H264_MAIN as isize,
+    /// Extended profile.
     Extended = ffi::AV_PROFILE_H264_EXTENDED as isize,
+    /// High profile.
     High = ffi::AV_PROFILE_H264_HIGH as isize,
+    /// High 10 profile.
     High10 = ffi::AV_PROFILE_H264_HIGH_10 as isize,
+    /// High 4:2:2 profile.
     High422 = ffi::AV_PROFILE_H264_HIGH_422 as isize,
+    /// High 4:4:4 profile.
     High444 = ffi::AV_PROFILE_H264_HIGH_444 as isize,
 }
 
@@ -159,6 +195,7 @@ impl TryFrom<u32> for H264Profile {
 }
 
 impl H264Profile {
+    /// Returns FFmpeg's textual representation for this profile.
     pub fn ffmpeg_name(&self) -> &'static str {
         match self {
             H264Profile::Baseline => "baseline",
@@ -173,14 +210,20 @@ impl H264Profile {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Output container format.
 pub enum ContainerFormat {
+    /// MPEG-4 Part 14 container.
     Mp4,
+    /// iTunes-style MPEG-4 variant.
     M4v,
+    /// QuickTime container.
     Mov,
+    /// Matroska container.
     Mkv,
 }
 
 impl ContainerFormat {
+    /// Returns the standard lowercase extension for this container.
     pub fn as_str(self) -> &'static str {
         match self {
             ContainerFormat::Mp4 => "mp4",
@@ -190,6 +233,7 @@ impl ContainerFormat {
         }
     }
 
+    /// Parses a file extension into a container format.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_ascii_lowercase().as_str() {
             "mp4" => Some(ContainerFormat::Mp4),
@@ -202,14 +246,20 @@ impl ContainerFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Supported streaming-device families.
 pub enum DeviceFamily {
+    /// Google Chromecast and related devices.
     Chromecast,
+    /// Roku devices.
     Roku,
+    /// Apple TV devices.
     AppleTv,
+    /// Amazon Fire TV devices.
     FireTv,
 }
 
 impl DeviceFamily {
+    /// Returns this family as a canonical identifier string.
     pub fn as_str(self) -> &'static str {
         match self {
             DeviceFamily::Chromecast => "chromecast",
@@ -219,6 +269,7 @@ impl DeviceFamily {
         }
     }
 
+    /// Parses a family identifier like `"roku"` or `"apple_tv"`.
     pub fn from_identifier(id: &str) -> Option<Self> {
         match id.trim().to_ascii_lowercase().as_str() {
             "chromecast" => Some(DeviceFamily::Chromecast),
@@ -232,59 +283,98 @@ impl DeviceFamily {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Capability profile for a specific streaming device model.
 pub struct StreamingDevice {
+    /// Human-readable device name.
     pub name: &'static str,
+    /// Stable model identifier used by this crate.
     pub model: &'static str,
+    /// Device manufacturer.
     pub maker: &'static str,
+    /// Device family classification.
     pub family: DeviceFamily,
+    /// Supported output containers.
     pub containers: &'static [ContainerFormat],
+    /// Supported video codecs.
     pub video_codecs: &'static [ffi::AVCodecID],
+    /// Supported audio codecs.
     pub audio_codecs: &'static [ffi::AVCodecID],
+    /// Maximum supported H.264 profile.
     pub max_h264_profile: H264Profile,
+    /// Maximum supported H.264 level.
     pub max_h264_level: H264Level,
+    /// Maximum supported frame rate.
     pub max_fps: u32,
+    /// Maximum supported output resolution.
     pub max_resolution: Resolution,
+    /// Optional maximum supported video bitrate (bits/sec).
     pub max_video_bitrate: Option<i64>,
+    /// Optional maximum supported audio bitrate (bits/sec).
     pub max_audio_bitrate: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
+/// Device-agnostic constraints resolved across selected targets.
 pub struct ResolvedTargetProfile {
     #[allow(dead_code)]
+    /// Selected output container.
     pub container: ContainerFormat,
+    /// Selected output video codec.
     pub video_codec: ffi::AVCodecID,
+    /// Selected output audio codec.
     pub audio_codec: ffi::AVCodecID,
+    /// Optional H.264 profile/level constraints.
     pub h264_constraints: Option<(H264Profile, H264Level)>,
+    /// Maximum output frame rate.
     pub max_fps: u32,
+    /// Maximum output resolution.
     pub max_resolution: Resolution,
+    /// Optional maximum output video bitrate (bits/sec).
     pub max_video_bitrate: Option<i64>,
+    /// Optional maximum output audio bitrate (bits/sec).
     pub max_audio_bitrate: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
+/// Relevant media characteristics discovered from an input file.
 pub struct InputMediaProfile {
+    /// Input container format, if known.
     pub container: Option<ContainerFormat>,
+    /// Input video codec.
     pub video_codec: ffi::AVCodecID,
+    /// Input audio codec.
     pub audio_codec: ffi::AVCodecID,
+    /// Input video bitrate (bits/sec), if known.
     pub video_bitrate: Option<i64>,
+    /// Input audio bitrate (bits/sec), if known.
     pub audio_bitrate: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
+/// Planned output settings after device and input reconciliation.
 pub struct PlannedOutputProfile {
+    /// Planned output container.
     pub container: ContainerFormat,
+    /// Planned output video codec.
     pub video_codec: ffi::AVCodecID,
+    /// Planned output audio codec.
     pub audio_codec: ffi::AVCodecID,
+    /// Optional H.264 profile/level constraints.
     pub h264_constraints: Option<(H264Profile, H264Level)>,
+    /// Planned maximum output frame rate.
     pub max_fps: u32,
+    /// Planned maximum output resolution.
     pub max_resolution: Resolution,
+    /// Planned target video bitrate (bits/sec), if set.
     pub target_video_bitrate: Option<i64>,
+    /// Planned target audio bitrate (bits/sec), if set.
     pub target_audio_bitrate: Option<i64>,
 }
 
 impl StreamingDevice {
+    /// Returns one video codec shared by all provided devices.
     pub fn get_common_video_codec(devices: &[&StreamingDevice]) -> Result<ffi::AVCodecID> {
         let first = devices
             .first()
@@ -299,6 +389,7 @@ impl StreamingDevice {
             .ok_or_else(|| anyhow!("No common video codec found among the selected devices"))
     }
 
+    /// Returns one audio codec shared by all provided devices.
     pub fn get_common_audio_codec(devices: &[&StreamingDevice]) -> Result<ffi::AVCodecID> {
         let first = devices
             .first()
@@ -313,6 +404,7 @@ impl StreamingDevice {
             .ok_or_else(|| anyhow!("No common audio codec found among the selected devices"))
     }
 
+    /// Returns all container formats common to all provided devices.
     pub fn get_common_containers(devices: &[&StreamingDevice]) -> Result<Vec<ContainerFormat>> {
         let first = devices
             .first()
@@ -327,6 +419,7 @@ impl StreamingDevice {
         Ok(common)
     }
 
+    /// Returns the first common container format across devices.
     pub fn get_common_container(devices: &[&StreamingDevice]) -> Result<ContainerFormat> {
         Self::get_common_containers(devices)?
             .into_iter()
@@ -334,6 +427,7 @@ impl StreamingDevice {
             .ok_or_else(|| anyhow!("No common output container found among the selected devices"))
     }
 
+    /// Returns the strictest (lowest) maximum H.264 profile across devices.
     pub fn get_min_h264_profile(devices: &[&StreamingDevice]) -> Result<H264Profile> {
         let mut min_profile = H264Profile::High444;
         for device in devices {
@@ -344,6 +438,7 @@ impl StreamingDevice {
         Ok(min_profile)
     }
 
+    /// Returns the strictest (lowest) maximum H.264 level across devices.
     pub fn get_min_h264_level(devices: &[&StreamingDevice]) -> Result<H264Level> {
         let mut min_level = H264Level::iter().max_by_key(|level| *level as i32).unwrap();
         for device in devices {
@@ -354,6 +449,7 @@ impl StreamingDevice {
         Ok(min_level)
     }
 
+    /// Returns the minimum supported fps limit across devices.
     pub fn get_min_fps(devices: &[&StreamingDevice]) -> Result<u32> {
         let mut min_fps = u32::MAX;
         for device in devices {
@@ -364,6 +460,7 @@ impl StreamingDevice {
         Ok(min_fps)
     }
 
+    /// Returns the minimum supported resolution across devices.
     pub fn get_min_resolution(devices: &[&StreamingDevice]) -> Result<Resolution> {
         let mut min_res = (u32::MAX, u32::MAX);
         for device in devices {
@@ -382,15 +479,30 @@ impl StreamingDevice {
         Ok(Resolution::from_dimensions(min_res.0, min_res.1))
     }
 
+    /// Returns the smallest video bitrate limit across devices.
     pub fn get_min_video_bitrate(devices: &[&StreamingDevice]) -> Option<i64> {
         devices.iter().filter_map(|d| d.max_video_bitrate).min()
     }
 
+    /// Returns the smallest audio bitrate limit across devices.
     pub fn get_min_audio_bitrate(devices: &[&StreamingDevice]) -> Option<i64> {
         devices.iter().filter_map(|d| d.max_audio_bitrate).min()
     }
 }
 
+/// Computes a resolved compatibility profile for selected target devices.
+///
+/// # Examples
+///
+/// ```rust
+/// let devices = vec![
+///     &direct_play_nice::devices::roku::ROKU_ULTRA,
+///     &direct_play_nice::devices::apple_tv::APPLE_TV_4K_3RD_GEN,
+/// ];
+/// let resolved = direct_play_nice::devices::resolve_target_profile(&devices)
+///     .expect("should find a compatible intersection");
+/// assert!(resolved.max_fps > 0);
+/// ```
 pub fn resolve_target_profile(devices: &[&StreamingDevice]) -> Result<ResolvedTargetProfile> {
     let video_codec = StreamingDevice::get_common_video_codec(devices)?;
     let audio_codec = StreamingDevice::get_common_audio_codec(devices)?;
@@ -417,6 +529,25 @@ pub fn resolve_target_profile(devices: &[&StreamingDevice]) -> Result<ResolvedTa
 }
 
 #[allow(dead_code)]
+/// Produces an output plan for selected devices and input media properties.
+///
+/// # Examples
+///
+/// ```rust
+/// use rsmpeg::ffi;
+///
+/// let devices = vec![&direct_play_nice::devices::roku::ROKU_ULTRA];
+/// let input = direct_play_nice::devices::InputMediaProfile {
+///     container: Some(direct_play_nice::devices::ContainerFormat::Mkv),
+///     video_codec: ffi::AV_CODEC_ID_H264,
+///     audio_codec: ffi::AV_CODEC_ID_AAC,
+///     video_bitrate: Some(8_000_000),
+///     audio_bitrate: Some(192_000),
+/// };
+/// let plan = direct_play_nice::devices::plan_output_profile(&devices, &input)
+///     .expect("planning should succeed");
+/// assert!(plan.max_fps > 0);
+/// ```
 pub fn plan_output_profile(
     devices: &[&StreamingDevice],
     input: &InputMediaProfile,
@@ -479,6 +610,7 @@ pub fn plan_output_profile(
 
 impl ResolvedTargetProfile {
     #[allow(dead_code)]
+    /// Returns whether this profile is playable by `device`.
     pub fn is_compatible_with_device(&self, device: &StreamingDevice) -> bool {
         let h264_ok = if let Some((profile, level)) = self.h264_constraints {
             profile <= device.max_h264_profile && level <= device.max_h264_level

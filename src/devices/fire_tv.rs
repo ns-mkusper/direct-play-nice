@@ -1,3 +1,5 @@
+//! Amazon Fire TV model capability profiles.
+//!
 // Sources:
 // - https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html
 
@@ -20,6 +22,7 @@ const FIRE_TV_AUDIO: &[ffi::AVCodecID] = &[
     ffi::AV_CODEC_ID_FLAC,
 ];
 
+/// Capability profile for Fire TV Stick 4K.
 pub const FIRE_TV_STICK_4K: StreamingDevice = StreamingDevice {
     name: "Fire TV Stick 4K",
     model: "fire_tv_stick_4k",
@@ -36,6 +39,7 @@ pub const FIRE_TV_STICK_4K: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(1_024_000),
 };
 
+/// Capability profile for Fire TV Stick 4K Max.
 pub const FIRE_TV_STICK_4K_MAX: StreamingDevice = StreamingDevice {
     name: "Fire TV Stick 4K Max",
     model: "fire_tv_stick_4k_max",
@@ -52,6 +56,7 @@ pub const FIRE_TV_STICK_4K_MAX: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(1_024_000),
 };
 
+/// Capability profile for Fire TV Cube (3rd generation).
 pub const FIRE_TV_CUBE_3RD_GEN: StreamingDevice = StreamingDevice {
     name: "Fire TV Cube (3rd gen)",
     model: "fire_tv_cube_3rd_gen",
