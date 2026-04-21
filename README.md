@@ -7,6 +7,18 @@
 `direct-play-nice` is a CLI tool that converts video files to profiles more
 likely to Direct Play across common streaming devices.
 
+## What Is Direct Play?
+
+Direct Play means the client can play the original media file as-is, without
+server-side video transcoding. In practice, this is usually the lowest-load,
+highest-quality playback path for media servers.
+
+Official references:
+
+- Plex: <https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/>
+- Jellyfin codec support (goal is Direct Play): <https://jellyfin.org/docs/general/clients/codec-support>
+- Emby playback methods: <https://emby.media/support/articles/DirectPlay-Stream-Transcoding.html>
+
 ## Quick Install
 
 ```bash
