@@ -1,32 +1,41 @@
 # Hardware Acceleration
 
-This chapter covers GPU acceleration in `direct_play_nice` for both:
+This chapter documents acceleration paths actually implemented in
+`direct_play_nice`:
 
-- AI OCR of bitmap subtitles
-- video transcoding
+- AI OCR for bitmap subtitle streams (PGS/VobSub/DVD)
+- H.264/HEVC hardware transcoding via FFmpeg encoders
 
-Support depends on your GPU hardware, driver stack, and how FFmpeg/ONNX Runtime
-were built in your environment.
+## OCR acceleration (bitmap subtitles)
 
-## OCR acceleration (bitmap subtitle AI OCR)
+`direct_play_nice` uses ONNX Runtime providers for PP-OCR and has explicit
+legacy-NVIDIA logic in `auto` mode.
 
-OCR acceleration is used for bitmap subtitle streams (PGS/VobSub/DVD) when OCR
-is enabled. The runtime uses ONNX Runtime execution providers with fallback.
+### What is supported in this project
 
-Typical provider order is:
+- NVIDIA CUDA path for PP-OCRv3/PP-OCRv4 (primary validated path)
+- Legacy NVIDIA behavior: if `nvidia-smi` reports compute capability major
+  `<= 5` (Maxwell-class and older), `--ocr-engine auto` prefers `pp-ocr-v3`
+  and disables classifier for stability
+- Windows DirectML and Apple CoreML provider paths are wired and can be used
+  when runtimes are installed
+- CPU fallback is available (or forced with `DPN_OCR_FORCE_CPU=1`)
 
-- CUDA (NVIDIA, when available)
-- DirectML (Windows)
-- CoreML (Apple platforms)
-- CPU fallback
+### OCR workload guidance by hardware class
 
-### OCR architecture guidance
+- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`
+- Newer NVIDIA families (Turing/Ampere/Ada): start with `--ocr-engine pp-ocr-v4`
+- Non-NVIDIA GPUs: use `auto` and verify provider availability with probe logs;
+  if providers are unavailable, OCR falls back to CPU/Tesseract path
 
-- NVIDIA: CUDA-capable GPUs supported by your CUDA Toolkit + cuDNN + ONNX
-  Runtime build.
-- Windows DirectML: DirectX 12-capable GPUs (vendor/driver dependent).
-- Apple CoreML: Apple platform support depends on CoreML/ONNX Runtime provider
-  compatibility.
+### OCR performance and validation artifacts
+
+- Full-movie OCR benchmark (self-hosted Linux, PP-OCRv3 GPU-required profile):
+  `87.62 FPS`, `3.65x` realtime
+  - [OCR benchmark report](../../benches/OCR_BENCHMARK.md)
+- OCR AI/GPU paths are covered in integration tests:
+  - [AI OCR stream coverage test](../../tests/cli_bitmap_subs.rs)
+  - [Multilingual OCR accuracy/perf stress](../../tests/cli_ocr_multilang_stress.rs)
 
 ### OCR official references
 
@@ -47,29 +56,32 @@ Typical provider order is:
 
 ## Transcoding acceleration
 
-`direct_play_nice` can use hardware-accelerated transcoding through FFmpeg when
-available. You can inspect what your current build/runtime supports with:
+`direct_play_nice` hardware encoder selection is currently targeted at H.264
+and HEVC output.
+
+### Codec and hardware mapping implemented by the CLI
+
+- H.264 hardware encoders: `h264_nvenc`, `h264_qsv`, `h264_vaapi`,
+  `h264_videotoolbox`, `h264_amf`
+- HEVC hardware encoders: `hevc_nvenc`, `hevc_qsv`, `hevc_vaapi`,
+  `hevc_videotoolbox`, `hevc_amf`
+- Backend availability is OS/build dependent and discovered at runtime
+
+You can inspect your current host/build support with:
 
 ```bash
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
-Common acceleration paths include:
+### Transcoding performance and validation artifacts
 
-- NVIDIA NVENC/NVDEC
-- Intel Quick Sync Video (QSV)
-- VAAPI (primarily Linux)
-- AMD AMF
-- Apple VideoToolbox
-
-### Transcoding architecture guidance
-
-- NVIDIA: see the NVIDIA Video Codec support matrix for exact GPU generation and
-  codec-level support.
-- Intel: see oneVPL supported hardware/runtime docs for QSV capability details.
-- AMD: AMF support depends on GPU generation, driver, and platform support in
-  FFmpeg and AMF.
-- Apple: VideoToolbox support depends on macOS + hardware codec support.
+- NVENC end-to-end matrix test validates profile/level/bitrate/device behavior:
+  - [NVENC matrix test](../../tests/nvenc_matrix.rs)
+- NVENC regression tests:
+  - [Profile/level integration test](../../tests/nvenc_integration.rs)
+  - [Duration-preservation regression](../../tests/nvenc_duration.rs)
+- Practical performance benefit is lower CPU pressure and higher conversion
+  concurrency on hosts with working hardware encoders.
 
 ### Transcoding official references
 

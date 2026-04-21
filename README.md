@@ -49,10 +49,17 @@ direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 
 `direct_play_nice` supports GPU acceleration in two places:
 
-- OCR acceleration for bitmap subtitles (PGS/VobSub/DVD) via ONNX Runtime
-  providers (for example CUDA/DirectML/CoreML with CPU fallback)
-- hardware-accelerated transcoding via FFmpeg paths (for example NVENC/NVDEC,
-  QSV, VAAPI, AMF, VideoToolbox)
+- Bitmap subtitle OCR (PGS/VobSub/DVD) via ONNX Runtime providers
+- H.264/HEVC hardware transcoding via FFmpeg hardware encoders
+
+Project-specific behavior:
+
+- `--ocr-engine auto` prefers `pp-ocr-v4` on modern GPU stacks
+- legacy NVIDIA (Maxwell-class / compute capability `<= 5`) auto-selects
+  `pp-ocr-v3` for better stability
+- OCR benchmark evidence in this repo shows full-movie OCR at `87.62 FPS`
+  (`3.65x` realtime) on a self-hosted Linux GPU run
+  ([OCR benchmark report](benches/OCR_BENCHMARK.md))
 
 Official compatibility and architecture references are collected in the manual:
 [Hardware Acceleration](docs/src/hardware-acceleration.md).
