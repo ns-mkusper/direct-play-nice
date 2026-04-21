@@ -18,7 +18,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Detect release-relevant changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          printf '%s\n' "$changed"
+
+          if printf '%s\n' "$changed" | grep -Eq '^(src/|Cargo\.toml$|Cargo\.lock$|release-plz\.toml$|cliff\.toml$|CHANGELOG\.md$)'; then
+            echo "enforce=true" >> "$GITHUB_OUTPUT"
+            echo "Release-readiness enforcement enabled."
+          else
+            echo "enforce=false" >> "$GITHUB_OUTPUT"
+            echo "Release-readiness enforcement skipped: no crate/release metadata changes."
+          fi
+
       - name: Run release-plz update preview
+        if: steps.changes.outputs.enforce == 'true'
         uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: update
@@ -26,6 +44,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Decide if merge will release
+        if: steps.changes.outputs.enforce == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -59,3 +78,7 @@ jobs:
           fi
 
           echo "Current crate version ${crate_version} is not tagged/published, so merge should trigger a release."
+
+      - name: Release readiness skipped
+        if: steps.changes.outputs.enforce != 'true'
+        run: echo "No release-impacting changes in this PR; skipping strict release-trigger check."
