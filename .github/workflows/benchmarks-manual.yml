@@ -1,0 +1,122 @@
+name: Benchmarks (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_path:
+        description: "Optional override for benchmark source file path"
+        required: false
+        type: string
+      sample_ms:
+        description: "Sampling window in milliseconds"
+        required: false
+        default: "200"
+        type: string
+      video_quality:
+        description: "Target quality profile"
+        required: false
+        default: "1080p"
+        type: choice
+        options:
+          - 1080p
+          - 720p
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  benchmarks:
+    name: Run Benchmarks
+    runs-on:
+      - self-hosted
+      - linux
+      - plex-bench
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+    env:
+      BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
+      INPUT_SAMPLE_MS: ${{ github.event.inputs.sample_ms }}
+      INPUT_VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve benchmark source path
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_path="${INPUT_SOURCE_PATH:-}"
+          if [[ -z "$source_path" ]]; then
+            source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
+          fi
+          if [[ -z "$source_path" ]]; then
+            echo "::error title=Missing source path::Set workflow input 'source_path' or BENCHMARK_SOURCE_PATH secret."
+            exit 1
+          fi
+          echo "path=$source_path" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool nvidia-smi; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}."
+            exit 1
+          fi
+          ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: manual-bench-v1
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Validate benchmark source file
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ steps.source.outputs.path }}"
+          mkdir -p benchmark_artifacts
+
+      - name: Run transcoding benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/transcode-tools/run_transcode_benchmark.sh \
+            --bin target/release/direct_play_nice \
+            --source "${{ steps.source.outputs.path }}" \
+            --run-dir benchmark_artifacts/transcode \
+            --hw-accel nvenc \
+            --video-quality "${INPUT_VIDEO_QUALITY:-1080p}" \
+            --sample-ms "${INPUT_SAMPLE_MS:-200}"
+
+      - name: Collect benchmark artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
+          cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
+          cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-manual-${{ github.run_id }}
+          path: |
+            benchmark_artifacts/TRANSCODE_BENCHMARK.md
+            benchmark_artifacts/TRANSCODE_BENCHMARK.json
+            benchmark_artifacts/OCR_BENCHMARK.md
