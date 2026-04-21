@@ -1,17 +1,14 @@
 # direct-play-nice Manual
 
-`direct-play-nice` is a CLI-first tool that converts media into profiles more
-likely to Direct Play across common streaming devices.
+This manual is the operational guide for the `direct_play_nice` CLI.
 
-Use this manual for:
+Use it for:
 
-- installation and local setup
-- everyday CLI usage
-- Sonarr/Radarr automation setup
-- probing and troubleshooting encoder/device support
+- installation and setup
+- first-run walkthroughs
+- full command/flag reference
+- Sonarr/Radarr automation
+- troubleshooting hardware, codec, and OCR issues
 
-If you are looking for Rust API docs instead, run:
-
-```bash
-cargo doc --no-deps
-```
+If you only need the quick install and a one-command example, use the project
+`README.md`.

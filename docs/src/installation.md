@@ -1,6 +1,12 @@
 # Installation
 
-## Build from source
+## From crates.io
+
+```bash
+cargo install direct_play_nice
+```
+
+## From source
 
 ```bash
 git clone https://github.com/ns-mkusper/direct-play-nice.git
@@ -8,15 +14,8 @@ cd direct-play-nice
 cargo build --release
 ```
 
-The resulting binary is at:
+Binary path:
 
 ```text
 target/release/direct_play_nice
-```
-
-## Verify installation
-
-```bash
-./target/release/direct_play_nice --version
-./target/release/direct_play_nice --help
 ```

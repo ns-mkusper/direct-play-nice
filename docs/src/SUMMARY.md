@@ -2,7 +2,10 @@
 
 - [Manual Home](./index.md)
 - [Installation](./installation.md)
-- [CLI Quick Start](./cli-quick-start.md)
+- [Getting Started](./getting-started.md)
+- [Command Reference](./command-reference.md)
+- [Subtitle OCR](./subtitle-ocr.md)
 - [Sonarr/Radarr Integration](./servarr.md)
 - [Probe and Debug](./probe-and-debug.md)
+- [Troubleshooting](./troubleshooting.md)
 - [Release Notes and Versioning](./release-and-versioning.md)
