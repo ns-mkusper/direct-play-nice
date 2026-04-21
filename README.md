@@ -45,6 +45,25 @@ Probe local hardware/codec capabilities:
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
+## GPU Acceleration
+
+`direct_play_nice` supports GPU acceleration in two places:
+
+- Bitmap subtitle OCR (PGS/VobSub/DVD) via ONNX Runtime providers
+- H.264/HEVC hardware transcoding via FFmpeg hardware encoders
+
+Project-specific behavior:
+
+- `--ocr-engine auto` prefers `pp-ocr-v4` on modern GPU stacks
+- legacy NVIDIA (Maxwell-class / compute capability `<= 5`) auto-selects
+  `pp-ocr-v3` for better stability
+- OCR benchmark evidence in this repo shows full-movie OCR at `87.62 FPS`
+  (`3.65x` realtime) on a self-hosted Linux GPU run
+  ([OCR benchmark report](benches/OCR_BENCHMARK.md))
+
+Official compatibility and architecture references are collected in the manual:
+[Hardware Acceleration](docs/src/hardware-acceleration.md).
+
 ## Sonarr Download Hook Example
 
 Use Sonarr `Settings -> Connect -> Custom Script` and enable the script on the
@@ -84,7 +103,8 @@ For the full model matrix and constraints, see
 For advanced usage, read the manual:
 
 - [direct-play-nice Book (mdBook)](docs/src/index.md)
-- GPU/OCR setup and runtime notes: [Subtitle OCR](docs/src/subtitle-ocr.md)
+- AI OCR for bitmap subtitles (setup + runtime notes): [Subtitle OCR](docs/src/subtitle-ocr.md)
+- GPU acceleration and supported architecture references: [Hardware Acceleration](docs/src/hardware-acceleration.md)
 - Plex auto-refresh workflow: [Plex Refresh](docs/src/plex-refresh.md)
 - Arr custom-script operation: [Sonarr/Radarr Integration](docs/src/servarr.md)
 - Hardware probing and diagnostics: [Probe and Debug](docs/src/probe-and-debug.md)

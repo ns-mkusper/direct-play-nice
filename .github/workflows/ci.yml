@@ -426,6 +426,16 @@ jobs:
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          RUSTDOCFLAGS: >-
+            -C link-arg=Mfplat.lib
+            -C link-arg=Strmiids.lib
+            -C link-arg=Mfuuid.lib
+            -C link-arg=Bcrypt.lib
+            -C link-arg=Ncrypt.lib
+            -C link-arg=Crypt32.lib
+            -C link-arg=Secur32.lib
+            -C link-arg=Ole32.lib
+            -C link-arg=User32.lib
           DPN_OCR_GOLDEN: "1"
           DPN_OCR_AI_E2E: "1"
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models

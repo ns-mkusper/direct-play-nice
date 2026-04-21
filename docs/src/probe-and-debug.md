@@ -28,6 +28,10 @@ direct_play_nice --probe-streams --output json input.mkv
 
 Use these to tune parallel conversion throughput per machine.
 
+For GPU architecture guidance and official vendor/runtime references (ONNX,
+CUDA, DirectML, Video Codec SDK, oneVPL, AMF, VideoToolbox), see
+[Hardware Acceleration](./hardware-acceleration.md).
+
 ## OCR runtime diagnostics (Linux)
 
 - verify ONNX Runtime linkage if OCR provider loading fails

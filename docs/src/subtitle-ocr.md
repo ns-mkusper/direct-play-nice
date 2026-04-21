@@ -2,7 +2,11 @@
 
 Bitmap subtitle formats (PGS/VobSub/DVD) are not directly compatible with MP4
 Direct Play in many client stacks. `direct_play_nice` can OCR bitmap subtitles
-into text tracks.
+into text tracks using AI OCR backends (PP-OCR/Tesseract). This path is meant
+for bitmap subtitle streams; text subtitles are muxed directly when compatible.
+
+For official GPU architecture/provider references and compatibility links, see
+[Hardware Acceleration](./hardware-acceleration.md).
 
 ## Defaults
 
@@ -60,7 +64,7 @@ Default model filenames:
 ```toml
 sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
-ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
+ocr_engine = "auto"         # auto | tesseract | pp-ocr-v3 | pp-ocr-v4 | external
 ocr_format = "srt"          # srt | ass
 ocr_write_srt_sidecar = false
 ocr_external_command = "python3 /opt/ocr/run.py"

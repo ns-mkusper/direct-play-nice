@@ -15,7 +15,8 @@
 
 name: Release
 permissions:
-  "contents": "write"
+  "contents": "read"
+  "actions": "read"
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -238,14 +239,139 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+
+  benchmark-runner-check:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+    steps:
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BENCHMARK_SOURCE_PATH:-}" ]]; then
+            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping benchmarks: BENCHMARK_SOURCE_PATH secret is not set."
+            exit 0
+          fi
+
+          has_runner="$(gh api repos/${{ github.repository }}/actions/runners --paginate \
+            --jq '[.runners[] | select(.status=="online" and ([.labels[].name] | index("plex-bench")))] | length > 0')"
+          if [[ "$has_runner" == "true" ]]; then
+            echo "run-benchmarks=true" >> "$GITHUB_OUTPUT"
+            echo "Benchmark runner is online."
+          else
+            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping benchmarks: no online self-hosted runner with label 'plex-bench'."
+          fi
+
+  benchmarks:
+    needs:
+      - plan
+      - benchmark-runner-check
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
+    runs-on:
+      - self-hosted
+      - linux
+      - plex-bench
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Ensure benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "Benchmark dependencies already present."
+            exit 0
+          fi
+
+          echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}. Preinstall them in the self-hosted runner image."
+          exit 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release-bench-v1
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Validate benchmark source path
+        run: |
+          test -n "$BENCHMARK_SOURCE_PATH"
+          test -f "$BENCHMARK_SOURCE_PATH"
+          mkdir -p benchmark_artifacts
+
+      - name: Validate GPU acceleration path
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v nvidia-smi >/dev/null 2>&1
+          nvidia-smi -L
+          ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
+
+      - name: Run transcoding benchmark
+        run: |
+          bash scripts/transcode-tools/run_transcode_benchmark.sh \
+            --bin target/release/direct_play_nice \
+            --source "$BENCHMARK_SOURCE_PATH" \
+            --run-dir benchmark_artifacts/transcode \
+            --hw-accel nvenc \
+            --video-quality 1080p \
+            --sample-ms 200
+
+      - name: Collect benchmark artifacts
+        run: |
+          cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
+          cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
+          cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-benchmarks
+          path: |
+            benchmark_artifacts/TRANSCODE_BENCHMARK.md
+            benchmark_artifacts/TRANSCODE_BENCHMARK.json
+            benchmark_artifacts/OCR_BENCHMARK.md
   # Determines if we should publish/announce
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - benchmarks
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.benchmarks.result == 'skipped' || needs.benchmarks.result == 'success') }}
+    permissions:
+      contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
