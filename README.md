@@ -81,10 +81,13 @@ For the full model matrix and constraints, see
 
 ## Documentation
 
-For advanced usage, full CLI reference, OCR setup, Sonarr/Radarr integration,
-and troubleshooting, read the manual:
+For advanced usage, read the manual:
 
 - [direct-play-nice Book (mdBook)](docs/src/index.md)
+- GPU/OCR setup and runtime notes: [Subtitle OCR](docs/src/subtitle-ocr.md)
+- Plex auto-refresh workflow: [Plex Refresh](docs/src/plex-refresh.md)
+- Arr custom-script operation: [Sonarr/Radarr Integration](docs/src/servarr.md)
+- Hardware probing and diagnostics: [Probe and Debug](docs/src/probe-and-debug.md)
 
 For Rust API docs (library internals used by the CLI):
 

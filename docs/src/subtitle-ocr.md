@@ -27,7 +27,22 @@ DirectML, CoreML, then CPU). You can force behavior with:
 - `DPN_OCR_REQUIRE_GPU=1`
 - `DPN_OCR_FORCE_CPU=1`
 
+Linux runtime notes:
+
+- Ensure CUDA/cuDNN and ONNX Runtime are version-compatible.
+- `ORT_DYLIB_PATH=/path/to/libonnxruntime.so` can be used if ONNX Runtime is
+  not discoverable on default library paths.
+- For older NVIDIA stacks, `--ocr-engine pp-ocr-v3` can be more stable than
+  `pp-ocr-v4`.
+
 ## Model location
 
 Models are downloaded to a default model directory unless `DPN_OCR_MODEL_DIR`
 is set.
+
+Default model filenames:
+
+- v4: `ch_PP-OCRv4_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_infer.onnx`,
+  `en_PP-OCRv4_rec_infer.onnx`
+- v3: `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
+  `en_PP-OCRv3_rec_infer.onnx`

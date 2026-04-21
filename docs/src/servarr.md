@@ -14,6 +14,25 @@
 - `--delete-source` applies to direct CLI usage.
 - In Sonarr/Radarr mode, replacement/rollback logic is handled by integration flow.
 
+## Practical wrapper pattern
+
+For GPU OCR environments, keep a stable wrapper script as the command Sonarr
+or Radarr calls. This keeps runtime paths and OCR flags centralized.
+
+Example wrapper:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+export ORT_DYLIB_PATH=\"/opt/onnxruntime/lib/libonnxruntime.so\"
+export LD_LIBRARY_PATH=\"/opt/onnxruntime/lib:${LD_LIBRARY_PATH:-}\"
+
+exec /path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
+```
+
+This avoids drift between manual shell runs and Arr-triggered runs.
+
 For service-specific script setup, see the Servarr docs:
 
 - <https://wiki.servarr.com/sonarr/custom-scripts>

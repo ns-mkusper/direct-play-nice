@@ -27,3 +27,9 @@ direct_play_nice --probe-streams --output json input.mkv
 - `DIRECT_PLAY_NICE_JOBS_PER_GPU`
 
 Use these to tune parallel conversion throughput per machine.
+
+## OCR runtime diagnostics (Linux)
+
+- verify ONNX Runtime linkage if OCR provider loading fails
+- set `ORT_DYLIB_PATH` when `libonnxruntime.so` is in a non-standard location
+- set `DPN_OCR_REQUIRE_GPU=1` for fail-fast behavior when GPU OCR is mandatory
