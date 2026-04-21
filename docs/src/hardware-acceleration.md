@@ -2,8 +2,35 @@
 
 This chapter covers GPU acceleration in `direct_play_nice` for:
 
-- AI OCR for bitmap subtitle streams (PGS/VobSub/DVD)
 - H.264/HEVC hardware transcoding via FFmpeg encoders
+- AI OCR for bitmap subtitle streams (PGS/VobSub/DVD)
+
+## Transcoding acceleration
+
+`direct_play_nice` hardware encoder selection is currently targeted at H.264
+and HEVC output.
+
+### Codec and hardware mapping implemented by the CLI
+
+- H.264 hardware encoders: `h264_nvenc`, `h264_qsv`, `h264_vaapi`,
+  `h264_videotoolbox`, `h264_amf`[^nvidia-ffmpeg][^nvidia-nvenc-api][^ffmpeg-qsv][^ffmpeg-vaapi][^apple-videotoolbox][^amd-amf-sdk]
+- HEVC hardware encoders: `hevc_nvenc`, `hevc_qsv`, `hevc_vaapi`,
+  `hevc_videotoolbox`, `hevc_amf`[^nvidia-ffmpeg][^nvidia-nvenc-api][^ffmpeg-qsv][^ffmpeg-vaapi][^apple-videotoolbox][^amd-amf-sdk]
+- Backend availability is OS/build dependent and discovered at runtime[^nvidia-codec-matrix][^intel-onevpl][^amd-amf-sdk][^apple-videotoolbox]
+
+You can inspect your current host/build support with:
+
+```bash
+direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
+```
+
+### Transcoding performance and validation artifacts
+
+- NVENC end-to-end matrix test validates profile/level/bitrate/device behavior:
+  - [NVENC matrix test](../../tests/nvenc_matrix.rs)
+- NVENC regression tests:
+  - [Profile/level integration test](../../tests/nvenc_integration.rs)
+  - [Duration-preservation regression](../../tests/nvenc_duration.rs)
 
 ## OCR acceleration (bitmap subtitles)
 
@@ -36,40 +63,12 @@ legacy-NVIDIA logic in `auto` mode.
   - [AI OCR stream coverage test](../../tests/cli_bitmap_subs.rs)
   - [Multilingual OCR accuracy/perf stress](../../tests/cli_ocr_multilang_stress.rs)
 
-## Transcoding acceleration
-
-`direct_play_nice` hardware encoder selection is currently targeted at H.264
-and HEVC output.
-
-### Codec and hardware mapping implemented by the CLI
-
-- H.264 hardware encoders: `h264_nvenc`, `h264_qsv`, `h264_vaapi`,
-  `h264_videotoolbox`, `h264_amf`[^nvidia-ffmpeg][^ffmpeg-qsv][^ffmpeg-vaapi][^apple-videotoolbox][^amd-amf-sdk]
-- HEVC hardware encoders: `hevc_nvenc`, `hevc_qsv`, `hevc_vaapi`,
-  `hevc_videotoolbox`, `hevc_amf`[^nvidia-ffmpeg][^ffmpeg-qsv][^ffmpeg-vaapi][^apple-videotoolbox][^amd-amf-sdk]
-- Backend availability is OS/build dependent and discovered at runtime[^nvidia-codec-matrix][^intel-onevpl][^amd-amf-sdk][^apple-videotoolbox]
-
-You can inspect your current host/build support with:
-
-```bash
-direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
-```
-
-### Transcoding performance and validation artifacts
-
-- NVENC end-to-end matrix test validates profile/level/bitrate/device behavior:
-  - [NVENC matrix test](../../tests/nvenc_matrix.rs)
-- NVENC regression tests:
-  - [Profile/level integration test](../../tests/nvenc_integration.rs)
-  - [Duration-preservation regression](../../tests/nvenc_duration.rs)
-- Practical performance benefit is lower CPU pressure and higher conversion
-  concurrency on hosts with working hardware encoders.
-
 [^ort-cuda-ep]: ONNX Runtime CUDA execution provider: <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html>.
 [^ort-directml-ep]: ONNX Runtime DirectML execution provider: <https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html>.
 [^ort-coreml-ep]: ONNX Runtime CoreML execution provider: <https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html>.
 [^nvidia-cuda-gpus]: NVIDIA CUDA GPU compute capability list: <https://developer.nvidia.com/cuda-gpus/>.
 [^nvidia-ffmpeg]: NVIDIA FFmpeg acceleration guide: <https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/ffmpeg-with-nvidia-gpu/index.html>.
+[^nvidia-nvenc-api]: NVIDIA NVENC programming guide: <https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-video-encoder-api-prog-guide/index.html>.
 [^ffmpeg-qsv]: FFmpeg `h264_qsv` / `hevc_qsv` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#QSV-Encoders>.
 [^ffmpeg-vaapi]: FFmpeg `h264_vaapi` / `hevc_vaapi` encoder options: <https://ffmpeg.org/ffmpeg-codecs.html#VAAPI-encoders>.
 [^nvidia-codec-matrix]: NVIDIA Video encode/decode support matrix: <https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new>.
