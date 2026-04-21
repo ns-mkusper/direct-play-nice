@@ -45,6 +45,18 @@ Probe local hardware/codec capabilities:
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
+## GPU Acceleration
+
+`direct_play_nice` supports GPU acceleration in two places:
+
+- OCR acceleration for bitmap subtitles (PGS/VobSub/DVD) via ONNX Runtime
+  providers (for example CUDA/DirectML/CoreML with CPU fallback)
+- hardware-accelerated transcoding via FFmpeg paths (for example NVENC/NVDEC,
+  QSV, VAAPI, AMF, VideoToolbox)
+
+Official compatibility and architecture references are collected in the manual:
+[Hardware Acceleration](docs/src/hardware-acceleration.md).
+
 ## Sonarr Download Hook Example
 
 Use Sonarr `Settings -> Connect -> Custom Script` and enable the script on the
@@ -85,6 +97,7 @@ For advanced usage, read the manual:
 
 - [direct-play-nice Book (mdBook)](docs/src/index.md)
 - AI OCR for bitmap subtitles (setup + runtime notes): [Subtitle OCR](docs/src/subtitle-ocr.md)
+- GPU acceleration and supported architecture references: [Hardware Acceleration](docs/src/hardware-acceleration.md)
 - Plex auto-refresh workflow: [Plex Refresh](docs/src/plex-refresh.md)
 - Arr custom-script operation: [Sonarr/Radarr Integration](docs/src/servarr.md)
 - Hardware probing and diagnostics: [Probe and Debug](docs/src/probe-and-debug.md)

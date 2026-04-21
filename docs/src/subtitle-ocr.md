@@ -5,6 +5,9 @@ Direct Play in many client stacks. `direct_play_nice` can OCR bitmap subtitles
 into text tracks using AI OCR backends (PP-OCR/Tesseract). This path is meant
 for bitmap subtitle streams; text subtitles are muxed directly when compatible.
 
+For official GPU architecture/provider references and compatibility links, see
+[Hardware Acceleration](./hardware-acceleration.md).
+
 ## Defaults
 
 - `--sub-mode auto`
