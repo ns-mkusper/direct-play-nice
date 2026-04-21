@@ -68,6 +68,10 @@ criterion = "0.4"
 name = "ocr_benchmark"
 harness = false
 
+[[bench]]
+name = "transcode_benchmark"
+harness = false
+
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"

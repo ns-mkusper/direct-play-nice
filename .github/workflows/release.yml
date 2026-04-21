@@ -238,14 +238,77 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+
+  benchmarks:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: release-bench-v1
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate synthetic benchmark source
+        run: |
+          mkdir -p benchmark_artifacts
+          ffmpeg -hide_banner -y \
+            -f lavfi -i "testsrc2=size=1920x1080:rate=30000/1001:duration=30" \
+            -f lavfi -i "sine=frequency=1000:sample_rate=48000:duration=30" \
+            -c:v mpeg2video -pix_fmt yuv420p -b:v 14M -maxrate 14M -bufsize 28M \
+            -c:a mp2 -b:a 320k \
+            benchmark_artifacts/source.mkv
+
+      - name: Run transcoding benchmark
+        run: |
+          bash scripts/transcode-tools/run_transcode_benchmark.zsh \
+            --bin target/release/direct_play_nice \
+            --source benchmark_artifacts/source.mkv \
+            --run-dir benchmark_artifacts/transcode \
+            --hw-accel nvenc \
+            --video-quality 1080p \
+            --sample-ms 200
+
+      - name: Collect benchmark artifacts
+        run: |
+          cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
+          cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
+          cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
+          rm -f benchmark_artifacts/source.mkv
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-benchmarks
+          path: |
+            benchmark_artifacts/TRANSCODE_BENCHMARK.md
+            benchmark_artifacts/TRANSCODE_BENCHMARK.json
+            benchmark_artifacts/OCR_BENCHMARK.md
   # Determines if we should publish/announce
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - benchmarks
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.benchmarks.result == 'skipped' || needs.benchmarks.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
