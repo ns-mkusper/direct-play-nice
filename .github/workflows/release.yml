@@ -242,8 +242,10 @@ jobs:
   benchmarks:
     needs:
       - plan
-    if: ${{ needs.plan.outputs.publishing == 'true' }}
-    runs-on: "ubuntu-22.04"
+    if: ${{ needs.plan.outputs.publishing == 'true' && secrets.BENCHMARK_SOURCE_PATH != '' }}
+    runs-on: "self-hosted"
+    env:
+      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -265,21 +267,17 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Generate synthetic benchmark source
+      - name: Validate benchmark source path
         run: |
+          test -n "$BENCHMARK_SOURCE_PATH"
+          test -f "$BENCHMARK_SOURCE_PATH"
           mkdir -p benchmark_artifacts
-          ffmpeg -hide_banner -y \
-            -f lavfi -i "testsrc2=size=1920x1080:rate=30000/1001:duration=30" \
-            -f lavfi -i "sine=frequency=1000:sample_rate=48000:duration=30" \
-            -c:v mpeg2video -pix_fmt yuv420p -b:v 14M -maxrate 14M -bufsize 28M \
-            -c:a mp2 -b:a 320k \
-            benchmark_artifacts/source.mkv
 
       - name: Run transcoding benchmark
         run: |
-          bash scripts/transcode-tools/run_transcode_benchmark.zsh \
+          bash scripts/transcode-tools/run_transcode_benchmark.sh \
             --bin target/release/direct_play_nice \
-            --source benchmark_artifacts/source.mkv \
+            --source "$BENCHMARK_SOURCE_PATH" \
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
             --video-quality 1080p \
@@ -290,7 +288,6 @@ jobs:
           cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
           cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
           cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
-          rm -f benchmark_artifacts/source.mkv
 
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4

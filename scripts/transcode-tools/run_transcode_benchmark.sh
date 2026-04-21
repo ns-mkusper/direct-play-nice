@@ -1,10 +1,10 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 usage() {
   cat <<'USAGE'
 Usage:
-  run_transcode_benchmark.zsh \
+  run_transcode_benchmark.sh \
     --bin /path/to/direct_play_nice \
     --source /path/to/source.mkv \
     --run-dir /path/to/run_dir \
@@ -155,7 +155,6 @@ end_ts=$(date +%s)
 python3 - <<'PY' "$SOURCE" "$CPU_OUT" "$HW_OUT" "$CPU_LOG" "$HW_LOG" "$GPU_SMI" "$SUMMARY_JSON" "$SUMMARY_MD" "$META" "$cpu_start" "$cpu_end" "$hw_start" "$hw_end"
 import csv
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
