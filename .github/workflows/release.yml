@@ -16,6 +16,7 @@
 name: Release
 permissions:
   "contents": "write"
+  "actions": "read"
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -239,11 +240,45 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  benchmark-runner-check:
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    outputs:
+      run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+    steps:
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BENCHMARK_SOURCE_PATH:-}" ]]; then
+            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping benchmarks: BENCHMARK_SOURCE_PATH secret is not set."
+            exit 0
+          fi
+
+          has_runner="$(gh api repos/${{ github.repository }}/actions/runners --paginate \
+            --jq '[.runners[] | select(.status=="online" and ([.labels[].name] | index("plex-bench")))] | length > 0')"
+          if [[ "$has_runner" == "true" ]]; then
+            echo "run-benchmarks=true" >> "$GITHUB_OUTPUT"
+            echo "Benchmark runner is online."
+          else
+            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping benchmarks: no online self-hosted runner with label 'plex-bench'."
+          fi
+
   benchmarks:
     needs:
       - plan
-    if: ${{ needs.plan.outputs.publishing == 'true' && secrets.BENCHMARK_SOURCE_PATH != '' }}
-    runs-on: "self-hosted"
+      - benchmark-runner-check
+    if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
+    runs-on:
+      - self-hosted
+      - plex-bench
     env:
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
     steps:
