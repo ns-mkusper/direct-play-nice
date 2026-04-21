@@ -15,7 +15,7 @@
 
 name: Release
 permissions:
-  "contents": "write"
+  "contents": "read"
   "actions": "read"
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -245,6 +245,9 @@ jobs:
       - plan
     if: ${{ needs.plan.outputs.publishing == 'true' }}
     runs-on: "ubuntu-22.04"
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
     env:
@@ -280,6 +283,10 @@ jobs:
       - self-hosted
       - linux
       - plex-bench
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
     env:
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
     steps:
@@ -301,14 +308,7 @@ jobs:
             exit 0
           fi
 
-          echo "Missing benchmark dependencies: ${missing[*]}"
-          if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-            sudo apt-get update -y
-            sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
-            exit 0
-          fi
-
-          echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}. Preinstall them in the runner image or allow passwordless sudo apt-get."
+          echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}. Preinstall them in the self-hosted runner image."
           exit 1
 
       - name: Install Rust
@@ -369,6 +369,9 @@ jobs:
       - benchmarks
     # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
     if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.benchmarks.result == 'skipped' || needs.benchmarks.result == 'success') }}
+    permissions:
+      contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
