@@ -84,7 +84,7 @@ For the full model matrix and constraints, see
 For advanced usage, read the manual:
 
 - [direct-play-nice Book (mdBook)](docs/src/index.md)
-- GPU/OCR setup and runtime notes: [Subtitle OCR](docs/src/subtitle-ocr.md)
+- GPU/AI OCR setup and runtime notes: [Subtitle OCR](docs/src/subtitle-ocr.md)
 - Plex auto-refresh workflow: [Plex Refresh](docs/src/plex-refresh.md)
 - Arr custom-script operation: [Sonarr/Radarr Integration](docs/src/servarr.md)
 - Hardware probing and diagnostics: [Probe and Debug](docs/src/probe-and-debug.md)

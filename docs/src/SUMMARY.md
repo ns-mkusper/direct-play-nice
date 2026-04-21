@@ -11,4 +11,3 @@
 - [Probe and Debug](./probe-and-debug.md)
 - [Troubleshooting](./troubleshooting.md)
 - [Build and Test](./build-and-test.md)
-- [Release Notes and Versioning](./release-and-versioning.md)
