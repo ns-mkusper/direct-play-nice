@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.1.0-alpha.5] - 2026-04-21
 
-### 📌 Release Delta Summary
+### 📌 Release Highlights
 
 - Merged major refactor and CI hardening work from recent mainline changes.
 - Added strict rustdoc coverage checks for public library APIs.
