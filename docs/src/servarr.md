@@ -17,7 +17,8 @@ The binary auto-detects Sonarr/Radarr custom-script invocations:
 
 ## Naming and replacement notes
 
-- Use `--servarr-output-extension` and `--servarr-output-suffix` to control output naming.
+- Use `--servarr-output-extension` and `--servarr-output-suffix` to control
+  output naming.
 - `--delete-source` applies to direct CLI usage.
 - In Sonarr/Radarr mode, replacement/rollback logic is handled by integration flow.
 - `--servarr-output-extension match-input` keeps the source container.
