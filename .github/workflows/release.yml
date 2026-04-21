@@ -278,6 +278,7 @@ jobs:
     if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
     runs-on:
       - self-hosted
+      - linux
       - plex-bench
     env:
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
@@ -286,10 +287,29 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install benchmark dependencies
+      - name: Ensure benchmark dependencies
+        shell: bash
         run: |
-          sudo apt-get update -y
-          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+
+          if [[ "${#missing[@]}" -eq 0 ]]; then
+            echo "Benchmark dependencies already present."
+            exit 0
+          fi
+
+          echo "Missing benchmark dependencies: ${missing[*]}"
+          if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo apt-get update -y
+            sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
+            exit 0
+          fi
+
+          echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}. Preinstall them in the runner image or allow passwordless sudo apt-get."
+          exit 1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -307,6 +327,14 @@ jobs:
           test -n "$BENCHMARK_SOURCE_PATH"
           test -f "$BENCHMARK_SOURCE_PATH"
           mkdir -p benchmark_artifacts
+
+      - name: Validate GPU acceleration path
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v nvidia-smi >/dev/null 2>&1
+          nvidia-smi -L
+          ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
 
       - name: Run transcoding benchmark
         run: |

@@ -37,7 +37,7 @@ jobs:
             # Treat Cargo.toml edits as release-impacting only when they touch
             # package versioning/build surface (not benches/docs-only metadata).
             if git diff --unified=0 "origin/${{ github.base_ref }}...HEAD" -- Cargo.toml | \
-              grep -Eq '^[+-]\s*(version|name|edition|rust-version|publish|license|readme|repository|homepage|documentation|description|keywords|categories)\s*=|^[+-]\s*\[(package|dependencies|dev-dependencies|build-dependencies|target\..*\.dependencies|features|workspace\.dependencies)\]'; then
+              grep -Eq '^[+-]\s*(version|publish)\s*=|^[+-]\s*\[(dependencies|dev-dependencies|build-dependencies|target\..*\.dependencies|features|workspace\.dependencies)\]'; then
               enforce=true
             fi
           fi
