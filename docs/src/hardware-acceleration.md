@@ -1,7 +1,6 @@
 # Hardware Acceleration
 
-This chapter documents acceleration paths actually implemented in
-`direct_play_nice`:
+This chapter covers GPU acceleration in `direct_play_nice` for:
 
 - AI OCR for bitmap subtitle streams (PGS/VobSub/DVD)
 - H.264/HEVC hardware transcoding via FFmpeg encoders
