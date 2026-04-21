@@ -2,8 +2,8 @@
 
 ## Scope
 
-This document records a full-movie OCR stress run for the remux of
-*Silence (2016)* on a self-hosted Linux server.
+This document records a full-movie OCR stress run for a representative
+feature-length remux on a self-hosted Linux server.
 
 - Host: self-hosted Linux media server (anonymized)
 - Source path: anonymized local benchmark copy
