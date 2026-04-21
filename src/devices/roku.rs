@@ -1,3 +1,5 @@
+//! Roku model capability profiles.
+//!
 // Sources:
 // - https://developer.roku.com/docs/specs/media/streaming-specifications.md
 
@@ -16,6 +18,7 @@ const ROKU_AUDIO: &[ffi::AVCodecID] = &[
     ffi::AV_CODEC_ID_DTS,
 ];
 
+/// Capability profile for Roku Express.
 pub const ROKU_EXPRESS: StreamingDevice = StreamingDevice {
     name: "Roku Express",
     model: "roku_express",
@@ -32,6 +35,7 @@ pub const ROKU_EXPRESS: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(640_000),
 };
 
+/// Capability profile for Roku Streaming Stick 4K.
 pub const ROKU_STREAMING_STICK_4K: StreamingDevice = StreamingDevice {
     name: "Roku Streaming Stick 4K",
     model: "roku_streaming_stick_4k",
@@ -48,6 +52,7 @@ pub const ROKU_STREAMING_STICK_4K: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(1_536_000),
 };
 
+/// Capability profile for Roku Ultra.
 pub const ROKU_ULTRA: StreamingDevice = StreamingDevice {
     name: "Roku Ultra",
     model: "roku_ultra",

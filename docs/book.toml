@@ -1,0 +1,14 @@
+[book]
+title = "direct-play-nice Manual"
+authors = ["direct-play-nice contributors"]
+description = "Operator and CLI guide for direct-play-nice."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+git-repository-url = "https://github.com/ns-mkusper/direct-play-nice"
+edit-url-template = "https://github.com/ns-mkusper/direct-play-nice/edit/main/docs/{path}"

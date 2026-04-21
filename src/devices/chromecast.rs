@@ -1,3 +1,5 @@
+//! Chromecast, Google TV, and Nest Hub model capability profiles.
+//!
 // Sources:
 // - https://developers.google.com/cast/docs/media
 
@@ -19,6 +21,7 @@ const H264_HEVC_VP9: &[ffi::AVCodecID] = &[
 ];
 const H264_VP9: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264, ffi::AV_CODEC_ID_VP9];
 
+/// Capability profile for Chromecast (1st generation).
 pub const CHROMECAST_1ST_GEN: StreamingDevice = StreamingDevice {
     name: "Chromecast (1st gen)",
     model: "chromecast_1st_gen",
@@ -35,6 +38,7 @@ pub const CHROMECAST_1ST_GEN: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Chromecast (2nd generation).
 pub const CHROMECAST_2ND_GEN: StreamingDevice = StreamingDevice {
     name: "Chromecast (2nd gen)",
     model: "chromecast_2nd_gen",
@@ -51,6 +55,7 @@ pub const CHROMECAST_2ND_GEN: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Chromecast (3rd generation).
 pub const CHROMECAST_3RD_GEN: StreamingDevice = StreamingDevice {
     name: "Chromecast (3rd gen)",
     model: "chromecast_3rd_gen",
@@ -67,6 +72,7 @@ pub const CHROMECAST_3RD_GEN: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Chromecast Ultra.
 pub const CHROMECAST_ULTRA: StreamingDevice = StreamingDevice {
     name: "Chromecast Ultra",
     model: "chromecast_ultra",
@@ -83,6 +89,7 @@ pub const CHROMECAST_ULTRA: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Chromecast with Google TV.
 pub const CHROMECAST_GOOGLE_TV: StreamingDevice = StreamingDevice {
     name: "Chromecast with Google TV",
     model: "chromecast_google_tv",
@@ -99,6 +106,7 @@ pub const CHROMECAST_GOOGLE_TV: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Google TV Streamer.
 pub const GOOGLE_TV_STREAMER: StreamingDevice = StreamingDevice {
     name: "Google TV Streamer",
     model: "google_tv_streamer",
@@ -115,6 +123,7 @@ pub const GOOGLE_TV_STREAMER: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(320_000),
 };
 
+/// Capability profile for Nest Hub.
 pub const NEST_HUB: StreamingDevice = StreamingDevice {
     name: "Nest Hub",
     model: "nest_hub",
@@ -131,6 +140,7 @@ pub const NEST_HUB: StreamingDevice = StreamingDevice {
     max_audio_bitrate: Some(256_000),
 };
 
+/// Capability profile for Nest Hub Max.
 pub const NEST_HUB_MAX: StreamingDevice = StreamingDevice {
     name: "Nest Hub Max",
     model: "nest_hub_max",
