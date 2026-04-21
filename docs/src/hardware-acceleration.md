@@ -18,12 +18,12 @@ legacy-NVIDIA logic in `auto` mode.
   `<= 5` (Maxwell-class and older), `--ocr-engine auto` prefers `pp-ocr-v3`
   and disables classifier for stability
 - Windows DirectML and Apple CoreML provider paths are wired and can be used
-  when runtimes are installed
+  when runtimes are installed[^ort-ep]
 - CPU fallback is available (or forced with `DPN_OCR_FORCE_CPU=1`)
 
 ### OCR workload guidance by hardware class
 
-- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`
+- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`[^cuda-gpus]
 - Newer NVIDIA families (Turing/Ampere/Ada): start with `--ocr-engine pp-ocr-v4`
 - Non-NVIDIA GPUs: use `auto` and verify provider availability with probe logs;
   if providers are unavailable, OCR falls back to CPU/Tesseract path
@@ -37,23 +37,6 @@ legacy-NVIDIA logic in `auto` mode.
   - [AI OCR stream coverage test](../../tests/cli_bitmap_subs.rs)
   - [Multilingual OCR accuracy/perf stress](../../tests/cli_ocr_multilang_stress.rs)
 
-### OCR official references
-
-- ONNX Runtime execution providers overview:
-  <https://onnxruntime.ai/docs/execution-providers/>
-- ONNX Runtime CUDA EP:
-  <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html>
-- ONNX Runtime DirectML EP:
-  <https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html>
-- ONNX Runtime CoreML EP:
-  <https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html>
-- NVIDIA CUDA documentation:
-  <https://docs.nvidia.com/cuda/>
-- NVIDIA CUDA GPU compute capability list:
-  <https://developer.nvidia.com/cuda-gpus/>
-- Microsoft DirectML reference:
-  <https://learn.microsoft.com/en-us/windows/ai/directml/directml-reference>
-
 ## Transcoding acceleration
 
 `direct_play_nice` hardware encoder selection is currently targeted at H.264
@@ -65,7 +48,7 @@ and HEVC output.
   `h264_videotoolbox`, `h264_amf`
 - HEVC hardware encoders: `hevc_nvenc`, `hevc_qsv`, `hevc_vaapi`,
   `hevc_videotoolbox`, `hevc_amf`
-- Backend availability is OS/build dependent and discovered at runtime
+- Backend availability is OS/build dependent and discovered at runtime[^ffmpeg-docs]
 
 You can inspect your current host/build support with:
 
@@ -83,19 +66,6 @@ direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 - Practical performance benefit is lower CPU pressure and higher conversion
   concurrency on hosts with working hardware encoders.
 
-### Transcoding official references
-
-- FFmpeg CLI documentation:
-  <https://ffmpeg.org/ffmpeg.html>
-- FFmpeg codec documentation:
-  <https://ffmpeg.org/ffmpeg-codecs.html>
-- NVIDIA Video Codec SDK readme:
-  <https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/read-me/index.html>
-- NVIDIA encode/decode support matrix:
-  <https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix>
-- Intel oneVPL supported hardware:
-  <https://www.intel.com/content/www/us/en/docs/onevpl/upgrade-from-msdk/2021-3/supported-hardware.html>
-- AMD AMF SDK:
-  <https://github.com/GPUOpen-LibrariesAndSDKs/AMF>
-- Apple VideoToolbox:
-  <https://developer.apple.com/documentation/videotoolbox>
+[^ort-ep]: ONNX Runtime execution providers: <https://onnxruntime.ai/docs/execution-providers/>. CUDA EP: <https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html>. DirectML EP: <https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html>. CoreML EP: <https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html>.
+[^cuda-gpus]: NVIDIA CUDA GPU list: <https://developer.nvidia.com/cuda-gpus>. CUDA docs: <https://docs.nvidia.com/cuda/>.
+[^ffmpeg-docs]: FFmpeg docs: <https://ffmpeg.org/ffmpeg.html>, codec docs: <https://ffmpeg.org/ffmpeg-codecs.html>. NVIDIA Video Codec SDK: <https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/read-me/index.html>, support matrix: <https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix>. Intel oneVPL supported hardware: <https://www.intel.com/content/www/us/en/docs/onevpl/upgrade-from-msdk/2021-3/supported-hardware.html>. AMD AMF SDK: <https://github.com/GPUOpen-LibrariesAndSDKs/AMF>. Apple VideoToolbox: <https://developer.apple.com/documentation/videotoolbox>.
