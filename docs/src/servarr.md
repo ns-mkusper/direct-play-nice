@@ -8,11 +8,25 @@
 2. Custom script invokes `direct_play_nice`.
 3. Successful conversion output replaces source according to configured behavior.
 
+## Event behavior
+
+The binary auto-detects Sonarr/Radarr custom-script invocations:
+
+- `sonarr_eventtype=Download` and `radarr_eventtype=Download` trigger conversion.
+- Non-download events (for example `Test`, `Grab`, `Rename`) exit cleanly.
+
 ## Naming and replacement notes
 
 - Use `--servarr-output-extension` and `--servarr-output-suffix` to control output naming.
 - `--delete-source` applies to direct CLI usage.
 - In Sonarr/Radarr mode, replacement/rollback logic is handled by integration flow.
+- `--servarr-output-extension match-input` keeps the source container.
+
+Example command in Sonarr custom script:
+
+```bash
+/path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
+```
 
 ## Practical wrapper pattern
 

@@ -9,6 +9,14 @@ On merge to `main`, CI updates release metadata and runs release steps defined i
 - `.github/workflows/cd.yml`
 - `release-plz.toml`
 
+## Version bump rules
+
+`release-plz` follows Conventional Commit semantics:
+
+- `feat:` -> minor bump
+- `fix:` -> patch bump
+- `!` or `BREAKING CHANGE` footer -> major bump
+
 ## Local maintainer checks
 
 ```bash

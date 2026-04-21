@@ -6,34 +6,65 @@
 direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 ```
 
-## Core options
+## Positional arguments
 
-- `--device <DEVICE>` target family/model set (`chromecast`, `roku`, `apple_tv`, `fire_tv`, or comma-separated intersection)
-- `--video-quality <PROFILE>` one of `match-source`, `360p`, `480p`, `720p`, `1080p`, `1440p`, `2160p`
-- `--audio-quality <PROFILE>` one of `match-source`, `320k`, `256k`, `224k`, `192k`, `160k`, `128k`, `96k`
-- `--max-video-bitrate <RATE>` cap video bitrate (for example `8M`)
-- `--max-audio-bitrate <RATE>` cap audio bitrate (for example `320k`)
-- `--hw-accel <MODE>` one of `auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`, `amf`
+- `[INPUT_FILE]` video file to convert (required unless probing)
+- `[OUTPUT_FILE]` output media file (required unless probing)
 
-## Probe options
+## Device and quality options
 
-- `--probe-hw` report detected hardware backends/encoders
-- `--probe-codecs` list FFmpeg encoder/decoder inventory
-- `--probe-streams` inspect stream metadata for an input file
-- `--only-video` filter probe output to video codecs
-- `--only-hw` filter probe output to hardware-capable codecs
-- `--probe-json` emit probe output as JSON
-- `--output <FORMAT>` `text` or `json` for stream probe output
+- `-d, --device <DEVICE>` target family/model or `all`
+- `--video-quality <video_quality>` quality preset
+- `--video-codec <video_codec>` `auto|h264|hevc`
+- `--audio-quality <audio_quality>` quality preset
+- `--max-video-bitrate <max_video_bitrate>` explicit video cap
+- `--max-audio-bitrate <max_audio_bitrate>` explicit audio cap
 
-## Stream-selection options
+## Stream and compatibility controls
 
-- `--unsupported-video-policy <POLICY>` `convert|ignore|fail`
-- `--primary-video-stream-index <INDEX>` manual primary stream override
-- `--primary-video-criteria <CRITERIA>` `resolution|bitrate|fps`
+- `--unsupported-video-policy <unsupported_video_policy>` `convert|ignore|fail`
+- `--primary-video-stream-index <primary_video_stream_index>`
+- `--primary-video-criteria <primary_video_criteria>` `resolution|bitrate|fps`
+- `--skip-codec-check`
 
-## Full help
+## Hardware controls
 
-Run:
+- `--hw-accel <hw_accel>` `auto|none|nvenc|vaapi|qsv|videotoolbox|amf`
+
+## Probe modes
+
+- `--probe-streams`
+- `--probe-hw`
+- `--probe-codecs`
+- `--only-video`
+- `--only-hw`
+- `--probe-json`
+- `--output <OUTPUT>` `text|json`
+- `--streams-filter <STREAMS_FILTER>` `all|video|audio|subtitle`
+
+## Sonarr/Radarr options
+
+- `--servarr-output-extension <EXTENSION>` (`match-input` supported)
+- `--servarr-output-suffix <servarr_output_suffix>`
+- `--delete-source [<BOOL>]`
+
+## Subtitle OCR options
+
+- `--sub-mode <sub_mode>` `auto|force|skip`
+- `--ocr-default-language <ocr_default_language>`
+- `--ocr-engine <ocr_engine>` `auto|tesseract|pp-ocr-v3|pp-ocr-v4|external`
+- `--ocr-format <ocr_format>` `srt|ass`
+- `--ocr-write-srt-sidecar`
+
+## Plex options
+
+- `--plex-refresh`
+- `--plex-url <PLEX_URL>`
+- `--plex-token <PLEX_TOKEN>`
+
+## Full generated help
+
+For the exact, version-specific clap output:
 
 ```bash
 direct_play_nice --help

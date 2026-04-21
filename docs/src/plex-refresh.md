@@ -9,6 +9,12 @@ To avoid the "Plex dance" (manual library rescans after conversion),
 - `--plex-url <PLEX_URL>` (default: `http://127.0.0.1:32400`)
 - `--plex-token <PLEX_TOKEN>`
 
+Environment variable equivalents:
+
+- `DIRECT_PLAY_NICE_PLEX_REFRESH=true`
+- `DIRECT_PLAY_NICE_PLEX_URL=http://127.0.0.1:32400`
+- `DIRECT_PLAY_NICE_PLEX_TOKEN=...` (or `PLEX_TOKEN`)
+
 Example:
 
 ```bash

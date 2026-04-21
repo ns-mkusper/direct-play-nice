@@ -27,6 +27,11 @@ DirectML, CoreML, then CPU). You can force behavior with:
 - `DPN_OCR_REQUIRE_GPU=1`
 - `DPN_OCR_FORCE_CPU=1`
 
+ONNX engines:
+
+- `--ocr-engine pp-ocr-v4` for modern GPU/runtime stacks
+- `--ocr-engine pp-ocr-v3` for legacy/older GPU compatibility cases
+
 Linux runtime notes:
 
 - Ensure CUDA/cuDNN and ONNX Runtime are version-compatible.
@@ -34,6 +39,9 @@ Linux runtime notes:
   not discoverable on default library paths.
 - For older NVIDIA stacks, `--ocr-engine pp-ocr-v3` can be more stable than
   `pp-ocr-v4`.
+- Use `scripts/ocr-tools/check_gpu_env.sh` to inspect runtime/library setup.
+- Containerized workloads may need NVIDIA Container Toolkit and exposed runtime
+  libraries.
 
 ## Model location
 
@@ -46,3 +54,14 @@ Default model filenames:
   `en_PP-OCRv4_rec_infer.onnx`
 - v3: `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
   `en_PP-OCRv3_rec_infer.onnx`
+
+## Config-file example
+
+```toml
+sub_mode = "auto"           # auto | force | skip
+ocr_default_language = "eng"
+ocr_engine = "auto"         # auto | tesseract | ppocrv3 | ppocrv4 | external
+ocr_format = "srt"          # srt | ass
+ocr_write_srt_sidecar = false
+ocr_external_command = "python3 /opt/ocr/run.py"
+```
