@@ -48,6 +48,127 @@ fn ensure_ppocr_models(
     Ok(PpOcrModels { det, cls, rec })
 }
 
+fn resolve_optional_latin_rec_model(model_dir: &Path, variant: PpOcrVariant) -> Result<Option<PathBuf>> {
+    if let Some(path) = env::var_os("DPN_OCR_REC_LATIN_MODEL") {
+        let rec_path = PathBuf::from(path);
+        if !rec_path.is_file() {
+            bail!(
+                "DPN_OCR_REC_LATIN_MODEL is set but file does not exist: '{}'",
+                rec_path.display()
+            );
+        }
+        return Ok(Some(rec_path));
+    }
+
+    let candidates: &[&str] = match variant {
+        PpOcrVariant::V3 => &[
+            "latin_PP-OCRv3_rec_infer.onnx",
+            "latin_ppocr_mobile_v2.0_rec_infer.onnx",
+            "multilingual_PP-OCRv3_rec_infer.onnx",
+        ],
+        PpOcrVariant::V4 => &[
+            "latin_PP-OCRv4_rec_infer.onnx",
+            "latin_ppocr_mobile_v2.0_rec_infer.onnx",
+            "multilingual_PP-OCRv4_rec_infer.onnx",
+        ],
+    };
+
+    for candidate in candidates {
+        let path = model_dir.join(candidate);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_optional_japanese_rec_model(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<Option<PathBuf>> {
+    resolve_optional_rec_model_with_candidates(
+        "DPN_OCR_REC_JAPANESE_MODEL",
+        model_dir,
+        match variant {
+            PpOcrVariant::V3 => &[
+                "japan_PP-OCRv3_rec_infer.onnx",
+                "japanese_PP-OCRv3_rec_infer.onnx",
+                "ja_PP-OCRv3_rec_infer.onnx",
+            ],
+            PpOcrVariant::V4 => &[
+                "japan_PP-OCRv4_rec_infer.onnx",
+                "japanese_PP-OCRv4_rec_infer.onnx",
+                "ja_PP-OCRv4_rec_infer.onnx",
+            ],
+        },
+    )
+}
+
+fn resolve_optional_korean_rec_model(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<Option<PathBuf>> {
+    resolve_optional_rec_model_with_candidates(
+        "DPN_OCR_REC_KOREAN_MODEL",
+        model_dir,
+        match variant {
+            PpOcrVariant::V3 => &[
+                "korean_PP-OCRv3_rec_infer.onnx",
+                "ko_PP-OCRv3_rec_infer.onnx",
+            ],
+            PpOcrVariant::V4 => &[
+                "korean_PP-OCRv4_rec_infer.onnx",
+                "ko_PP-OCRv4_rec_infer.onnx",
+            ],
+        },
+    )
+}
+
+fn resolve_optional_cjk_rec_model(model_dir: &Path, variant: PpOcrVariant) -> Result<Option<PathBuf>> {
+    resolve_optional_rec_model_with_candidates(
+        "DPN_OCR_REC_CJK_MODEL",
+        model_dir,
+        match variant {
+            PpOcrVariant::V3 => &[
+                "cjk_PP-OCRv3_rec_infer.onnx",
+                "chinese_PP-OCRv3_rec_infer.onnx",
+                "zh_PP-OCRv3_rec_infer.onnx",
+            ],
+            PpOcrVariant::V4 => &[
+                "cjk_PP-OCRv4_rec_infer.onnx",
+                "chinese_PP-OCRv4_rec_infer.onnx",
+                "zh_PP-OCRv4_rec_infer.onnx",
+            ],
+        },
+    )
+}
+
+fn resolve_optional_rec_model_with_candidates(
+    env_key: &str,
+    model_dir: &Path,
+    candidates: &[&str],
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = env::var_os(env_key) {
+        let rec_path = PathBuf::from(path);
+        if !rec_path.is_file() {
+            bail!(
+                "{} is set but file does not exist: '{}'",
+                env_key,
+                rec_path.display()
+            );
+        }
+        return Ok(Some(rec_path));
+    }
+
+    for candidate in candidates {
+        let path = model_dir.join(candidate);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
     let path = model_dir.join(spec.filename);
     if path.exists() {
@@ -173,4 +294,3 @@ fn to_hex_lower(bytes: &[u8]) -> String {
     }
     out
 }
-

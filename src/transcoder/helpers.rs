@@ -1,19 +1,20 @@
+use crate::transcoder::prelude::*;
 
-fn describe_bitrate(bitrate: Option<i64>) -> String {
+pub(crate) fn describe_bitrate(bitrate: Option<i64>) -> String {
     match bitrate {
         Some(bps) => format!("{} bps", bps),
         None => "match source".to_string(),
     }
 }
 
-fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
+pub(crate) fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
     match dimensions {
         Some((w, h)) => format!("max {}x{}", w, h),
         None => "match source".to_string(),
     }
 }
 
-fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
+pub(crate) fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     match codec_id {
         ffi::AV_CODEC_ID_H264 => "H.264",
         ffi::AV_CODEC_ID_AAC => "AAC",
@@ -27,7 +28,7 @@ fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
-fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRational) {
+pub(crate) fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRational) {
     unsafe {
         let current = (*ctx.as_ptr()).pkt_timebase;
         if current.num <= 0 || current.den <= 0 {
@@ -36,7 +37,7 @@ fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRati
     }
 }
 
-fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
+pub(crate) fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
     // Fail fast on broken bitstreams instead of writing partially decoded output.
     unsafe {
         (*ctx.as_mut_ptr()).err_recognition |= ffi::AV_EF_EXPLODE as i32;
@@ -77,7 +78,7 @@ fn preferred_decoder_names(codec_id: ffi::AVCodecID, prefer_hw: bool) -> &'stati
     }
 }
 
-fn find_decoder_with_fallback(
+pub(crate) fn find_decoder_with_fallback(
     codec_id: ffi::AVCodecID,
     prefer_hw: bool,
 ) -> Option<AVCodecRef<'static>> {
@@ -129,7 +130,7 @@ unsafe extern "C" fn select_cuda_hw_format(
     *pix_fmts
 }
 
-fn configure_cuda_hw_decoder(
+pub(crate) fn configure_cuda_hw_decoder(
     decode_context: &mut AVCodecContext,
     device: *mut ffi::AVBufferRef,
 ) -> Result<()> {
@@ -152,21 +153,20 @@ fn configure_cuda_hw_decoder(
     Ok(())
 }
 
-fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
+pub(crate) fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
     devices
         .iter()
         .all(|device| device.video_codecs.contains(&codec))
 }
 
-fn describe_h264_profile(profile: i32) -> String {
+pub(crate) fn describe_h264_profile(profile: i32) -> String {
     H264Profile::try_from(profile)
         .map(|p| format!("{:?}", p))
         .unwrap_or_else(|_| format!("profile({})", profile))
 }
 
-fn describe_h264_level(level: i32) -> String {
+pub(crate) fn describe_h264_level(level: i32) -> String {
     H264Level::try_from(level)
         .map(|l| l.ffmpeg_name().to_string())
         .unwrap_or_else(|_| format!("level({})", level))
 }
-

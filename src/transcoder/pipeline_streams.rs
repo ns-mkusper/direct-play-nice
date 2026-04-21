@@ -1,3 +1,5 @@
+use crate::transcoder::prelude::*;
+
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
         let transfer_format = unsafe {
@@ -54,7 +56,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     }
 }
 
-fn process_video_stream(
+pub(crate) fn process_video_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
@@ -201,7 +203,7 @@ fn process_video_stream(
     Ok(())
 }
 
-fn process_audio_stream(
+pub(crate) fn process_audio_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
@@ -336,7 +338,7 @@ fn process_audio_stream(
     Ok(())
 }
 
-fn process_subtitle_stream(
+pub(crate) fn process_subtitle_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
@@ -486,7 +488,7 @@ fn process_subtitle_stream(
     Ok(())
 }
 
-fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
+pub(crate) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
         ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
@@ -496,7 +498,7 @@ fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     )
 }
 
-fn load_encode_and_write(
+pub(crate) fn load_encode_and_write(
     fifo: &mut AVAudioFifo,
     output_format_context: &mut AVFormatContextOutput,
     encode_context: &mut AVCodecContext,

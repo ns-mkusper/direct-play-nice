@@ -1,0 +1,6 @@
+{
+  "language": "spa",
+  "expected_text": "DEBEMOS IRNOS AHORA",
+  "min_similarity": 0.88,
+  "max_infer_ms": 2500
+}

@@ -51,7 +51,7 @@ pub fn supported_model_ids() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::devices::*;
 
     #[test]
     fn resolve_all_is_compatible_with_every_device() {

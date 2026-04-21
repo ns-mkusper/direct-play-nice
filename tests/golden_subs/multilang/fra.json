@@ -1,0 +1,6 @@
+{
+  "language": "fra",
+  "expected_text": "NOUS DEVONS PARTIR",
+  "min_similarity": 0.88,
+  "max_infer_ms": 2500
+}

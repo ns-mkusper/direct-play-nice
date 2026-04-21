@@ -18,6 +18,33 @@ fn init_ort_environment() -> Result<bool> {
     Ok(selection.gpu_available)
 }
 
+thread_local! {
+    static OCR_CUDA_DEVICE_ID: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) struct OcrCudaDeviceGuard {
+    previous: Option<i32>,
+}
+
+impl Drop for OcrCudaDeviceGuard {
+    fn drop(&mut self) {
+        OCR_CUDA_DEVICE_ID.with(|slot| slot.set(self.previous));
+    }
+}
+
+pub(super) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDeviceGuard {
+    let previous = OCR_CUDA_DEVICE_ID.with(|slot| {
+        let prev = slot.get();
+        slot.set(device_id);
+        prev
+    });
+    OcrCudaDeviceGuard { previous }
+}
+
+fn thread_ocr_cuda_device() -> Option<i32> {
+    OCR_CUDA_DEVICE_ID.with(|slot| slot.get())
+}
+
 struct ModelSpec {
     filename: &'static str,
     url: &'static str,
@@ -65,6 +92,10 @@ struct PpOcrModels {
 impl PpOcrEngine {
     fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
+        let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
+        let japanese_rec = resolve_optional_japanese_rec_model(model_dir, variant)?;
+        let korean_rec = resolve_optional_korean_rec_model(model_dir, variant)?;
+        let cjk_rec = resolve_optional_cjk_rec_model(model_dir, variant)?;
         info!(
             "Initializing {} models (det='{}', cls='{}', rec='{}')",
             variant.label(),
@@ -72,16 +103,118 @@ impl PpOcrEngine {
             models.cls.display(),
             models.rec.display()
         );
-        let mut ocr = OcrLite::new();
-        ocr.init_models_custom(
-            models.det.to_string_lossy().as_ref(),
-            models.cls.to_string_lossy().as_ref(),
-            models.rec.to_string_lossy().as_ref(),
-            configure_ort_builder,
-        )
-        .map_err(|err| anyhow!("failed to initialize {} models: {}", variant.label(), err))?;
-        Ok(Self { ocr, variant })
+        let english_ocr = init_ocr_lite(
+            variant,
+            "english",
+            &models.det,
+            &models.cls,
+            &models.rec,
+        )?;
+
+        let latin_ocr = if let Some(latin_rec_path) = latin_rec {
+            info!(
+                "Initializing {} latin rec model at '{}'",
+                variant.label(),
+                latin_rec_path.display()
+            );
+            match init_ocr_lite(variant, "latin", &models.det, &models.cls, &latin_rec_path) {
+                Ok(ocr) => Some(ocr),
+                Err(err) => {
+                    warn!(
+                        "{} latin rec model failed to initialize; falling back to english rec model only: {:#} (debug: {:?})",
+                        variant.label(),
+                        err,
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            info!(
+                "{} latin rec model not configured/found; using english rec model for all languages.",
+                variant.label()
+            );
+            None
+        };
+
+        let japanese_ocr =
+            init_optional_rec_profile(variant, "japanese", &models.det, &models.cls, japanese_rec);
+        let korean_ocr =
+            init_optional_rec_profile(variant, "korean", &models.det, &models.cls, korean_rec);
+        let cjk_ocr = init_optional_rec_profile(variant, "cjk", &models.det, &models.cls, cjk_rec);
+
+        Ok(Self {
+            english_ocr,
+            latin_ocr,
+            japanese_ocr,
+            korean_ocr,
+            cjk_ocr,
+            variant,
+        })
     }
+}
+
+fn init_optional_rec_profile(
+    variant: PpOcrVariant,
+    profile_label: &'static str,
+    det: &Path,
+    cls: &Path,
+    rec_path: Option<PathBuf>,
+) -> Option<OcrLite> {
+    let Some(rec_path) = rec_path else {
+        info!(
+            "{} {} rec model not configured/found; fallback routing will use other rec profiles.",
+            variant.label(),
+            profile_label
+        );
+        return None;
+    };
+
+    info!(
+        "Initializing {} {} rec model at '{}'",
+        variant.label(),
+        profile_label,
+        rec_path.display()
+    );
+    match init_ocr_lite(variant, profile_label, det, cls, &rec_path) {
+        Ok(ocr) => Some(ocr),
+        Err(err) => {
+            warn!(
+                "{} {} rec model failed to initialize; routing will fall back to other rec profiles: {:#} (debug: {:?})",
+                variant.label(),
+                profile_label,
+                err,
+                err
+            );
+            None
+        }
+    }
+}
+
+fn init_ocr_lite(
+    variant: PpOcrVariant,
+    profile_label: &str,
+    det: &Path,
+    cls: &Path,
+    rec: &Path,
+) -> Result<OcrLite> {
+    let mut ocr = OcrLite::new();
+    ocr.init_models_custom(
+        det.to_string_lossy().as_ref(),
+        cls.to_string_lossy().as_ref(),
+        rec.to_string_lossy().as_ref(),
+        configure_ort_builder,
+    )
+    .map_err(|err| {
+        anyhow!(
+            "failed to initialize {} {} models: {} (debug: {:?})",
+            variant.label(),
+            profile_label,
+            err,
+            err
+        )
+    })?;
+    Ok(ocr)
 }
 
 fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
@@ -211,18 +344,55 @@ fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvi
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CUDAExecutionProvider::default();
-    ep = apply_cuda_env_overrides(ep);
-    ep = ep
-        .with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic)
-        .with_cuda_graph(false)
-        .with_conv_max_workspace(false)
-        .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested);
-    info!("CUDA EP safety brakes enabled for Maxwell-class GPUs.");
-    let mut ep = ep.build();
-    if require_gpu {
-        ep = ep.error_on_failure();
+    if let Some(device_id) = thread_ocr_cuda_device() {
+        ep = ep.with_device_id(device_id);
+        debug!("Assigning OCR worker to CUDA device {}", device_id);
     }
-    ep
+    ep = apply_cuda_env_overrides(ep);
+    let perf_profile = env_flag_enabled("DPN_OCR_CUDA_PERF_PROFILE");
+    let safety_brakes = !env_flag_enabled("DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES");
+    ep = if perf_profile {
+        info!("CUDA EP performance profile enabled (DPN_OCR_CUDA_PERF_PROFILE=1).");
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Exhaustive)
+            .with_cuda_graph(true)
+            .with_conv_max_workspace(true)
+            .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
+    } else if safety_brakes {
+        info!("CUDA EP safety brakes enabled for Maxwell-class GPUs.");
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Heuristic)
+            .with_cuda_graph(false)
+            .with_conv_max_workspace(false)
+            .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested)
+    } else {
+        info!(
+            "CUDA EP safety brakes disabled (DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=1); using balanced settings."
+        );
+        ep.with_conv_algorithm_search(CuDNNConvAlgorithmSearch::Exhaustive)
+            .with_cuda_graph(false)
+            .with_conv_max_workspace(true)
+            .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
+    };
+    let strict_cuda = require_gpu || !env_flag_enabled("DPN_OCR_CUDA_FAIL_SILENT");
+    let ep = ep.build();
+    if strict_cuda {
+        ep.error_on_failure()
+    } else {
+        ep
+    }
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .map(|v| {
+            let x = v.trim().to_ascii_lowercase();
+            matches!(x.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn allow_legacy_cuda_maxwell() -> bool {
+    env_flag_enabled("DPN_OCR_ALLOW_LEGACY_CUDA")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -348,12 +518,117 @@ fn select_execution_provider_plan(
     Ok((kinds, gpu_available))
 }
 
+#[cfg(target_os = "linux")]
+fn library_visible_on_system(lib_prefix: &str) -> bool {
+    if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.lines().any(|line| line.contains(lib_prefix)) {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(ld_library_path) = env::var("LD_LIBRARY_PATH") {
+        for dir in ld_library_path.split(':').filter(|s| !s.trim().is_empty()) {
+            let path = Path::new(dir);
+            if !path.is_dir() {
+                continue;
+            }
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(lib_prefix)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    const COMMON_LIB_DIRS: [&str; 6] = [
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib",
+        "/usr/local/lib64",
+        "/usr/local/cuda/lib64",
+        "/opt/cuda/lib64",
+    ];
+    for dir in COMMON_LIB_DIRS {
+        let path = Path::new(dir);
+        if !path.is_dir() {
+            continue;
+        }
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(lib_prefix)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+    const REQUIRED: [&str; 4] = ["libcudart.so", "libcublas.so", "libcublasLt.so", "libcudnn.so"];
+    REQUIRED
+        .into_iter()
+        .filter(|lib| !library_visible_on_system(lib))
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+    Vec::new()
+}
+
+pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        return Vec::new();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        let output = match Command::new("nvidia-smi")
+            .arg("--query-gpu=index")
+            .arg("--format=csv,noheader")
+            .output()
+        {
+            Ok(out) if out.status.success() => out,
+            _ => return Vec::new(),
+        };
+
+        let mut indexes: Vec<i32> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<i32>().ok())
+            .collect();
+        indexes.sort_unstable();
+        indexes.dedup();
+        indexes
+    }
+}
+
 fn build_execution_providers() -> Result<ExecutionProviderSelection> {
     let require_gpu = require_gpu();
     if require_gpu {
         info!("DPN_OCR_REQUIRE_GPU=1; GPU execution provider is required.");
     }
-    let force_cpu = force_cpu_execution_providers();
+    let mut force_cpu = force_cpu_execution_providers();
     if force_cpu {
         warn!("DPN_OCR_FORCE_CPU=1; disabling GPU execution providers.");
     }
@@ -392,9 +667,46 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
             false
         }
     };
+    if cuda_available {
+        let missing = missing_cuda_runtime_libraries();
+        if !missing.is_empty() {
+            let msg = format!(
+                "CUDA runtime appears incomplete (missing: {}). \
+                 Install CUDA/cuDNN runtime libraries and ensure they are on the linker path.",
+                missing.join(", ")
+            );
+            if require_gpu {
+                bail!("{msg}");
+            }
+            warn!("{msg} Falling back to CPU OCR.");
+            FORCE_CPU_EP.store(true, Ordering::Relaxed);
+            force_cpu = true;
+        }
+    }
 
     let directml_available = detect_directml_available(force_cpu);
     let coreml_available = detect_coreml_available(force_cpu);
+
+    // Modern ORT/CUDA builds are unreliable on legacy Maxwell cards (e.g., GTX 960).
+    // Default to CPU to avoid repeated GPU-init churn unless explicitly overridden.
+    if !force_cpu
+        && cuda_available
+        && prefer_ppocr_v3_for_legacy_nvidia()
+        && !allow_legacy_cuda_maxwell()
+    {
+        let msg = "Detected legacy NVIDIA Maxwell GPU. Disabling CUDA EP for OCR by default; \
+                   set DPN_OCR_ALLOW_LEGACY_CUDA=1 to force an experimental GPU attempt.";
+        if require_gpu {
+            bail!("{msg}");
+        }
+        warn!("{msg}");
+        FORCE_CPU_EP.store(true, Ordering::Relaxed);
+        force_cpu = true;
+    }
+
+    let cuda_available = if force_cpu { false } else { cuda_available };
+    let directml_available = if force_cpu { false } else { directml_available };
+    let coreml_available = if force_cpu { false } else { coreml_available };
 
     let (kinds, gpu_available) = select_execution_provider_plan(
         require_gpu,
@@ -439,4 +751,3 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
         gpu_available,
     })
 }
-

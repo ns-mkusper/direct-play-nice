@@ -26,14 +26,16 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, OnceLock,
 };
+use std::thread;
 
 use crate::{OcrEngine, OcrFormat, SubMode};
 use text_processing::{
     is_english_language, language_uses_spaces, lines_text_for_quality, ocr_text_quality_score,
     postprocess_ocr_text, ppocr_average_confidence, ppocr_needs_quality_fallback,
+    prune_impossible_geometry,
 };
 #[cfg(test)]
 use text_processing::{ppocr_spacing_needs_fallback, split_glued_ascii_token};

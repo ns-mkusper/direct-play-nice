@@ -38,6 +38,54 @@ fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
     None
 }
 
+#[derive(Debug, Default, Clone)]
+struct OcrQualityBaseline {
+    samples: usize,
+    quality_sum: f32,
+    confidence_sum: f32,
+}
+
+impl OcrQualityBaseline {
+    const WINDOW_MS: i64 = 3 * 60 * 1_000;
+
+    fn observe(&mut self, quality: f32, confidence: f32, timestamp_ms: i64) {
+        if !(0..=Self::WINDOW_MS).contains(&timestamp_ms) {
+            return;
+        }
+        if !quality.is_finite() || !confidence.is_finite() {
+            return;
+        }
+        if !(0.0..=1.0).contains(&quality) || !(0.0..=1.0).contains(&confidence) {
+            return;
+        }
+        self.samples += 1;
+        self.quality_sum += quality;
+        self.confidence_sum += confidence;
+    }
+
+    fn avg_quality(&self) -> Option<f32> {
+        if self.samples == 0 {
+            None
+        } else {
+            Some(self.quality_sum / self.samples as f32)
+        }
+    }
+
+    fn avg_confidence(&self) -> Option<f32> {
+        if self.samples == 0 {
+            None
+        } else {
+            Some(self.confidence_sum / self.samples as f32)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OcrFallbackThresholds {
+    quality: f32,
+    confidence: f32,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ocr_single_stream(
     input_path: &str,
@@ -87,6 +135,7 @@ fn ocr_single_stream(
 
     let mut cues = Vec::new();
     let mut packet_seq: usize = 0;
+    let mut quality_baseline = OcrQualityBaseline::default();
 
     loop {
         let mut packet = match ictx.read_packet()? {
@@ -120,6 +169,7 @@ fn ocr_single_stream(
                 video_dimensions,
                 ocr_engine,
                 engine,
+                &mut quality_baseline,
             )?;
             cues.append(&mut new_cues);
             packet_seq += 1;
@@ -142,6 +192,7 @@ fn ocr_single_stream(
             video_dimensions,
             ocr_engine,
             engine,
+            &mut quality_baseline,
         )?;
         cues.append(&mut new_cues);
         packet_seq += 1;
@@ -165,6 +216,7 @@ fn subtitle_to_cues(
     video_dimensions: Option<(u32, u32)>,
     ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
+    quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<Vec<SubtitleCue>> {
     if subtitle.is_null() {
         return Ok(Vec::new());
@@ -192,11 +244,13 @@ fn subtitle_to_cues(
     let (lines, had_imagery) = extract_subtitle_lines(
         sub,
         language,
+        start_ms,
         stream_index,
         packet_seq,
         work_dir,
         ocr_engine,
         engine,
+        quality_baseline,
     )?;
     if had_imagery && lines.is_empty() {
         warn!(
@@ -261,14 +315,17 @@ fn subtitle_to_cues(
     Ok(cues)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     language: &str,
+    subtitle_start_ms: i64,
     stream_index: i32,
     packet_seq: usize,
     work_dir: &Path,
     ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
+    quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<(Vec<OcrLine>, bool)> {
     let mut lines = Vec::new();
     let mut had_imagery = false;
@@ -336,23 +393,49 @@ fn extract_subtitle_lines(
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
         let mut output = engine.extract_lines(&pgm_path, language)?;
-        let force_tesseract_non_english =
-            !is_english_language(language) && language_uses_spaces(language);
+        let discarded = prune_impossible_geometry(&mut output.lines, language);
+        if discarded > 0 {
+            debug!(
+                "{} geometry pruning: discarded {} impossible OCR boxes for subtitle stream {} packet {} rect {}",
+                ppocr_engine_label(ocr_engine),
+                discarded,
+                stream_index,
+                packet_seq,
+                i
+            );
+        }
+        let ppocr_text = lines_text_for_quality(&output.lines);
+        let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
+        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
+        quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
+        let thresholds = quality_fallback_thresholds(quality_baseline);
+        let force_tesseract_non_english = force_tesseract_non_english_enabled()
+            && !is_english_language(language)
+            && language_uses_spaces(language);
+        let quality_fallback_requested = ppocr_needs_quality_fallback(&output.lines, language);
+        let should_try_quality_fallback = quality_fallback_requested
+            && thresholds.is_some_and(|thresholds| {
+                ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
+            });
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(language)
             && !disable_tesseract_quality_fallback()
-            && (force_tesseract_non_english
-                || ppocr_needs_quality_fallback(&output.lines, language))
+            && (force_tesseract_non_english || should_try_quality_fallback)
         {
-            let ppocr_text = lines_text_for_quality(&output.lines);
-            let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
-            let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
             if let Some(fallback_language) = resolve_tesseract_fallback_language(language) {
                 match run_tesseract_best_effort(&pgm_path, &fallback_language) {
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // For non-English streams, prefer language-specific Tesseract
                         // because the bundled PP-OCR recognizer is English-focused.
-                        if force_tesseract_non_english || candidate.quality + 0.03 >= ppocr_quality
+                        let should_replace_with_tesseract = if force_tesseract_non_english {
+                            true
+                        } else {
+                            let min_gain = tesseract_quality_fallback_min_gain();
+                            candidate.quality >= ppocr_quality + min_gain
+                                || (ppocr_confidence < 0.70
+                                    && candidate.quality + 0.03 >= ppocr_quality)
+                        };
+                        if should_replace_with_tesseract
                         {
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
@@ -404,7 +487,7 @@ fn extract_subtitle_lines(
                             }
                         } else {
                             debug!(
-                                "{} quality fallback skipped: keeping model output for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
+                                "{} quality fallback skipped (insufficient gain): keeping model output for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
                                 ppocr_engine_label(ocr_engine),
                                 stream_index,
                                 packet_seq,
@@ -456,3 +539,47 @@ fn extract_subtitle_lines(
     Ok((lines, had_imagery))
 }
 
+fn force_tesseract_non_english_enabled() -> bool {
+    env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
+        .ok()
+        .map(|v| {
+            let x = v.trim().to_ascii_lowercase();
+            matches!(x.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn tesseract_quality_fallback_min_gain() -> f32 {
+    match env::var("DPN_OCR_TESS_FALLBACK_MIN_GAIN") {
+        Ok(v) => match v.trim().parse::<f32>() {
+            Ok(x) if x.is_finite() && (0.0..=0.5).contains(&x) => x,
+            _ => {
+                warn!(
+                    "Ignoring invalid DPN_OCR_TESS_FALLBACK_MIN_GAIN='{}'; using default 0.08",
+                    v
+                );
+                0.08
+            }
+        },
+        Err(_) => 0.08,
+    }
+}
+
+fn quality_fallback_thresholds(baseline: &OcrQualityBaseline) -> Option<OcrFallbackThresholds> {
+    const BASELINE_MIN_SAMPLES: usize = 12;
+    const RELATIVE_DROP: f32 = 0.15;
+
+    if baseline.samples < BASELINE_MIN_SAMPLES {
+        return None;
+    }
+
+    let dynamic_quality = baseline.avg_quality()?.mul_add(1.0 - RELATIVE_DROP, 0.0);
+    let dynamic_confidence = baseline
+        .avg_confidence()?
+        .mul_add(1.0 - RELATIVE_DROP, 0.0);
+
+    Some(OcrFallbackThresholds {
+        quality: dynamic_quality.clamp(0.0, 1.0),
+        confidence: dynamic_confidence.clamp(0.0, 1.0),
+    })
+}

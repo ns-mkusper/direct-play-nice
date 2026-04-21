@@ -1,3 +1,5 @@
+use crate::transcoder::prelude::*;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum VideoCodecPreference {
@@ -163,9 +165,9 @@ impl std::fmt::Display for AudioQuality {
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct QualityLimits {
-    max_video_dimensions: Option<(u32, u32)>,
-    max_video_bitrate: Option<i64>,
-    max_audio_bitrate: Option<i64>,
+    pub(crate) max_video_dimensions: Option<(u32, u32)>,
+    pub(crate) max_video_bitrate: Option<i64>,
+    pub(crate) max_audio_bitrate: Option<i64>,
 }
 
 impl QualityLimits {
@@ -179,4 +181,3 @@ impl QualityLimits {
         self.max_audio_bitrate = audio_quality.bitrate();
     }
 }
-

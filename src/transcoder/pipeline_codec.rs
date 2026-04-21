@@ -1,4 +1,6 @@
-fn preferred_audio_frame_size(encode_context: &AVCodecContext, fifo_size: i32) -> i32 {
+use crate::transcoder::prelude::*;
+
+pub(crate) fn preferred_audio_frame_size(encode_context: &AVCodecContext, fifo_size: i32) -> i32 {
     if encode_context.frame_size > 0 {
         return encode_context.frame_size;
     }
@@ -92,7 +94,7 @@ fn configure_video_timing(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn set_h264_video_codec_par(
+pub(crate) fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
@@ -194,7 +196,7 @@ fn set_h264_video_codec_par(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn set_hevc_video_codec_par(
+pub(crate) fn set_hevc_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
@@ -279,7 +281,7 @@ fn set_hevc_video_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
-fn set_audio_codec_par(
+pub(crate) fn set_audio_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     _output_stream: &mut AVStreamMut,
@@ -334,7 +336,7 @@ fn set_audio_codec_par(
     Ok(())
 }
 
-fn set_subtitle_codec_par(
+pub(crate) fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     _output_stream: &mut AVStreamMut,

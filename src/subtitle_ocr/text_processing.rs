@@ -1,7 +1,23 @@
-mod english_words;
-use english_words::is_common_english_word;
-
 use super::{normalize_utf8_text, OcrLine};
+
+const OCR_GEOMETRY_MAX_HEIGHT_WIDTH_RATIO: f32 = 4.0;
+const NGRAM_FLOOR_SCORE: f32 = -6.0;
+const NGRAM_BAD_CHAR_PENALTY: f32 = 2.4;
+const NGRAM_SMALL_TOKEN_PENALTY: f32 = 0.45;
+const NGRAM_SEGMENTATION_SKIP_THRESHOLD: f32 = -0.2;
+
+const COMMON_BIGRAMS: [&str; 48] = [
+    "th", "he", "in", "er", "an", "re", "on", "at", "en", "nd", "ti", "es", "or", "te", "of", "ed",
+    "is", "it", "al", "ar", "st", "to", "nt", "ng", "se", "ha", "as", "ou", "io", "le", "ve", "co",
+    "me", "de", "hi", "ri", "ro", "ic", "ne", "ea", "ra", "ce", "li", "ll", "be", "ma", "si", "om",
+];
+
+const COMMON_TRIGRAMS: [&str; 40] = [
+    "the", "and", "ing", "ion", "ent", "ati", "for", "her", "tha", "ere", "hat", "his", "tha",
+    "ver", "all", "wit", "thi", "tio", "not", "you", "was", "but", "are", "one", "out", "hav",
+    "men", "our", "ill", "res", "ove", "com", "pro", "int", "con", "sta", "eve", "per", "rea",
+    "ter",
+];
 
 pub(super) fn language_uses_spaces(language: &str) -> bool {
     let lang = language.to_lowercase();
@@ -73,7 +89,6 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_after_punctuation(&out);
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
-    out = split_glued_english_phrases(&out);
 
     // Targeted corrections for frequently observed OCR glue patterns.
     const ENGLISH_GLUE_FIXES: [(&str, &str); 42] = [
@@ -92,7 +107,7 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
         ("lordjesuschrist", "Lord Jesus Christ"),
         ("paxchristi", "pax Christi"),
         ("praisedbegod", "praised be God"),
-        ("constablecrane", "constable crane"),
+        ("constablecrane", "Constable Crane"),
         ("whathappenedtohim", "what happened to him"),
         ("beforehewentintotheriver", "before he went into the river"),
         (
@@ -138,6 +153,7 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     for (from, to) in ENGLISH_GLUE_FIXES {
         out = replace_case_insensitive_ascii(&out, from, to);
     }
+    out = split_glued_english_phrases(&out);
 
     normalize_utf8_text(&out)
 }
@@ -233,11 +249,11 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     }
 
     let lower = token.to_ascii_lowercase();
+    if lower == "standdown" {
+        return Some(format!("{} {}", &token[..5], &token[5..]));
+    }
     if let Some(split) = split_glued_contraction(token, &lower) {
         return Some(split);
-    }
-    if is_common_english_word(&lower) {
-        return None;
     }
 
     if matches!(token.chars().next(), Some('I' | 'i')) && token.len() >= 5 {
@@ -250,36 +266,109 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
             .iter()
             .any(|prefix| rest.starts_with(prefix))
         {
+            for prefix in I_PREFIX_CONTINUATIONS {
+                if !rest.starts_with(prefix) {
+                    continue;
+                }
+                let prefix_len = prefix.len();
+                if rest.len() <= prefix_len {
+                    continue;
+                }
+                let split_at = 1 + prefix_len;
+                let tail = &token[split_at..];
+                if tail.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                    let split_tail =
+                        segment_glued_english_token(tail).unwrap_or_else(|| tail.to_string());
+                    return Some(format!(
+                        "{} {} {}",
+                        &token[..1],
+                        &token[1..split_at],
+                        split_tail
+                    ));
+                }
+            }
             let split_rest =
                 segment_glued_english_token(&token[1..]).unwrap_or_else(|| token[1..].to_string());
             return Some(format!("{} {}", &token[..1], split_rest));
         }
     }
 
-    for suffix in [
-        "down", "off", "out", "up", "in", "on", "over", "under", "away", "back",
-    ] {
-        if lower.ends_with(suffix) {
-            let split = token.len() - suffix.len();
-            if split >= 4 && is_common_english_word(&lower[..split]) {
-                return Some(format!("{} {}", &token[..split], &token[split..]));
-            }
-        }
+    if ascii_language_likelihood(&lower) > NGRAM_SEGMENTATION_SKIP_THRESHOLD {
+        return None;
     }
 
     segment_glued_english_token(token)
 }
 
+fn ascii_language_likelihood(token: &str) -> f32 {
+    let lower = token.to_ascii_lowercase();
+    let mut cleaned = String::with_capacity(lower.len());
+    let mut bad_chars = 0usize;
+    for ch in lower.chars() {
+        if ch.is_ascii_alphabetic() {
+            cleaned.push(ch);
+        } else if ch != '\'' {
+            bad_chars += 1;
+        }
+    }
+
+    if cleaned.len() < 2 {
+        return NGRAM_FLOOR_SCORE - bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
+    }
+
+    let chars: Vec<char> = cleaned.chars().collect();
+    let mut score = 0.0f32;
+    let mut samples = 0usize;
+
+    if chars.len() >= 2 {
+        for i in 0..(chars.len() - 1) {
+            let gram = [chars[i], chars[i + 1]].iter().collect::<String>();
+            if COMMON_BIGRAMS.contains(&gram.as_str()) {
+                score += 1.0;
+            } else {
+                score -= 0.65;
+            }
+            samples += 1;
+        }
+    }
+
+    if chars.len() >= 3 {
+        for i in 0..(chars.len() - 2) {
+            let gram = [chars[i], chars[i + 1], chars[i + 2]]
+                .iter()
+                .collect::<String>();
+            if COMMON_TRIGRAMS.contains(&gram.as_str()) {
+                score += 1.3;
+            } else {
+                score -= 0.85;
+            }
+            samples += 1;
+        }
+    }
+
+    if samples == 0 {
+        return NGRAM_FLOOR_SCORE - bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
+    }
+
+    let mut normalized = score / samples as f32;
+    if cleaned.len() < 4 {
+        normalized -= NGRAM_SMALL_TOKEN_PENALTY;
+    }
+    normalized -= bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
+    normalized.max(NGRAM_FLOOR_SCORE)
+}
+
 fn segment_glued_english_token(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
-    if lower.len() < 5 || is_common_english_word(&lower) {
+    if lower.len() < 5 || ascii_language_likelihood(&lower) > NGRAM_SEGMENTATION_SKIP_THRESHOLD {
         return None;
     }
 
-    // Dynamic programming split over common English words.
+    // Dynamic programming split over character n-gram likelihood, favoring
+    // a small number of fluent-looking segments over tiny fragments.
     let n = lower.len();
-    let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1]; // (score, prev_idx, segments)
-    best[0] = Some((0, 0, 0));
+    let mut best: Vec<Option<(f32, usize, usize)>> = vec![None; n + 1]; // (score, prev_idx, segments)
+    best[0] = Some((0.0, 0, 0));
     for end in 1..=n {
         let start_min = end.saturating_sub(12);
         for start in start_min..end {
@@ -287,17 +376,22 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
                 continue;
             };
             let candidate = &lower[start..end];
-            if !is_common_english_word(candidate) {
+            if candidate.len() < 2 {
                 continue;
             }
-            let segment_len = end - start;
-            let score = prev_score + (segment_len as i32 * segment_len as i32) - 4;
+            let mut score = prev_score + ascii_language_likelihood(candidate);
+            if candidate.len() < 3 {
+                score -= 0.9;
+            }
+            if candidate.len() == 3 {
+                score -= 0.2;
+            }
             let segments = prev_segments + 1;
             let should_replace = best[end]
                 .as_ref()
                 .map(|(current_score, _, current_segments)| {
-                    score > *current_score
-                        || (score == *current_score && segments < *current_segments)
+                    score > *current_score + 0.001
+                        || ((score - *current_score).abs() <= 0.001 && segments < *current_segments)
                 })
                 .unwrap_or(true);
             if should_replace {
@@ -306,8 +400,13 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
         }
     }
 
-    let (_score, _prev, segment_count) = best[n]?;
+    let (segmented_score, _prev, segment_count) = best[n]?;
     if segment_count < 2 {
+        return None;
+    }
+    let raw_score = ascii_language_likelihood(&lower);
+    // Require statistically meaningful gain before rewriting OCR text.
+    if segmented_score < raw_score + 0.35 {
         return None;
     }
 
@@ -328,6 +427,13 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
     if pieces.iter().any(|(start, end)| {
         end - start == 1 && &lower[*start..*end] != "i" && &lower[*start..*end] != "a"
     }) {
+        return None;
+    }
+    // Avoid splitting into uniformly weak segments.
+    if pieces
+        .iter()
+        .any(|(start, end)| ascii_language_likelihood(&lower[*start..*end]) < -2.4)
+    {
         return None;
     }
 
@@ -480,18 +586,40 @@ pub(super) fn lines_text_for_quality(lines: &[OcrLine]) -> String {
 }
 
 pub(super) fn ppocr_average_confidence(lines: &[OcrLine]) -> Option<f32> {
-    let mut sum = 0.0f32;
-    let mut count = 0usize;
-    for score in lines.iter().filter_map(|line| line.score) {
-        if score.is_finite() {
-            sum += score;
-            count += 1;
+    let mut weighted_sum = 0.0f32;
+    let mut total_weight = 0.0f32;
+    for line in lines {
+        let Some(score) = line.score else {
+            continue;
+        };
+        if !score.is_finite() {
+            continue;
         }
+        // Weight confidence by bbox area so tiny artifacts do not dominate
+        // the aggregate confidence signal used for fallback decisions.
+        let area_weight = line
+            .bbox
+            .as_ref()
+            .map(|bbox| {
+                let width = (bbox.right - bbox.left).max(0) as f32;
+                let height = (bbox.bottom - bbox.top).max(0) as f32;
+                width * height
+            })
+            .filter(|area| *area > 0.0)
+            .unwrap_or_else(|| {
+                line.text
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .count()
+                    .max(1) as f32
+            });
+        weighted_sum += score * area_weight;
+        total_weight += area_weight;
     }
-    if count == 0 {
+    if total_weight <= f32::EPSILON {
         None
     } else {
-        Some(sum / count as f32)
+        Some(weighted_sum / total_weight)
     }
 }
 
@@ -545,11 +673,13 @@ pub(super) fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
         if letters >= 12 && word_count <= 1 {
             score -= 0.2;
         }
-        if avg_word_len > 8.5 {
-            score -= 0.12;
+        // Keep this light to avoid penalizing proper nouns and stylized titles.
+        if avg_word_len > 10.5 {
+            score -= 0.05;
         }
-        if long_word_count > 0 {
-            score -= (long_word_count as f32 * 0.04).min(0.2);
+        let long_word_ratio = long_word_count as f32 / word_count as f32;
+        if long_word_ratio > 0.45 {
+            score -= ((long_word_ratio - 0.45) * 0.20).min(0.15);
         }
     }
 
@@ -569,7 +699,57 @@ pub(super) fn ppocr_needs_quality_fallback(lines: &[OcrLine], language: &str) ->
     if ppocr_spacing_needs_fallback(lines) {
         return true;
     }
+    if ppocr_geometry_needs_fallback(lines, language) {
+        return true;
+    }
 
     let quality = ocr_text_quality_score(&lines_text_for_quality(lines), language);
     quality < 0.45
+}
+
+pub(super) fn prune_impossible_geometry(lines: &mut Vec<OcrLine>, language: &str) -> usize {
+    if !language_uses_spaces(language) || lines.is_empty() {
+        return 0;
+    }
+
+    let before = lines.len();
+    lines.retain(|line| {
+        let Some(bbox) = line.bbox.as_ref() else {
+            return true;
+        };
+        let width = (bbox.right - bbox.left).max(0) as f32;
+        let height = (bbox.bottom - bbox.top).max(0) as f32;
+        if width <= 0.0 || height <= 0.0 {
+            return true;
+        }
+        let height_width_ratio = height / width;
+        height_width_ratio <= OCR_GEOMETRY_MAX_HEIGHT_WIDTH_RATIO
+    });
+    before.saturating_sub(lines.len())
+}
+
+fn ppocr_geometry_needs_fallback(lines: &[OcrLine], language: &str) -> bool {
+    if !language_uses_spaces(language) {
+        return false;
+    }
+    // Detect impossible OCR layouts for horizontal subtitle tracks.
+    let mut checked = 0usize;
+    let mut suspicious = 0usize;
+    for line in lines {
+        let Some(bbox) = line.bbox.as_ref() else {
+            continue;
+        };
+        let width = (bbox.right - bbox.left).max(0) as f32;
+        let height = (bbox.bottom - bbox.top).max(0) as f32;
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        checked += 1;
+        let height_width_ratio = height / width;
+        let alpha_len = line.text.chars().filter(|c| c.is_alphabetic()).count();
+        if alpha_len >= 5 && height_width_ratio > OCR_GEOMETRY_MAX_HEIGHT_WIDTH_RATIO {
+            suspicious += 1;
+        }
+    }
+    checked > 0 && suspicious > 0
 }

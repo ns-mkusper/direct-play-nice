@@ -241,6 +241,8 @@ Linux GPU runtime notes:
   preferred path.
 - For legacy NVIDIA GPUs, `--ocr-engine pp-ocr-v3` can be more stable than
   v4 on older driver/runtime combinations.
+- For legacy Maxwell OCR runtime setup on Linux, source
+  `scripts/ocr-tools/env_maxwell_legacy.sh` before running the CLI.
 - If GPU must be used, set `DPN_OCR_REQUIRE_GPU=1` to fail fast when no GPU
   execution provider is available.
 

@@ -17,6 +17,7 @@ const DEFAULT_JOBS_PER_GPU: usize = 2;
 const MAX_JOBS_ENV: &str = "DIRECT_PLAY_NICE_MAX_JOBS";
 const JOBS_PER_GPU_ENV: &str = "DIRECT_PLAY_NICE_JOBS_PER_GPU";
 const LOCK_DIR_ENV: &str = "DIRECT_PLAY_NICE_LOCK_DIR";
+const DISABLE_CUDA_PIN_ENV: &str = "DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN";
 
 #[derive(Clone)]
 struct SlotSpec {
@@ -59,6 +60,13 @@ impl SlotGuard {
     fn apply_gpu_affinity(&mut self) {
         match &self.gpu {
             Some(GpuKind::Nvidia { index }) => {
+                if cuda_visible_devices_pin_disabled() {
+                    info!(
+                        "Skipping CUDA_VISIBLE_DEVICES pinning for conversion slot on NVIDIA GPU {} ({}=1).",
+                        index, DISABLE_CUDA_PIN_ENV
+                    );
+                    return;
+                }
                 let prev = PrevGpuEnv::capture();
                 self.prev_env = Some(prev);
 
@@ -84,6 +92,16 @@ impl SlotGuard {
             None => {}
         }
     }
+}
+
+fn cuda_visible_devices_pin_disabled() -> bool {
+    std::env::var(DISABLE_CUDA_PIN_ENV)
+        .ok()
+        .map(|v| {
+            let x = v.trim().to_ascii_lowercase();
+            matches!(x.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 struct PrevGpuEnv {

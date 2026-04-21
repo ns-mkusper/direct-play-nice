@@ -1,8 +1,6 @@
-use super::*;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::servarr::*;
     use std::ffi::CString;
     use std::sync::Mutex;
     use tempfile::tempdir;
