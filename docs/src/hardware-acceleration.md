@@ -20,7 +20,7 @@ Typical provider order is:
 - CoreML (Apple platforms)
 - CPU fallback
 
-### Supported GPU architecture guidance
+### OCR architecture guidance
 
 - NVIDIA: CUDA-capable GPUs supported by your CUDA Toolkit + cuDNN + ONNX
   Runtime build.
@@ -28,7 +28,7 @@ Typical provider order is:
 - Apple CoreML: Apple platform support depends on CoreML/ONNX Runtime provider
   compatibility.
 
-### Official references
+### OCR official references
 
 - ONNX Runtime execution providers overview:
   <https://onnxruntime.ai/docs/execution-providers/>
@@ -62,7 +62,7 @@ Common acceleration paths include:
 - AMD AMF
 - Apple VideoToolbox
 
-### Supported GPU architecture guidance
+### Transcoding architecture guidance
 
 - NVIDIA: see the NVIDIA Video Codec support matrix for exact GPU generation and
   codec-level support.
@@ -71,7 +71,7 @@ Common acceleration paths include:
   FFmpeg and AMF.
 - Apple: VideoToolbox support depends on macOS + hardware codec support.
 
-### Official references
+### Transcoding official references
 
 - FFmpeg CLI documentation:
   <https://ffmpeg.org/ffmpeg.html>
