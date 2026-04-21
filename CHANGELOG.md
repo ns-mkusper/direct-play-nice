@@ -8,6 +8,23 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [0.1.0-alpha.5] - 2026-04-21
+
+### 📌 Release Highlights
+
+- Merged major refactor and CI hardening work from recent mainline changes.
+- Added strict rustdoc coverage checks for public library APIs.
+- Added and validated an mdBook manual with dedicated chapters for:
+  installation, command reference, quality controls, OCR/GPU setup, Plex
+  refresh, Sonarr/Radarr integration, troubleshooting, and build/test flows.
+- Added GitHub Pages deployment workflow for publishing the mdBook on pushes to
+  `main`, and retained PR-time docs validation (`markdownlint`, link checks,
+  mdBook build).
+- Improved release-note generation to capture all commit styles (including
+  unconventional subjects) since the previous tag.
+- Refreshed README to be a concise landing page with Direct Play definition
+  links and handoff to the full manual.
+
 ## [0.1.0-alpha.4] - 2026-04-07
 
 ### 📌 Release Delta Summary
