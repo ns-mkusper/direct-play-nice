@@ -251,7 +251,7 @@ jobs:
     outputs:
       run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' && secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
     steps:
       - id: check
@@ -264,8 +264,12 @@ jobs:
             exit 0
           fi
 
-          has_runner="$(gh api repos/${{ github.repository }}/actions/runners --paginate \
-            --jq '[.runners[] | select(.status=="online" and ([.labels[].name] | index("plex-bench")))] | length > 0')"
+          if ! has_runner="$(gh api repos/${{ github.repository }}/actions/runners --paginate \
+            --jq '[.runners[] | select(.status=="online" and ([.labels[].name] | index("plex-bench")))] | length > 0')"; then
+            echo "::warning::Unable to query self-hosted runner inventory via API; skipping benchmarks."
+            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ "$has_runner" == "true" ]]; then
             echo "run-benchmarks=true" >> "$GITHUB_OUTPUT"
             echo "Benchmark runner is online."
