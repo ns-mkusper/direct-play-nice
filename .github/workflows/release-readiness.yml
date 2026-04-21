@@ -27,7 +27,22 @@ jobs:
           changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
           printf '%s\n' "$changed"
 
-          if printf '%s\n' "$changed" | grep -Eq '^(src/|Cargo\.toml$|Cargo\.lock$|release-plz\.toml$|cliff\.toml$|CHANGELOG\.md$)'; then
+          enforce=false
+
+          if printf '%s\n' "$changed" | grep -Eq '^(src/|Cargo\.lock$|release-plz\.toml$|cliff\.toml$|CHANGELOG\.md$)'; then
+            enforce=true
+          fi
+
+          if [[ "$enforce" != "true" ]] && printf '%s\n' "$changed" | grep -Eq '^Cargo\.toml$'; then
+            # Treat Cargo.toml edits as release-impacting only when they touch
+            # package versioning/build surface (not benches/docs-only metadata).
+            if git diff --unified=0 "origin/${{ github.base_ref }}...HEAD" -- Cargo.toml | \
+              grep -Eq '^[+-]\s*(version|name|edition|rust-version|publish|license|readme|repository|homepage|documentation|description|keywords|categories)\s*=|^[+-]\s*\[(package|dependencies|dev-dependencies|build-dependencies|target\..*\.dependencies|features|workspace\.dependencies)\]'; then
+              enforce=true
+            fi
+          fi
+
+          if [[ "$enforce" == "true" ]]; then
             echo "enforce=true" >> "$GITHUB_OUTPUT"
             echo "Release-readiness enforcement enabled."
           else
