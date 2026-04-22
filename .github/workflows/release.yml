@@ -251,11 +251,23 @@ jobs:
     outputs:
       run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
     env:
-      GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' && secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      FALLBACK_GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' && secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
+      - name: Generate runner app token
+        id: runner-app-token
+        if: ${{ secrets.RUNNER_APP_ID != '' && secrets.RUNNER_APP_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RUNNER_APP_ID }}
+          private-key: ${{ secrets.RUNNER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - id: check
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.runner-app-token.outputs.token != '' && steps.runner-app-token.outputs.token || env.FALLBACK_GH_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${BENCHMARK_SOURCE_PATH:-}" ]]; then
