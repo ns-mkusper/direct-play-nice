@@ -396,7 +396,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f /opt/direct-play-nice/ort116-runtime/lib/libonnxruntime.so
+          test -f /opt/direct-play-nice/ort122-runtime/lib/libonnxruntime.so
           test -f /opt/direct-play-nice/cudnn8-runtime/usr/lib/libcudnn.so.8
 
       - name: Run OCR benchmark
@@ -416,8 +416,8 @@ jobs:
             --jobs-per-gpu 1 \
             --cuda-devices 0 \
             --require-gpu \
-            --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_SKIP_CLS=1"
 
