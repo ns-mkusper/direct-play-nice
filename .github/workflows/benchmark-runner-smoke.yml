@@ -1,0 +1,85 @@
+name: Benchmark Runner Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_path:
+        description: "Optional override for benchmark source file path"
+        required: false
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  benchmark-runner-smoke:
+    name: benchmark-runner-smoke
+    runs-on:
+      - self-hosted
+      - linux
+      - plex-bench
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
+      HOME: /tmp/direct-play-nice-gha-home
+      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
+      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve benchmark source path
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_path="${INPUT_SOURCE_PATH:-}"
+          if [[ -z "$source_path" ]]; then
+            source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
+          fi
+          if [[ -z "$source_path" ]]; then
+            echo "::error title=Missing source path::Set workflow input 'source_path' or BENCHMARK_SOURCE_PATH secret."
+            exit 1
+          fi
+          echo "path=$source_path" >> "$GITHUB_OUTPUT"
+
+      - name: Check runner dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool nvidia-smi; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}."
+            exit 1
+          fi
+          ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
+
+      - name: Verify writable Rust homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
+          touch "$HOME/.write-test" "$CARGO_HOME/.write-test" "$RUSTUP_HOME/.write-test"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+
+      - name: Validate benchmark source readability
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -r "${{ steps.source.outputs.path }}"
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "${{ steps.source.outputs.path }}" | head -n 1
