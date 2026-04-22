@@ -256,7 +256,6 @@ jobs:
     steps:
       - name: Generate runner app token
         id: runner-app-token
-        if: ${{ secrets.RUNNER_APP_ID != '' && secrets.RUNNER_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.RUNNER_APP_ID }}
