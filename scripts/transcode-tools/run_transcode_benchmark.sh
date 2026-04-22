@@ -330,7 +330,7 @@ def tf(x):
     return f"{x:.2f}"
 
 lines = []
-lines.append("# Transcoding Benchmark (Sanitized)")
+lines.append("# Transcoding Benchmark")
 lines.append("")
 lines.append("## Scope")
 lines.append("")
