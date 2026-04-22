@@ -252,9 +252,9 @@ jobs:
       run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
     env:
       BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
-      HOME: ${{ github.workspace }}/.gha-home
-      CARGO_HOME: ${{ github.workspace }}/.gha-home/.cargo
-      RUSTUP_HOME: ${{ github.workspace }}/.gha-home/.rustup
+      HOME: /tmp/direct-play-nice-gha-home
+      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
+      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
       FALLBACK_GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' && secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Generate runner app token
