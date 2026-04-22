@@ -40,6 +40,9 @@ jobs:
       INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
       INPUT_SAMPLE_MS: ${{ github.event.inputs.sample_ms }}
       INPUT_VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
+      HOME: ${{ github.workspace }}/.gha-home
+      CARGO_HOME: ${{ github.workspace }}/.gha-home/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.gha-home/.rustup
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,6 +76,12 @@ jobs:
             exit 1
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
+
+      - name: Prepare Rust home directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
