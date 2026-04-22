@@ -11,6 +11,7 @@ Usage:
     [--hw-accel nvenc] \
     [--video-quality 1080p] \
     [--sub-mode skip] \
+    [--max-source-seconds 900] \
     [--sample-ms 200] \
     [--cpu-output cpu.mp4] \
     [--hw-output hw.mp4]
@@ -37,6 +38,7 @@ RUN_DIR=""
 HW_ACCEL="nvenc"
 VIDEO_QUALITY="1080p"
 SUB_MODE="skip"
+MAX_SOURCE_SECONDS=""
 SAMPLE_MS="200"
 CPU_OUTPUT_NAME="cpu.mp4"
 HW_OUTPUT_NAME="hw.mp4"
@@ -55,6 +57,8 @@ while [[ $# -gt 0 ]]; do
       VIDEO_QUALITY="$2"; shift 2 ;;
     --sub-mode)
       SUB_MODE="$2"; shift 2 ;;
+    --max-source-seconds)
+      MAX_SOURCE_SECONDS="$2"; shift 2 ;;
     --sample-ms)
       SAMPLE_MS="$2"; shift 2 ;;
     --cpu-output)
@@ -87,6 +91,12 @@ if ! [[ "$SAMPLE_MS" =~ ^[0-9]+$ ]] || (( SAMPLE_MS < 50 )); then
   echo "--sample-ms must be an integer >= 50" >&2
   exit 2
 fi
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  if ! [[ "$MAX_SOURCE_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SOURCE_SECONDS < 30 )); then
+    echo "--max-source-seconds must be an integer >= 30" >&2
+    exit 2
+  fi
+fi
 if ! command -v ffprobe >/dev/null 2>&1; then
   echo "ffprobe is required on PATH" >&2
   exit 2
@@ -104,16 +114,28 @@ CPU_CMD="$RUN_DIR/cpu_command.txt"
 HW_CMD="$RUN_DIR/hw_command.txt"
 SUMMARY_JSON="$RUN_DIR/benchmark_summary.json"
 SUMMARY_MD="$RUN_DIR/benchmark_summary.md"
+TRIMMED_SOURCE="$RUN_DIR/source_trimmed.mkv"
 
-echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$SOURCE' '$CPU_OUT'" > "$CPU_CMD"
-echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$SOURCE' '$HW_OUT'" > "$HW_CMD"
+BENCH_SOURCE="$SOURCE"
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  ffmpeg -hide_banner -loglevel error -y \
+    -ss 0 -i "$SOURCE" \
+    -t "$MAX_SOURCE_SECONDS" \
+    -map 0 -c copy "$TRIMMED_SOURCE"
+  BENCH_SOURCE="$TRIMMED_SOURCE"
+fi
+
+echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$BENCH_SOURCE' '$CPU_OUT'" > "$CPU_CMD"
+echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$BENCH_SOURCE' '$HW_OUT'" > "$HW_CMD"
 
 {
   echo "START_HUMAN=$(date -Is)"
   echo "BIN=$BIN"
   echo "SOURCE_BASENAME=$(basename "$SOURCE")"
+  echo "BENCH_SOURCE_BASENAME=$(basename "$BENCH_SOURCE")"
   echo "VIDEO_QUALITY=$VIDEO_QUALITY"
   echo "SUB_MODE=$SUB_MODE"
+  echo "MAX_SOURCE_SECONDS=${MAX_SOURCE_SECONDS:-}"
   echo "HW_ACCEL=$HW_ACCEL"
   echo "SAMPLE_MS=$SAMPLE_MS"
 } > "$META"
@@ -123,7 +145,7 @@ echo "START_TS=$start_ts" >> "$META"
 
 # Pass 1: CPU baseline
 cpu_start=$(date +%s.%N)
-"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
+"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$BENCH_SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
 cpu_end=$(date +%s.%N)
 
 # Pass 2: Hardware attempt with optional GPU telemetry
@@ -140,7 +162,7 @@ fi
 
 hw_start=$(date +%s.%N)
 set +e
-"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
+"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$BENCH_SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
 hw_status="$?"
 set -e
 hw_end=$(date +%s.%N)
@@ -157,7 +179,7 @@ end_ts=$(date +%s)
   echo "HW_EXIT_STATUS=$hw_status"
 } >> "$META"
 
-python3 - <<'PY' "$SOURCE" "$CPU_OUT" "$HW_OUT" "$CPU_LOG" "$HW_LOG" "$GPU_SMI" "$SUMMARY_JSON" "$SUMMARY_MD" "$META" "$cpu_start" "$cpu_end" "$hw_start" "$hw_end"
+python3 - <<'PY' "$BENCH_SOURCE" "$CPU_OUT" "$HW_OUT" "$CPU_LOG" "$HW_LOG" "$GPU_SMI" "$SUMMARY_JSON" "$SUMMARY_MD" "$META" "$cpu_start" "$cpu_end" "$hw_start" "$hw_end"
 import csv
 import json
 import subprocess

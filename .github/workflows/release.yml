@@ -301,7 +301,7 @@ jobs:
       - self-hosted
       - linux
       - plex-bench
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
@@ -401,6 +401,7 @@ jobs:
             --hw-accel nvenc \
             --video-quality 1080p \
             --sub-mode skip \
+            --max-source-seconds 900 \
             --sample-ms 200
 
       - name: Collect benchmark artifacts
