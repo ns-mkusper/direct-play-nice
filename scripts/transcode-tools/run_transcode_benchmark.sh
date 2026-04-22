@@ -10,6 +10,7 @@ Usage:
     --run-dir /path/to/run_dir \
     [--hw-accel nvenc] \
     [--video-quality 1080p] \
+    [--sub-mode skip] \
     [--sample-ms 200] \
     [--cpu-output cpu.mp4] \
     [--hw-output hw.mp4]
@@ -35,6 +36,7 @@ SOURCE=""
 RUN_DIR=""
 HW_ACCEL="nvenc"
 VIDEO_QUALITY="1080p"
+SUB_MODE="skip"
 SAMPLE_MS="200"
 CPU_OUTPUT_NAME="cpu.mp4"
 HW_OUTPUT_NAME="hw.mp4"
@@ -51,6 +53,8 @@ while [[ $# -gt 0 ]]; do
       HW_ACCEL="$2"; shift 2 ;;
     --video-quality)
       VIDEO_QUALITY="$2"; shift 2 ;;
+    --sub-mode)
+      SUB_MODE="$2"; shift 2 ;;
     --sample-ms)
       SAMPLE_MS="$2"; shift 2 ;;
     --cpu-output)
@@ -101,14 +105,15 @@ HW_CMD="$RUN_DIR/hw_command.txt"
 SUMMARY_JSON="$RUN_DIR/benchmark_summary.json"
 SUMMARY_MD="$RUN_DIR/benchmark_summary.md"
 
-echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --skip-codec-check '$SOURCE' '$CPU_OUT'" > "$CPU_CMD"
-echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --skip-codec-check '$SOURCE' '$HW_OUT'" > "$HW_CMD"
+echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$SOURCE' '$CPU_OUT'" > "$CPU_CMD"
+echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$SOURCE' '$HW_OUT'" > "$HW_CMD"
 
 {
   echo "START_HUMAN=$(date -Is)"
   echo "BIN=$BIN"
   echo "SOURCE_BASENAME=$(basename "$SOURCE")"
   echo "VIDEO_QUALITY=$VIDEO_QUALITY"
+  echo "SUB_MODE=$SUB_MODE"
   echo "HW_ACCEL=$HW_ACCEL"
   echo "SAMPLE_MS=$SAMPLE_MS"
 } > "$META"
@@ -118,7 +123,7 @@ echo "START_TS=$start_ts" >> "$META"
 
 # Pass 1: CPU baseline
 cpu_start=$(date +%s.%N)
-"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --skip-codec-check "$SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
+"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
 cpu_end=$(date +%s.%N)
 
 # Pass 2: Hardware attempt with optional GPU telemetry
@@ -135,7 +140,7 @@ fi
 
 hw_start=$(date +%s.%N)
 set +e
-"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --skip-codec-check "$SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
+"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
 hw_status="$?"
 set -e
 hw_end=$(date +%s.%N)

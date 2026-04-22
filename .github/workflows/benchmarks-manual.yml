@@ -143,6 +143,7 @@ jobs:
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
             --video-quality "${INPUT_VIDEO_QUALITY:-1080p}" \
+            --sub-mode skip \
             --sample-ms "${INPUT_SAMPLE_MS:-200}"
 
       - name: Collect benchmark artifacts
