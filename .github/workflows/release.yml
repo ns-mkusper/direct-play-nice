@@ -424,8 +424,9 @@ jobs:
             --sub-mode force \
             --max-source-seconds 600 \
             --sample-ms 200 \
-            --ocr-max-jobs 4 \
+            --ocr-max-jobs 1 \
             --jobs-per-gpu 1 \
+            --cuda-devices 0 \
             --require-gpu \
             --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
             --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
