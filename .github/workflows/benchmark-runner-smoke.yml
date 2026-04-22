@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool nvidia-smi; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
           if [[ "${#missing[@]}" -ne 0 ]]; then
@@ -76,6 +76,7 @@ jobs:
           set -euo pipefail
           rustc --version
           cargo --version
+          ldconfig -p | grep -Eq 'libclang(\.so|-[0-9]+\.so)'
 
       - name: Validate benchmark source readability
         shell: bash

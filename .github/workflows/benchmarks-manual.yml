@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool nvidia-smi; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
           if [[ "${#missing[@]}" -ne 0 ]]; then
@@ -103,6 +103,20 @@ jobs:
 
       - name: Export VCPKG_ROOT
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Export LIBCLANG_PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          if [[ -z "$libclang_path" ]]; then
+            echo "::error title=Missing libclang::Runner image must include libclang shared library."
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
