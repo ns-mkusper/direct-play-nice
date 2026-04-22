@@ -14,7 +14,8 @@ jobs:
     name: Run Benchmarks
     runs-on:
       - self-hosted
-      - linux
+      - Linux
+      - X64
       - plex-bench
     timeout-minutes: 180
     permissions:

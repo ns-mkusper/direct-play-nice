@@ -299,7 +299,8 @@ jobs:
     if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
     runs-on:
       - self-hosted
-      - linux
+      - Linux
+      - X64
       - plex-bench
     timeout-minutes: 180
     permissions:
