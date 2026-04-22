@@ -1,25 +1,9 @@
-name: Benchmarks (Manual)
+name: Benchmarks
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_path:
-        description: "Optional override for benchmark source file path"
-        required: false
-        type: string
-      sample_ms:
-        description: "Sampling window in milliseconds"
-        required: false
-        default: "200"
-        type: string
-      video_quality:
-        description: "Target quality profile"
-        required: false
-        default: "1080p"
-        type: choice
-        options:
-          - 1080p
-          - 720p
+  push:
+    branches:
+      - main
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -37,9 +21,6 @@ jobs:
       actions: write
     env:
       BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
-      INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
-      INPUT_SAMPLE_MS: ${{ github.event.inputs.sample_ms }}
-      INPUT_VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
@@ -53,12 +34,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_path="${INPUT_SOURCE_PATH:-}"
+          source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
           if [[ -z "$source_path" ]]; then
-            source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
-          fi
-          if [[ -z "$source_path" ]]; then
-            echo "::error title=Missing source path::Set workflow input 'source_path' or BENCHMARK_SOURCE_PATH secret."
+            echo "::error title=Missing source path::Set BENCHMARK_SOURCE_PATH secret."
             exit 1
           fi
           echo "path=$source_path" >> "$GITHUB_OUTPUT"
@@ -121,7 +99,7 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: manual-bench-v1
+          prefix-key: main-bench-v1
 
       - name: Build release binary
         run: cargo build --release
@@ -142,10 +120,10 @@ jobs:
             --source "${{ steps.source.outputs.path }}" \
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
-            --video-quality "${INPUT_VIDEO_QUALITY:-1080p}" \
+            --video-quality "1080p" \
             --sub-mode skip \
             --max-source-seconds 900 \
-            --sample-ms "${INPUT_SAMPLE_MS:-200}"
+            --sample-ms "200"
 
       - name: Collect benchmark artifacts
         shell: bash
@@ -158,7 +136,7 @@ jobs:
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: benchmarks-manual-${{ github.run_id }}
+          name: benchmarks-${{ github.run_id }}
           path: |
             benchmark_artifacts/TRANSCODE_BENCHMARK.md
             benchmark_artifacts/TRANSCODE_BENCHMARK.json
