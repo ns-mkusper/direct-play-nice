@@ -12,6 +12,7 @@ Usage:
     [--ort-lib /path/to/onnxruntime/lib] \
     [--ocr-engine pp-ocr-v3] \
     [--sub-mode force] \
+    [--max-source-seconds 600] \
     [--sample-ms 200] \
     [--ocr-max-jobs 8] \
     [--jobs-per-gpu 1] \
@@ -39,6 +40,7 @@ OUTPUT_NAME="output.mp4"
 ORT_LIB=""
 OCR_ENGINE="pp-ocr-v3"
 SUB_MODE="force"
+MAX_SOURCE_SECONDS=""
 SAMPLE_MS="200"
 OCR_MAX_JOBS=""
 JOBS_PER_GPU=""
@@ -62,6 +64,8 @@ while [[ $# -gt 0 ]]; do
       OCR_ENGINE="$2"; shift 2 ;;
     --sub-mode)
       SUB_MODE="$2"; shift 2 ;;
+    --max-source-seconds)
+      MAX_SOURCE_SECONDS="$2"; shift 2 ;;
     --sample-ms)
       SAMPLE_MS="$2"; shift 2 ;;
     --ocr-max-jobs)
@@ -103,6 +107,12 @@ if ! [[ "$SAMPLE_MS" =~ ^[0-9]+$ ]] || [[ "$SAMPLE_MS" -lt 50 ]]; then
   echo "--sample-ms must be an integer >= 50" >&2
   exit 2
 fi
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  if ! [[ "$MAX_SOURCE_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SOURCE_SECONDS < 30 )); then
+    echo "--max-source-seconds must be an integer >= 30" >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "$RUN_DIR"
 
@@ -113,6 +123,16 @@ META="$RUN_DIR/meta.txt"
 CMD_TXT="$RUN_DIR/command.txt"
 SUMMARY_JSON="$RUN_DIR/benchmark_summary.json"
 SUMMARY_MD="$RUN_DIR/benchmark_summary.md"
+TRIMMED_SOURCE="$RUN_DIR/source_trimmed.mkv"
+
+BENCH_SOURCE="$SOURCE"
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  ffmpeg -hide_banner -loglevel error -y \
+    -ss 0 -i "$SOURCE" \
+    -t "$MAX_SOURCE_SECONDS" \
+    -map 0 -c copy "$TRIMMED_SOURCE"
+  BENCH_SOURCE="$TRIMMED_SOURCE"
+fi
 
 printf '%q ' \
   "$BIN" \
@@ -120,16 +140,18 @@ printf '%q ' \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
-  "$SOURCE" "$OUT" >"$CMD_TXT"
+  "$BENCH_SOURCE" "$OUT" >"$CMD_TXT"
 printf '\n' >>"$CMD_TXT"
 
 {
   echo "BIN=$BIN"
   echo "SOURCE=$SOURCE"
+  echo "BENCH_SOURCE=$BENCH_SOURCE"
   echo "OUT=$OUT"
   echo "ORT_LIB=$ORT_LIB"
   echo "OCR_ENGINE=$OCR_ENGINE"
   echo "SUB_MODE=$SUB_MODE"
+  echo "MAX_SOURCE_SECONDS=${MAX_SOURCE_SECONDS:-}"
   echo "SAMPLE_MS=$SAMPLE_MS"
   echo "START_HUMAN=$(date -Is)"
 } >"$META"
@@ -183,7 +205,7 @@ env "${ENV_VARS[@]}" \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
-  "$SOURCE" "$OUT" >"$LOG" 2>&1
+  "$BENCH_SOURCE" "$OUT" >"$LOG" 2>&1
 status="$?"
 set -e
 
