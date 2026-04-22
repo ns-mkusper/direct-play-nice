@@ -40,9 +40,9 @@ jobs:
       INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
       INPUT_SAMPLE_MS: ${{ github.event.inputs.sample_ms }}
       INPUT_VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
-      HOME: ${{ github.workspace }}/.gha-home
-      CARGO_HOME: ${{ github.workspace }}/.gha-home/.cargo
-      RUSTUP_HOME: ${{ github.workspace }}/.gha-home/.rustup
+      HOME: /tmp/direct-play-nice-gha-home
+      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
+      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
     steps:
       - uses: actions/checkout@v4
         with:
