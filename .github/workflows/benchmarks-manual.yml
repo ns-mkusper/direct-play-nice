@@ -31,7 +31,7 @@ jobs:
       - self-hosted
       - linux
       - plex-bench
-    timeout-minutes: 45
+    timeout-minutes: 120
     permissions:
       contents: read
       actions: write
