@@ -121,20 +121,6 @@ jobs:
           command -v nvidia-smi >/dev/null 2>&1
           nvidia-smi -L
 
-      - name: Run transcoding benchmark
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/transcode-tools/run_transcode_benchmark.sh \
-            --bin target/release/direct_play_nice \
-            --source "${{ steps.source.outputs.path }}" \
-            --run-dir benchmark_artifacts/transcode \
-            --hw-accel nvenc \
-            --video-quality "1080p" \
-            --sub-mode skip \
-            --max-source-seconds 900 \
-            --sample-ms "200"
-
       - name: Run OCR benchmark
         shell: bash
         run: |
@@ -156,6 +142,20 @@ jobs:
             --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_SKIP_CLS=1"
+
+      - name: Run transcoding benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/transcode-tools/run_transcode_benchmark.sh \
+            --bin target/release/direct_play_nice \
+            --source "${{ steps.source.outputs.path }}" \
+            --run-dir benchmark_artifacts/transcode \
+            --hw-accel nvenc \
+            --video-quality "1080p" \
+            --sub-mode skip \
+            --max-source-seconds 900 \
+            --sample-ms "200"
 
       - name: Collect benchmark artifacts
         shell: bash
