@@ -76,10 +76,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
+            target/vcpkg/.vcpkg-root
             target/vcpkg/installed
             target/vcpkg/packages
             target/vcpkg/downloads
             target/vcpkg/buildtrees
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
           key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
           restore-keys: |
             vcpkg-bench-${{ runner.os }}-
@@ -95,6 +99,15 @@ jobs:
 
       - name: Export VCPKG_ROOT
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Validate VCPKG root
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f target/vcpkg/.vcpkg-root ]]; then
+            echo "::error title=Invalid vcpkg root::target/vcpkg/.vcpkg-root is missing after dependency build."
+            exit 1
+          fi
 
       - name: Export LIBCLANG_PATH
         shell: bash
