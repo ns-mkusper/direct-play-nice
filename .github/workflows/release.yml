@@ -480,6 +480,13 @@ jobs:
             benchmark_artifacts/OCR_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.log
             benchmark_artifacts/OCR_BENCHMARK_GPU.csv
+
+      - name: Cleanup local benchmark outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf benchmark_artifacts
   # Determines if we should publish/announce
   host:
     needs:
