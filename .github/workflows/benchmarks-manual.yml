@@ -125,6 +125,17 @@ jobs:
           test -f "${{ steps.source.outputs.path }}"
           mkdir -p benchmark_artifacts
 
+      - name: Ensure free disk headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          avail_kb="$(df --output=avail -k / | tail -n1 | tr -d ' ')"
+          min_kb="$((10 * 1024 * 1024))"
+          if (( avail_kb < min_kb )); then
+            echo "::error title=Insufficient disk space::Need at least 10GiB free on /. Available: ${avail_kb} KiB."
+            exit 1
+          fi
+
       - name: Validate OCR runtime path
         shell: bash
         run: |
@@ -148,7 +159,7 @@ jobs:
             --output-name ocr.mp4 \
             --ocr-engine pp-ocr-v3 \
             --sub-mode force \
-            --max-source-seconds 600 \
+            --max-source-seconds 240 \
             --sample-ms "200" \
             --ocr-max-jobs 1 \
             --jobs-per-gpu 1 \
@@ -168,7 +179,7 @@ jobs:
             --hw-accel nvenc \
             --video-quality "1080p" \
             --sub-mode skip \
-            --max-source-seconds 900 \
+            --max-source-seconds 300 \
             --sample-ms "200"
 
       - name: Collect benchmark artifacts
