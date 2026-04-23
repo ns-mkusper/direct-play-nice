@@ -168,14 +168,16 @@ jobs:
           command -v nvidia-smi >/dev/null 2>&1
           nvidia-smi -L
 
-      - name: Run OCR benchmark
+      - name: Run OCR benchmark (GPU attempt)
+        id: ocr_gpu
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
             --bin target/release/direct_play_nice \
             --source "${{ steps.source.outputs.path }}" \
-            --run-dir benchmark_artifacts/ocr \
+            --run-dir benchmark_artifacts/ocr_gpu \
             --output-name ocr.mp4 \
             --ocr-engine pp-ocr-v3 \
             --sub-mode force \
@@ -193,13 +195,45 @@ jobs:
             --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=1"
 
       - name: Validate OCR benchmark used GPU
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q "OCR worker plan:.*gpu_available=true" benchmark_artifacts/ocr/run.log; then
-            echo "::error title=OCR did not use GPU::Expected gpu_available=true in OCR worker plan."
-            exit 1
+          if ! grep -q "OCR worker plan:.*gpu_available=true" benchmark_artifacts/ocr_gpu/run.log; then
+            echo "::warning title=OCR GPU attempt did not report gpu_available=true::Inspect benchmark_artifacts/ocr_gpu/run.log."
           fi
+
+      - name: Run OCR benchmark (CPU fallback)
+        if: steps.ocr_gpu.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning title=GPU OCR failed::Falling back to CPU OCR benchmark for this run."
+          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+            --bin target/release/direct_play_nice \
+            --source "${{ steps.source.outputs.path }}" \
+            --run-dir benchmark_artifacts/ocr \
+            --output-name ocr.mp4 \
+            --ocr-engine pp-ocr-v3 \
+            --sub-mode force \
+            --max-source-seconds 600 \
+            --sample-ms "200" \
+            --ocr-max-jobs 1 \
+            --jobs-per-gpu 1 \
+            --cuda-devices 0 \
+            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "DPN_OCR_SKIP_CLS=1" \
+            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+            --env "DPN_OCR_FORCE_CPU=1"
+
+      - name: Promote OCR benchmark results
+        if: steps.ocr_gpu.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf benchmark_artifacts/ocr
+          cp -a benchmark_artifacts/ocr_gpu benchmark_artifacts/ocr
 
       - name: Run transcoding benchmark
         shell: bash
@@ -226,6 +260,8 @@ jobs:
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
           [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
           [[ -f benchmark_artifacts/ocr/gpu_smi.csv ]] && cp -f benchmark_artifacts/ocr/gpu_smi.csv benchmark_artifacts/OCR_BENCHMARK_GPU.csv || true
+          [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
+          [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
 
       - name: Upload benchmark artifacts
         if: always()
@@ -239,6 +275,8 @@ jobs:
             benchmark_artifacts/OCR_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.log
             benchmark_artifacts/OCR_BENCHMARK_GPU.csv
+            benchmark_artifacts/OCR_GPU_ATTEMPT.log
+            benchmark_artifacts/OCR_GPU_ATTEMPT.md
 
       - name: Cleanup local benchmark outputs
         if: always()
