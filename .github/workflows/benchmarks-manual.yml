@@ -94,14 +94,20 @@ jobs:
             vcpkg-bench-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        shell: bash
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
           VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
           VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
           VCPKG_MAX_CONCURRENCY: 2
           CMAKE_BUILD_PARALLEL_LEVEL: 2
-        run: cargo vcpkg --verbose build
+        run: |
+          set -euo pipefail
+          if [[ -f target/vcpkg/.vcpkg-root && -d target/vcpkg/installed ]]; then
+            echo "Using cached vcpkg workspace at target/vcpkg; skipping cargo vcpkg build."
+            exit 0
+          fi
+          cargo vcpkg --verbose build
 
       - name: Export VCPKG_ROOT
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
