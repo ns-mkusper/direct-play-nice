@@ -72,6 +72,11 @@ jobs:
           set -euo pipefail
           command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
 
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: main-bench-v1
+
       - name: Cache vcpkg artifacts
         uses: actions/cache@v4
         with:
@@ -122,11 +127,6 @@ jobs:
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
-
-      - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: main-bench-v1
 
       - name: Build release binary
         run: cargo build --release
