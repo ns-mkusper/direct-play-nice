@@ -313,18 +313,43 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check cached release binary
+        id: cached-bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x /usr/local/bin/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=/usr/local/bin/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed /usr/local/bin/direct_play_nice"
+          elif command -v direct_play_nice >/dev/null 2>&1; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=$(command -v direct_play_nice)" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed direct_play_nice from PATH"
+          elif [[ -x target/release/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using cached target/release/direct_play_nice"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install cargo-vcpkg
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
           command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: main-bench-v1
 
       - name: Cache vcpkg artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -341,6 +366,7 @@ jobs:
             vcpkg-bench-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
@@ -357,9 +383,11 @@ jobs:
           cargo vcpkg --verbose build
 
       - name: Export VCPKG_ROOT
+        if: steps.cached-bin.outputs.missing == 'true'
         run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
 
       - name: Validate VCPKG root
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -368,6 +396,7 @@ jobs:
           fi
 
       - name: Export LIBCLANG_PATH
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -379,9 +408,11 @@ jobs:
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
 
       - name: Force regenerate rusty_ffmpeg bindings
+        if: steps.cached-bin.outputs.missing == 'true'
         run: cargo clean -p rusty_ffmpeg
 
       - name: Build release binary
+        if: steps.cached-bin.outputs.missing == 'true'
         run: cargo build --release
 
       - name: Validate benchmark source file
@@ -390,6 +421,17 @@ jobs:
           set -euo pipefail
           test -f "${{ steps.source.outputs.path }}"
           mkdir -p benchmark_artifacts
+
+      - name: Validate benchmark binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          if [[ ! -x "$bin" ]]; then
+            echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
+            exit 1
+          fi
+          "$bin" --version
 
       - name: Ensure free disk headroom
         shell: bash
@@ -420,8 +462,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
-            --bin target/release/direct_play_nice \
+            --bin "$bin" \
             --source "${{ steps.source.outputs.path }}" \
             --run-dir benchmark_artifacts/ocr_gpu \
             --output-name ocr.mp4 \
@@ -455,8 +498,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "::warning title=GPU OCR failed::Falling back to CPU OCR benchmark for this run."
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
-            --bin target/release/direct_play_nice \
+            --bin "$bin" \
             --source "${{ steps.source.outputs.path }}" \
             --run-dir benchmark_artifacts/ocr \
             --output-name ocr.mp4 \
@@ -485,8 +529,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/transcode-tools/run_transcode_benchmark.sh \
-            --bin target/release/direct_play_nice \
+            --bin "$bin" \
             --source "${{ steps.source.outputs.path }}" \
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
