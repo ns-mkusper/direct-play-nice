@@ -108,7 +108,7 @@ dependencies = [
 # git = "https://github.com/cqundefine/vcpkg"
 # rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
 git = "https://github.com/microsoft/vcpkg.git"
-rev = "05442024c3fda64320bd25d2251cc9807b84fb6f"
+rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static-md"
@@ -116,3 +116,7 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
 ]
+
+[patch.crates-io]
+ort = { path = "vendor/ort" }
+paddle-ocr-rs = { path = "vendor/paddle-ocr-rs" }

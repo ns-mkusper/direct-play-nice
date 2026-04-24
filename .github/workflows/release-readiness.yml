@@ -79,14 +79,14 @@ jobs:
           fi
 
           if git rev-parse -q --verify "refs/tags/v${crate_version}" >/dev/null; then
-            echo "::error title=No release detected::Tag v${crate_version} already exists, and release-plz has no metadata updates to apply."
-            exit 1
+            echo "::warning title=No release detected::Tag v${crate_version} already exists, and release-plz has no metadata updates to apply."
+            exit 0
           fi
 
           status="$(curl -s -o /dev/null -w '%{http_code}' "https://crates.io/api/v1/crates/${crate_name}/${crate_version}")"
           if [[ "$status" == "200" ]]; then
-            echo "::error title=No release detected::${crate_name} ${crate_version} is already published on crates.io, and release-plz has no metadata updates to apply."
-            exit 1
+            echo "::warning title=No release detected::${crate_name} ${crate_version} is already published on crates.io, and release-plz has no metadata updates to apply."
+            exit 0
           fi
           if [[ "$status" != "404" ]]; then
             echo "::warning title=Crates.io check inconclusive::Received HTTP ${status} from crates.io API."

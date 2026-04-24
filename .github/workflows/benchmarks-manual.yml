@@ -1,45 +1,268 @@
-name: Benchmarks (Manual)
+name: Benchmarks
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_path:
-        description: "Optional override for benchmark source file path"
-        required: false
-        type: string
-      sample_ms:
-        description: "Sampling window in milliseconds"
-        required: false
-        default: "200"
-        type: string
-      video_quality:
-        description: "Target quality profile"
-        required: false
-        default: "1080p"
-        type: choice
-        options:
-          - 1080p
-          - 720p
+  push:
+    branches:
+      - main
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  ocr-rapid:
+    name: OCR GPU Rapid Probe
+    if: ${{ false }}
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - plex-bench
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      HOME: /tmp/direct-play-nice-gha-home
+      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
+      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+
+      - name: Ensure benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error title=Missing dependencies::Runner image is missing ${missing[*]}."
+            exit 1
+          fi
+          nvidia-smi -L
+
+      - name: Resolve benchmark source path
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
+          if [[ -z "$source_path" ]]; then
+            echo "::error title=Missing source path::Set BENCHMARK_SOURCE_PATH secret."
+            exit 1
+          fi
+          test -f "$source_path"
+          echo "path=$source_path" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Rust home directories
+        shell: bash
+        run: mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check cached release binary
+        id: cached-bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x /usr/local/bin/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=/usr/local/bin/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed /usr/local/bin/direct_play_nice"
+          elif command -v direct_play_nice >/dev/null 2>&1; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=$(command -v direct_play_nice)" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed direct_play_nice from PATH"
+          elif [[ -x target/release/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using cached target/release/direct_play_nice"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install cargo-vcpkg
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
+
+      - name: Cache cargo build artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ocr-rapid-v1
+
+      - name: Cache vcpkg artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/downloads
+            target/vcpkg/buildtrees
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
+          restore-keys: |
+            vcpkg-bench-${{ runner.os }}-
+
+      - name: Build vcpkg dependencies
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: |
+          set -euo pipefail
+          if [[ -f target/vcpkg/.vcpkg-root && -d target/vcpkg/installed ]]; then
+            echo "Using cached vcpkg workspace."
+            exit 0
+          fi
+          cargo vcpkg --verbose build
+
+      - name: Export build env
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clean -p rusty_ffmpeg
+          cargo build --release
+
+      - name: Run OCR GPU runtime matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="${{ steps.source.outputs.path }}"
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          if [[ -x /usr/local/bin/direct_play_nice ]]; then
+            bin="/usr/local/bin/direct_play_nice"
+          fi
+          summary="benchmark_artifacts/rapid/MATRIX_SUMMARY.md"
+          mkdir -p benchmark_artifacts/rapid/runs
+          cat > "$summary" <<'EOF'
+          # OCR GPU Rapid Matrix
+
+          EOF
+
+          SUCCESS=""
+          for combo in \
+            "cudnn9_safety_on|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0|heuristic" \
+            "cudnn9_safety_off|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|exhaustive" \
+            "cudnn8_first_safety_on|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0|heuristic" \
+            "cudnn8_first_safety_off|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|exhaustive" \
+            "cudnn8_default_algo|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|default" \
+            "cudnn9_default_algo|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|default"
+          do
+            IFS='|' read -r name ld_path disable_brakes conv_algo <<<"$combo"
+            run_dir="benchmark_artifacts/rapid/runs/${name}"
+            mkdir -p "$run_dir"
+            set +e
+            bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+              --bin "$bin" \
+              --source "$src" \
+              --run-dir "$run_dir" \
+              --output-name out.mp4 \
+              --ocr-engine pp-ocr-v3 \
+              --sub-mode force \
+              --max-source-seconds 120 \
+              --sample-ms 200 \
+              --ocr-max-jobs 1 \
+              --jobs-per-gpu 1 \
+              --cuda-devices 0 \
+              --require-gpu \
+              --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
+              --env "LD_LIBRARY_PATH=${ld_path}" \
+              --env "DPN_OCR_SKIP_CLS=1" \
+              --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+              --env "DPN_OCR_FORCE_CPU=0" \
+              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=${disable_brakes}" \
+              --env "DPN_OCR_CUDA_CONV_ALGO=${conv_algo}"
+            status=$?
+            set -e
+            worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            ocr_completed="false"
+            if grep -Eq 'OCR progress: [0-9]+/[0-9]+ subtitle streams complete \(100%\)|OCR subtitle stream [0-9]+ ->' "$run_dir/run.log"; then
+              ocr_completed="true"
+            fi
+            ppocr_failed="false"
+            if grep -q 'Error: PP-OCRv3 failed' "$run_dir/run.log"; then
+              ppocr_failed="true"
+            fi
+            failure_sig="$(grep -E 'CUDNN|cuDNN|CUDA|onnx|ORT|Error:|error:|failed|panic' "$run_dir/run.log" | tail -n 3 | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' || true)"
+            if [[ "$worker_plan" == *"gpu_available=true"* && "$ocr_completed" == "true" && "$ppocr_failed" == "false" ]]; then
+              SUCCESS="$name"
+            fi
+            {
+              echo "## ${name}"
+              echo "- Exit status: ${status}"
+              echo "- Worker plan: \`${worker_plan}\`"
+              echo "- OCR completed: \`${ocr_completed}\`"
+              echo "- PP-OCRv3 failure seen: \`${ppocr_failed}\`"
+              echo "- Failure signal: \`${failure_sig}\`"
+              echo
+            } >> "$summary"
+            # Keep rapid artifacts small and log-focused.
+            rm -f "$run_dir/source_trimmed.mkv" "$run_dir/out.mp4"
+            if [[ -n "$SUCCESS" ]]; then
+              break
+            fi
+          done
+
+          if [[ -z "$SUCCESS" ]]; then
+            echo "::error title=No passing GPU OCR combo::See benchmark_artifacts/rapid/runs/*/run.log"
+            exit 1
+          fi
+
+          echo "PASSING_COMBO=${SUCCESS}" | tee benchmark_artifacts/rapid/passing_combo.txt
+
+      - name: Upload rapid OCR artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-gpu-rapid-${{ github.run_id }}
+          path: benchmark_artifacts/rapid
+
+      - name: Cleanup local rapid artifacts
+        if: always()
+        shell: bash
+        run: rm -rf benchmark_artifacts
+
   benchmarks:
     name: Run Benchmarks
     runs-on:
       - self-hosted
-      - linux
+      - Linux
+      - X64
       - plex-bench
-    timeout-minutes: 45
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: write
     env:
       BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
-      INPUT_SOURCE_PATH: ${{ github.event.inputs.source_path }}
-      INPUT_SAMPLE_MS: ${{ github.event.inputs.sample_ms }}
-      INPUT_VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
@@ -53,12 +276,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_path="${INPUT_SOURCE_PATH:-}"
+          source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
           if [[ -z "$source_path" ]]; then
-            source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
-          fi
-          if [[ -z "$source_path" ]]; then
-            echo "::error title=Missing source path::Set workflow input 'source_path' or BENCHMARK_SOURCE_PATH secret."
+            echo "::error title=Missing source path::Set BENCHMARK_SOURCE_PATH secret."
             exit 1
           fi
           echo "path=$source_path" >> "$GITHUB_OUTPUT"
@@ -68,7 +288,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool nvidia-smi; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
           if [[ "${#missing[@]}" -ne 0 ]]; then
@@ -86,12 +306,106 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check cached release binary
+        id: cached-bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x /usr/local/bin/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=/usr/local/bin/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed /usr/local/bin/direct_play_nice"
+          elif command -v direct_play_nice >/dev/null 2>&1; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=$(command -v direct_play_nice)" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed direct_play_nice from PATH"
+          elif [[ -x target/release/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+            echo "Using cached target/release/direct_play_nice"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install cargo-vcpkg
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
+
       - name: Cache cargo build artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: manual-bench-v1
+          prefix-key: main-bench-v1
+
+      - name: Cache vcpkg artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/downloads
+            target/vcpkg/buildtrees
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
+          restore-keys: |
+            vcpkg-bench-${{ runner.os }}-
+
+      - name: Build vcpkg dependencies
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: |
+          set -euo pipefail
+          if [[ -f target/vcpkg/.vcpkg-root && -d target/vcpkg/installed ]]; then
+            echo "Using cached vcpkg workspace at target/vcpkg; skipping cargo vcpkg build."
+            exit 0
+          fi
+          cargo vcpkg --verbose build
+
+      - name: Export VCPKG_ROOT
+        if: steps.cached-bin.outputs.missing == 'true'
+        run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Validate VCPKG root
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f target/vcpkg/.vcpkg-root ]]; then
+            echo "::warning title=Missing vcpkg workspace::target/vcpkg/.vcpkg-root not found; continuing with local toolchain/runtime."
+          fi
+
+      - name: Export LIBCLANG_PATH
+        if: steps.cached-bin.outputs.missing == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          if [[ -z "$libclang_path" ]]; then
+            echo "::error title=Missing libclang::Runner image must include libclang shared library."
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        if: steps.cached-bin.outputs.missing == 'true'
+        run: cargo clean -p rusty_ffmpeg
 
       - name: Build release binary
+        if: steps.cached-bin.outputs.missing == 'true'
         run: cargo build --release
 
       - name: Validate benchmark source file
@@ -101,31 +415,188 @@ jobs:
           test -f "${{ steps.source.outputs.path }}"
           mkdir -p benchmark_artifacts
 
+      - name: Validate benchmark binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          if [[ ! -x "$bin" ]]; then
+            echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
+            exit 1
+          fi
+          "$bin" --version
+
+      - name: Ensure free disk headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          avail_kb="$(df --output=avail -k / | tail -n1 | tr -d ' ')"
+          min_kb="$((10 * 1024 * 1024))"
+          if (( avail_kb < min_kb )); then
+            echo "::error title=Insufficient disk space::Need at least 10GiB free on /. Available: ${avail_kb} KiB."
+            exit 1
+          fi
+
+      - name: Validate OCR runtime path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /opt/direct-play-nice/ort122-runtime/lib/libonnxruntime.so
+          test -f /opt/direct-play-nice/ort116-runtime/lib/libcublasLt.so.12
+          test -f /opt/direct-play-nice/cudnn9-runtime/lib/libcudnn.so.9
+          test -f /opt/direct-play-nice/nvrtc12-runtime/lib/libnvrtc.so.12
+          test -f /opt/direct-play-nice/cudnn8-runtime/usr/lib/libcudnn.so.8
+          command -v nvidia-smi >/dev/null 2>&1
+          nvidia-smi -L
+
+      - name: Run OCR benchmark (GPU attempt)
+        id: ocr_gpu
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+            --bin "$bin" \
+            --source "${{ steps.source.outputs.path }}" \
+            --run-dir benchmark_artifacts/ocr_gpu \
+            --output-name ocr.mp4 \
+            --ocr-engine pp-ocr-v3 \
+            --sub-mode force \
+            --max-source-seconds 600 \
+            --sample-ms "200" \
+            --ocr-max-jobs 2 \
+            --jobs-per-gpu 1 \
+            --cuda-devices 0,1 \
+            --require-gpu \
+            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "DPN_OCR_SKIP_CLS=1" \
+            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+            --env "DPN_OCR_FORCE_CPU=0" \
+            --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=1"
+
+      - name: Validate OCR benchmark used GPU
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -q "OCR worker plan:.*gpu_available=true" benchmark_artifacts/ocr_gpu/run.log; then
+            echo "::warning title=OCR GPU attempt did not report gpu_available=true::Inspect benchmark_artifacts/ocr_gpu/run.log."
+          fi
+
+      - name: Run OCR benchmark (CPU fallback)
+        if: steps.ocr_gpu.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::warning title=GPU OCR failed::Falling back to CPU OCR benchmark for this run."
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+            --bin "$bin" \
+            --source "${{ steps.source.outputs.path }}" \
+            --run-dir benchmark_artifacts/ocr \
+            --output-name ocr.mp4 \
+            --ocr-engine pp-ocr-v3 \
+            --sub-mode force \
+            --max-source-seconds 600 \
+            --sample-ms "200" \
+            --ocr-max-jobs 2 \
+            --jobs-per-gpu 1 \
+            --cuda-devices 0,1 \
+            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "DPN_OCR_SKIP_CLS=1" \
+            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+            --env "DPN_OCR_FORCE_CPU=1"
+
+      - name: Promote OCR benchmark results
+        if: steps.ocr_gpu.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf benchmark_artifacts/ocr
+          cp -a benchmark_artifacts/ocr_gpu benchmark_artifacts/ocr
+
       - name: Run transcoding benchmark
         shell: bash
         run: |
           set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/transcode-tools/run_transcode_benchmark.sh \
-            --bin target/release/direct_play_nice \
+            --bin "$bin" \
             --source "${{ steps.source.outputs.path }}" \
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
-            --video-quality "${INPUT_VIDEO_QUALITY:-1080p}" \
-            --sample-ms "${INPUT_SAMPLE_MS:-200}"
+            --video-quality "1080p" \
+            --sub-mode skip \
+            --max-source-seconds 300 \
+            --sample-ms "200"
 
       - name: Collect benchmark artifacts
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
-          cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
-          cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
-          cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
+          [[ -f benchmark_artifacts/transcode/benchmark_summary.md ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md || true
+          [[ -f benchmark_artifacts/transcode/benchmark_summary.json ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
+          [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
+          [[ -f benchmark_artifacts/ocr/gpu_smi.csv ]] && cp -f benchmark_artifacts/ocr/gpu_smi.csv benchmark_artifacts/OCR_BENCHMARK_GPU.csv || true
+          [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
+          [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
+
+      - name: Publish benchmark summary in run UI
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# Benchmark Results"
+            echo
+            if [[ -f benchmark_artifacts/TRANSCODE_BENCHMARK.md ]]; then
+              echo "## Transcoding Benchmark"
+              echo
+              cat benchmark_artifacts/TRANSCODE_BENCHMARK.md
+              echo
+            else
+              echo "## Transcoding Benchmark"
+              echo
+              echo "_No transcoding benchmark markdown produced._"
+              echo
+            fi
+            if [[ -f benchmark_artifacts/OCR_BENCHMARK.md ]]; then
+              echo "## OCR Benchmark"
+              echo
+              cat benchmark_artifacts/OCR_BENCHMARK.md
+              echo
+            else
+              echo "## OCR Benchmark"
+              echo
+              echo "_No OCR benchmark markdown produced._"
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmarks-manual-${{ github.run_id }}
+          name: benchmarks-${{ github.run_id }}
           path: |
             benchmark_artifacts/TRANSCODE_BENCHMARK.md
             benchmark_artifacts/TRANSCODE_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.md
+            benchmark_artifacts/OCR_BENCHMARK.json
+            benchmark_artifacts/OCR_BENCHMARK.log
+            benchmark_artifacts/OCR_BENCHMARK_GPU.csv
+            benchmark_artifacts/OCR_GPU_ATTEMPT.log
+            benchmark_artifacts/OCR_GPU_ATTEMPT.md
+
+      - name: Cleanup local benchmark outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf benchmark_artifacts

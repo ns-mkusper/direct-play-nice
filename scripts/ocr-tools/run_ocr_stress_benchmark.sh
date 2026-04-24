@@ -12,6 +12,7 @@ Usage:
     [--ort-lib /path/to/onnxruntime/lib] \
     [--ocr-engine pp-ocr-v3] \
     [--sub-mode force] \
+    [--max-source-seconds 600] \
     [--sample-ms 200] \
     [--ocr-max-jobs 8] \
     [--jobs-per-gpu 1] \
@@ -39,6 +40,7 @@ OUTPUT_NAME="output.mp4"
 ORT_LIB=""
 OCR_ENGINE="pp-ocr-v3"
 SUB_MODE="force"
+MAX_SOURCE_SECONDS=""
 SAMPLE_MS="200"
 OCR_MAX_JOBS=""
 JOBS_PER_GPU=""
@@ -62,6 +64,8 @@ while [[ $# -gt 0 ]]; do
       OCR_ENGINE="$2"; shift 2 ;;
     --sub-mode)
       SUB_MODE="$2"; shift 2 ;;
+    --max-source-seconds)
+      MAX_SOURCE_SECONDS="$2"; shift 2 ;;
     --sample-ms)
       SAMPLE_MS="$2"; shift 2 ;;
     --ocr-max-jobs)
@@ -103,6 +107,12 @@ if ! [[ "$SAMPLE_MS" =~ ^[0-9]+$ ]] || [[ "$SAMPLE_MS" -lt 50 ]]; then
   echo "--sample-ms must be an integer >= 50" >&2
   exit 2
 fi
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  if ! [[ "$MAX_SOURCE_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SOURCE_SECONDS < 30 )); then
+    echo "--max-source-seconds must be an integer >= 30" >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "$RUN_DIR"
 
@@ -113,6 +123,16 @@ META="$RUN_DIR/meta.txt"
 CMD_TXT="$RUN_DIR/command.txt"
 SUMMARY_JSON="$RUN_DIR/benchmark_summary.json"
 SUMMARY_MD="$RUN_DIR/benchmark_summary.md"
+TRIMMED_SOURCE="$RUN_DIR/source_trimmed.mkv"
+
+BENCH_SOURCE="$SOURCE"
+if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
+  ffmpeg -hide_banner -loglevel error -y \
+    -ss 0 -i "$SOURCE" \
+    -t "$MAX_SOURCE_SECONDS" \
+    -map 0 -c copy "$TRIMMED_SOURCE"
+  BENCH_SOURCE="$TRIMMED_SOURCE"
+fi
 
 printf '%q ' \
   "$BIN" \
@@ -120,16 +140,22 @@ printf '%q ' \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
-  "$SOURCE" "$OUT" >"$CMD_TXT"
+  "$BENCH_SOURCE" "$OUT" >"$CMD_TXT"
 printf '\n' >>"$CMD_TXT"
 
 {
   echo "BIN=$BIN"
   echo "SOURCE=$SOURCE"
+  echo "BENCH_SOURCE=$BENCH_SOURCE"
   echo "OUT=$OUT"
   echo "ORT_LIB=$ORT_LIB"
   echo "OCR_ENGINE=$OCR_ENGINE"
   echo "SUB_MODE=$SUB_MODE"
+  echo "OCR_MAX_JOBS=${OCR_MAX_JOBS:-}"
+  echo "JOBS_PER_GPU=${JOBS_PER_GPU:-}"
+  echo "CUDA_DEVICES=${CUDA_DEVICES:-}"
+  echo "REQUIRE_GPU=$REQUIRE_GPU"
+  echo "MAX_SOURCE_SECONDS=${MAX_SOURCE_SECONDS:-}"
   echo "SAMPLE_MS=$SAMPLE_MS"
   echo "START_HUMAN=$(date -Is)"
 } >"$META"
@@ -148,6 +174,7 @@ SMI_PID="$!"
 set +e
 ENV_VARS=(
   "DPN_MAX_JOBS=1"
+  "DIRECT_PLAY_NICE_LOCK_DIR=$RUN_DIR/locks"
 )
 if [[ -n "$OCR_MAX_JOBS" ]]; then
   ENV_VARS+=("DPN_OCR_MAX_JOBS=$OCR_MAX_JOBS")
@@ -183,7 +210,7 @@ env "${ENV_VARS[@]}" \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
-  "$SOURCE" "$OUT" >"$LOG" 2>&1
+  "$BENCH_SOURCE" "$OUT" >"$LOG" 2>&1
 status="$?"
 set -e
 
@@ -201,6 +228,7 @@ wait "$SMI_PID" 2>/dev/null || true
 python3 - <<'PY' "$META" "$OUT" "$SMI" "$LOG" "$SUMMARY_JSON" "$SUMMARY_MD"
 import csv
 import json
+import re
 import statistics
 import subprocess
 import sys
@@ -261,6 +289,55 @@ if out_path.exists():
         )
     )
 
+source_subtitle_streams = []
+subtitle_codec_counts = {}
+bitmap_codec_counts = {}
+bitmap_codecs = {
+    "hdmv_pgs_subtitle",
+    "dvd_subtitle",
+    "dvb_subtitle",
+    "xsub",
+}
+bench_source = meta.get("BENCH_SOURCE")
+if bench_source:
+    try:
+        ffprobe_json = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "s",
+                "-show_entries",
+                "stream=index,codec_name:stream_tags=language,title",
+                "-of",
+                "json",
+                bench_source,
+            ],
+            text=True,
+        )
+        streams_obj = json.loads(ffprobe_json)
+        for s in streams_obj.get("streams", []):
+            codec = s.get("codec_name") or "unknown"
+            stream_index = s.get("index")
+            tags = s.get("tags") or {}
+            language = tags.get("language") or "und"
+            title = tags.get("title") or ""
+            is_bitmap = codec in bitmap_codecs
+            entry = {
+                "index": stream_index,
+                "codec": codec,
+                "language": language,
+                "title": title,
+                "is_bitmap": is_bitmap,
+            }
+            source_subtitle_streams.append(entry)
+            subtitle_codec_counts[codec] = subtitle_codec_counts.get(codec, 0) + 1
+            if is_bitmap:
+                bitmap_codec_counts[codec] = bitmap_codec_counts.get(codec, 0) + 1
+    except Exception:
+        pass
+
 gpu = {}
 if gpu_path.exists():
     with gpu_path.open() as f:
@@ -302,6 +379,20 @@ log_text = log_path.read_text(errors="replace") if log_path.exists() else ""
 ocr_stream_lines = [
     ln for ln in log_text.splitlines() if "OCR subtitle stream" in ln and "cues" in ln
 ]
+ocr_stream_cues = []
+for ln in ocr_stream_lines:
+    m = re.search(r"OCR subtitle stream\s+(\d+).*\((\d+)\s+cues", ln)
+    if not m:
+        continue
+    ocr_stream_cues.append({"stream_index": int(m.group(1)), "cues": int(m.group(2))})
+total_ocr_cues = sum(item["cues"] for item in ocr_stream_cues)
+active_gpu_count = sum(1 for s in gpu_summary.values() if s["avg_util_pct"] >= 5.0)
+gpu_count = len(gpu_summary)
+gpu_parallelism_note = (
+    f"{active_gpu_count}/{gpu_count} GPUs active (avg util >= 5%)"
+    if gpu_count > 0
+    else "No GPU telemetry samples captured"
+)
 
 summary = {
     "meta": meta,
@@ -313,7 +404,13 @@ summary = {
     "effective_fps": (video_packets / elapsed) if elapsed > 0 and video_packets > 0 else None,
     "realtime_factor": (out_duration / elapsed) if elapsed > 0 else None,
     "gpu": gpu_summary,
+    "gpu_parallelism_note": gpu_parallelism_note,
+    "source_subtitle_streams": source_subtitle_streams,
+    "subtitle_codec_counts": subtitle_codec_counts,
+    "bitmap_subtitle_codec_counts": bitmap_codec_counts,
     "ocr_stream_lines": ocr_stream_lines,
+    "ocr_stream_cues": ocr_stream_cues,
+    "total_ocr_cues": total_ocr_cues,
     "quality_fallback_count": log_text.count("quality fallback: using Tesseract"),
     "language_fallback_count": log_text.count("language fallback: using Tesseract"),
     "worker_plan_lines": [
@@ -330,10 +427,17 @@ lines.append(f"- Elapsed: `{elapsed:.0f}s`")
 lines.append(f"- Output size: `{out_bytes} bytes`")
 lines.append(f"- Output duration: `{out_duration:.3f}s`")
 lines.append(f"- Video packets: `{video_packets}`")
+lines.append(f"- OCR engine: `{meta.get('OCR_ENGINE', '')}`")
+lines.append(f"- Subtitle mode: `{meta.get('SUB_MODE', '')}`")
+lines.append(f"- Requested CUDA devices: `{meta.get('CUDA_DEVICES', '') or 'auto'}`")
+lines.append(f"- OCR max jobs: `{meta.get('OCR_MAX_JOBS', '') or 'default'}`")
+lines.append(f"- Jobs per GPU: `{meta.get('JOBS_PER_GPU', '') or 'default'}`")
+lines.append(f"- GPU required: `{meta.get('REQUIRE_GPU', '0')}`")
 if summary["effective_fps"] is not None:
     lines.append(f"- Effective throughput: `{summary['effective_fps']:.2f} FPS`")
 if summary["realtime_factor"] is not None:
     lines.append(f"- Realtime factor: `{summary['realtime_factor']:.2f}x`")
+lines.append(f"- GPU parallelism: `{summary['gpu_parallelism_note']}`")
 lines.append("")
 lines.append("## GPU Stats")
 lines.append("")
@@ -345,11 +449,36 @@ for gpu_name, s in gpu_summary.items():
         f"{s['peak_util_pct']:.2f}% | {s['avg_power_w']:.2f}W | {s['peak_power_w']:.2f}W | {s['peak_vram_mib']:.0f} MiB | {s['peak_temp_c']:.0f}C |"
     )
 lines.append("")
+lines.append("## Source Subtitle Streams")
+lines.append("")
+if source_subtitle_streams:
+    lines.append("| Stream | Codec | Language | Bitmap | Title |")
+    lines.append("| ---: | --- | --- | --- | --- |")
+    for s in source_subtitle_streams:
+        title = (s["title"] or "").replace("|", "/")
+        lines.append(
+            f"| {s['index']} | {s['codec']} | {s['language']} | {'yes' if s['is_bitmap'] else 'no'} | {title} |"
+        )
+    lines.append("")
+    codec_summary = ", ".join(f"{k}={v}" for k, v in sorted(subtitle_codec_counts.items()))
+    bitmap_summary = ", ".join(f"{k}={v}" for k, v in sorted(bitmap_codec_counts.items())) or "none"
+    lines.append(f"- Subtitle codec counts: `{codec_summary}`")
+    lines.append(f"- Bitmap subtitle codec counts: `{bitmap_summary}`")
+else:
+    lines.append("- No subtitle streams found in source probe.")
+lines.append("")
 lines.append("## OCR Streams")
 lines.append("")
 if ocr_stream_lines:
     for ln in ocr_stream_lines:
         lines.append(f"- {ln}")
+    if ocr_stream_cues:
+        lines.append("")
+        lines.append("### OCR Cue Counts")
+        lines.append("")
+        for item in ocr_stream_cues:
+            lines.append(f"- Stream `{item['stream_index']}` -> `{item['cues']}` cues")
+        lines.append(f"- Total OCR cues emitted: `{total_ocr_cues}`")
 else:
     lines.append("- No OCR stream summary lines found in run.log")
 lines.append("")

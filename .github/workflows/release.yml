@@ -299,9 +299,10 @@ jobs:
     if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
     runs-on:
       - self-hosted
-      - linux
+      - Linux
+      - X64
       - plex-bench
-    timeout-minutes: 45
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read
@@ -317,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
 
@@ -338,6 +339,50 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
+
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/downloads
+            target/vcpkg/buildtrees
+          key: vcpkg-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
+          restore-keys: |
+            vcpkg-release-${{ runner.os }}-
+
+      - name: Build vcpkg dependencies
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: cargo vcpkg --verbose build
+
+      - name: Export VCPKG_ROOT
+        run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Export LIBCLANG_PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          if [[ -z "$libclang_path" ]]; then
+            echo "::error title=Missing libclang::Runner image must include libclang shared library."
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+
+      - name: Force regenerate rusty_ffmpeg bindings
+        run: cargo clean -p rusty_ffmpeg
+
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -352,6 +397,17 @@ jobs:
           test -f "$BENCHMARK_SOURCE_PATH"
           mkdir -p benchmark_artifacts
 
+      - name: Ensure free disk headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          avail_kb="$(df --output=avail -k / | tail -n1 | tr -d ' ')"
+          min_kb="$((10 * 1024 * 1024))"
+          if (( avail_kb < min_kb )); then
+            echo "::error title=Insufficient disk space::Need at least 10GiB free on /. Available: ${avail_kb} KiB."
+            exit 1
+          fi
+
       - name: Validate GPU acceleration path
         shell: bash
         run: |
@@ -359,6 +415,36 @@ jobs:
           command -v nvidia-smi >/dev/null 2>&1
           nvidia-smi -L
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
+
+      - name: Validate OCR runtime path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f /opt/direct-play-nice/ort122-runtime/lib/libonnxruntime.so
+          test -f /opt/direct-play-nice/ort116-runtime/lib/libcublasLt.so.12
+          test -f /opt/direct-play-nice/cudnn9-runtime/lib/libcudnn.so.9
+          test -f /opt/direct-play-nice/nvrtc12-runtime/lib/libnvrtc.so.12
+          test -f /opt/direct-play-nice/cudnn8-runtime/usr/lib/libcudnn.so.8
+
+      - name: Run OCR benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+            --bin target/release/direct_play_nice \
+            --source "$BENCHMARK_SOURCE_PATH" \
+            --run-dir benchmark_artifacts/ocr \
+            --output-name ocr.mp4 \
+            --ocr-engine pp-ocr-v3 \
+            --sub-mode force \
+            --max-source-seconds 240 \
+            --sample-ms 200 \
+            --ocr-max-jobs 1 \
+            --jobs-per-gpu 1 \
+            --cuda-devices 0 \
+            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "DPN_OCR_SKIP_CLS=1"
 
       - name: Run transcoding benchmark
         run: |
@@ -368,15 +454,22 @@ jobs:
             --run-dir benchmark_artifacts/transcode \
             --hw-accel nvenc \
             --video-quality 1080p \
+            --sub-mode skip \
+            --max-source-seconds 300 \
             --sample-ms 200
 
       - name: Collect benchmark artifacts
+        if: always()
         run: |
-          cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md
-          cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json
-          cp -f benches/OCR_BENCHMARK.md benchmark_artifacts/OCR_BENCHMARK.md
+          [[ -f benchmark_artifacts/transcode/benchmark_summary.md ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md || true
+          [[ -f benchmark_artifacts/transcode/benchmark_summary.json ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
+          [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
+          [[ -f benchmark_artifacts/ocr/gpu_smi.csv ]] && cp -f benchmark_artifacts/ocr/gpu_smi.csv benchmark_artifacts/OCR_BENCHMARK_GPU.csv || true
 
       - name: Upload benchmark artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-benchmarks
@@ -384,6 +477,16 @@ jobs:
             benchmark_artifacts/TRANSCODE_BENCHMARK.md
             benchmark_artifacts/TRANSCODE_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.md
+            benchmark_artifacts/OCR_BENCHMARK.json
+            benchmark_artifacts/OCR_BENCHMARK.log
+            benchmark_artifacts/OCR_BENCHMARK_GPU.csv
+
+      - name: Cleanup local benchmark outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf benchmark_artifacts
   # Determines if we should publish/announce
   host:
     needs:

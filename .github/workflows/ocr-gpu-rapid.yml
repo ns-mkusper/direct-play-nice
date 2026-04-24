@@ -1,0 +1,236 @@
+name: OCR GPU Rapid (Manual)
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  ocr-gpu-rapid:
+    name: OCR GPU Rapid Probe
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - plex-bench
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      HOME: /tmp/direct-play-nice-gha-home
+      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
+      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Ensure benchmark dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error title=Missing dependencies::Runner image is missing ${missing[*]}."
+            exit 1
+          fi
+          nvidia-smi -L
+
+      - name: Prepare Rust home directories
+        shell: bash
+        run: mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ocr-rapid-v1
+
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/vcpkg/.vcpkg-root
+            target/vcpkg/installed
+            target/vcpkg/packages
+            target/vcpkg/downloads
+            target/vcpkg/buildtrees
+            target/vcpkg/scripts
+            target/vcpkg/triplets
+            target/vcpkg/vcpkg
+          key: vcpkg-ocr-rapid-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            vcpkg-ocr-rapid-${{ runner.os }}-
+
+      - name: Build vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_FEATURE_FLAGS: manifests,binarycaching
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
+          VCPKG_MAX_CONCURRENCY: 2
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: |
+          set -euo pipefail
+          if [[ -f target/vcpkg/.vcpkg-root && -d target/vcpkg/installed ]]; then
+            echo "Using cached vcpkg workspace."
+            exit 0
+          fi
+          cargo vcpkg --verbose build
+
+      - name: Export build env
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clean -p rusty_ffmpeg
+          cargo build --release
+
+      - name: Generate tiny bitmap-subtitle source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark_artifacts/rapid/src
+          cat > benchmark_artifacts/rapid/src/subs_eng.srt <<'EOF'
+          1
+          00:00:00,000 --> 00:00:01,200
+          hello world
+
+          2
+          00:00:02,000 --> 00:00:03,500
+          second english line
+          EOF
+          cat > benchmark_artifacts/rapid/src/subs_spa.srt <<'EOF'
+          1
+          00:00:00,500 --> 00:00:01,600
+          hola mundo
+
+          2
+          00:00:02,200 --> 00:00:03,600
+          segunda linea
+          EOF
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i testsrc=size=1280x720:rate=24:duration=12 \
+            -pix_fmt yuv420p \
+            -c:v h264_nvenc \
+            benchmark_artifacts/rapid/src/video.mkv
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=12 \
+            -c:a aac \
+            benchmark_artifacts/rapid/src/audio.m4a
+          enc=""
+          for candidate in hdmv_pgs_subtitle dvdsub dvb_subtitle; do
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "${candidate}"; then
+              enc="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$enc" ]]; then
+            echo "::error title=No bitmap subtitle encoder::Need one of hdmv_pgs_subtitle, dvdsub, dvb_subtitle."
+            exit 1
+          fi
+          ffmpeg -hide_banner -loglevel error -y \
+            -i benchmark_artifacts/rapid/src/video.mkv \
+            -i benchmark_artifacts/rapid/src/audio.m4a \
+            -i benchmark_artifacts/rapid/src/subs_eng.srt \
+            -i benchmark_artifacts/rapid/src/subs_spa.srt \
+            -map 0:v:0 -map 1:a:0 -map 2:0 -map 3:0 \
+            -c:v copy -c:a copy -c:s "$enc" \
+            benchmark_artifacts/rapid/source_bitmap.mkv
+
+      - name: Run OCR GPU runtime matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="benchmark_artifacts/rapid/source_bitmap.mkv"
+          bin="target/release/direct_play_nice"
+          summary="benchmark_artifacts/rapid/MATRIX_SUMMARY.md"
+          mkdir -p benchmark_artifacts/rapid/runs
+          cat > "$summary" <<'EOF'
+          # OCR GPU Rapid Matrix
+
+          EOF
+
+          SUCCESS=""
+          for combo in \
+            "cudnn9_safety_on|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0" \
+            "cudnn9_safety_off|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1" \
+            "cudnn8_first_safety_on|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0" \
+            "cudnn8_first_safety_off|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1"
+          do
+            IFS='|' read -r name ld_path disable_brakes <<<"$combo"
+            run_dir="benchmark_artifacts/rapid/runs/${name}"
+            mkdir -p "$run_dir"
+            set +e
+            bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+              --bin "$bin" \
+              --source "$src" \
+              --run-dir "$run_dir" \
+              --output-name out.mp4 \
+              --ocr-engine pp-ocr-v3 \
+              --sub-mode force \
+              --sample-ms 200 \
+              --ocr-max-jobs 1 \
+              --jobs-per-gpu 1 \
+              --cuda-devices 0 \
+              --require-gpu \
+              --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+              --env "LD_LIBRARY_PATH=${ld_path}" \
+              --env "DPN_OCR_SKIP_CLS=1" \
+              --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+              --env "DPN_OCR_FORCE_CPU=0" \
+              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=${disable_brakes}"
+            status=$?
+            set -e
+            worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            if [[ "$status" -eq 0 && "$worker_plan" == *"gpu_available=true"* ]]; then
+              SUCCESS="$name"
+            fi
+            {
+              echo "## ${name}"
+              echo "- Exit status: ${status}"
+              echo "- Worker plan: \`${worker_plan}\`"
+              echo
+            } >> "$summary"
+            if [[ -n "$SUCCESS" ]]; then
+              break
+            fi
+          done
+
+          if [[ -z "$SUCCESS" ]]; then
+            echo "::error title=No passing GPU OCR combo::See benchmark_artifacts/rapid/runs/*/run.log"
+            exit 1
+          fi
+
+          echo "PASSING_COMBO=${SUCCESS}" | tee benchmark_artifacts/rapid/passing_combo.txt
+
+      - name: Upload rapid OCR artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-gpu-rapid-${{ github.run_id }}
+          path: benchmark_artifacts/rapid
+
+      - name: Cleanup local rapid artifacts
+        if: always()
+        shell: bash
+        run: rm -rf benchmark_artifacts

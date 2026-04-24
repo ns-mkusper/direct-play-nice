@@ -1,4 +1,4 @@
-# OCR Benchmark - Full-Movie Stress (Sanitized)
+# OCR Benchmark - Full-Movie Stress
 
 ## Scope
 
