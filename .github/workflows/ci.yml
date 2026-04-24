@@ -213,6 +213,33 @@ jobs:
           cargo test -q --features ffmpeg-cli-tests cli_fails_fast_on_corrupted_hevc_input
           cargo test -q --features ffmpeg-cli-tests sonarr_download_failure_restores_original_and_cleans_temp_files
 
+      - name: Run OCR fixture accuracy probe (Linux stable)
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
+        run: |
+          mkdir -p benchmark_artifacts/ocr_fixture_eval
+          if [[ ! -x target/debug/direct_play_nice ]]; then
+            cargo build --bin direct_play_nice
+          fi
+          ./scripts/ocr-tools/run_ocr_fixture_eval.sh \
+            --bin target/debug/direct_play_nice \
+            --fixtures tests/golden_subs/multilang \
+            --run-dir benchmark_artifacts/ocr_fixture_eval \
+            --ocr-engine pp-ocr-v3
+          echo "### OCR fixture eval (Linux stable)" >> "$GITHUB_STEP_SUMMARY"
+          sed -n '1,120p' benchmark_artifacts/ocr_fixture_eval/fixture_eval.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload OCR fixture eval artifacts (Linux stable)
+        if: matrix.toolchain == 'stable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-fixture-eval-linux-stable
+          path: benchmark_artifacts/ocr_fixture_eval
+          retention-days: 7
+
       - name: Upload cargo timings
         if: matrix.toolchain == 'stable'
         uses: actions/upload-artifact@v4

@@ -168,6 +168,14 @@ pub(crate) struct Args {
     #[arg(long = "streams-filter", value_enum, default_value_t = StreamsFilter::All)]
     pub(crate) streams_filter: StreamsFilter,
 
+    /// Evaluate OCR accuracy against fixture PNG+JSON pairs and exit (ground-truth CER/WER report).
+    #[arg(
+        long = "probe-ocr-fixtures",
+        value_parser = value_parser!(PathBuf),
+        id = "probe_ocr_fixtures"
+    )]
+    pub(crate) probe_ocr_fixtures: Option<PathBuf>,
+
     /// File extension to use when replacing Sonarr/Radarr media (default: mp4). Use 'match-input' to keep the original extension.
     #[arg(
         long = "servarr-output-extension",
