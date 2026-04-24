@@ -119,3 +119,4 @@ dependencies = [
 
 [patch.crates-io]
 ort = { path = "vendor/ort" }
+paddle-ocr-rs = { path = "vendor/paddle-ocr-rs" }
