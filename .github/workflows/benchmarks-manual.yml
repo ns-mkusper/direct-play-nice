@@ -199,6 +199,7 @@ jobs:
             status=$?
             set -e
             worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            failure_sig="$(grep -E 'CUDNN|cuDNN|CUDA|onnx|ORT|Error:|error:|failed|panic' "$run_dir/run.log" | tail -n 3 | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' || true)"
             if [[ "$status" -eq 0 && "$worker_plan" == *"gpu_available=true"* ]]; then
               SUCCESS="$name"
             fi
@@ -206,8 +207,11 @@ jobs:
               echo "## ${name}"
               echo "- Exit status: ${status}"
               echo "- Worker plan: \`${worker_plan}\`"
+              echo "- Failure signal: \`${failure_sig}\`"
               echo
             } >> "$summary"
+            # Keep rapid artifacts small and log-focused.
+            rm -f "$run_dir/source_trimmed.mkv" "$run_dir/out.mp4"
             if [[ -n "$SUCCESS" ]]; then
               break
             fi
