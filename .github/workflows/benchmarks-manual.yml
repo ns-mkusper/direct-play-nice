@@ -554,6 +554,38 @@ jobs:
           [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
           [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
 
+      - name: Publish benchmark summary in run UI
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# Benchmark Results"
+            echo
+            if [[ -f benchmark_artifacts/TRANSCODE_BENCHMARK.md ]]; then
+              echo "## Transcoding Benchmark"
+              echo
+              cat benchmark_artifacts/TRANSCODE_BENCHMARK.md
+              echo
+            else
+              echo "## Transcoding Benchmark"
+              echo
+              echo "_No transcoding benchmark markdown produced._"
+              echo
+            fi
+            if [[ -f benchmark_artifacts/OCR_BENCHMARK.md ]]; then
+              echo "## OCR Benchmark"
+              echo
+              cat benchmark_artifacts/OCR_BENCHMARK.md
+              echo
+            else
+              echo "## OCR Benchmark"
+              echo
+              echo "_No OCR benchmark markdown produced._"
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload benchmark artifacts
         if: always()
         uses: actions/upload-artifact@v4
