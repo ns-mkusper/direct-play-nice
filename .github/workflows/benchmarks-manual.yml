@@ -199,7 +199,7 @@ jobs:
               --jobs-per-gpu 1 \
               --cuda-devices 0 \
               --require-gpu \
-              --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
+              --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
               --env "LD_LIBRARY_PATH=${ld_path}" \
               --env "DPN_OCR_SKIP_CLS=1" \
               --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \

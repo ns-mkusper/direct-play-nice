@@ -116,3 +116,6 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
 ]
+
+[patch.crates-io]
+ort = { path = "vendor/ort" }
