@@ -168,12 +168,14 @@ jobs:
 
           SUCCESS=""
           for combo in \
-            "cudnn9_safety_on|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0" \
-            "cudnn9_safety_off|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1" \
-            "cudnn8_first_safety_on|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0" \
-            "cudnn8_first_safety_off|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1"
+            "cudnn9_safety_on|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0|heuristic" \
+            "cudnn9_safety_off|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|exhaustive" \
+            "cudnn8_first_safety_on|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|0|heuristic" \
+            "cudnn8_first_safety_off|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|exhaustive" \
+            "cudnn8_default_algo|/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|default" \
+            "cudnn9_default_algo|/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}|1|default"
           do
-            IFS='|' read -r name ld_path disable_brakes <<<"$combo"
+            IFS='|' read -r name ld_path disable_brakes conv_algo <<<"$combo"
             run_dir="benchmark_artifacts/rapid/runs/${name}"
             mkdir -p "$run_dir"
             set +e
@@ -195,7 +197,8 @@ jobs:
               --env "DPN_OCR_SKIP_CLS=1" \
               --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
               --env "DPN_OCR_FORCE_CPU=0" \
-              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=${disable_brakes}"
+              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=${disable_brakes}" \
+              --env "DPN_OCR_CUDA_CONV_ALGO=${conv_algo}"
             status=$?
             set -e
             worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"

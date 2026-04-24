@@ -372,6 +372,9 @@ fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
             .with_conv_max_workspace(true)
             .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
     };
+    if let Some(algo) = cuda_conv_algo_override() {
+        ep = ep.with_conv_algorithm_search(algo);
+    }
     let strict_cuda = require_gpu || !env_flag_enabled("DPN_OCR_CUDA_FAIL_SILENT");
     let ep = ep.build();
     if strict_cuda {
@@ -389,6 +392,31 @@ fn env_flag_enabled(key: &str) -> bool {
             matches!(x.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false)
+}
+
+fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
+    let raw = env::var("DPN_OCR_CUDA_CONV_ALGO").ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "default" => {
+            info!("Overriding CUDA conv algorithm via DPN_OCR_CUDA_CONV_ALGO=default.");
+            Some(CuDNNConvAlgorithmSearch::Default)
+        }
+        "heuristic" => {
+            info!("Overriding CUDA conv algorithm via DPN_OCR_CUDA_CONV_ALGO=heuristic.");
+            Some(CuDNNConvAlgorithmSearch::Heuristic)
+        }
+        "exhaustive" => {
+            info!("Overriding CUDA conv algorithm via DPN_OCR_CUDA_CONV_ALGO=exhaustive.");
+            Some(CuDNNConvAlgorithmSearch::Exhaustive)
+        }
+        other => {
+            warn!(
+                "Ignoring invalid DPN_OCR_CUDA_CONV_ALGO='{}'; expected one of: default, heuristic, exhaustive.",
+                other
+            );
+            None
+        }
+    }
 }
 
 fn allow_legacy_cuda_maxwell() -> bool {
