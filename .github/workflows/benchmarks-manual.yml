@@ -1,12 +1,6 @@
 name: Benchmarks
 
 on:
-  workflow_dispatch:
-    inputs:
-      ocr_rapid_only:
-        description: "Run isolated OCR GPU rapid matrix only"
-        required: false
-        default: "false"
   push:
     branches:
       - main
@@ -17,7 +11,7 @@ env:
 jobs:
   ocr-rapid:
     name: OCR GPU Rapid Probe
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.ocr_rapid_only == 'true' }}
+    if: ${{ false }}
     runs-on:
       - self-hosted
       - Linux
@@ -258,7 +252,6 @@ jobs:
 
   benchmarks:
     name: Run Benchmarks
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.ocr_rapid_only == 'true') }}
     runs-on:
       - self-hosted
       - Linux
