@@ -64,9 +64,15 @@ jobs:
           set -euo pipefail
           if [[ -x target/release/direct_play_nice ]]; then
             echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
             echo "Using cached target/release/direct_play_nice"
+          elif command -v direct_play_nice >/dev/null 2>&1; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "bin_path=$(command -v direct_play_nice)" >> "$GITHUB_OUTPUT"
+            echo "Using runner-installed direct_play_nice binary"
           else
             echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install cargo-vcpkg
@@ -190,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           src="benchmark_artifacts/rapid/source_bitmap.mkv"
-          bin="target/release/direct_play_nice"
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
           summary="benchmark_artifacts/rapid/MATRIX_SUMMARY.md"
           mkdir -p benchmark_artifacts/rapid/runs
           cat > "$summary" <<'EOF'
