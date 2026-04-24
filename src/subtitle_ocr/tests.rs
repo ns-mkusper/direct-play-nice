@@ -456,6 +456,95 @@ fn test_downloader_handles_404() {
     assert!(!path.with_extension("download").exists());
 }
 
+#[test]
+fn test_optional_rec_model_auto_provision_downloads_when_missing() {
+    let mut server = Server::new();
+    let body = b"auto-provision-rec-model";
+    let hash = to_hex_lower(&Sha256::digest(body));
+    let mock = server
+        .mock("GET", "/optional_rec.onnx")
+        .with_status(200)
+        .with_body(body.as_slice())
+        .create();
+
+    let tmp = TempDir::new().unwrap();
+    let spec = ModelSpec {
+        filename: "optional_rec.onnx",
+        url: Box::leak(format!("{}/optional_rec.onnx", server.url()).into_boxed_str()),
+        sha256: Box::leak(hash.to_ascii_uppercase().into_boxed_str()),
+    };
+
+    let resolved = resolve_optional_rec_model_with_candidates(
+        "DPN_TEST_DO_NOT_SET_OPTIONAL_REC",
+        tmp.path(),
+        &["missing_candidate.onnx"],
+        &spec,
+        "test",
+        PpOcrVariant::V4,
+    )
+    .expect("resolver should not error");
+    let resolved = resolved.expect("expected auto-provisioned rec model path");
+    assert_eq!(resolved.file_name().unwrap(), "optional_rec.onnx");
+    assert!(resolved.is_file());
+    mock.assert();
+}
+
+#[test]
+fn test_optional_rec_model_env_override_wins_over_auto_provision() {
+    let env_key = "DPN_TEST_REC_MODEL_OVERRIDE";
+    let tmp = TempDir::new().unwrap();
+    let manual = tmp.path().join("manual_rec.onnx");
+    let mut f = File::create(&manual).unwrap();
+    f.write_all(b"manual").unwrap();
+
+    std::env::set_var(env_key, &manual);
+    let resolved = resolve_optional_rec_model_with_candidates(
+        env_key,
+        tmp.path(),
+        &["missing_candidate.onnx"],
+        &ModelSpec {
+            filename: "unused.onnx",
+            url: "http://127.0.0.1:9/unused.onnx",
+            sha256: "DEADBEEF",
+        },
+        "test",
+        PpOcrVariant::V3,
+    )
+    .expect("resolver should not error");
+    std::env::remove_var(env_key);
+
+    let resolved = resolved.expect("expected env override path");
+    assert_eq!(resolved, manual);
+}
+
+#[test]
+fn test_optional_rec_model_auto_provision_failure_returns_none() {
+    let mut server = Server::new();
+    let mock = server
+        .mock("GET", "/missing_optional_rec.onnx")
+        .with_status(404)
+        .create();
+
+    let tmp = TempDir::new().unwrap();
+    let spec = ModelSpec {
+        filename: "missing_optional_rec.onnx",
+        url: Box::leak(format!("{}/missing_optional_rec.onnx", server.url()).into_boxed_str()),
+        sha256: "DEADBEEF",
+    };
+
+    let resolved = resolve_optional_rec_model_with_candidates(
+        "DPN_TEST_DO_NOT_SET_OPTIONAL_REC_FAIL",
+        tmp.path(),
+        &["still_missing.onnx"],
+        &spec,
+        "test",
+        PpOcrVariant::V4,
+    )
+    .expect("resolver should not hard-fail when optional provisioning fails");
+    assert!(resolved.is_none());
+    mock.assert();
+}
+
 fn is_skippable_ort_runtime_error(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
     // CI runners often have an unexpected ORT runtime on PATH/LD path.

@@ -86,6 +86,23 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         return Ok(());
     }
 
+    if let Some(fixture_dir) = args.probe_ocr_fixtures.as_deref() {
+        let report =
+            crate::subtitle_ocr::evaluate_ocr_fixture_accuracy(fixture_dir, args.ocr_engine)?;
+        match args.output {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            OutputFormat::Text => {
+                println!(
+                    "{}",
+                    crate::subtitle_ocr::render_ocr_fixture_report_markdown(&report)
+                );
+            }
+        }
+        return Ok(());
+    }
+
     // Additional probe early exits (supports combined --probe-hw --probe-codecs)
     if args.probe_hw || args.probe_codecs {
         let want_json = args.probe_json || matches!(args.output, OutputFormat::Json);

@@ -36,6 +36,7 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--probe-streams`
 - `--probe-hw`
 - `--probe-codecs`
+- `--probe-ocr-fixtures <PATH>` evaluate OCR accuracy against fixture PNG+JSON pairs
 - `--only-video`
 - `--only-hw`
 - `--probe-json`

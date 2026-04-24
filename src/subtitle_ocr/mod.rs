@@ -54,6 +54,7 @@ include!("muxing.rs");
 include!("ocr_pipeline.rs");
 include!("text_render.rs");
 include!("language.rs");
+include!("fixture_eval.rs");
 
 #[cfg(test)]
 mod tests;

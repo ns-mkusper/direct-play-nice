@@ -87,6 +87,34 @@ impl PpOcrVariant {
             ),
         }
     }
+
+    fn default_latin_rec_spec(self) -> &'static ModelSpec {
+        match self {
+            PpOcrVariant::V3 => &PPOCR_V3_LATIN_REC_MODEL,
+            PpOcrVariant::V4 => &PPOCR_V4_LATIN_REC_MODEL,
+        }
+    }
+
+    fn default_japanese_rec_spec(self) -> &'static ModelSpec {
+        match self {
+            PpOcrVariant::V3 => &PPOCR_V3_JAPANESE_REC_MODEL,
+            PpOcrVariant::V4 => &PPOCR_V4_JAPANESE_REC_MODEL,
+        }
+    }
+
+    fn default_korean_rec_spec(self) -> &'static ModelSpec {
+        match self {
+            PpOcrVariant::V3 => &PPOCR_V3_KOREAN_REC_MODEL,
+            PpOcrVariant::V4 => &PPOCR_V4_KOREAN_REC_MODEL,
+        }
+    }
+
+    fn default_cjk_rec_spec(self) -> &'static ModelSpec {
+        match self {
+            PpOcrVariant::V3 => &PPOCR_V3_CJK_REC_MODEL,
+            PpOcrVariant::V4 => &PPOCR_V4_CJK_REC_MODEL,
+        }
+    }
 }
 
 struct PpOcrEngine {
@@ -239,6 +267,7 @@ static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
 static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
 static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
 static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,

@@ -540,13 +540,19 @@ fn extract_subtitle_lines(
 }
 
 fn force_tesseract_non_english_enabled() -> bool {
-    env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
+    let enabled = env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
         .ok()
         .map(|v| {
             let x = v.trim().to_ascii_lowercase();
             matches!(x.as_str(), "1" | "true" | "yes" | "on")
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if enabled && !FORCE_TESS_NON_ENGLISH_LOGGED.swap(true, Ordering::Relaxed) {
+        warn!(
+            "DPN_OCR_FORCE_TESS_NON_ENGLISH=1 set; non-English subtitle streams will prefer Tesseract over PP-OCR."
+        );
+    }
+    enabled
 }
 
 fn tesseract_quality_fallback_min_gain() -> f32 {

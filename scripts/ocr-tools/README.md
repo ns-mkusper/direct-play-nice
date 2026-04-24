@@ -95,3 +95,23 @@ grep -c "quality fallback: using Tesseract" "$RUN_DIR/run.log"
 grep -c "language fallback: using Tesseract" "$RUN_DIR/run.log"
 sed -n '1,120p' "$RUN_DIR/benchmark_summary.md"
 ```
+
+## 6) Ground-truth fixture accuracy evaluation
+
+This evaluates multilingual fixture PNG+JSON pairs and reports CER/WER for:
+
+- `hybrid` (ONNX + quality-triggered Tesseract replacement)
+- `strict-gain` (same, but stricter replacement gain)
+- `pure-onnx` (no Tesseract replacement)
+
+```bash
+FIXTURE_RUN_DIR=/path/to/benchmarks/fixture_eval_$(date +%Y%m%d_%H%M%S)
+
+"$REPO_DIR/scripts/ocr-tools/run_ocr_fixture_eval.sh" \
+  --bin "$BIN" \
+  --fixtures "$REPO_DIR/tests/golden_subs/multilang" \
+  --run-dir "$FIXTURE_RUN_DIR" \
+  --ocr-engine pp-ocr-v3
+
+sed -n '1,200p' "$FIXTURE_RUN_DIR/fixture_eval.md"
+```

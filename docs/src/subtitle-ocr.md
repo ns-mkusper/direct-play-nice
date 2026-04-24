@@ -59,6 +59,21 @@ Default model filenames:
 - v3: `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
   `en_PP-OCRv3_rec_infer.onnx`
 
+Optional multilingual rec models are also auto-provisioned (downloaded on first
+use if missing in the model directory):
+
+- `latin_PP-OCRv3_rec_mobile.onnx`
+- `japan_PP-OCRv4_rec_mobile.onnx`
+- `korean_PP-OCRv4_rec_mobile.onnx`
+- `chinese_cht_PP-OCRv3_rec_mobile.onnx`
+
+Override paths for these optional profiles with:
+
+- `DPN_OCR_REC_LATIN_MODEL`
+- `DPN_OCR_REC_JAPANESE_MODEL`
+- `DPN_OCR_REC_KOREAN_MODEL`
+- `DPN_OCR_REC_CJK_MODEL`
+
 ## Config-file example
 
 ```toml

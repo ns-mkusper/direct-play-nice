@@ -1,4 +1,4 @@
-name: Benchmarks
+name: Benchmarks (Post-Merge)
 
 on:
   push:
@@ -251,7 +251,7 @@ jobs:
         run: rm -rf benchmark_artifacts
 
   benchmarks:
-    name: Run Benchmarks
+    name: Run Post-Merge Benchmarks
     runs-on:
       - self-hosted
       - Linux

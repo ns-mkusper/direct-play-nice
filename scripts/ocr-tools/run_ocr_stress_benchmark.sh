@@ -175,6 +175,10 @@ set +e
 ENV_VARS=(
   "DPN_MAX_JOBS=1"
   "DIRECT_PLAY_NICE_LOCK_DIR=$RUN_DIR/locks"
+  # Keep benchmark results focused on ONNX behavior unless the caller
+  # explicitly overrides these policy toggles via --env.
+  "DPN_OCR_FORCE_TESS_NON_ENGLISH=0"
+  "DPN_OCR_DISABLE_TESS_FALLBACK=0"
 )
 if [[ -n "$OCR_MAX_JOBS" ]]; then
   ENV_VARS+=("DPN_OCR_MAX_JOBS=$OCR_MAX_JOBS")
@@ -203,6 +207,28 @@ fi
 if [[ "${#EXTRA_ENVS[@]}" -gt 0 ]]; then
   ENV_VARS+=("${EXTRA_ENVS[@]}")
 fi
+
+resolve_effective_env_value() {
+  local key="$1"
+  local default="$2"
+  local value="$default"
+  local kv
+  for kv in "${ENV_VARS[@]}"; do
+    if [[ "$kv" == "$key="* ]]; then
+      value="${kv#*=}"
+    fi
+  done
+  printf '%s' "$value"
+}
+
+FORCE_TESS_NON_ENGLISH="$(resolve_effective_env_value "DPN_OCR_FORCE_TESS_NON_ENGLISH" "0")"
+DISABLE_TESS_FALLBACK="$(resolve_effective_env_value "DPN_OCR_DISABLE_TESS_FALLBACK" "0")"
+TESS_FALLBACK_MIN_GAIN="$(resolve_effective_env_value "DPN_OCR_TESS_FALLBACK_MIN_GAIN" "")"
+{
+  echo "FORCE_TESS_NON_ENGLISH=$FORCE_TESS_NON_ENGLISH"
+  echo "DISABLE_TESS_FALLBACK=$DISABLE_TESS_FALLBACK"
+  echo "TESS_FALLBACK_MIN_GAIN=$TESS_FALLBACK_MIN_GAIN"
+} >>"$META"
 
 env "${ENV_VARS[@]}" \
   "$BIN" \
@@ -386,6 +412,39 @@ for ln in ocr_stream_lines:
         continue
     ocr_stream_cues.append({"stream_index": int(m.group(1)), "cues": int(m.group(2))})
 total_ocr_cues = sum(item["cues"] for item in ocr_stream_cues)
+quality_fallback_lines = [
+    ln for ln in log_text.splitlines() if "quality fallback: using Tesseract" in ln
+]
+language_fallback_lines = [
+    ln for ln in log_text.splitlines() if "language fallback: using Tesseract" in ln
+]
+score_pattern = re.compile(
+    r"tess_score=(?P<tess>[0-9]*\.?[0-9]+),\s*ppocr_score=(?P<ppocr>[0-9]*\.?[0-9]+),\s*ppocr_conf=(?P<conf>[0-9]*\.?[0-9]+)"
+)
+
+def parse_fallback_scores(lines):
+    parsed = []
+    for line in lines:
+        m = score_pattern.search(line)
+        if not m:
+            continue
+        parsed.append(
+            {
+                "tess_score": float(m.group("tess")),
+                "ppocr_score": float(m.group("ppocr")),
+                "ppocr_conf": float(m.group("conf")),
+            }
+        )
+    return parsed
+
+quality_fallback_scores = parse_fallback_scores(quality_fallback_lines)
+language_fallback_scores = parse_fallback_scores(language_fallback_lines)
+
+def average_key(items, key):
+    if not items:
+        return None
+    return sum(item[key] for item in items) / len(items)
+
 active_gpu_count = sum(1 for s in gpu_summary.values() if s["avg_util_pct"] >= 5.0)
 gpu_count = len(gpu_summary)
 gpu_parallelism_note = (
@@ -411,8 +470,23 @@ summary = {
     "ocr_stream_lines": ocr_stream_lines,
     "ocr_stream_cues": ocr_stream_cues,
     "total_ocr_cues": total_ocr_cues,
-    "quality_fallback_count": log_text.count("quality fallback: using Tesseract"),
-    "language_fallback_count": log_text.count("language fallback: using Tesseract"),
+    "force_tess_non_english": meta.get("FORCE_TESS_NON_ENGLISH", ""),
+    "disable_tess_fallback": meta.get("DISABLE_TESS_FALLBACK", ""),
+    "tess_fallback_min_gain": meta.get("TESS_FALLBACK_MIN_GAIN", ""),
+    "quality_fallback_count": len(quality_fallback_lines),
+    "language_fallback_count": len(language_fallback_lines),
+    "quality_fallback_rate": (len(quality_fallback_lines) / total_ocr_cues)
+    if total_ocr_cues > 0
+    else None,
+    "language_fallback_rate": (len(language_fallback_lines) / total_ocr_cues)
+    if total_ocr_cues > 0
+    else None,
+    "quality_fallback_avg_tess_score": average_key(quality_fallback_scores, "tess_score"),
+    "quality_fallback_avg_ppocr_score": average_key(quality_fallback_scores, "ppocr_score"),
+    "quality_fallback_avg_ppocr_conf": average_key(quality_fallback_scores, "ppocr_conf"),
+    "language_fallback_avg_tess_score": average_key(language_fallback_scores, "tess_score"),
+    "language_fallback_avg_ppocr_score": average_key(language_fallback_scores, "ppocr_score"),
+    "language_fallback_avg_ppocr_conf": average_key(language_fallback_scores, "ppocr_conf"),
     "worker_plan_lines": [
         ln for ln in log_text.splitlines() if "OCR worker plan:" in ln or "Running OCR with " in ln
     ],
@@ -433,6 +507,9 @@ lines.append(f"- Requested CUDA devices: `{meta.get('CUDA_DEVICES', '') or 'auto
 lines.append(f"- OCR max jobs: `{meta.get('OCR_MAX_JOBS', '') or 'default'}`")
 lines.append(f"- Jobs per GPU: `{meta.get('JOBS_PER_GPU', '') or 'default'}`")
 lines.append(f"- GPU required: `{meta.get('REQUIRE_GPU', '0')}`")
+lines.append(f"- Force non-English Tesseract: `{summary['force_tess_non_english'] or '0'}`")
+lines.append(f"- Disable Tesseract fallback: `{summary['disable_tess_fallback'] or '0'}`")
+lines.append(f"- Tesseract min gain override: `{summary['tess_fallback_min_gain'] or 'default'}`")
 if summary["effective_fps"] is not None:
     lines.append(f"- Effective throughput: `{summary['effective_fps']:.2f} FPS`")
 if summary["realtime_factor"] is not None:
@@ -486,6 +563,22 @@ lines.append("## Fallback Counts")
 lines.append("")
 lines.append(f"- Quality fallback count: `{summary['quality_fallback_count']}`")
 lines.append(f"- Language fallback count: `{summary['language_fallback_count']}`")
+if summary["quality_fallback_rate"] is not None:
+    lines.append(f"- Quality fallback rate: `{summary['quality_fallback_rate'] * 100:.2f}%`")
+if summary["language_fallback_rate"] is not None:
+    lines.append(f"- Language fallback rate: `{summary['language_fallback_rate'] * 100:.2f}%`")
+if summary["quality_fallback_avg_ppocr_score"] is not None:
+    lines.append(
+        f"- Quality fallback avg scores: `tess={summary['quality_fallback_avg_tess_score']:.3f}`, "
+        f"`ppocr={summary['quality_fallback_avg_ppocr_score']:.3f}`, "
+        f"`ppocr_conf={summary['quality_fallback_avg_ppocr_conf']:.3f}`"
+    )
+if summary["language_fallback_avg_ppocr_score"] is not None:
+    lines.append(
+        f"- Language fallback avg scores: `tess={summary['language_fallback_avg_tess_score']:.3f}`, "
+        f"`ppocr={summary['language_fallback_avg_ppocr_score']:.3f}`, "
+        f"`ppocr_conf={summary['language_fallback_avg_ppocr_conf']:.3f}`"
+    )
 lines.append("")
 lines.append("## Worker Plan")
 lines.append("")
