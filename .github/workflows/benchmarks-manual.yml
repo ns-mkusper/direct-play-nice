@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          clean: false
 
       - name: Ensure benchmark dependencies
         shell: bash
@@ -56,18 +57,33 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Check cached release binary
+        id: cached-bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x target/release/direct_play_nice ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            echo "Using cached target/release/direct_play_nice"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install cargo-vcpkg
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
           command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: ocr-rapid-v1
 
       - name: Cache vcpkg artifacts
+        if: steps.cached-bin.outputs.missing == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -84,6 +100,7 @@ jobs:
             vcpkg-ocr-rapid-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         env:
           VCPKG_FEATURE_FLAGS: manifests,binarycaching
@@ -100,6 +117,7 @@ jobs:
           cargo vcpkg --verbose build
 
       - name: Export build env
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -108,6 +126,7 @@ jobs:
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
 
       - name: Build release binary
+        if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
