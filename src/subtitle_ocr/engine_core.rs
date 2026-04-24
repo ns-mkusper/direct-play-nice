@@ -239,6 +239,7 @@ static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
 static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
 static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
 static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
