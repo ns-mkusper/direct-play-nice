@@ -159,6 +159,9 @@ jobs:
           set -euo pipefail
           src="${{ steps.source.outputs.path }}"
           bin="${{ steps.cached-bin.outputs.bin_path }}"
+          if [[ -x /usr/local/bin/direct_play_nice ]]; then
+            bin="/usr/local/bin/direct_play_nice"
+          fi
           summary="benchmark_artifacts/rapid/MATRIX_SUMMARY.md"
           mkdir -p benchmark_artifacts/rapid/runs
           cat > "$summary" <<'EOF'
@@ -202,14 +205,24 @@ jobs:
             status=$?
             set -e
             worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            ocr_completed="false"
+            if grep -Eq 'OCR progress: [0-9]+/[0-9]+ subtitle streams complete \(100%\)|OCR subtitle stream [0-9]+ ->' "$run_dir/run.log"; then
+              ocr_completed="true"
+            fi
+            ppocr_failed="false"
+            if grep -q 'Error: PP-OCRv3 failed' "$run_dir/run.log"; then
+              ppocr_failed="true"
+            fi
             failure_sig="$(grep -E 'CUDNN|cuDNN|CUDA|onnx|ORT|Error:|error:|failed|panic' "$run_dir/run.log" | tail -n 3 | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' || true)"
-            if [[ "$status" -eq 0 && "$worker_plan" == *"gpu_available=true"* ]]; then
+            if [[ "$worker_plan" == *"gpu_available=true"* && "$ocr_completed" == "true" && "$ppocr_failed" == "false" ]]; then
               SUCCESS="$name"
             fi
             {
               echo "## ${name}"
               echo "- Exit status: ${status}"
               echo "- Worker plan: \`${worker_plan}\`"
+              echo "- OCR completed: \`${ocr_completed}\`"
+              echo "- PP-OCRv3 failure seen: \`${ppocr_failed}\`"
               echo "- Failure signal: \`${failure_sig}\`"
               echo
             } >> "$summary"
