@@ -101,9 +101,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-ocr-rapid-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
           restore-keys: |
-            vcpkg-ocr-rapid-${{ runner.os }}-
+            vcpkg-bench-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
         if: steps.cached-bin.outputs.missing == 'true'
