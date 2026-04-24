@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail, Context, Result};
-use clap::parser::ValueSource;
 use clap::{value_parser, ArgMatches, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use devices::{ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice};
 use libc::EINVAL;
