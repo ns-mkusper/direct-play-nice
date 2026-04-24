@@ -11,10 +11,10 @@ use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{self};
 use rsmpeg::swresample::SwrContext;
 use rsmpeg::swscale::SwsContext;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     convert::TryFrom,
     env,
     ffi::{c_char, CStr, CString},
@@ -50,7 +50,7 @@ use main_retry::{
     cleanup_partial_output, handle_hw_encoder_init_error, handle_hw_profile_mismatch,
     retry_with_software_encoder, select_primary_video_stream_index,
 };
-use main_sidecar::post_process_ocr_subtitles;
+use main_sidecar::{post_process_ocr_subtitles, OcrSidecarRequest};
 #[cfg(test)]
 use main_sidecar::{sidecar_path_for_track, write_ocr_srt_sidecars};
 use throttle::acquire_slot;

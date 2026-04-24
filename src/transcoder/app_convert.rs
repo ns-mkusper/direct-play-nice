@@ -469,13 +469,15 @@ pub(crate) fn convert_video_file(
                         &mut encode_context,
                         &mut output_stream,
                         stream,
-                        min_h264_profile,
-                        min_h264_level,
-                        quality_limits,
-                        device_max_resolution,
-                        input_stream_codecpar.bit_rate,
-                        &encoder_name_owned,
-                        is_constant_quality_mode,
+                        H264VideoCodecParams {
+                            h264_profile: min_h264_profile,
+                            h264_level: min_h264_level,
+                            quality_limits,
+                            device_max_resolution,
+                            source_bit_rate_hint: input_stream_codecpar.bit_rate,
+                            encoder_name: &encoder_name_owned,
+                            is_constant_quality_mode,
+                        },
                     );
                 } else {
                     set_hevc_video_codec_par(
@@ -483,11 +485,13 @@ pub(crate) fn convert_video_file(
                         &mut encode_context,
                         &mut output_stream,
                         stream,
-                        quality_limits,
-                        device_max_resolution,
-                        input_stream_codecpar.bit_rate,
-                        &encoder_name_owned,
-                        is_constant_quality_mode,
+                        HevcVideoCodecParams {
+                            quality_limits,
+                            device_max_resolution,
+                            source_bit_rate_hint: input_stream_codecpar.bit_rate,
+                            encoder_name: &encoder_name_owned,
+                            is_constant_quality_mode,
+                        },
                     );
                 }
                 let src_par = stream.codecpar();

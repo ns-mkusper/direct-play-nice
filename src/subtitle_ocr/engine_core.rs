@@ -335,16 +335,16 @@ pub fn convert_bitmap_subtitles(
         let mut outputs = Vec::with_capacity(tasks.len());
         let total_tasks = tasks.len().max(1);
         for (idx, task) in tasks.into_iter().enumerate() {
-            let cues = ocr_single_stream(
-                &input_path,
-                task.stream_index,
-                &task.language,
+            let cues = ocr_single_stream(OcrStreamRequest {
+                input_path: &input_path,
+                stream_index: task.stream_index,
+                language: &task.language,
                 work_dir,
                 ocr_format,
                 video_dimensions,
-                resolved_engine,
-                &mut *seed_engine,
-            )?;
+                ocr_engine: resolved_engine,
+                engine: &mut *seed_engine,
+            })?;
             outputs.push(OcrTaskOutput {
                 order: task.order,
                 stream_index: task.stream_index,
@@ -653,16 +653,16 @@ fn run_ocr_tasks_parallel(
                 );
             }
             for task in worker_tasks {
-                let cues = ocr_single_stream(
-                    &input_path,
-                    task.stream_index,
-                    &task.language,
-                    &work_dir,
+                let cues = ocr_single_stream(OcrStreamRequest {
+                    input_path: &input_path,
+                    stream_index: task.stream_index,
+                    language: &task.language,
+                    work_dir: &work_dir,
                     ocr_format,
                     video_dimensions,
-                    resolved_engine,
-                    &mut *engine,
-                )?;
+                    ocr_engine: resolved_engine,
+                    engine: &mut *engine,
+                })?;
 
                 local_outputs.push(OcrTaskOutput {
                     order: task.order,

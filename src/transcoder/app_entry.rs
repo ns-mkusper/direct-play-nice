@@ -355,17 +355,19 @@ fn run_conversion(
     let mut needs_conversion = true;
     match assess_direct_play_compatibility(
         input_file,
-        target_is_mp4,
-        args.sub_mode,
-        target_video_codec,
-        common_audio_codec,
-        h264_constraints,
-        min_fps,
-        device_cap,
-        &common_containers,
-        &quality_limits,
-        args.primary_video_stream_index,
-        args.primary_video_criteria,
+        DirectPlayConstraints {
+            target_is_mp4,
+            sub_mode: args.sub_mode,
+            target_video_codec,
+            target_audio_codec: common_audio_codec,
+            h264_constraints,
+            max_fps: min_fps,
+            device_cap,
+            supported_containers: &common_containers,
+            quality_limits: &quality_limits,
+            primary_video_stream_index: args.primary_video_stream_index,
+            primary_criteria: args.primary_video_criteria,
+        },
     ) {
         Ok(assessment) => {
             if assessment.compatible {
@@ -494,17 +496,17 @@ fn run_conversion(
             input_file
         };
         conversion_result = conversion_result.and_then(|outcome| {
-            post_process_ocr_subtitles(
+            post_process_ocr_subtitles(OcrSidecarRequest {
                 input_file,
                 mux_source_file,
                 output_file,
-                args.sub_mode,
-                args.ocr_default_language.as_deref(),
-                args.ocr_engine,
-                args.ocr_format,
-                args.ocr_external_command.as_deref(),
-                args.ocr_write_srt_sidecar,
-            )?;
+                sub_mode: args.sub_mode,
+                default_ocr_language: args.ocr_default_language.as_deref(),
+                ocr_engine: args.ocr_engine,
+                ocr_format: args.ocr_format,
+                ocr_external_command: args.ocr_external_command.as_deref(),
+                ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
+            })?;
             Ok(outcome)
         });
     } else if conversion_result.is_ok() && needs_conversion && output_is_mkv {
