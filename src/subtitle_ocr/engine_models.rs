@@ -48,38 +48,31 @@ fn ensure_ppocr_models(
     Ok(PpOcrModels { det, cls, rec })
 }
 
-fn resolve_optional_latin_rec_model(model_dir: &Path, variant: PpOcrVariant) -> Result<Option<PathBuf>> {
-    if let Some(path) = env::var_os("DPN_OCR_REC_LATIN_MODEL") {
-        let rec_path = PathBuf::from(path);
-        if !rec_path.is_file() {
-            bail!(
-                "DPN_OCR_REC_LATIN_MODEL is set but file does not exist: '{}'",
-                rec_path.display()
-            );
-        }
-        return Ok(Some(rec_path));
-    }
-
-    let candidates: &[&str] = match variant {
-        PpOcrVariant::V3 => &[
-            "latin_PP-OCRv3_rec_infer.onnx",
-            "latin_ppocr_mobile_v2.0_rec_infer.onnx",
-            "multilingual_PP-OCRv3_rec_infer.onnx",
-        ],
-        PpOcrVariant::V4 => &[
-            "latin_PP-OCRv4_rec_infer.onnx",
-            "latin_ppocr_mobile_v2.0_rec_infer.onnx",
-            "multilingual_PP-OCRv4_rec_infer.onnx",
-        ],
-    };
-
-    for candidate in candidates {
-        let path = model_dir.join(candidate);
-        if path.is_file() {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
+fn resolve_optional_latin_rec_model(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<Option<PathBuf>> {
+    resolve_optional_rec_model_with_candidates(
+        "DPN_OCR_REC_LATIN_MODEL",
+        model_dir,
+        match variant {
+            PpOcrVariant::V3 => &[
+                "latin_PP-OCRv3_rec_mobile.onnx",
+                "latin_PP-OCRv3_rec_infer.onnx",
+                "latin_ppocr_mobile_v2.0_rec_infer.onnx",
+                "multilingual_PP-OCRv3_rec_infer.onnx",
+            ],
+            PpOcrVariant::V4 => &[
+                "latin_PP-OCRv3_rec_mobile.onnx",
+                "latin_PP-OCRv4_rec_infer.onnx",
+                "latin_ppocr_mobile_v2.0_rec_infer.onnx",
+                "multilingual_PP-OCRv4_rec_infer.onnx",
+            ],
+        },
+        variant.default_latin_rec_spec(),
+        "latin",
+        variant,
+    )
 }
 
 fn resolve_optional_japanese_rec_model(
@@ -91,16 +84,21 @@ fn resolve_optional_japanese_rec_model(
         model_dir,
         match variant {
             PpOcrVariant::V3 => &[
+                "japan_PP-OCRv4_rec_mobile.onnx",
                 "japan_PP-OCRv3_rec_infer.onnx",
                 "japanese_PP-OCRv3_rec_infer.onnx",
                 "ja_PP-OCRv3_rec_infer.onnx",
             ],
             PpOcrVariant::V4 => &[
+                "japan_PP-OCRv4_rec_mobile.onnx",
                 "japan_PP-OCRv4_rec_infer.onnx",
                 "japanese_PP-OCRv4_rec_infer.onnx",
                 "ja_PP-OCRv4_rec_infer.onnx",
             ],
         },
+        variant.default_japanese_rec_spec(),
+        "japanese",
+        variant,
     )
 }
 
@@ -113,33 +111,46 @@ fn resolve_optional_korean_rec_model(
         model_dir,
         match variant {
             PpOcrVariant::V3 => &[
+                "korean_PP-OCRv4_rec_mobile.onnx",
                 "korean_PP-OCRv3_rec_infer.onnx",
                 "ko_PP-OCRv3_rec_infer.onnx",
             ],
             PpOcrVariant::V4 => &[
+                "korean_PP-OCRv4_rec_mobile.onnx",
                 "korean_PP-OCRv4_rec_infer.onnx",
                 "ko_PP-OCRv4_rec_infer.onnx",
             ],
         },
+        variant.default_korean_rec_spec(),
+        "korean",
+        variant,
     )
 }
 
-fn resolve_optional_cjk_rec_model(model_dir: &Path, variant: PpOcrVariant) -> Result<Option<PathBuf>> {
+fn resolve_optional_cjk_rec_model(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<Option<PathBuf>> {
     resolve_optional_rec_model_with_candidates(
         "DPN_OCR_REC_CJK_MODEL",
         model_dir,
         match variant {
             PpOcrVariant::V3 => &[
+                "chinese_cht_PP-OCRv3_rec_mobile.onnx",
                 "cjk_PP-OCRv3_rec_infer.onnx",
                 "chinese_PP-OCRv3_rec_infer.onnx",
                 "zh_PP-OCRv3_rec_infer.onnx",
             ],
             PpOcrVariant::V4 => &[
+                "chinese_cht_PP-OCRv3_rec_mobile.onnx",
                 "cjk_PP-OCRv4_rec_infer.onnx",
                 "chinese_PP-OCRv4_rec_infer.onnx",
                 "zh_PP-OCRv4_rec_infer.onnx",
             ],
         },
+        variant.default_cjk_rec_spec(),
+        "cjk",
+        variant,
     )
 }
 
@@ -147,6 +158,9 @@ fn resolve_optional_rec_model_with_candidates(
     env_key: &str,
     model_dir: &Path,
     candidates: &[&str],
+    default_spec: &ModelSpec,
+    profile_label: &str,
+    variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
     if let Some(path) = env::var_os(env_key) {
         let rec_path = PathBuf::from(path);
@@ -166,7 +180,27 @@ fn resolve_optional_rec_model_with_candidates(
             return Ok(Some(path));
         }
     }
-    Ok(None)
+
+    match ensure_model_file(model_dir, default_spec) {
+        Ok(path) => {
+            info!(
+                "{} {} rec model auto-provisioned at '{}'",
+                variant.label(),
+                profile_label,
+                path.display()
+            );
+            Ok(Some(path))
+        }
+        Err(err) => {
+            warn!(
+                "{} {} rec model auto-provisioning failed; continuing with fallback routing: {:#}",
+                variant.label(),
+                profile_label,
+                err
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {

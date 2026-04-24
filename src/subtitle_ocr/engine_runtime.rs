@@ -83,6 +83,32 @@ const PPOCR_V3_REC_MODEL: ModelSpec = ModelSpec {
     sha256: "EF7ABD8BD3629AE57EA2C28B425C1BD258A871B93FD2FE7C433946ADE9B5D9EA",
 };
 
+const PPOCR_V4_LATIN_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "latin_PP-OCRv3_rec_mobile.onnx",
+    url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/latin_PP-OCRv3_rec_mobile.onnx",
+    sha256: "E9D7A33667E8AAA702862975186ADF2012E3F390CC0F9422865957125F8071CF",
+};
+const PPOCR_V4_JAPANESE_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "japan_PP-OCRv4_rec_mobile.onnx",
+    url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
+    sha256: "E1075A67DBA758ECFC7EBC78A10AE61C95AC8FB66A9C86FAB5541E33F085CB7A",
+};
+const PPOCR_V4_KOREAN_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "korean_PP-OCRv4_rec_mobile.onnx",
+    url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/korean_PP-OCRv4_rec_mobile.onnx",
+    sha256: "AB151BA9065ECCD98F884CF4D927DB091BE86137276392072EDD4F9D43AD7426",
+};
+const PPOCR_V4_CJK_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "chinese_cht_PP-OCRv3_rec_mobile.onnx",
+    url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/chinese_cht_PP-OCRv3_rec_mobile.onnx",
+    sha256: "779656D044CE388045E02EA9244724616194E63928606436CDFC6DC3C9528CC6",
+};
+
+const PPOCR_V3_LATIN_REC_MODEL: ModelSpec = PPOCR_V4_LATIN_REC_MODEL;
+const PPOCR_V3_JAPANESE_REC_MODEL: ModelSpec = PPOCR_V4_JAPANESE_REC_MODEL;
+const PPOCR_V3_KOREAN_REC_MODEL: ModelSpec = PPOCR_V4_KOREAN_REC_MODEL;
+const PPOCR_V3_CJK_REC_MODEL: ModelSpec = PPOCR_V4_CJK_REC_MODEL;
+
 struct PpOcrModels {
     det: PathBuf,
     cls: PathBuf,
