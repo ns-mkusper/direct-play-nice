@@ -146,13 +146,24 @@ jobs:
             -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=12 \
             -c:a aac \
             benchmark_artifacts/rapid/src/audio.m4a
+          enc=""
+          for candidate in hdmv_pgs_subtitle dvdsub dvb_subtitle; do
+            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "${candidate}"; then
+              enc="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$enc" ]]; then
+            echo "::error title=No bitmap subtitle encoder::Need one of hdmv_pgs_subtitle, dvdsub, dvb_subtitle."
+            exit 1
+          fi
           ffmpeg -hide_banner -loglevel error -y \
             -i benchmark_artifacts/rapid/src/video.mkv \
             -i benchmark_artifacts/rapid/src/audio.m4a \
             -i benchmark_artifacts/rapid/src/subs_eng.srt \
             -i benchmark_artifacts/rapid/src/subs_spa.srt \
             -map 0:v:0 -map 1:a:0 -map 2:0 -map 3:0 \
-            -c:v copy -c:a copy -c:s hdmv_pgs_subtitle \
+            -c:v copy -c:a copy -c:s "$enc" \
             benchmark_artifacts/rapid/source_bitmap.mkv
 
       - name: Run OCR GPU runtime matrix
