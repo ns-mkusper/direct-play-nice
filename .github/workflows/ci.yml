@@ -221,16 +221,36 @@ jobs:
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
         run: |
           mkdir -p benchmark_artifacts/ocr_fixture_eval
+          probe_log="benchmark_artifacts/ocr_fixture_eval/probe.log"
           if [[ ! -x target/debug/direct_play_nice ]]; then
             cargo build --bin direct_play_nice
           fi
+          set +e
           ./scripts/ocr-tools/run_ocr_fixture_eval.sh \
             --bin target/debug/direct_play_nice \
             --fixtures tests/golden_subs/multilang \
             --run-dir benchmark_artifacts/ocr_fixture_eval \
-            --ocr-engine pp-ocr-v3
-          echo "### OCR fixture eval (Linux stable)" >> "$GITHUB_STEP_SUMMARY"
-          sed -n '1,120p' benchmark_artifacts/ocr_fixture_eval/fixture_eval.md >> "$GITHUB_STEP_SUMMARY"
+            --ocr-engine pp-ocr-v3 2>&1 | tee "$probe_log"
+          probe_status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$probe_status" -ne 0 ]]; then
+            if grep -Eqi 'load the ONNX Runtime binary|libonnxruntime\.so|onnxruntime\.dll|cannot open shared object file|The specified module could not be found' "$probe_log"; then
+              echo "::warning title=Skipping OCR fixture probe::ONNX Runtime shared library is unavailable on this runner."
+              {
+                echo "### OCR fixture eval (Linux stable)"
+                echo "- Status: skipped (missing ONNX Runtime shared library on runner)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error title=OCR fixture probe failed::See benchmark_artifacts/ocr_fixture_eval/probe.log"
+            exit "$probe_status"
+          fi
+
+          {
+            echo "### OCR fixture eval (Linux stable)"
+            sed -n '1,120p' benchmark_artifacts/ocr_fixture_eval/fixture_eval.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload OCR fixture eval artifacts (Linux stable)
         if: matrix.toolchain == 'stable'
