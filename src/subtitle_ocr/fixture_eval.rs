@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FixtureEvalMode {
+pub(super) enum FixtureEvalMode {
     Hybrid,
     StrictGain,
     PureOnnx,
@@ -24,14 +26,14 @@ impl FixtureEvalMode {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct FixtureExpected {
+pub(super) struct FixtureExpected {
     expected_text: String,
     language: Option<String>,
     min_similarity: Option<f32>,
 }
 
 #[derive(Debug)]
-struct FixtureSpec {
+pub(super) struct FixtureSpec {
     name: String,
     language: String,
     expected_text: String,
@@ -141,9 +143,7 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
         "| Mode | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate | Avg Infer ms | Tesseract Replacements |"
             .to_string(),
     );
-    lines.push(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string(),
-    );
+    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
     for mode in &report.modes {
         lines.push(format!(
             "| {} | {} | {:.4} | {:.4} | {:.4} | {:.2}% | {:.2} | {} |",
@@ -162,7 +162,9 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
         lines.push(String::new());
         lines.push(format!("## Mode: {}", mode.mode));
         lines.push(String::new());
-        lines.push("| Language | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate |".to_string());
+        lines.push(
+            "| Language | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate |".to_string(),
+        );
         lines.push("| --- | ---: | ---: | ---: | ---: | ---: |".to_string());
         for lang in &mode.per_language {
             lines.push(format!(
@@ -181,7 +183,7 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
     lines.join("\n")
 }
 
-fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant> {
+pub(super) fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant> {
     match ocr_engine {
         OcrEngine::PpOcrV3 => Ok(PpOcrVariant::V3),
         OcrEngine::PpOcrV4 => Ok(PpOcrVariant::V4),
@@ -197,7 +199,10 @@ fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant> {
     }
 }
 
-fn init_ppocr_engine_safe(model_dir: &Path, variant: PpOcrVariant) -> Result<PpOcrEngine> {
+pub(super) fn init_ppocr_engine_safe(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<PpOcrEngine> {
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         init_ppocr_engine(model_dir, require_gpu(), variant)
     }));
@@ -214,7 +219,7 @@ fn init_ppocr_engine_safe(model_dir: &Path, variant: PpOcrVariant) -> Result<PpO
     }
 }
 
-fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+pub(super) fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(msg) = payload.downcast_ref::<&str>() {
         (*msg).to_string()
     } else if let Some(msg) = payload.downcast_ref::<String>() {
@@ -224,7 +229,7 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-fn load_fixture_specs(fixture_dir: &Path) -> Result<Vec<FixtureSpec>> {
+pub(super) fn load_fixture_specs(fixture_dir: &Path) -> Result<Vec<FixtureSpec>> {
     let mut fixtures = Vec::new();
     for entry in fs::read_dir(fixture_dir)
         .with_context(|| format!("reading fixture directory '{}'", fixture_dir.display()))?
@@ -259,7 +264,7 @@ fn load_fixture_specs(fixture_dir: &Path) -> Result<Vec<FixtureSpec>> {
     Ok(fixtures)
 }
 
-fn evaluate_fixture(
+pub(super) fn evaluate_fixture(
     engine: &mut PpOcrEngine,
     spec: &FixtureSpec,
     mode: FixtureEvalMode,
@@ -295,7 +300,9 @@ fn evaluate_fixture(
             && ppocr_needs_quality_fallback(&output.lines, &spec.language);
         if should_try_fallback {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(&spec.language) {
-                if let Ok(candidate) = run_tesseract_best_effort(&spec.image_path, &fallback_language) {
+                if let Ok(candidate) =
+                    run_tesseract_best_effort(&spec.image_path, &fallback_language)
+                {
                     if !candidate.text.is_empty() {
                         let replace = candidate.quality >= ppocr_quality + min_gain
                             || (ppocr_confidence < 0.70
@@ -342,12 +349,17 @@ fn evaluate_fixture(
     })
 }
 
-fn summarize_mode(mode: FixtureEvalMode, fixtures: Vec<FixtureResult>) -> FixtureModeSummary {
+pub(super) fn summarize_mode(
+    mode: FixtureEvalMode,
+    fixtures: Vec<FixtureResult>,
+) -> FixtureModeSummary {
     let fixture_count = fixtures.len();
     let avg_cer = avg(fixtures.iter().map(|x| x.cer));
     let avg_wer = avg(fixtures.iter().map(|x| x.wer));
     let avg_similarity = avg(fixtures.iter().map(|x| x.similarity));
-    let pass_rate = avg(fixtures.iter().map(|x| if x.meets_threshold { 1.0 } else { 0.0 }));
+    let pass_rate = avg(fixtures
+        .iter()
+        .map(|x| if x.meets_threshold { 1.0 } else { 0.0 }));
     let avg_infer_ms = avg(fixtures.iter().map(|x| x.infer_ms as f32));
     let tesseract_replacement_count = fixtures.iter().filter(|x| x.used_tesseract).count();
 
@@ -368,7 +380,9 @@ fn summarize_mode(mode: FixtureEvalMode, fixtures: Vec<FixtureResult>) -> Fixtur
             avg_cer: avg(items.iter().map(|x| x.cer)),
             avg_wer: avg(items.iter().map(|x| x.wer)),
             avg_similarity: avg(items.iter().map(|x| x.similarity)),
-            pass_rate: avg(items.iter().map(|x| if x.meets_threshold { 1.0 } else { 0.0 })),
+            pass_rate: avg(items
+                .iter()
+                .map(|x| if x.meets_threshold { 1.0 } else { 0.0 })),
         });
     }
 
@@ -386,7 +400,7 @@ fn summarize_mode(mode: FixtureEvalMode, fixtures: Vec<FixtureResult>) -> Fixtur
     }
 }
 
-fn avg<I>(iter: I) -> f32
+pub(super) fn avg<I>(iter: I) -> f32
 where
     I: Iterator<Item = f32>,
 {
@@ -403,7 +417,7 @@ where
     }
 }
 
-fn normalize_text_for_word_similarity(input: &str) -> String {
+pub(super) fn normalize_text_for_word_similarity(input: &str) -> String {
     input
         .to_uppercase()
         .split_whitespace()
@@ -411,7 +425,7 @@ fn normalize_text_for_word_similarity(input: &str) -> String {
         .join(" ")
 }
 
-fn normalize_text_for_char_similarity(input: &str) -> String {
+pub(super) fn normalize_text_for_char_similarity(input: &str) -> String {
     input
         .to_uppercase()
         .chars()
@@ -419,7 +433,7 @@ fn normalize_text_for_char_similarity(input: &str) -> String {
         .collect()
 }
 
-fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
+pub(super) fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
     if expected_words.is_empty() {
@@ -451,7 +465,7 @@ fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     dp[m][n] as f32 / expected_words.len() as f32
 }
 
-fn char_error_rate_eval(expected: &str, actual: &str) -> f32 {
+pub(super) fn char_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_chars: Vec<char> = expected.chars().collect();
     let actual_chars: Vec<char> = actual.chars().collect();
     if expected_chars.is_empty() {

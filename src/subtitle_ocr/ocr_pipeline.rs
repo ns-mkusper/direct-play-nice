@@ -1,4 +1,9 @@
-fn discover_candidates(input_file: &CStr, sub_mode: SubMode) -> Result<Vec<SubtitleCandidate>> {
+use super::*;
+
+pub(super) fn discover_candidates(
+    input_file: &CStr,
+    sub_mode: SubMode,
+) -> Result<Vec<SubtitleCandidate>> {
     let ictx = AVFormatContextInput::open(input_file)?;
     let mut out = Vec::new();
 
@@ -27,7 +32,7 @@ fn discover_candidates(input_file: &CStr, sub_mode: SubMode) -> Result<Vec<Subti
     Ok(out)
 }
 
-fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
+pub(super) fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
     let ictx = AVFormatContextInput::open(input_file).ok()?;
     for stream in ictx.streams() {
         let cp = stream.codecpar();
@@ -39,7 +44,7 @@ fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
 }
 
 #[derive(Debug, Default, Clone)]
-struct OcrQualityBaseline {
+pub(super) struct OcrQualityBaseline {
     samples: usize,
     quality_sum: f32,
     confidence_sum: f32,
@@ -48,7 +53,7 @@ struct OcrQualityBaseline {
 impl OcrQualityBaseline {
     const WINDOW_MS: i64 = 3 * 60 * 1_000;
 
-    fn observe(&mut self, quality: f32, confidence: f32, timestamp_ms: i64) {
+    pub(super) fn observe(&mut self, quality: f32, confidence: f32, timestamp_ms: i64) {
         if !(0..=Self::WINDOW_MS).contains(&timestamp_ms) {
             return;
         }
@@ -81,23 +86,23 @@ impl OcrQualityBaseline {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct OcrFallbackThresholds {
-    quality: f32,
-    confidence: f32,
+pub(super) struct OcrFallbackThresholds {
+    pub(super) quality: f32,
+    pub(super) confidence: f32,
 }
 
-struct OcrStreamRequest<'a> {
-    input_path: &'a str,
-    stream_index: i32,
-    language: &'a str,
-    work_dir: &'a Path,
-    ocr_format: OcrFormat,
-    video_dimensions: Option<(u32, u32)>,
-    ocr_engine: OcrEngine,
-    engine: &'a mut dyn SubtitleConverter,
+pub(super) struct OcrStreamRequest<'a> {
+    pub(super) input_path: &'a str,
+    pub(super) stream_index: i32,
+    pub(super) language: &'a str,
+    pub(super) work_dir: &'a Path,
+    pub(super) ocr_format: OcrFormat,
+    pub(super) video_dimensions: Option<(u32, u32)>,
+    pub(super) ocr_engine: OcrEngine,
+    pub(super) engine: &'a mut dyn SubtitleConverter,
 }
 
-fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<SubtitleCue>> {
+pub(super) fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<SubtitleCue>> {
     let OcrStreamRequest {
         input_path,
         stream_index,
@@ -219,7 +224,7 @@ fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<SubtitleCue>> 
     Ok(cues)
 }
 
-struct SubtitleCueBuildContext<'a> {
+pub(super) struct SubtitleCueBuildContext<'a> {
     fallback_start_ms: i64,
     fallback_duration_ms: i64,
     language: &'a str,
@@ -233,7 +238,7 @@ struct SubtitleCueBuildContext<'a> {
     quality_baseline: &'a mut OcrQualityBaseline,
 }
 
-fn subtitle_to_cues(
+pub(super) fn subtitle_to_cues(
     subtitle: *const ffi::AVSubtitle,
     context: SubtitleCueBuildContext<'_>,
 ) -> Result<Vec<SubtitleCue>> {
@@ -350,7 +355,7 @@ fn subtitle_to_cues(
     Ok(cues)
 }
 
-struct SubtitleLineExtractionContext<'a> {
+pub(super) struct SubtitleLineExtractionContext<'a> {
     language: &'a str,
     subtitle_start_ms: i64,
     stream_index: i32,
@@ -361,7 +366,7 @@ struct SubtitleLineExtractionContext<'a> {
     quality_baseline: &'a mut OcrQualityBaseline,
 }
 
-fn extract_subtitle_lines(
+pub(super) fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     context: SubtitleLineExtractionContext<'_>,
 ) -> Result<(Vec<OcrLine>, bool)> {
@@ -587,7 +592,7 @@ fn extract_subtitle_lines(
     Ok((lines, had_imagery))
 }
 
-fn force_tesseract_non_english_enabled() -> bool {
+pub(super) fn force_tesseract_non_english_enabled() -> bool {
     let enabled = env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
         .ok()
         .map(|v| {
@@ -603,7 +608,7 @@ fn force_tesseract_non_english_enabled() -> bool {
     enabled
 }
 
-fn tesseract_quality_fallback_min_gain() -> f32 {
+pub(super) fn tesseract_quality_fallback_min_gain() -> f32 {
     match env::var("DPN_OCR_TESS_FALLBACK_MIN_GAIN") {
         Ok(v) => match v.trim().parse::<f32>() {
             Ok(x) if x.is_finite() && (0.0..=0.5).contains(&x) => x,
@@ -619,7 +624,9 @@ fn tesseract_quality_fallback_min_gain() -> f32 {
     }
 }
 
-fn quality_fallback_thresholds(baseline: &OcrQualityBaseline) -> Option<OcrFallbackThresholds> {
+pub(super) fn quality_fallback_thresholds(
+    baseline: &OcrQualityBaseline,
+) -> Option<OcrFallbackThresholds> {
     const BASELINE_MIN_SAMPLES: usize = 12;
     const RELATIVE_DROP: f32 = 0.15;
 

@@ -1,11 +1,15 @@
-fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<i64> {
+use super::*;
+
+pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<i64> {
     if value == ffi::AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 {
         return None;
     }
     Some(unsafe { ffi::av_rescale_q(value, time_base, ffi::AVRational { num: 1, den: 1000 }) })
 }
 
-fn extract_language_tag_from_metadata(dict: &rsmpeg::avutil::AVDictionary) -> Option<String> {
+pub(super) fn extract_language_tag_from_metadata(
+    dict: &rsmpeg::avutil::AVDictionary,
+) -> Option<String> {
     for entry in dict.iter() {
         if entry
             .key()
@@ -21,7 +25,7 @@ fn extract_language_tag_from_metadata(dict: &rsmpeg::avutil::AVDictionary) -> Op
     None
 }
 
-fn resolve_ocr_language(
+pub(super) fn resolve_ocr_language(
     tag: Option<&str>,
     default_lang: Option<&str>,
     system_lang: Option<&str>,
@@ -77,7 +81,7 @@ fn resolve_ocr_language(
         .unwrap_or_else(|| "eng".to_string())
 }
 
-fn detect_system_ocr_language() -> Option<String> {
+pub(super) fn detect_system_ocr_language() -> Option<String> {
     for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(raw) = env::var_os(var) {
             let val = raw.to_string_lossy().trim().to_string();
@@ -101,7 +105,7 @@ fn detect_system_ocr_language() -> Option<String> {
     None
 }
 
-fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
+pub(super) fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
     let normalized = input.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
@@ -148,7 +152,7 @@ fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
     Some(mapped.to_string())
 }
 
-fn list_tesseract_languages() -> Result<HashSet<String>> {
+pub(super) fn list_tesseract_languages() -> Result<HashSet<String>> {
     let output = Command::new("tesseract")
         .arg("--list-langs")
         .output()
@@ -182,17 +186,17 @@ fn list_tesseract_languages() -> Result<HashSet<String>> {
     Ok(langs)
 }
 
-fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
+pub(super) fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
     let cached = TESSERACT_LANG_CACHE.get_or_init(list_tesseract_languages);
     cached.as_ref().ok()
 }
 
-fn resolve_tesseract_fallback_language(language: &str) -> Option<String> {
+pub(super) fn resolve_tesseract_fallback_language(language: &str) -> Option<String> {
     let langs = tesseract_languages_cached()?;
     resolve_tesseract_fallback_language_with_available(language, langs)
 }
 
-fn resolve_tesseract_fallback_language_with_available(
+pub(super) fn resolve_tesseract_fallback_language_with_available(
     language: &str,
     langs: &HashSet<String>,
 ) -> Option<String> {
@@ -208,7 +212,7 @@ fn resolve_tesseract_fallback_language_with_available(
     None
 }
 
-fn codec_name(codec_id: ffi::AVCodecID) -> String {
+pub(super) fn codec_name(codec_id: ffi::AVCodecID) -> String {
     unsafe {
         CStr::from_ptr(ffi::avcodec_get_name(codec_id))
             .to_string_lossy()
@@ -216,7 +220,7 @@ fn codec_name(codec_id: ffi::AVCodecID) -> String {
     }
 }
 
-fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
+pub(super) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
         ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
@@ -225,4 +229,3 @@ fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
             | ffi::AV_CODEC_ID_XSUB
     )
 }
-
