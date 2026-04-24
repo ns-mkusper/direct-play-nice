@@ -170,6 +170,7 @@ SMI_PID="$!"
 set +e
 ENV_VARS=(
   "DPN_MAX_JOBS=1"
+  "DIRECT_PLAY_NICE_LOCK_DIR=$RUN_DIR/locks"
 )
 if [[ -n "$OCR_MAX_JOBS" ]]; then
   ENV_VARS+=("DPN_OCR_MAX_JOBS=$OCR_MAX_JOBS")
