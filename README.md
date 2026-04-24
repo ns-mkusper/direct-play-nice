@@ -62,7 +62,7 @@ Project-specific behavior:
   ([OCR benchmark report](benches/OCR_BENCHMARK.md))
 
 Official compatibility and architecture references are collected in the manual:
-[Hardware Acceleration](docs/src/hardware-acceleration.md).
+[Hardware Acceleration](https://ns-mkusper.github.io/direct-play-nice/hardware-acceleration.html).
 
 ## Sonarr Download Hook Example
 
@@ -102,12 +102,12 @@ For the full model matrix and constraints, see
 
 For advanced usage, read the manual:
 
-- [direct-play-nice Book (mdBook)](docs/src/index.md)
-- AI OCR for bitmap subtitles (setup + runtime notes): [Subtitle OCR](docs/src/subtitle-ocr.md)
-- GPU acceleration and supported architecture references: [Hardware Acceleration](docs/src/hardware-acceleration.md)
-- Plex auto-refresh workflow: [Plex Refresh](docs/src/plex-refresh.md)
-- Arr custom-script operation: [Sonarr/Radarr Integration](docs/src/servarr.md)
-- Hardware probing and diagnostics: [Probe and Debug](docs/src/probe-and-debug.md)
+- [direct-play-nice Book (mdBook)](https://ns-mkusper.github.io/direct-play-nice/)
+- AI OCR for bitmap subtitles (setup + runtime notes): [Subtitle OCR](https://ns-mkusper.github.io/direct-play-nice/subtitle-ocr.html)
+- GPU acceleration and supported architecture references: [Hardware Acceleration](https://ns-mkusper.github.io/direct-play-nice/hardware-acceleration.html)
+- Plex auto-refresh workflow: [Plex Refresh](https://ns-mkusper.github.io/direct-play-nice/plex-refresh.html)
+- Arr custom-script operation: [Sonarr/Radarr Integration](https://ns-mkusper.github.io/direct-play-nice/servarr.html)
+- Hardware probing and diagnostics: [Probe and Debug](https://ns-mkusper.github.io/direct-play-nice/probe-and-debug.html)
 
 For Rust API docs (library internals used by the CLI):
 
