@@ -27,6 +27,7 @@ jobs:
     permissions:
       contents: read
     env:
+      BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
@@ -49,6 +50,19 @@ jobs:
             exit 1
           fi
           nvidia-smi -L
+
+      - name: Resolve benchmark source path
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_path="${BENCHMARK_SOURCE_PATH_SECRET:-}"
+          if [[ -z "$source_path" ]]; then
+            echo "::error title=Missing source path::Set BENCHMARK_SOURCE_PATH secret."
+            exit 1
+          fi
+          test -f "$source_path"
+          echo "path=$source_path" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Rust home directories
         shell: bash
@@ -139,63 +153,11 @@ jobs:
           cargo clean -p rusty_ffmpeg
           cargo build --release
 
-      - name: Generate tiny bitmap-subtitle source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p benchmark_artifacts/rapid/src
-          cat > benchmark_artifacts/rapid/src/subs_eng.srt <<'EOF'
-          1
-          00:00:00,000 --> 00:00:01,200
-          hello world
-
-          2
-          00:00:02,000 --> 00:00:03,500
-          second english line
-          EOF
-          cat > benchmark_artifacts/rapid/src/subs_spa.srt <<'EOF'
-          1
-          00:00:00,500 --> 00:00:01,600
-          hola mundo
-
-          2
-          00:00:02,200 --> 00:00:03,600
-          segunda linea
-          EOF
-          ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i testsrc=size=1280x720:rate=24:duration=12 \
-            -pix_fmt yuv420p \
-            -c:v h264_nvenc \
-            benchmark_artifacts/rapid/src/video.mkv
-          ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=12 \
-            -c:a aac \
-            benchmark_artifacts/rapid/src/audio.m4a
-          enc=""
-          for candidate in hdmv_pgs_subtitle dvdsub dvb_subtitle; do
-            if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "${candidate}"; then
-              enc="$candidate"
-              break
-            fi
-          done
-          if [[ -z "$enc" ]]; then
-            echo "::error title=No bitmap subtitle encoder::Need one of hdmv_pgs_subtitle, dvdsub, dvb_subtitle."
-            exit 1
-          fi
-          ffmpeg -hide_banner -loglevel error -y \
-            -i benchmark_artifacts/rapid/src/video.mkv \
-            -i benchmark_artifacts/rapid/src/audio.m4a \
-            -i benchmark_artifacts/rapid/src/subs_eng.srt \
-            -i benchmark_artifacts/rapid/src/subs_spa.srt \
-            -map 0:v:0 -map 1:a:0 -map 2:0 -map 3:0 \
-            -c:v copy -c:a copy -c:s "$enc" \
-            benchmark_artifacts/rapid/source_bitmap.mkv
-
       - name: Run OCR GPU runtime matrix
         shell: bash
         run: |
           set -euo pipefail
-          src="benchmark_artifacts/rapid/source_bitmap.mkv"
+          src="${{ steps.source.outputs.path }}"
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           summary="benchmark_artifacts/rapid/MATRIX_SUMMARY.md"
           mkdir -p benchmark_artifacts/rapid/runs
@@ -222,6 +184,7 @@ jobs:
               --output-name out.mp4 \
               --ocr-engine pp-ocr-v3 \
               --sub-mode force \
+              --max-source-seconds 120 \
               --sample-ms 200 \
               --ocr-max-jobs 1 \
               --jobs-per-gpu 1 \
