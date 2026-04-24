@@ -1,4 +1,15 @@
-use crate::*;
+use anyhow::{anyhow, bail, Result};
+use log::warn;
+use rsmpeg::avformat::AVFormatContextInput;
+use rsmpeg::ffi;
+use std::ffi::CStr;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::{
+    convert_video_file, Args, ConversionOutcome, ConversionParams, HwAccel, HwEncoderInitError,
+    HwProfileLevelMismatch, PrimaryVideoCriteria,
+};
 
 pub(super) fn cleanup_partial_output(path: &CStr) {
     let output_path = PathBuf::from(path.to_string_lossy().into_owned());
@@ -13,58 +24,21 @@ pub(super) fn cleanup_partial_output(path: &CStr) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn retry_with_software_encoder(
     input_file: &CStr,
     output_file: &CStr,
-    sub_mode: SubMode,
-    target_video_codec: ffi::AVCodecID,
-    target_audio_codec: ffi::AVCodecID,
-    h264_constraints: Option<(H264Profile, H264Level)>,
-    min_fps: u32,
-    min_resolution: Resolution,
-    quality_limits: &QualityLimits,
-    uv_policy: UnsupportedVideoPolicy,
-    primary_video_stream_index: Option<usize>,
-    primary_video_criteria: PrimaryVideoCriteria,
-    requested_video_quality: VideoQuality,
-    requested_audio_quality: AudioQuality,
-    skip_codec_check: bool,
-) -> Result<ConversionOutcome, anyhow::Error> {
-    convert_video_file(
-        input_file,
-        output_file,
-        sub_mode,
-        target_video_codec,
-        target_audio_codec,
-        h264_constraints,
-        min_fps,
-        min_resolution,
-        quality_limits,
-        uv_policy,
-        primary_video_stream_index,
-        primary_video_criteria,
-        requested_video_quality,
-        requested_audio_quality,
-        skip_codec_check,
-        HwAccel::None,
-    )
+    params: ConversionParams<'_>,
+) -> Result<ConversionOutcome> {
+    convert_video_file(input_file, output_file, params.with_hw_accel(HwAccel::None))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_hw_profile_mismatch(
     mismatch: HwProfileLevelMismatch,
     args: &Args,
     input_file: &CStr,
     output_file: &CStr,
-    sub_mode: SubMode,
-    target_video_codec: ffi::AVCodecID,
-    target_audio_codec: ffi::AVCodecID,
-    h264_constraints: Option<(H264Profile, H264Level)>,
-    min_fps: u32,
-    min_resolution: Resolution,
-    quality_limits: &QualityLimits,
-) -> Result<ConversionOutcome, anyhow::Error> {
+    params: ConversionParams<'_>,
+) -> Result<ConversionOutcome> {
     if args.hw_accel == HwAccel::None || !mismatch.used_hw_encoder {
         return Err(anyhow!(mismatch));
     }
@@ -87,39 +61,16 @@ pub(super) fn handle_hw_profile_mismatch(
         mismatch.expected_level
     );
     cleanup_partial_output(output_file);
-    retry_with_software_encoder(
-        input_file,
-        output_file,
-        sub_mode,
-        target_video_codec,
-        target_audio_codec,
-        h264_constraints,
-        min_fps,
-        min_resolution,
-        quality_limits,
-        args.unsupported_video_policy,
-        args.primary_video_stream_index,
-        args.primary_video_criteria,
-        args.video_quality,
-        args.audio_quality,
-        args.skip_codec_check,
-    )
+    retry_with_software_encoder(input_file, output_file, params)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_hw_encoder_init_error(
     init_error: HwEncoderInitError,
     args: &Args,
     input_file: &CStr,
     output_file: &CStr,
-    sub_mode: SubMode,
-    target_video_codec: ffi::AVCodecID,
-    target_audio_codec: ffi::AVCodecID,
-    h264_constraints: Option<(H264Profile, H264Level)>,
-    min_fps: u32,
-    min_resolution: Resolution,
-    quality_limits: &QualityLimits,
-) -> Result<ConversionOutcome, anyhow::Error> {
+    params: ConversionParams<'_>,
+) -> Result<ConversionOutcome> {
     if args.hw_accel == HwAccel::None {
         return Err(anyhow!(init_error));
     }
@@ -129,23 +80,7 @@ pub(super) fn handle_hw_encoder_init_error(
         init_error.encoder, init_error.message
     );
     cleanup_partial_output(output_file);
-    retry_with_software_encoder(
-        input_file,
-        output_file,
-        sub_mode,
-        target_video_codec,
-        target_audio_codec,
-        h264_constraints,
-        min_fps,
-        min_resolution,
-        quality_limits,
-        args.unsupported_video_policy,
-        args.primary_video_stream_index,
-        args.primary_video_criteria,
-        args.video_quality,
-        args.audio_quality,
-        args.skip_codec_check,
-    )
+    retry_with_software_encoder(input_file, output_file, params)
 }
 
 pub(super) fn select_primary_video_stream_index(

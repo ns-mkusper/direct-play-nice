@@ -246,7 +246,7 @@ fn run_conversion(
     };
     let min_fps = resolved_profile.max_fps;
     let min_resolution = resolved_profile.max_resolution;
-    let device_cap = resolution_to_dimensions(min_resolution);
+    let device_cap = min_resolution.to_dimensions();
 
     if let Some(device_video_limit) = resolved_profile.max_video_bitrate {
         quality_limits.max_video_bitrate = Some(
@@ -405,6 +405,23 @@ fn run_conversion(
         None
     };
     let conversion_output_file = temp_output_cstring.as_deref().unwrap_or(output_file);
+    let conversion_params = ConversionParams {
+        sub_mode: args.sub_mode,
+        target_video_codec,
+        target_audio_codec: common_audio_codec,
+        h264_constraints,
+        min_fps,
+        device_max_resolution: min_resolution,
+        quality_limits: &quality_limits,
+        uv_policy: args.unsupported_video_policy,
+        primary_video_stream_index: args.primary_video_stream_index,
+        primary_criteria: args.primary_video_criteria,
+        requested_video_quality: args.video_quality,
+        requested_audio_quality: args.audio_quality,
+        skip_codec_check: args.skip_codec_check,
+        hw_accel: args.hw_accel,
+    };
+
     let mut conversion_result = if needs_conversion {
         let disable_cuda_pin = should_ocr && ocr_multi_gpu_requested();
         let prev_cuda_pin = if disable_cuda_pin {
@@ -415,24 +432,7 @@ fn run_conversion(
             None
         };
         let _conversion_slot = acquire_slot()?;
-        let result = convert_video_file(
-            input_file,
-            conversion_output_file,
-            args.sub_mode,
-            target_video_codec,
-            common_audio_codec,
-            h264_constraints,
-            min_fps,
-            min_resolution,
-            &quality_limits,
-            args.unsupported_video_policy,
-            args.primary_video_stream_index,
-            args.primary_video_criteria,
-            args.video_quality,
-            args.audio_quality,
-            args.skip_codec_check,
-            args.hw_accel,
-        );
+        let result = convert_video_file(input_file, conversion_output_file, conversion_params);
         if let Some(prev) = prev_cuda_pin {
             if let Some(value) = prev {
                 std::env::set_var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN", value);
@@ -454,13 +454,7 @@ fn run_conversion(
                         &args,
                         input_file,
                         conversion_output_file,
-                        args.sub_mode,
-                        target_video_codec,
-                        common_audio_codec,
-                        h264_constraints,
-                        min_fps,
-                        min_resolution,
-                        &quality_limits,
+                        conversion_params,
                     ),
                     Err(err1) => match err1.downcast::<HwEncoderInitError>() {
                         Ok(init_err) => handle_hw_encoder_init_error(
@@ -468,13 +462,7 @@ fn run_conversion(
                             &args,
                             input_file,
                             conversion_output_file,
-                            args.sub_mode,
-                            target_video_codec,
-                            common_audio_codec,
-                            h264_constraints,
-                            min_fps,
-                            min_resolution,
-                            &quality_limits,
+                            conversion_params,
                         ),
                         Err(err2) => match err2.downcast::<DecoderError>() {
                             Ok(dec_err) => Err(anyhow!(dec_err)),
@@ -487,19 +475,7 @@ fn run_conversion(
                                 retry_with_software_encoder(
                                     input_file,
                                     conversion_output_file,
-                                    args.sub_mode,
-                                    target_video_codec,
-                                    common_audio_codec,
-                                    h264_constraints,
-                                    min_fps,
-                                    min_resolution,
-                                    &quality_limits,
-                                    args.unsupported_video_policy,
-                                    args.primary_video_stream_index,
-                                    args.primary_video_criteria,
-                                    args.video_quality,
-                                    args.audio_quality,
-                                    args.skip_codec_check,
+                                    conversion_params,
                                 )
                             }
                         },

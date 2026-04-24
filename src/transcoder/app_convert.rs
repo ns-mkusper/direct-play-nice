@@ -1,24 +1,51 @@
 use crate::transcoder::prelude::*;
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(crate) struct ConversionParams<'a> {
+    pub(crate) sub_mode: SubMode,
+    pub(crate) target_video_codec: ffi::AVCodecID,
+    pub(crate) target_audio_codec: ffi::AVCodecID,
+    pub(crate) h264_constraints: Option<(H264Profile, H264Level)>,
+    pub(crate) min_fps: u32,
+    pub(crate) device_max_resolution: Resolution,
+    pub(crate) quality_limits: &'a QualityLimits,
+    pub(crate) uv_policy: UnsupportedVideoPolicy,
+    pub(crate) primary_video_stream_index: Option<usize>,
+    pub(crate) primary_criteria: PrimaryVideoCriteria,
+    pub(crate) requested_video_quality: VideoQuality,
+    pub(crate) requested_audio_quality: AudioQuality,
+    pub(crate) skip_codec_check: bool,
+    pub(crate) hw_accel: HwAccel,
+}
+
+impl ConversionParams<'_> {
+    pub(crate) fn with_hw_accel(self, hw_accel: HwAccel) -> Self {
+        Self { hw_accel, ..self }
+    }
+}
+
 pub(crate) fn convert_video_file(
     input_file: &CStr,
     output_file: &CStr,
-    sub_mode: SubMode,
-    target_video_codec: ffi::AVCodecID,
-    target_audio_codec: ffi::AVCodecID,
-    h264_constraints: Option<(H264Profile, H264Level)>,
-    _min_fps: u32,
-    device_max_resolution: Resolution,
-    quality_limits: &QualityLimits,
-    uv_policy: UnsupportedVideoPolicy,
-    primary_video_stream_index: Option<usize>,
-    primary_criteria: PrimaryVideoCriteria,
-    requested_video_quality: VideoQuality,
-    requested_audio_quality: AudioQuality,
-    skip_codec_check: bool,
-    hw_accel: HwAccel,
-) -> Result<ConversionOutcome, anyhow::Error> {
+    params: ConversionParams<'_>,
+) -> Result<ConversionOutcome> {
+    let ConversionParams {
+        sub_mode,
+        target_video_codec,
+        target_audio_codec,
+        h264_constraints,
+        min_fps: _min_fps,
+        device_max_resolution,
+        quality_limits,
+        uv_policy,
+        primary_video_stream_index,
+        primary_criteria,
+        requested_video_quality,
+        requested_audio_quality,
+        skip_codec_check,
+        hw_accel,
+    } = params;
+
     let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
         h264_constraints
     } else {
@@ -49,9 +76,7 @@ pub(crate) fn convert_video_file(
         describe_codec(target_audio_codec)
     );
 
-    // START FIX: Determine Constant Quality Mode
     let is_constant_quality_mode = requested_video_quality == VideoQuality::MatchSource;
-    // END FIX: Determine Constant Quality Mode
 
     let allow_cuda_hw_decode = matches!(hw_accel, HwAccel::Auto | HwAccel::Nvenc);
     let shared_hw_device = if allow_cuda_hw_decode {

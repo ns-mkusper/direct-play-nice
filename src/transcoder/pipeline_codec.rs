@@ -108,7 +108,7 @@ pub(crate) fn set_h264_video_codec_par(
     is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
-    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let device_cap = device_max_resolution.to_dimensions();
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
         decode_context.height,
@@ -208,7 +208,7 @@ pub(crate) fn set_hevc_video_codec_par(
     is_constant_quality_mode: bool,
 ) {
     encode_context.set_sample_rate(decode_context.sample_rate);
-    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let device_cap = device_max_resolution.to_dimensions();
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
         decode_context.height,
