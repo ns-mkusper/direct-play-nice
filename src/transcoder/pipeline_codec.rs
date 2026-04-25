@@ -93,22 +93,34 @@ fn configure_video_timing(
     output_stream.set_time_base(encode_time_base);
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct H264VideoCodecParams<'a> {
+    pub(crate) h264_profile: H264Profile,
+    pub(crate) h264_level: H264Level,
+    pub(crate) quality_limits: &'a QualityLimits,
+    pub(crate) device_max_resolution: Resolution,
+    pub(crate) source_bit_rate_hint: i64,
+    pub(crate) encoder_name: &'a str,
+    pub(crate) is_constant_quality_mode: bool,
+}
+
 pub(crate) fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
     input_stream: &AVStreamRef,
-    h264_profile: H264Profile,
-    h264_level: H264Level,
-    quality_limits: &QualityLimits,
-    device_max_resolution: Resolution,
-    source_bit_rate_hint: i64,
-    encoder_name: &str,
-    is_constant_quality_mode: bool,
+    params: H264VideoCodecParams<'_>,
 ) {
+    let H264VideoCodecParams {
+        h264_profile,
+        h264_level,
+        quality_limits,
+        device_max_resolution,
+        source_bit_rate_hint,
+        encoder_name,
+        is_constant_quality_mode,
+    } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
-    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let device_cap = device_max_resolution.to_dimensions();
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
         decode_context.height,
@@ -195,20 +207,30 @@ pub(crate) fn set_h264_video_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct HevcVideoCodecParams<'a> {
+    pub(crate) quality_limits: &'a QualityLimits,
+    pub(crate) device_max_resolution: Resolution,
+    pub(crate) source_bit_rate_hint: i64,
+    pub(crate) encoder_name: &'a str,
+    pub(crate) is_constant_quality_mode: bool,
+}
+
 pub(crate) fn set_hevc_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
     output_stream: &mut AVStreamMut,
     input_stream: &AVStreamRef,
-    quality_limits: &QualityLimits,
-    device_max_resolution: Resolution,
-    source_bit_rate_hint: i64,
-    encoder_name: &str,
-    is_constant_quality_mode: bool,
+    params: HevcVideoCodecParams<'_>,
 ) {
+    let HevcVideoCodecParams {
+        quality_limits,
+        device_max_resolution,
+        source_bit_rate_hint,
+        encoder_name,
+        is_constant_quality_mode,
+    } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
-    let device_cap = resolution_to_dimensions(device_max_resolution);
+    let device_cap = device_max_resolution.to_dimensions();
     let (target_width, target_height) = clamp_dimensions(
         decode_context.width,
         decode_context.height,

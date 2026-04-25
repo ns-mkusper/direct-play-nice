@@ -1,4 +1,24 @@
-use crate::*;
+use anyhow::{bail, Context, Result};
+use clap::{value_parser, Parser};
+use log::info;
+use rsmpeg::avcodec::AVCodecContext;
+use rsmpeg::avformat::AVFormatContextOutput;
+use rsmpeg::avutil::ra;
+use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
+use rsmpeg::error::RsmpegError;
+use rsmpeg::ffi;
+use rsmpeg::swresample::SwrContext;
+use std::ffi::CString;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicI64;
+
+use crate::devices::{self, DeviceFamily};
+use crate::gpu::HwAccel;
+use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
+use crate::types::{
+    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, StreamsFilter, SubMode,
+    UnsupportedVideoPolicy,
+};
 
 pub(crate) struct ProgressTracker {
     duration_us: i64,

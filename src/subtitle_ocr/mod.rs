@@ -50,11 +50,17 @@ pub struct OcrSubtitleTrack {
 }
 
 include!("engine_setup.rs");
-include!("muxing.rs");
-include!("ocr_pipeline.rs");
-include!("text_render.rs");
-include!("language.rs");
-include!("fixture_eval.rs");
+mod fixture_eval;
+mod language;
+mod muxing;
+mod ocr_pipeline;
+mod text_render;
+
+pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
+use language::*;
+pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};
+use ocr_pipeline::*;
+use text_render::*;
 
 #[cfg(test)]
 mod tests;

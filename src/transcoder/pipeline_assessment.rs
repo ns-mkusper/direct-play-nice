@@ -19,21 +19,39 @@ impl ConversionOutcome {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(crate) struct DirectPlayConstraints<'a> {
+    pub(crate) target_is_mp4: bool,
+    pub(crate) sub_mode: SubMode,
+    pub(crate) target_video_codec: ffi::AVCodecID,
+    pub(crate) target_audio_codec: ffi::AVCodecID,
+    pub(crate) h264_constraints: Option<(H264Profile, H264Level)>,
+    pub(crate) max_fps: u32,
+    pub(crate) device_cap: (u32, u32),
+    pub(crate) supported_containers: &'a [ContainerFormat],
+    pub(crate) quality_limits: &'a QualityLimits,
+    pub(crate) primary_video_stream_index: Option<usize>,
+    pub(crate) primary_criteria: PrimaryVideoCriteria,
+}
+
 pub(crate) fn assess_direct_play_compatibility(
     input_file: &CStr,
-    target_is_mp4: bool,
-    sub_mode: SubMode,
-    target_video_codec: ffi::AVCodecID,
-    target_audio_codec: ffi::AVCodecID,
-    h264_constraints: Option<(H264Profile, H264Level)>,
-    max_fps: u32,
-    device_cap: (u32, u32),
-    supported_containers: &[ContainerFormat],
-    quality_limits: &QualityLimits,
-    primary_video_stream_index: Option<usize>,
-    primary_criteria: PrimaryVideoCriteria,
+    constraints: DirectPlayConstraints<'_>,
 ) -> Result<DirectPlayAssessment> {
+    let DirectPlayConstraints {
+        target_is_mp4,
+        sub_mode,
+        target_video_codec,
+        target_audio_codec,
+        h264_constraints,
+        max_fps,
+        device_cap,
+        supported_containers,
+        quality_limits,
+        primary_video_stream_index,
+        primary_criteria,
+    } = constraints;
+
     let ictx = AVFormatContextInput::open(input_file)?;
     let primary_idx =
         select_primary_video_stream_index(&ictx, primary_video_stream_index, primary_criteria)?;

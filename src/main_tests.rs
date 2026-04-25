@@ -12,6 +12,7 @@ mod rate_limit_tests {
 
 #[cfg(test)]
 mod video_tests {
+    use crate::devices::DeviceFamily;
     use crate::*;
     use std::process::Command;
     use tempfile::tempdir;

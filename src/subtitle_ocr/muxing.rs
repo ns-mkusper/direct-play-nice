@@ -1,9 +1,11 @@
-struct PendingPacket {
+use super::*;
+
+pub(super) struct PendingPacket {
     ts: i64,
     packet: AVPacket,
 }
 
-struct SubtitleMuxer {
+pub(super) struct SubtitleMuxer {
     input_ctx: AVFormatContextInput,
     input_stream_index: usize,
     input_time_base: ffi::AVRational,
@@ -242,7 +244,7 @@ pub fn mux_text_tracks_from(
     Ok(())
 }
 
-fn build_subtitle_muxer(
+pub(super) fn build_subtitle_muxer(
     track: &OcrSubtitleTrack,
     output_ctx: &mut AVFormatContextOutput,
     is_mp4: bool,
@@ -306,7 +308,11 @@ fn build_subtitle_muxer(
     })
 }
 
-fn select_subtitle_codec_id(format: OcrFormat, is_mp4: bool, is_mkv: bool) -> ffi::AVCodecID {
+pub(super) fn select_subtitle_codec_id(
+    format: OcrFormat,
+    is_mp4: bool,
+    is_mkv: bool,
+) -> ffi::AVCodecID {
     if is_mp4 {
         ffi::AV_CODEC_ID_MOV_TEXT
     } else if is_mkv {
@@ -319,13 +325,13 @@ fn select_subtitle_codec_id(format: OcrFormat, is_mp4: bool, is_mkv: bool) -> ff
     }
 }
 
-fn build_language_metadata(language: &str) -> Option<AVDictionary> {
+pub(super) fn build_language_metadata(language: &str) -> Option<AVDictionary> {
     let key = CString::new("language").ok()?;
     let value = CString::new(language).ok()?;
     Some(AVDictionary::new(&key, &value, 0))
 }
 
-fn set_subtitle_codec_par(
+pub(super) fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
 ) {
@@ -353,7 +359,7 @@ fn set_subtitle_codec_par(
     }
 }
 
-fn encode_subtitle_packet(
+pub(super) fn encode_subtitle_packet(
     encode_context: &mut AVCodecContext,
     subtitle: &rsmpeg::avcodec::AVSubtitle,
     packet: &AVPacket,
@@ -438,7 +444,7 @@ fn encode_subtitle_packet(
     Ok(Some(encoded_packet))
 }
 
-fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
+pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
     let ts = if packet.pts != ffi::AV_NOPTS_VALUE {
         packet.pts
     } else if packet.dts != ffi::AV_NOPTS_VALUE {
@@ -448,4 +454,3 @@ fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
     };
     unsafe { ffi::av_rescale_q(ts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) }
 }
-
