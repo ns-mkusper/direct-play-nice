@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::{env_helpers, IntegrationKind};
 
+/// Resolves Sonarr/Radarr input media paths from direct vars and fallback env combinations.
 pub(super) fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>> {
     let env_snapshot = crate::logging::collect_relevant_env(kind);
 
@@ -31,8 +32,10 @@ pub(super) fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>>
                 "sonarr_episodefile_relativepath",
                 "sonarr_episodefile_relativepaths",
             ]);
-            let source_folder =
-                env_helpers::first_non_empty(&["sonarr_episodefile_sourcefolder", "sonarr_sourcefolder"]);
+            let source_folder = env_helpers::first_non_empty(&[
+                "sonarr_episodefile_sourcefolder",
+                "sonarr_sourcefolder",
+            ]);
             let source_path =
                 env_helpers::get_env_paths(&["sonarr_episodefile_sourcepath", "sonarr_sourcepath"]);
 
@@ -138,8 +141,10 @@ pub(super) fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>>
                 "radarr_moviefile_relativepath",
                 "radarr_moviefile_relativepaths",
             ]);
-            let source_folder =
-                env_helpers::first_non_empty(&["radarr_moviefile_sourcefolder", "radarr_sourcefolder"]);
+            let source_folder = env_helpers::first_non_empty(&[
+                "radarr_moviefile_sourcefolder",
+                "radarr_sourcefolder",
+            ]);
             let source_path =
                 env_helpers::get_env_paths(&["radarr_moviefile_sourcepath", "radarr_sourcepath"]);
 

@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
+/// Builds the destination file path using suffix/extension policy options.
 pub(super) fn resolve_output_path(
     input_path: &Path,
     desired_ext: &str,
@@ -56,6 +57,7 @@ pub(super) fn resolve_output_path(
     Ok(new_path)
 }
 
+/// Normalizes a suffix value to either `None` or a dot-prefixed string.
 pub(super) fn normalize_suffix(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -68,6 +70,7 @@ pub(super) fn normalize_suffix(raw: &str) -> Option<String> {
     }
 }
 
+/// Appends a suffix before the extension while preserving parent directory.
 pub(super) fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     let parent = path.parent();
     let filename = path
@@ -89,6 +92,7 @@ pub(super) fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     }
 }
 
+/// Converts a Rust path to a `CString` for FFI calls.
 pub(super) fn path_to_cstring(path: &Path) -> Result<CString> {
     let path_str = path
         .to_str()

@@ -29,9 +29,9 @@ pub(crate) use types::{
 };
 
 #[cfg(test)]
-pub(crate) use transcoder::*;
-#[cfg(test)]
 pub(crate) use transcoder::prelude::*;
+#[cfg(test)]
+pub(crate) use transcoder::*;
 
 fn main() -> Result<()> {
     if env::var_os("RUST_LOG").is_none() {

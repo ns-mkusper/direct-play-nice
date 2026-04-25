@@ -17,7 +17,10 @@ pub(super) fn run_tesseract(image_path: &Path, language: &str) -> Result<String>
     Ok(run_tesseract_best_effort(image_path, language)?.text)
 }
 
-pub(super) fn run_tesseract_best_effort(image_path: &Path, language: &str) -> Result<TesseractCandidate> {
+pub(super) fn run_tesseract_best_effort(
+    image_path: &Path,
+    language: &str,
+) -> Result<TesseractCandidate> {
     let psm_modes: &[u8] = if language_uses_spaces(language) {
         &[6, 7]
     } else {
@@ -145,7 +148,10 @@ pub(super) fn parse_external_ocr_argv(ocr_external_command: &str) -> Result<Vec<
     Ok(argv)
 }
 
-pub(super) fn rect_to_pgm(rect: &ffi::AVSubtitleRect, ocr_engine: OcrEngine) -> Option<(Vec<u8>, bool)> {
+pub(super) fn rect_to_pgm(
+    rect: &ffi::AVSubtitleRect,
+    ocr_engine: OcrEngine,
+) -> Option<(Vec<u8>, bool)> {
     if rect.w <= 0 || rect.h <= 0 || rect.data[0].is_null() {
         return None;
     }
@@ -579,7 +585,9 @@ pub(super) fn word_error_rate(expected: &str, actual: &str) -> f32 {
     dp[m][n] as f32 / expected_words.len() as f32
 }
 
-pub(super) fn bounding_box_from_points(points: &[paddle_ocr_rs::ocr_result::Point]) -> Option<OcrBoundingBox> {
+pub(super) fn bounding_box_from_points(
+    points: &[paddle_ocr_rs::ocr_result::Point],
+) -> Option<OcrBoundingBox> {
     if points.is_empty() {
         return None;
     }
@@ -708,12 +716,14 @@ pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> 
 
     let mut merged = Vec::new();
     for mut group in groups {
-        group.items.sort_by(|a, b| match (a.bbox.as_ref(), b.bbox.as_ref()) {
-            (Some(a_box), Some(b_box)) => a_box.left.cmp(&b_box.left),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        });
+        group
+            .items
+            .sort_by(|a, b| match (a.bbox.as_ref(), b.bbox.as_ref()) {
+                (Some(a_box), Some(b_box)) => a_box.left.cmp(&b_box.left),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
 
         let avg_height = group.avg_height.max(1.0);
         let space_threshold = (avg_height * 0.25).max(2.0);

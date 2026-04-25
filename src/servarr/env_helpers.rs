@@ -1,5 +1,6 @@
 use std::env;
 
+/// Parses common truthy/falsey env string values into a boolean.
 pub(super) fn parse_boolish(value: String) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "y" => Some(true),
@@ -8,6 +9,7 @@ pub(super) fn parse_boolish(value: String) -> Option<bool> {
     }
 }
 
+/// Looks up an environment variable using case-insensitive key matching.
 pub(super) fn get_env_ignore_case(key: &str) -> Option<String> {
     if let Ok(val) = env::var(key) {
         return Some(val);
@@ -22,6 +24,7 @@ pub(super) fn get_env_ignore_case(key: &str) -> Option<String> {
     None
 }
 
+/// Formats captured environment key/value pairs for diagnostics.
 pub(super) fn format_env_snapshot(entries: &[(String, String)]) -> String {
     if entries.is_empty() {
         return "<none>".to_string();
@@ -34,6 +37,7 @@ pub(super) fn format_env_snapshot(entries: &[(String, String)]) -> String {
         .join(", ")
 }
 
+/// Returns the first non-empty value among the provided environment keys.
 pub(super) fn first_non_empty(keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(val) = get_env_ignore_case(key) {
@@ -46,6 +50,7 @@ pub(super) fn first_non_empty(keys: &[&str]) -> Option<String> {
     None
 }
 
+/// Parses a `|`-delimited environment variable into non-empty path entries.
 pub(super) fn get_env_paths(keys: &[&str]) -> Option<Vec<String>> {
     for key in keys {
         if let Some(val) = get_env_ignore_case(key) {

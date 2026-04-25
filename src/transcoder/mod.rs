@@ -36,9 +36,11 @@ pub(crate) mod prelude {
 
     pub(crate) use crate::config;
     pub(crate) use crate::devices;
-    pub(crate) use crate::devices::{ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice};
     #[cfg(test)]
     pub(crate) use crate::devices::DeviceFamily;
+    pub(crate) use crate::devices::{
+        ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice,
+    };
     pub(crate) use crate::ffmpeg_utils::*;
     pub(crate) use crate::gpu::*;
     pub(crate) use crate::logging::log_relevant_env;
@@ -64,11 +66,11 @@ pub(crate) mod prelude {
     pub(crate) use crate::types::*;
 }
 
-pub(crate) use app::app_entry::run;
 pub(crate) use app::app_convert::convert_video_file;
+pub(crate) use app::app_entry::run;
 pub(crate) use ffmpeg_diagnostics::configure_ffmpeg_logging;
 #[cfg(test)]
 pub(crate) use ffmpeg_diagnostics::*;
-pub(crate) use quality::{AudioQuality, QualityLimits, VideoCodecPreference, VideoQuality};
 pub(crate) use h264::*;
 pub(crate) use pipeline::*;
+pub(crate) use quality::{AudioQuality, QualityLimits, VideoCodecPreference, VideoQuality};

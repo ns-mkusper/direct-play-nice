@@ -1,5 +1,8 @@
 use super::*;
-pub(super) fn discover_candidates(input_file: &CStr, sub_mode: SubMode) -> Result<Vec<SubtitleCandidate>> {
+pub(super) fn discover_candidates(
+    input_file: &CStr,
+    sub_mode: SubMode,
+) -> Result<Vec<SubtitleCandidate>> {
     let ictx = AVFormatContextInput::open(input_file)?;
     let mut out = Vec::new();
 
@@ -436,8 +439,7 @@ pub(super) fn extract_subtitle_lines(
                                 || (ppocr_confidence < 0.70
                                     && candidate.quality + 0.03 >= ppocr_quality)
                         };
-                        if should_replace_with_tesseract
-                        {
+                        if should_replace_with_tesseract {
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -572,7 +574,9 @@ pub(super) fn tesseract_quality_fallback_min_gain() -> f32 {
     }
 }
 
-pub(super) fn quality_fallback_thresholds(baseline: &OcrQualityBaseline) -> Option<OcrFallbackThresholds> {
+pub(super) fn quality_fallback_thresholds(
+    baseline: &OcrQualityBaseline,
+) -> Option<OcrFallbackThresholds> {
     const BASELINE_MIN_SAMPLES: usize = 12;
     const RELATIVE_DROP: f32 = 0.15;
 
@@ -581,9 +585,7 @@ pub(super) fn quality_fallback_thresholds(baseline: &OcrQualityBaseline) -> Opti
     }
 
     let dynamic_quality = baseline.avg_quality()?.mul_add(1.0 - RELATIVE_DROP, 0.0);
-    let dynamic_confidence = baseline
-        .avg_confidence()?
-        .mul_add(1.0 - RELATIVE_DROP, 0.0);
+    let dynamic_confidence = baseline.avg_confidence()?.mul_add(1.0 - RELATIVE_DROP, 0.0);
 
     Some(OcrFallbackThresholds {
         quality: dynamic_quality.clamp(0.0, 1.0),
