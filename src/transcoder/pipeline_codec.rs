@@ -375,7 +375,9 @@ pub(crate) fn set_subtitle_codec_par(
             )
         });
 
-        // TODO: find safe way to do this
+        // SAFETY: FFmpeg expects subtitle_header to be allocated with av_malloc* and owned by
+        // the codec context. We allocate exactly new_subtitle_header.len() bytes and copy from a
+        // valid in-memory buffer of the same length.
         unsafe {
             (*encode_context.as_mut_ptr()).subtitle_header =
                 ffi::av_mallocz(new_subtitle_header.len()) as *mut _;

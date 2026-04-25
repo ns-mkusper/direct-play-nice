@@ -20,6 +20,8 @@ Notes:
   - Executes two benchmark passes on the same input:
       1) CPU baseline (--hw-accel none)
       2) Hardware attempt (--hw-accel <value>)
+  - Forces `--delete-source false` for both passes so the second run
+    always uses the same input file.
   - Captures logs, optional GPU telemetry, and summary artifacts:
       meta.txt
       cpu_command.txt
@@ -125,8 +127,8 @@ if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
   BENCH_SOURCE="$TRIMMED_SOURCE"
 fi
 
-echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$BENCH_SOURCE' '$CPU_OUT'" > "$CPU_CMD"
-echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check '$BENCH_SOURCE' '$HW_OUT'" > "$HW_CMD"
+echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check --delete-source false '$BENCH_SOURCE' '$CPU_OUT'" > "$CPU_CMD"
+echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check --delete-source false '$BENCH_SOURCE' '$HW_OUT'" > "$HW_CMD"
 
 {
   echo "START_HUMAN=$(date -Is)"
@@ -145,7 +147,7 @@ echo "START_TS=$start_ts" >> "$META"
 
 # Pass 1: CPU baseline
 cpu_start=$(date +%s.%N)
-"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$BENCH_SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
+"$BIN" --hw-accel none --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check --delete-source false "$BENCH_SOURCE" "$CPU_OUT" > "$CPU_LOG" 2>&1
 cpu_end=$(date +%s.%N)
 
 # Pass 2: Hardware attempt with optional GPU telemetry
@@ -162,7 +164,7 @@ fi
 
 hw_start=$(date +%s.%N)
 set +e
-"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check "$BENCH_SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
+"$BIN" --hw-accel "$HW_ACCEL" --video-quality "$VIDEO_QUALITY" --sub-mode "$SUB_MODE" --skip-codec-check --delete-source false "$BENCH_SOURCE" "$HW_OUT" > "$HW_LOG" 2>&1
 hw_status="$?"
 set -e
 hw_end=$(date +%s.%N)

@@ -11,22 +11,36 @@ pub mod devices;
 /// Hardware acceleration detection and codec probing helpers.
 pub mod gpu;
 
+/// Criteria used when scoring candidate video streams.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ScoreCriteria {
+    /// Prioritize resolution (pixel area), then bitrate, then frame rate.
+    Resolution,
+    /// Prioritize bitrate, then resolution, then frame rate.
+    Bitrate,
+    /// Prioritize frame rate, then resolution, then bitrate.
+    Fps,
+}
+
 /// Creates a sortable score tuple for primary-video selection.
 ///
-/// The tuple order depends on `criteria`:
-/// - `"resolution"` => `(area, bitrate, fps)`
-/// - `"bitrate"` => `(bitrate, area, fps)`
-/// - `"fps"` => `(fps, area, bitrate)`
-/// - any other value defaults to the `"resolution"` order
+/// The tuple order depends on `criteria`.
 ///
 /// # Examples
 ///
 /// ```rust
-/// let score = direct_play_nice::score_video("resolution", 1920, 1080, 8_000_000, 30000, 1001);
+/// let score = direct_play_nice::score_video(
+///     direct_play_nice::ScoreCriteria::Resolution,
+///     1920,
+///     1080,
+///     8_000_000,
+///     30000,
+///     1001,
+/// );
 /// assert!(score.0 > 0);
 /// ```
 pub fn score_video(
-    criteria: &str,
+    criteria: ScoreCriteria,
     width: u32,
     height: u32,
     bitrate: u64,
@@ -41,9 +55,27 @@ pub fn score_video(
         ((fps_num as u128) * 1000) / (fps_den as u128)
     };
     match criteria {
-        "resolution" => (area, br, fps_milli),
-        "bitrate" => (br, area, fps_milli),
-        "fps" => (fps_milli, area, br),
-        _ => (area, br, fps_milli),
+        ScoreCriteria::Resolution => (area, br, fps_milli),
+        ScoreCriteria::Bitrate => (br, area, fps_milli),
+        ScoreCriteria::Fps => (fps_milli, area, br),
     }
+}
+
+/// Backward-compatible string-based scoring helper.
+///
+/// Unknown values default to [`ScoreCriteria::Resolution`].
+pub fn score_video_legacy(
+    criteria: &str,
+    width: u32,
+    height: u32,
+    bitrate: u64,
+    fps_num: u32,
+    fps_den: u32,
+) -> (u128, u128, u128) {
+    let criteria = match criteria {
+        "bitrate" => ScoreCriteria::Bitrate,
+        "fps" => ScoreCriteria::Fps,
+        _ => ScoreCriteria::Resolution,
+    };
+    score_video(criteria, width, height, bitrate, fps_num, fps_den)
 }

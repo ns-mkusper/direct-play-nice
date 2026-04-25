@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use std::env;
 
+mod cli;
 mod config;
 mod devices;
 mod ffmpeg_utils;
@@ -19,18 +20,18 @@ mod throttle;
 mod transcoder;
 mod types;
 
-use ffmpeg_utils::Args;
-#[cfg(test)]
-use main_sidecar::{sidecar_path_for_track, write_ocr_srt_sidecars};
-#[cfg(test)]
-use transcoder::prelude::*;
+pub(crate) use ffmpeg_utils::Args;
+pub(crate) use transcoder::{
+    configure_ffmpeg_logging, AudioQuality, VideoCodecPreference, VideoQuality,
+};
+pub(crate) use types::{
+    OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,
+};
 
-#[allow(unused_imports)]
-pub(crate) use ffmpeg_utils::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(crate) use transcoder::*;
-#[allow(unused_imports)]
-pub(crate) use types::*;
+#[cfg(test)]
+pub(crate) use transcoder::prelude::*;
 
 fn main() -> Result<()> {
     if env::var_os("RUST_LOG").is_none() {
@@ -41,7 +42,7 @@ fn main() -> Result<()> {
         .target(env_logger::Target::Stderr)
         .try_init();
 
-    transcoder::configure_ffmpeg_logging();
+    configure_ffmpeg_logging();
 
     let mut matches = Args::command().get_matches();
     let matches_snapshot = matches.clone();

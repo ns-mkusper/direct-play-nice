@@ -367,7 +367,9 @@ pub(crate) fn process_subtitle_stream(
                     "Subtitle stream {} raw packet pts={} dts={} duration={}",
                     stream_processing_context.stream_index, packet.pts, packet.dts, packet.duration
                 );
-                // TODO: Find the max size of subtitle data in a single packet
+                // Conservative fixed buffer to avoid per-packet allocations in the hot path.
+                // If we see larger subtitle payloads in the future, raise this value or switch
+                // to a growth strategy.
                 const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
                 let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
                 stream_processing_context

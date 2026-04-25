@@ -1,9 +1,5 @@
 use super::*;
-
-pub(super) fn discover_candidates(
-    input_file: &CStr,
-    sub_mode: SubMode,
-) -> Result<Vec<SubtitleCandidate>> {
+pub(super) fn discover_candidates(input_file: &CStr, sub_mode: SubMode) -> Result<Vec<SubtitleCandidate>> {
     let ictx = AVFormatContextInput::open(input_file)?;
     let mut out = Vec::new();
 
@@ -91,29 +87,17 @@ pub(super) struct OcrFallbackThresholds {
     pub(super) confidence: f32,
 }
 
-pub(super) struct OcrStreamRequest<'a> {
-    pub(super) input_path: &'a str,
-    pub(super) stream_index: i32,
-    pub(super) language: &'a str,
-    pub(super) work_dir: &'a Path,
-    pub(super) ocr_format: OcrFormat,
-    pub(super) video_dimensions: Option<(u32, u32)>,
-    pub(super) ocr_engine: OcrEngine,
-    pub(super) engine: &'a mut dyn SubtitleConverter,
-}
-
-pub(super) fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<SubtitleCue>> {
-    let OcrStreamRequest {
-        input_path,
-        stream_index,
-        language,
-        work_dir,
-        ocr_format,
-        video_dimensions,
-        ocr_engine,
-        engine,
-    } = request;
-
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ocr_single_stream(
+    input_path: &str,
+    stream_index: i32,
+    language: &str,
+    work_dir: &Path,
+    ocr_format: OcrFormat,
+    video_dimensions: Option<(u32, u32)>,
+    ocr_engine: OcrEngine,
+    engine: &mut dyn SubtitleConverter,
+) -> Result<Vec<SubtitleCue>> {
     let input_cstr = CString::new(input_path).context("input path has interior NUL")?;
     let mut ictx = AVFormatContextInput::open(input_cstr.as_c_str())?;
 
@@ -176,19 +160,17 @@ pub(super) fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<Sub
                 .max(0);
             let mut new_cues = subtitle_to_cues(
                 subtitle.as_ptr(),
-                SubtitleCueBuildContext {
-                    fallback_start_ms,
-                    fallback_duration_ms: fallback_dur_ms,
-                    language,
-                    stream_index,
-                    packet_seq,
-                    work_dir,
-                    ocr_format,
-                    video_dimensions,
-                    ocr_engine,
-                    engine,
-                    quality_baseline: &mut quality_baseline,
-                },
+                fallback_start_ms,
+                fallback_dur_ms,
+                language,
+                stream_index,
+                packet_seq,
+                work_dir,
+                ocr_format,
+                video_dimensions,
+                ocr_engine,
+                engine,
+                &mut quality_baseline,
             )?;
             cues.append(&mut new_cues);
             packet_seq += 1;
@@ -201,19 +183,17 @@ pub(super) fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<Sub
         };
         let mut new_cues = subtitle_to_cues(
             subtitle.as_ptr(),
-            SubtitleCueBuildContext {
-                fallback_start_ms: 0,
-                fallback_duration_ms: 0,
-                language,
-                stream_index,
-                packet_seq,
-                work_dir,
-                ocr_format,
-                video_dimensions,
-                ocr_engine,
-                engine,
-                quality_baseline: &mut quality_baseline,
-            },
+            0,
+            0,
+            language,
+            stream_index,
+            packet_seq,
+            work_dir,
+            ocr_format,
+            video_dimensions,
+            ocr_engine,
+            engine,
+            &mut quality_baseline,
         )?;
         cues.append(&mut new_cues);
         packet_seq += 1;
@@ -224,38 +204,21 @@ pub(super) fn ocr_single_stream(request: OcrStreamRequest<'_>) -> Result<Vec<Sub
     Ok(cues)
 }
 
-pub(super) struct SubtitleCueBuildContext<'a> {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn subtitle_to_cues(
+    subtitle: *const ffi::AVSubtitle,
     fallback_start_ms: i64,
     fallback_duration_ms: i64,
-    language: &'a str,
+    language: &str,
     stream_index: i32,
     packet_seq: usize,
-    work_dir: &'a Path,
+    work_dir: &Path,
     ocr_format: OcrFormat,
     video_dimensions: Option<(u32, u32)>,
     ocr_engine: OcrEngine,
-    engine: &'a mut dyn SubtitleConverter,
-    quality_baseline: &'a mut OcrQualityBaseline,
-}
-
-pub(super) fn subtitle_to_cues(
-    subtitle: *const ffi::AVSubtitle,
-    context: SubtitleCueBuildContext<'_>,
+    engine: &mut dyn SubtitleConverter,
+    quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<Vec<SubtitleCue>> {
-    let SubtitleCueBuildContext {
-        fallback_start_ms,
-        fallback_duration_ms,
-        language,
-        stream_index,
-        packet_seq,
-        work_dir,
-        ocr_format,
-        video_dimensions,
-        ocr_engine,
-        engine,
-        quality_baseline,
-    } = context;
-
     if subtitle.is_null() {
         return Ok(Vec::new());
     }
@@ -281,16 +244,14 @@ pub(super) fn subtitle_to_cues(
 
     let (lines, had_imagery) = extract_subtitle_lines(
         sub,
-        SubtitleLineExtractionContext {
-            language,
-            subtitle_start_ms: start_ms,
-            stream_index,
-            packet_seq,
-            work_dir,
-            ocr_engine,
-            engine,
-            quality_baseline,
-        },
+        language,
+        start_ms,
+        stream_index,
+        packet_seq,
+        work_dir,
+        ocr_engine,
+        engine,
+        quality_baseline,
     )?;
     if had_imagery && lines.is_empty() {
         warn!(
@@ -355,32 +316,18 @@ pub(super) fn subtitle_to_cues(
     Ok(cues)
 }
 
-pub(super) struct SubtitleLineExtractionContext<'a> {
-    language: &'a str,
+#[allow(clippy::too_many_arguments)]
+pub(super) fn extract_subtitle_lines(
+    subtitle: &ffi::AVSubtitle,
+    language: &str,
     subtitle_start_ms: i64,
     stream_index: i32,
     packet_seq: usize,
-    work_dir: &'a Path,
+    work_dir: &Path,
     ocr_engine: OcrEngine,
-    engine: &'a mut dyn SubtitleConverter,
-    quality_baseline: &'a mut OcrQualityBaseline,
-}
-
-pub(super) fn extract_subtitle_lines(
-    subtitle: &ffi::AVSubtitle,
-    context: SubtitleLineExtractionContext<'_>,
+    engine: &mut dyn SubtitleConverter,
+    quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<(Vec<OcrLine>, bool)> {
-    let SubtitleLineExtractionContext {
-        language,
-        subtitle_start_ms,
-        stream_index,
-        packet_seq,
-        work_dir,
-        ocr_engine,
-        engine,
-        quality_baseline,
-    } = context;
-
     let mut lines = Vec::new();
     let mut had_imagery = false;
 
@@ -489,7 +436,8 @@ pub(super) fn extract_subtitle_lines(
                                 || (ppocr_confidence < 0.70
                                     && candidate.quality + 0.03 >= ppocr_quality)
                         };
-                        if should_replace_with_tesseract {
+                        if should_replace_with_tesseract
+                        {
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -624,9 +572,7 @@ pub(super) fn tesseract_quality_fallback_min_gain() -> f32 {
     }
 }
 
-pub(super) fn quality_fallback_thresholds(
-    baseline: &OcrQualityBaseline,
-) -> Option<OcrFallbackThresholds> {
+pub(super) fn quality_fallback_thresholds(baseline: &OcrQualityBaseline) -> Option<OcrFallbackThresholds> {
     const BASELINE_MIN_SAMPLES: usize = 12;
     const RELATIVE_DROP: f32 = 0.15;
 
@@ -635,7 +581,9 @@ pub(super) fn quality_fallback_thresholds(
     }
 
     let dynamic_quality = baseline.avg_quality()?.mul_add(1.0 - RELATIVE_DROP, 0.0);
-    let dynamic_confidence = baseline.avg_confidence()?.mul_add(1.0 - RELATIVE_DROP, 0.0);
+    let dynamic_confidence = baseline
+        .avg_confidence()?
+        .mul_add(1.0 - RELATIVE_DROP, 0.0);
 
     Some(OcrFallbackThresholds {
         quality: dynamic_quality.clamp(0.0, 1.0),

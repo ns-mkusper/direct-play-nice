@@ -1,5 +1,4 @@
 use super::*;
-
 pub(super) struct PendingPacket {
     ts: i64,
     packet: AVPacket,
@@ -308,11 +307,7 @@ pub(super) fn build_subtitle_muxer(
     })
 }
 
-pub(super) fn select_subtitle_codec_id(
-    format: OcrFormat,
-    is_mp4: bool,
-    is_mkv: bool,
-) -> ffi::AVCodecID {
+pub(super) fn select_subtitle_codec_id(format: OcrFormat, is_mp4: bool, is_mkv: bool) -> ffi::AVCodecID {
     if is_mp4 {
         ffi::AV_CODEC_ID_MOV_TEXT
     } else if is_mkv {
@@ -454,3 +449,4 @@ pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
     };
     unsafe { ffi::av_rescale_q(ts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) }
 }
+

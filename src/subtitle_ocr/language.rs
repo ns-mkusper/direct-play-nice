@@ -1,5 +1,4 @@
 use super::*;
-
 pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<i64> {
     if value == ffi::AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 {
         return None;
@@ -7,9 +6,7 @@ pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<
     Some(unsafe { ffi::av_rescale_q(value, time_base, ffi::AVRational { num: 1, den: 1000 }) })
 }
 
-pub(super) fn extract_language_tag_from_metadata(
-    dict: &rsmpeg::avutil::AVDictionary,
-) -> Option<String> {
+pub(super) fn extract_language_tag_from_metadata(dict: &rsmpeg::avutil::AVDictionary) -> Option<String> {
     for entry in dict.iter() {
         if entry
             .key()
@@ -229,3 +226,4 @@ pub(super) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
             | ffi::AV_CODEC_ID_XSUB
     )
 }
+

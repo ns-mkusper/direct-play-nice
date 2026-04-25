@@ -6,33 +6,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{subtitle_ocr, OcrEngine, OcrFormat, SubMode};
-
-pub(super) struct OcrSidecarRequest<'a> {
-    pub(super) input_file: &'a CStr,
-    pub(super) mux_source_file: &'a CStr,
-    pub(super) output_file: &'a CStr,
-    pub(super) sub_mode: SubMode,
-    pub(super) default_ocr_language: Option<&'a str>,
-    pub(super) ocr_engine: OcrEngine,
-    pub(super) ocr_format: OcrFormat,
-    pub(super) ocr_external_command: Option<&'a str>,
-    pub(super) ocr_write_srt_sidecar: bool,
-}
-
-pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<()> {
-    let OcrSidecarRequest {
-        input_file,
-        mux_source_file,
-        output_file,
-        sub_mode,
-        default_ocr_language,
-        ocr_engine,
-        ocr_format,
-        ocr_external_command,
-        ocr_write_srt_sidecar,
-    } = request;
-
+use crate::subtitle_ocr;
+use crate::types::{OcrEngine, OcrFormat, SubMode};
+#[allow(clippy::too_many_arguments)]
+pub(super) fn post_process_ocr_subtitles(
+    input_file: &CStr,
+    mux_source_file: &CStr,
+    output_file: &CStr,
+    sub_mode: SubMode,
+    default_ocr_language: Option<&str>,
+    ocr_engine: OcrEngine,
+    ocr_format: OcrFormat,
+    ocr_external_command: Option<&str>,
+    ocr_write_srt_sidecar: bool,
+) -> Result<()> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(());
     }

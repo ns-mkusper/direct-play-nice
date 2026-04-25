@@ -1,79 +1,81 @@
-struct SubtitleCandidate {
-    stream_index: i32,
-    language_tag: Option<String>,
+use super::*;
+
+pub(super) struct SubtitleCandidate {
+    pub(super) stream_index: i32,
+    pub(super) language_tag: Option<String>,
 }
 
 #[derive(Debug)]
-struct OcrTask {
-    order: usize,
-    stream_index: i32,
-    language: String,
-    subtitle_path: PathBuf,
+pub(super) struct OcrTask {
+    pub(super) order: usize,
+    pub(super) stream_index: i32,
+    pub(super) language: String,
+    pub(super) subtitle_path: PathBuf,
 }
 
 #[derive(Debug)]
-struct OcrTaskOutput {
-    order: usize,
-    stream_index: i32,
-    language: String,
-    subtitle_path: PathBuf,
-    cues: Vec<SubtitleCue>,
+pub(super) struct OcrTaskOutput {
+    pub(super) order: usize,
+    pub(super) stream_index: i32,
+    pub(super) language: String,
+    pub(super) subtitle_path: PathBuf,
+    pub(super) cues: Vec<SubtitleCue>,
 }
 
 #[derive(Debug, Clone)]
-struct SubtitleCue {
-    start_ms: i64,
-    end_ms: i64,
-    text: String,
+pub(super) struct SubtitleCue {
+    pub(super) start_ms: i64,
+    pub(super) end_ms: i64,
+    pub(super) text: String,
 }
 
 #[derive(Debug, Clone)]
-struct OcrBoundingBox {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
+pub(super) struct OcrBoundingBox {
+    pub(super) left: i32,
+    pub(super) top: i32,
+    pub(super) right: i32,
+    pub(super) bottom: i32,
 }
 
 #[derive(Debug, Clone)]
-struct OcrLine {
-    text: String,
-    bbox: Option<OcrBoundingBox>,
-    score: Option<f32>,
-    color: Option<(u8, u8, u8)>,
-    italic: bool,
+pub(super) struct OcrLine {
+    pub(super) text: String,
+    pub(super) bbox: Option<OcrBoundingBox>,
+    pub(super) score: Option<f32>,
+    pub(super) color: Option<(u8, u8, u8)>,
+    pub(super) italic: bool,
 }
 
 #[derive(Debug, Default)]
-struct OcrOutput {
-    lines: Vec<OcrLine>,
+pub(super) struct OcrOutput {
+    pub(super) lines: Vec<OcrLine>,
 }
 
-trait SubtitleConverter {
+pub(super) trait SubtitleConverter {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
 }
 
-struct TesseractEngine;
+pub(super) struct TesseractEngine;
 
-struct ExternalEngine {
+pub(super) struct ExternalEngine {
     command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpOcrVariant {
+pub(super) enum PpOcrVariant {
     V3,
     V4,
 }
 
 impl PpOcrVariant {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             PpOcrVariant::V3 => "PP-OCRv3",
             PpOcrVariant::V4 => "PP-OCRv4",
         }
     }
 
-    fn model_specs(self) -> (&'static ModelSpec, &'static ModelSpec, &'static ModelSpec) {
+    pub(super) fn model_specs(self) -> (&'static ModelSpec, &'static ModelSpec, &'static ModelSpec) {
         match self {
             PpOcrVariant::V3 => (
                 &PPOCR_V3_DET_MODEL,
@@ -88,28 +90,28 @@ impl PpOcrVariant {
         }
     }
 
-    fn default_latin_rec_spec(self) -> &'static ModelSpec {
+    pub(super) fn default_latin_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_LATIN_REC_MODEL,
             PpOcrVariant::V4 => &PPOCR_V4_LATIN_REC_MODEL,
         }
     }
 
-    fn default_japanese_rec_spec(self) -> &'static ModelSpec {
+    pub(super) fn default_japanese_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_JAPANESE_REC_MODEL,
             PpOcrVariant::V4 => &PPOCR_V4_JAPANESE_REC_MODEL,
         }
     }
 
-    fn default_korean_rec_spec(self) -> &'static ModelSpec {
+    pub(super) fn default_korean_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_KOREAN_REC_MODEL,
             PpOcrVariant::V4 => &PPOCR_V4_KOREAN_REC_MODEL,
         }
     }
 
-    fn default_cjk_rec_spec(self) -> &'static ModelSpec {
+    pub(super) fn default_cjk_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_CJK_REC_MODEL,
             PpOcrVariant::V4 => &PPOCR_V4_CJK_REC_MODEL,
@@ -117,7 +119,7 @@ impl PpOcrVariant {
     }
 }
 
-struct PpOcrEngine {
+pub(super) struct PpOcrEngine {
     english_ocr: OcrLite,
     latin_ocr: Option<OcrLite>,
     japanese_ocr: Option<OcrLite>,
@@ -127,7 +129,7 @@ struct PpOcrEngine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OcrRecProfile {
+pub(super) enum OcrRecProfile {
     English,
     Latin,
     Japanese,
@@ -246,7 +248,7 @@ impl SubtitleConverter for PpOcrEngine {
     }
 }
 
-fn rec_profile_for_language(language: &str) -> OcrRecProfile {
+pub(super) fn rec_profile_for_language(language: &str) -> OcrRecProfile {
     let normalized =
         map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
     match normalized.as_str() {
@@ -261,13 +263,13 @@ fn rec_profile_for_language(language: &str) -> OcrRecProfile {
     }
 }
 
-static ORT_ENV_INIT: OnceLock<()> = OnceLock::new();
-static ORT_ENV_GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
-static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
-static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
-static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
-static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
-static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
+pub(super) static ORT_ENV_INIT: OnceLock<()> = OnceLock::new();
+pub(super) static ORT_ENV_GPU_AVAILABLE: OnceLock<bool> = OnceLock::new();
+pub(super) static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
+pub(super) static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
+pub(super) static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
+pub(super) static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+pub(super) static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
 
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
@@ -335,16 +337,16 @@ pub fn convert_bitmap_subtitles(
         let mut outputs = Vec::with_capacity(tasks.len());
         let total_tasks = tasks.len().max(1);
         for (idx, task) in tasks.into_iter().enumerate() {
-            let cues = ocr_single_stream(OcrStreamRequest {
-                input_path: &input_path,
-                stream_index: task.stream_index,
-                language: &task.language,
+            let cues = ocr_single_stream(
+                &input_path,
+                task.stream_index,
+                &task.language,
                 work_dir,
                 ocr_format,
                 video_dimensions,
-                ocr_engine: resolved_engine,
-                engine: &mut *seed_engine,
-            })?;
+                resolved_engine,
+                &mut *seed_engine,
+            )?;
             outputs.push(OcrTaskOutput {
                 order: task.order,
                 stream_index: task.stream_index,
@@ -373,7 +375,7 @@ pub fn convert_bitmap_subtitles(
     finalize_ocr_outputs(outputs, ocr_format, video_dimensions)
 }
 
-fn apply_ocr_cuda_visible_devices_override() {
+pub(super) fn apply_ocr_cuda_visible_devices_override() {
     let Ok(raw) = env::var("DPN_OCR_CUDA_DEVICES") else {
         return;
     };
@@ -414,12 +416,12 @@ impl OcrFormat {
 }
 
 #[derive(Debug, Clone)]
-struct OcrWorkerPlan {
-    worker_count: usize,
-    device_ids: Vec<i32>,
+pub(super) struct OcrWorkerPlan {
+    pub(super) worker_count: usize,
+    pub(super) device_ids: Vec<i32>,
 }
 
-fn plan_ocr_workers(resolved_engine: OcrEngine, task_count: usize) -> OcrWorkerPlan {
+pub(super) fn plan_ocr_workers(resolved_engine: OcrEngine, task_count: usize) -> OcrWorkerPlan {
     let available_parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -459,7 +461,7 @@ fn plan_ocr_workers(resolved_engine: OcrEngine, task_count: usize) -> OcrWorkerP
     plan
 }
 
-fn plan_ocr_workers_with_inputs(
+pub(super) fn plan_ocr_workers_with_inputs(
     resolved_engine: OcrEngine,
     task_count: usize,
     available_parallelism: usize,
@@ -514,15 +516,15 @@ fn plan_ocr_workers_with_inputs(
     }
 }
 
-fn ocr_jobs_per_gpu_env() -> Option<usize> {
+pub(super) fn ocr_jobs_per_gpu_env() -> Option<usize> {
     parse_positive_usize_env("DPN_OCR_JOBS_PER_GPU")
 }
 
-fn ocr_max_jobs_env() -> Option<usize> {
+pub(super) fn ocr_max_jobs_env() -> Option<usize> {
     parse_positive_usize_env("DPN_OCR_MAX_JOBS")
 }
 
-fn parse_positive_usize_env(key: &str) -> Option<usize> {
+pub(super) fn parse_positive_usize_env(key: &str) -> Option<usize> {
     let raw = env::var(key).ok()?;
     match raw.trim().parse::<usize>() {
         Ok(value) if value >= 1 => Some(value),
@@ -533,7 +535,7 @@ fn parse_positive_usize_env(key: &str) -> Option<usize> {
     }
 }
 
-fn parse_cuda_device_list(value: &str) -> Vec<i32> {
+pub(super) fn parse_cuda_device_list(value: &str) -> Vec<i32> {
     let mut out = Vec::new();
     for token in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         if let Ok(id) = token.parse::<i32>() {
@@ -545,7 +547,7 @@ fn parse_cuda_device_list(value: &str) -> Vec<i32> {
     out
 }
 
-fn detect_ocr_cuda_devices() -> Vec<i32> {
+pub(super) fn detect_ocr_cuda_devices() -> Vec<i32> {
     if let Ok(raw) = env::var("DPN_OCR_CUDA_DEVICES") {
         let parsed = parse_cuda_device_list(&raw);
         if parsed.is_empty() {
@@ -582,7 +584,7 @@ fn detect_ocr_cuda_devices() -> Vec<i32> {
     detected
 }
 
-struct OcrParallelParams {
+pub(super) struct OcrParallelParams {
     input_path: String,
     work_dir: PathBuf,
     ocr_format: OcrFormat,
@@ -592,7 +594,7 @@ struct OcrParallelParams {
     total_tasks: usize,
 }
 
-fn run_ocr_tasks_parallel(
+pub(super) fn run_ocr_tasks_parallel(
     tasks: Vec<OcrTask>,
     worker_plan: OcrWorkerPlan,
     params: OcrParallelParams,
@@ -653,16 +655,16 @@ fn run_ocr_tasks_parallel(
                 );
             }
             for task in worker_tasks {
-                let cues = ocr_single_stream(OcrStreamRequest {
-                    input_path: &input_path,
-                    stream_index: task.stream_index,
-                    language: &task.language,
-                    work_dir: &work_dir,
+                let cues = ocr_single_stream(
+                    &input_path,
+                    task.stream_index,
+                    &task.language,
+                    &work_dir,
                     ocr_format,
                     video_dimensions,
-                    ocr_engine: resolved_engine,
-                    engine: &mut *engine,
-                })?;
+                    resolved_engine,
+                    &mut *engine,
+                )?;
 
                 local_outputs.push(OcrTaskOutput {
                     order: task.order,
@@ -689,7 +691,7 @@ fn run_ocr_tasks_parallel(
     Ok(outputs)
 }
 
-fn align_cuda_visible_devices_with_worker_plan(device_ids: &[i32]) {
+pub(super) fn align_cuda_visible_devices_with_worker_plan(device_ids: &[i32]) {
     if device_ids.len() <= 1 {
         return;
     }
@@ -726,12 +728,12 @@ fn align_cuda_visible_devices_with_worker_plan(device_ids: &[i32]) {
 }
 
 #[derive(Debug)]
-struct OcrWorkerBatch {
-    assigned_device: Option<i32>,
-    tasks: Vec<OcrTask>,
+pub(super) struct OcrWorkerBatch {
+    pub(super) assigned_device: Option<i32>,
+    pub(super) tasks: Vec<OcrTask>,
 }
 
-fn build_ocr_worker_batches(
+pub(super) fn build_ocr_worker_batches(
     tasks: Vec<OcrTask>,
     worker_count: usize,
     device_ids: &[i32],
@@ -756,7 +758,7 @@ fn build_ocr_worker_batches(
     batches
 }
 
-fn log_ocr_stream_progress(completed: usize, total: usize) {
+pub(super) fn log_ocr_stream_progress(completed: usize, total: usize) {
     let pct = ((completed as f32 / total as f32) * 100.0).round().clamp(0.0, 100.0) as u32;
     info!(
         "OCR progress: {}/{} subtitle streams complete ({}%)",
@@ -764,7 +766,7 @@ fn log_ocr_stream_progress(completed: usize, total: usize) {
     );
 }
 
-fn finalize_ocr_outputs(
+pub(super) fn finalize_ocr_outputs(
     outputs: Vec<OcrTaskOutput>,
     ocr_format: OcrFormat,
     video_dimensions: Option<(u32, u32)>,
@@ -793,7 +795,7 @@ fn finalize_ocr_outputs(
     Ok(tracks)
 }
 
-fn build_ocr_engine(
+pub(super) fn build_ocr_engine(
     ocr_engine: OcrEngine,
     ocr_external_command: Option<&str>,
 ) -> Result<(OcrEngine, Box<dyn SubtitleConverter>)> {
@@ -890,7 +892,7 @@ fn build_ocr_engine(
     }
 }
 
-fn create_ocr_engine(
+pub(super) fn create_ocr_engine(
     resolved_engine: OcrEngine,
     ocr_external_command: Option<&str>,
 ) -> Result<Box<dyn SubtitleConverter>> {
@@ -916,11 +918,11 @@ fn create_ocr_engine(
     }
 }
 
-fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
+pub(super) fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
     auto_engine_preference_with_capability(gpu_available, prefer_ppocr_v3_for_legacy_nvidia())
 }
 
-fn auto_engine_preference_with_capability(
+pub(super) fn auto_engine_preference_with_capability(
     gpu_available: bool,
     prefer_v3_on_gpu: bool,
 ) -> OcrEngine {
@@ -934,11 +936,11 @@ fn auto_engine_preference_with_capability(
     }
 }
 
-fn prefer_ppocr_v3_for_legacy_nvidia() -> bool {
+pub(super) fn prefer_ppocr_v3_for_legacy_nvidia() -> bool {
     *LEGACY_NVIDIA_MAXWELL.get_or_init(detect_legacy_nvidia_maxwell)
 }
 
-fn detect_legacy_nvidia_maxwell() -> bool {
+pub(super) fn detect_legacy_nvidia_maxwell() -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         return false;
@@ -985,7 +987,7 @@ fn detect_legacy_nvidia_maxwell() -> bool {
     }
 }
 
-fn disable_tesseract_quality_fallback() -> bool {
+pub(super) fn disable_tesseract_quality_fallback() -> bool {
     let disabled = env::var("DPN_OCR_DISABLE_TESS_FALLBACK")
         .ok()
         .map(|v| {
@@ -1001,7 +1003,7 @@ fn disable_tesseract_quality_fallback() -> bool {
     disabled
 }
 
-fn ppocr_require_gpu_error(variant: PpOcrVariant, err: &anyhow::Error) -> anyhow::Error {
+pub(super) fn ppocr_require_gpu_error(variant: PpOcrVariant, err: &anyhow::Error) -> anyhow::Error {
     anyhow!(
         "{} failed to initialize with DPN_OCR_REQUIRE_GPU=1. \
          Verify CUDA/ONNX Runtime GPU libraries are installed. Underlying error: {:#} (debug: {:?})",
@@ -1011,7 +1013,7 @@ fn ppocr_require_gpu_error(variant: PpOcrVariant, err: &anyhow::Error) -> anyhow
     )
 }
 
-fn init_ppocr_engine(
+pub(super) fn init_ppocr_engine(
     model_dir: &Path,
     require_gpu: bool,
     variant: PpOcrVariant,
@@ -1060,7 +1062,8 @@ fn init_ppocr_engine(
         }
     }
 }
-fn init_ort_environment() -> Result<bool> {
+
+pub(super) fn init_ort_environment() -> Result<bool> {
     if ORT_ENV_INIT.get().is_some() {
         return Ok(*ORT_ENV_GPU_AVAILABLE.get().unwrap_or(&false));
     }
@@ -1103,82 +1106,82 @@ pub(super) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDevic
     OcrCudaDeviceGuard { previous }
 }
 
-fn thread_ocr_cuda_device() -> Option<i32> {
+pub(super) fn thread_ocr_cuda_device() -> Option<i32> {
     OCR_CUDA_DEVICE_ID.with(|slot| slot.get())
 }
 
-struct ModelSpec {
-    filename: &'static str,
-    url: &'static str,
-    sha256: &'static str,
+pub(super) struct ModelSpec {
+    pub(super) filename: &'static str,
+    pub(super) url: &'static str,
+    pub(super) sha256: &'static str,
 }
 
-const PPOCR_V4_DET_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_DET_MODEL: ModelSpec = ModelSpec {
     filename: "ch_PP-OCRv4_det_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_infer.onnx",
     sha256: "D2A7720D45A54257208B1E13E36A8479894CB74155A5EFE29462512D42F49DA9",
 };
-const PPOCR_V4_CLS_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_CLS_MODEL: ModelSpec = ModelSpec {
     filename: "ch_ppocr_mobile_v2.0_cls_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_infer.onnx",
     sha256: "E47ACEDF663230F8863FF1AB0E64DD2D82B838FCEB5957146DAB185A89D6215C",
 };
-const PPOCR_V4_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_REC_MODEL: ModelSpec = ModelSpec {
     filename: "en_PP-OCRv4_rec_infer.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.7.0/onnx/PP-OCRv4/rec/en_PP-OCRv4_rec_infer.onnx",
     sha256: "E8770C967605983D1570CDF5352041DFB68FA0C21664F49F47B155ABD3E0E318",
 };
 
-const PPOCR_V3_DET_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V3_DET_MODEL: ModelSpec = ModelSpec {
     filename: "ch_PP-OCRv3_det_infer.onnx",
     url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_PP-OCRv3_det_infer.onnx?download=true",
     sha256: "3439588C030FAEA393A54515F51E983D8E155B19A2E8ABA7891934C1CF0DE526",
 };
-const PPOCR_V3_CLS_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V3_CLS_MODEL: ModelSpec = ModelSpec {
     filename: "ch_ppocr_mobile_v2.0_cls_train.onnx",
     url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_ppocr_mobile_v2.0_cls_train.onnx?download=true",
     sha256: "70581B300B83BABD9E0DD1D7D74C5B006869E8796DA277A70C2E405BF9D77C82",
 };
-const PPOCR_V3_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V3_REC_MODEL: ModelSpec = ModelSpec {
     filename: "en_PP-OCRv3_rec_infer.onnx",
     url: "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/en_PP-OCRv3_rec_infer.onnx?download=true",
     sha256: "EF7ABD8BD3629AE57EA2C28B425C1BD258A871B93FD2FE7C433946ADE9B5D9EA",
 };
 
-const PPOCR_V4_LATIN_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_LATIN_REC_MODEL: ModelSpec = ModelSpec {
     filename: "latin_PP-OCRv3_rec_mobile.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/latin_PP-OCRv3_rec_mobile.onnx",
     sha256: "E9D7A33667E8AAA702862975186ADF2012E3F390CC0F9422865957125F8071CF",
 };
-const PPOCR_V4_JAPANESE_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_JAPANESE_REC_MODEL: ModelSpec = ModelSpec {
     filename: "japan_PP-OCRv4_rec_mobile.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
     sha256: "E1075A67DBA758ECFC7EBC78A10AE61C95AC8FB66A9C86FAB5541E33F085CB7A",
 };
-const PPOCR_V4_KOREAN_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_KOREAN_REC_MODEL: ModelSpec = ModelSpec {
     filename: "korean_PP-OCRv4_rec_mobile.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/korean_PP-OCRv4_rec_mobile.onnx",
     sha256: "AB151BA9065ECCD98F884CF4D927DB091BE86137276392072EDD4F9D43AD7426",
 };
-const PPOCR_V4_CJK_REC_MODEL: ModelSpec = ModelSpec {
+pub(super) const PPOCR_V4_CJK_REC_MODEL: ModelSpec = ModelSpec {
     filename: "chinese_cht_PP-OCRv3_rec_mobile.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/chinese_cht_PP-OCRv3_rec_mobile.onnx",
     sha256: "779656D044CE388045E02EA9244724616194E63928606436CDFC6DC3C9528CC6",
 };
 
-const PPOCR_V3_LATIN_REC_MODEL: ModelSpec = PPOCR_V4_LATIN_REC_MODEL;
-const PPOCR_V3_JAPANESE_REC_MODEL: ModelSpec = PPOCR_V4_JAPANESE_REC_MODEL;
-const PPOCR_V3_KOREAN_REC_MODEL: ModelSpec = PPOCR_V4_KOREAN_REC_MODEL;
-const PPOCR_V3_CJK_REC_MODEL: ModelSpec = PPOCR_V4_CJK_REC_MODEL;
+pub(super) const PPOCR_V3_LATIN_REC_MODEL: ModelSpec = PPOCR_V4_LATIN_REC_MODEL;
+pub(super) const PPOCR_V3_JAPANESE_REC_MODEL: ModelSpec = PPOCR_V4_JAPANESE_REC_MODEL;
+pub(super) const PPOCR_V3_KOREAN_REC_MODEL: ModelSpec = PPOCR_V4_KOREAN_REC_MODEL;
+pub(super) const PPOCR_V3_CJK_REC_MODEL: ModelSpec = PPOCR_V4_CJK_REC_MODEL;
 
-struct PpOcrModels {
+pub(super) struct PpOcrModels {
     det: PathBuf,
     cls: PathBuf,
     rec: PathBuf,
 }
 
 impl PpOcrEngine {
-    fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
+    pub(super) fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
         let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
         let japanese_rec = resolve_optional_japanese_rec_model(model_dir, variant)?;
@@ -1242,7 +1245,7 @@ impl PpOcrEngine {
     }
 }
 
-fn init_optional_rec_profile(
+pub(super) fn init_optional_rec_profile(
     variant: PpOcrVariant,
     profile_label: &'static str,
     det: &Path,
@@ -1279,7 +1282,7 @@ fn init_optional_rec_profile(
     }
 }
 
-fn init_ocr_lite(
+pub(super) fn init_ocr_lite(
     variant: PpOcrVariant,
     profile_label: &str,
     det: &Path,
@@ -1305,7 +1308,7 @@ fn init_ocr_lite(
     Ok(ocr)
 }
 
-fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
+pub(super) fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
     let selection = build_execution_providers().map_err(|err| ort::Error::new(err.to_string()))?;
     let mut builder = builder.with_execution_providers(selection.providers)?;
     builder = builder.with_intra_threads(
@@ -1321,7 +1324,7 @@ fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort:
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutionProviderKind {
+pub(super) enum ExecutionProviderKind {
     Cuda,
     DirectML,
     CoreML,
@@ -1339,16 +1342,16 @@ impl ExecutionProviderKind {
     }
 }
 
-struct ExecutionProviderSelection {
-    providers: Vec<ExecutionProviderDispatch>,
-    gpu_available: bool,
+pub(super) struct ExecutionProviderSelection {
+    pub(super) providers: Vec<ExecutionProviderDispatch>,
+    pub(super) gpu_available: bool,
 }
 
-fn require_gpu() -> bool {
+pub(super) fn require_gpu() -> bool {
     env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() == Some("1")
 }
 
-fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
+pub(super) fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
     let configured = env::var("DPN_OCR_SKIP_CLS").ok().and_then(|v| {
         let v = v.trim();
         if v.eq_ignore_ascii_case("1")
@@ -1370,14 +1373,14 @@ fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
     configured.unwrap_or(matches!(variant, PpOcrVariant::V3) && require_gpu)
 }
 
-fn force_cpu_execution_providers() -> bool {
+pub(super) fn force_cpu_execution_providers() -> bool {
     if env::var("DPN_OCR_FORCE_CPU").ok().as_deref() == Some("1") {
         return true;
     }
     FORCE_CPU_EP.load(Ordering::Relaxed)
 }
 
-fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
+pub(super) fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
     kinds
         .iter()
         .map(|kind| kind.label())
@@ -1386,7 +1389,7 @@ fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvider {
+pub(super) fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvider {
     let flags = match env::var("ORT_CUDA_FLAGS") {
         Ok(val) => val,
         Err(_) => return ep,
@@ -1430,7 +1433,7 @@ fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvi
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CUDAExecutionProvider::default();
     if let Some(device_id) = thread_ocr_cuda_device() {
         ep = ep.with_device_id(device_id);
@@ -1472,7 +1475,7 @@ fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     }
 }
 
-fn env_flag_enabled(key: &str) -> bool {
+pub(super) fn env_flag_enabled(key: &str) -> bool {
     env::var(key)
         .ok()
         .map(|v| {
@@ -1482,7 +1485,7 @@ fn env_flag_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
+pub(super) fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
     let raw = env::var("DPN_OCR_CUDA_CONV_ALGO").ok()?;
     match raw.trim().to_ascii_lowercase().as_str() {
         "default" => {
@@ -1507,17 +1510,17 @@ fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
     }
 }
 
-fn allow_legacy_cuda_maxwell() -> bool {
+pub(super) fn allow_legacy_cuda_maxwell() -> bool {
     env_flag_enabled("DPN_OCR_ALLOW_LEGACY_CUDA")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn build_cuda_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_cuda_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("CUDA execution provider is not supported on this platform");
 }
 
 #[cfg(target_os = "windows")]
-fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = DirectMLExecutionProvider::default().build();
     if require_gpu {
         ep = ep.error_on_failure();
@@ -1526,12 +1529,12 @@ fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn build_directml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_directml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("DirectML execution provider is only supported on Windows");
 }
 
 #[cfg(target_vendor = "apple")]
-fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CoreMLExecutionProvider::default().build();
     if require_gpu {
         ep = ep.error_on_failure();
@@ -1540,12 +1543,12 @@ fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(super) fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("CoreML execution provider is only supported on Apple platforms");
 }
 
 #[cfg(target_os = "windows")]
-fn detect_directml_available(force_cpu: bool) -> bool {
+pub(super) fn detect_directml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
     }
@@ -1570,12 +1573,12 @@ fn detect_directml_available(force_cpu: bool) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn detect_directml_available(_force_cpu: bool) -> bool {
+pub(super) fn detect_directml_available(_force_cpu: bool) -> bool {
     false
 }
 
 #[cfg(target_vendor = "apple")]
-fn detect_coreml_available(force_cpu: bool) -> bool {
+pub(super) fn detect_coreml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
     }
@@ -1600,11 +1603,11 @@ fn detect_coreml_available(force_cpu: bool) -> bool {
 }
 
 #[cfg(not(target_vendor = "apple"))]
-fn detect_coreml_available(_force_cpu: bool) -> bool {
+pub(super) fn detect_coreml_available(_force_cpu: bool) -> bool {
     false
 }
 
-fn select_execution_provider_plan(
+pub(super) fn select_execution_provider_plan(
     require_gpu: bool,
     cuda_available: bool,
     directml_available: bool,
@@ -1635,7 +1638,7 @@ fn select_execution_provider_plan(
 }
 
 #[cfg(target_os = "linux")]
-fn library_visible_on_system(lib_prefix: &str) -> bool {
+pub(super) fn library_visible_on_system(lib_prefix: &str) -> bool {
     if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1699,7 +1702,7 @@ fn library_visible_on_system(lib_prefix: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+pub(super) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     const REQUIRED: [&str; 4] = ["libcudart.so", "libcublas.so", "libcublasLt.so", "libcudnn.so"];
     REQUIRED
         .into_iter()
@@ -1708,7 +1711,7 @@ fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
+pub(super) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     Vec::new()
 }
 
@@ -1739,7 +1742,7 @@ pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     }
 }
 
-fn build_execution_providers() -> Result<ExecutionProviderSelection> {
+pub(super) fn build_execution_providers() -> Result<ExecutionProviderSelection> {
     let require_gpu = require_gpu();
     if require_gpu {
         info!("DPN_OCR_REQUIRE_GPU=1; GPU execution provider is required.");
@@ -1867,7 +1870,8 @@ fn build_execution_providers() -> Result<ExecutionProviderSelection> {
         gpu_available,
     })
 }
-fn resolve_model_dir() -> Result<PathBuf> {
+
+pub(super) fn resolve_model_dir() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("DPN_OCR_MODEL_DIR") {
         let path = PathBuf::from(dir);
         fs::create_dir_all(&path)
@@ -1900,7 +1904,7 @@ fn resolve_model_dir() -> Result<PathBuf> {
     Ok(fallback)
 }
 
-fn ensure_ppocr_models(
+pub(super) fn ensure_ppocr_models(
     model_dir: &Path,
     variant: PpOcrVariant,
     skip_cls: bool,
@@ -1917,7 +1921,7 @@ fn ensure_ppocr_models(
     Ok(PpOcrModels { det, cls, rec })
 }
 
-fn resolve_optional_latin_rec_model(
+pub(super) fn resolve_optional_latin_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
@@ -1944,7 +1948,7 @@ fn resolve_optional_latin_rec_model(
     )
 }
 
-fn resolve_optional_japanese_rec_model(
+pub(super) fn resolve_optional_japanese_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
@@ -1971,7 +1975,7 @@ fn resolve_optional_japanese_rec_model(
     )
 }
 
-fn resolve_optional_korean_rec_model(
+pub(super) fn resolve_optional_korean_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
@@ -1996,7 +2000,7 @@ fn resolve_optional_korean_rec_model(
     )
 }
 
-fn resolve_optional_cjk_rec_model(
+pub(super) fn resolve_optional_cjk_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
@@ -2023,7 +2027,7 @@ fn resolve_optional_cjk_rec_model(
     )
 }
 
-fn resolve_optional_rec_model_with_candidates(
+pub(super) fn resolve_optional_rec_model_with_candidates(
     env_key: &str,
     model_dir: &Path,
     candidates: &[&str],
@@ -2072,7 +2076,7 @@ fn resolve_optional_rec_model_with_candidates(
     }
 }
 
-fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
+pub(super) fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
     let path = model_dir.join(spec.filename);
     if path.exists() {
         if let Ok(hash) = sha256_file(&path) {
@@ -2097,7 +2101,7 @@ fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-fn ensure_model_file_with_values(
+pub(super) fn ensure_model_file_with_values(
     model_dir: &Path,
     filename: &str,
     url: &str,
@@ -2112,7 +2116,7 @@ fn ensure_model_file_with_values(
     Ok(path)
 }
 
-fn download_model_with_values(path: &Path, url: &str, sha256: &str, filename: &str) -> Result<()> {
+pub(super) fn download_model_with_values(path: &Path, url: &str, sha256: &str, filename: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("invalid OCR model path '{}'", path.display()))?;
@@ -2175,7 +2179,7 @@ fn download_model_with_values(path: &Path, url: &str, sha256: &str, filename: &s
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(super) fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 16 * 1024];
@@ -2189,7 +2193,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(to_hex_lower(&hasher.finalize()))
 }
 
-fn to_hex_lower(bytes: &[u8]) -> String {
+pub(super) fn to_hex_lower(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;

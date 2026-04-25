@@ -1,5 +1,4 @@
 use super::*;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FixtureEvalMode {
     Hybrid,
@@ -143,7 +142,9 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
         "| Mode | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate | Avg Infer ms | Tesseract Replacements |"
             .to_string(),
     );
-    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
+    lines.push(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string(),
+    );
     for mode in &report.modes {
         lines.push(format!(
             "| {} | {} | {:.4} | {:.4} | {:.4} | {:.2}% | {:.2} | {} |",
@@ -162,9 +163,7 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
         lines.push(String::new());
         lines.push(format!("## Mode: {}", mode.mode));
         lines.push(String::new());
-        lines.push(
-            "| Language | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate |".to_string(),
-        );
+        lines.push("| Language | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate |".to_string());
         lines.push("| --- | ---: | ---: | ---: | ---: | ---: |".to_string());
         for lang in &mode.per_language {
             lines.push(format!(
@@ -199,10 +198,7 @@ pub(super) fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant
     }
 }
 
-pub(super) fn init_ppocr_engine_safe(
-    model_dir: &Path,
-    variant: PpOcrVariant,
-) -> Result<PpOcrEngine> {
+pub(super) fn init_ppocr_engine_safe(model_dir: &Path, variant: PpOcrVariant) -> Result<PpOcrEngine> {
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         init_ppocr_engine(model_dir, require_gpu(), variant)
     }));
@@ -300,9 +296,7 @@ pub(super) fn evaluate_fixture(
             && ppocr_needs_quality_fallback(&output.lines, &spec.language);
         if should_try_fallback {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(&spec.language) {
-                if let Ok(candidate) =
-                    run_tesseract_best_effort(&spec.image_path, &fallback_language)
-                {
+                if let Ok(candidate) = run_tesseract_best_effort(&spec.image_path, &fallback_language) {
                     if !candidate.text.is_empty() {
                         let replace = candidate.quality >= ppocr_quality + min_gain
                             || (ppocr_confidence < 0.70
@@ -349,17 +343,12 @@ pub(super) fn evaluate_fixture(
     })
 }
 
-pub(super) fn summarize_mode(
-    mode: FixtureEvalMode,
-    fixtures: Vec<FixtureResult>,
-) -> FixtureModeSummary {
+pub(super) fn summarize_mode(mode: FixtureEvalMode, fixtures: Vec<FixtureResult>) -> FixtureModeSummary {
     let fixture_count = fixtures.len();
     let avg_cer = avg(fixtures.iter().map(|x| x.cer));
     let avg_wer = avg(fixtures.iter().map(|x| x.wer));
     let avg_similarity = avg(fixtures.iter().map(|x| x.similarity));
-    let pass_rate = avg(fixtures
-        .iter()
-        .map(|x| if x.meets_threshold { 1.0 } else { 0.0 }));
+    let pass_rate = avg(fixtures.iter().map(|x| if x.meets_threshold { 1.0 } else { 0.0 }));
     let avg_infer_ms = avg(fixtures.iter().map(|x| x.infer_ms as f32));
     let tesseract_replacement_count = fixtures.iter().filter(|x| x.used_tesseract).count();
 
@@ -380,9 +369,7 @@ pub(super) fn summarize_mode(
             avg_cer: avg(items.iter().map(|x| x.cer)),
             avg_wer: avg(items.iter().map(|x| x.wer)),
             avg_similarity: avg(items.iter().map(|x| x.similarity)),
-            pass_rate: avg(items
-                .iter()
-                .map(|x| if x.meets_threshold { 1.0 } else { 0.0 })),
+            pass_rate: avg(items.iter().map(|x| if x.meets_threshold { 1.0 } else { 0.0 })),
         });
     }
 
