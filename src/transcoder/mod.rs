@@ -69,8 +69,6 @@ pub(crate) mod prelude {
 pub(crate) use app::app_convert::convert_video_file;
 pub(crate) use app::app_entry::run;
 pub(crate) use ffmpeg_diagnostics::configure_ffmpeg_logging;
-#[cfg(test)]
-pub(crate) use ffmpeg_diagnostics::*;
 pub(crate) use h264::*;
 pub(crate) use pipeline::*;
 pub(crate) use quality::{AudioQuality, QualityLimits, VideoCodecPreference, VideoQuality};
