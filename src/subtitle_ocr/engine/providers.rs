@@ -119,7 +119,9 @@ pub(in crate::subtitle_ocr) fn format_provider_kinds(kinds: &[ExecutionProviderK
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(in crate::subtitle_ocr) fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvider {
+pub(in crate::subtitle_ocr) fn apply_cuda_env_overrides(
+    mut ep: CUDAExecutionProvider,
+) -> CUDAExecutionProvider {
     let flags = match env::var("ORT_CUDA_FLAGS") {
         Ok(val) => val,
         Err(_) => return ep,
@@ -246,7 +248,9 @@ pub(in crate::subtitle_ocr) fn allow_legacy_cuda_maxwell() -> bool {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-pub(in crate::subtitle_ocr) fn build_cuda_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(in crate::subtitle_ocr) fn build_cuda_provider(
+    _require_gpu: bool,
+) -> ExecutionProviderDispatch {
     unreachable!("CUDA execution provider is not supported on this platform");
 }
 
@@ -256,7 +260,9 @@ pub(in crate::subtitle_ocr) fn cuda_conv_algo_override() -> Option<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub(in crate::subtitle_ocr) fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+pub(in crate::subtitle_ocr) fn build_directml_provider(
+    require_gpu: bool,
+) -> ExecutionProviderDispatch {
     let mut ep = DirectMLExecutionProvider::default().build();
     if require_gpu {
         ep = ep.error_on_failure();
@@ -265,12 +271,16 @@ pub(in crate::subtitle_ocr) fn build_directml_provider(require_gpu: bool) -> Exe
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(in crate::subtitle_ocr) fn build_directml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(in crate::subtitle_ocr) fn build_directml_provider(
+    _require_gpu: bool,
+) -> ExecutionProviderDispatch {
     unreachable!("DirectML execution provider is only supported on Windows");
 }
 
 #[cfg(target_vendor = "apple")]
-pub(in crate::subtitle_ocr) fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
+pub(in crate::subtitle_ocr) fn build_coreml_provider(
+    require_gpu: bool,
+) -> ExecutionProviderDispatch {
     let mut ep = CoreMLExecutionProvider::default().build();
     if require_gpu {
         ep = ep.error_on_failure();
@@ -279,7 +289,9 @@ pub(in crate::subtitle_ocr) fn build_coreml_provider(require_gpu: bool) -> Execu
 }
 
 #[cfg(not(target_vendor = "apple"))]
-pub(in crate::subtitle_ocr) fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
+pub(in crate::subtitle_ocr) fn build_coreml_provider(
+    _require_gpu: bool,
+) -> ExecutionProviderDispatch {
     unreachable!("CoreML execution provider is only supported on Apple platforms");
 }
 
