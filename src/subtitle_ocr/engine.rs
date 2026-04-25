@@ -1,4 +1,44 @@
-use super::*;
+//! OCR engine selection, worker planning, model provisioning, and execution-provider setup.
+
+use anyhow::{anyhow, bail, Context, Result};
+use log::{debug, info, warn};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use ort::execution_providers::cuda::{CUDAExecutionProvider, CuDNNConvAlgorithmSearch};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use ort::execution_providers::ArenaExtendStrategy;
+#[cfg(target_vendor = "apple")]
+use ort::execution_providers::CoreMLExecutionProvider;
+#[cfg(target_os = "windows")]
+use ort::execution_providers::DirectMLExecutionProvider;
+use ort::execution_providers::{
+    CPUExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
+};
+use ort::session::builder::SessionBuilder;
+use paddle_ocr_rs::ocr_lite::OcrLite;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::env;
+use std::ffi::CStr;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, OnceLock,
+};
+use std::thread;
+
+use super::language::{
+    detect_system_ocr_language, list_tesseract_languages, map_language_tag_to_tesseract,
+    resolve_ocr_language,
+};
+use super::ocr_pipeline::{discover_candidates, ocr_single_stream, probe_video_dimensions};
+use super::text_render::{
+    bounding_box_from_points, load_image, merge_ocr_lines_with_spacing, normalize_utf8_text,
+    run_external_ocr_command, run_tesseract, write_ass, write_srt,
+};
+use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
 
 pub(super) struct SubtitleCandidate {
     pub(super) stream_index: i32,
@@ -52,7 +92,9 @@ pub(super) struct OcrOutput {
 }
 
 pub(super) trait SubtitleConverter {
-    /// Internal helper for extract lines.
+    /// Extracts OCR text lines from a subtitle image for the requested language.
+    ///
+    /// Implementations should return an empty `OcrOutput` when extraction succeeds but no text is found.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
 }
 
@@ -69,7 +111,7 @@ pub(super) enum PpOcrVariant {
 }
 
 impl PpOcrVariant {
-    /// Internal OCR helper for label.
+    /// Returns a human-readable label used in logs and diagnostics.
     pub(super) fn label(self) -> &'static str {
         match self {
             PpOcrVariant::V3 => "PP-OCRv3",
@@ -77,7 +119,7 @@ impl PpOcrVariant {
         }
     }
 
-    /// Internal OCR helper for model specs.
+    /// Returns the detector/classifier/recognizer model specs for this PP-OCR variant.
     pub(super) fn model_specs(
         self,
     ) -> (&'static ModelSpec, &'static ModelSpec, &'static ModelSpec) {
@@ -95,7 +137,7 @@ impl PpOcrVariant {
         }
     }
 
-    /// Internal OCR helper for default latin rec spec.
+    /// Returns the default latin recognizer model for the current PP-OCR variant.
     pub(super) fn default_latin_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_LATIN_REC_MODEL,
@@ -103,7 +145,7 @@ impl PpOcrVariant {
         }
     }
 
-    /// Internal OCR helper for default japanese rec spec.
+    /// Returns the default Japanese recognizer model for the current PP-OCR variant.
     pub(super) fn default_japanese_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_JAPANESE_REC_MODEL,
@@ -111,7 +153,7 @@ impl PpOcrVariant {
         }
     }
 
-    /// Internal OCR helper for default korean rec spec.
+    /// Returns the default Korean recognizer model for the current PP-OCR variant.
     pub(super) fn default_korean_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_KOREAN_REC_MODEL,
@@ -119,7 +161,7 @@ impl PpOcrVariant {
         }
     }
 
-    /// Internal OCR helper for default cjk rec spec.
+    /// Returns the default CJK recognizer model for the current PP-OCR variant.
     pub(super) fn default_cjk_rec_spec(self) -> &'static ModelSpec {
         match self {
             PpOcrVariant::V3 => &PPOCR_V3_CJK_REC_MODEL,
@@ -147,7 +189,6 @@ pub(super) enum OcrRecProfile {
 }
 
 impl SubtitleConverter for TesseractEngine {
-    /// Internal helper for extract lines.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let text = run_tesseract(image_path, language)?;
         if text.is_empty() {
@@ -166,7 +207,6 @@ impl SubtitleConverter for TesseractEngine {
 }
 
 impl SubtitleConverter for ExternalEngine {
-    /// Internal helper for extract lines.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let text = run_external_ocr_command(image_path, language, &self.command)?;
         if text.is_empty() {
@@ -185,7 +225,6 @@ impl SubtitleConverter for ExternalEngine {
 }
 
 impl SubtitleConverter for PpOcrEngine {
-    /// Internal helper for extract lines.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let rec_profile = rec_profile_for_language(language);
         let (ocr, rec_label) = match rec_profile {
@@ -260,7 +299,9 @@ impl SubtitleConverter for PpOcrEngine {
     }
 }
 
-/// Internal OCR helper for rec profile for language.
+/// Maps a language tag to the PP-OCR recognition profile used for model selection.
+///
+/// Unknown tags intentionally fall back to `English` so OCR can still proceed.
 pub(super) fn rec_profile_for_language(language: &str) -> OcrRecProfile {
     let normalized =
         map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
@@ -285,6 +326,10 @@ pub(super) static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
 pub(super) static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 pub(super) static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
 
+/// Converts bitmap subtitle streams into OCR subtitle tracks.
+///
+/// The function performs stream discovery, language resolution, engine selection,
+/// optional parallelization, and final subtitle serialization (`.srt`/`.ass`).
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
     work_dir: &Path,
@@ -389,7 +434,9 @@ pub fn convert_bitmap_subtitles(
     finalize_ocr_outputs(outputs, ocr_format, video_dimensions)
 }
 
-/// Internal OCR helper for apply ocr cuda visible devices override.
+/// Applies `DPN_OCR_CUDA_DEVICES` onto `CUDA_VISIBLE_DEVICES` before OCR initialization.
+///
+/// This ensures provider initialization and worker planning observe the same visible GPU set.
 pub(super) fn apply_ocr_cuda_visible_devices_override() {
     let Ok(raw) = env::var("DPN_OCR_CUDA_DEVICES") else {
         return;
@@ -422,7 +469,7 @@ pub(super) fn apply_ocr_cuda_visible_devices_override() {
 }
 
 impl OcrFormat {
-    /// Internal helper for extension.
+    /// File extension used when writing OCR output for this subtitle format.
     fn extension(self) -> &'static str {
         match self {
             OcrFormat::Srt => "srt",
@@ -437,7 +484,7 @@ pub(super) struct OcrWorkerPlan {
     pub(super) device_ids: Vec<i32>,
 }
 
-/// Internal OCR helper for plan ocr workers.
+/// Builds an OCR worker plan from runtime capabilities and optional env overrides.
 pub(super) fn plan_ocr_workers(resolved_engine: OcrEngine, task_count: usize) -> OcrWorkerPlan {
     let available_parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -477,7 +524,9 @@ pub(super) fn plan_ocr_workers(resolved_engine: OcrEngine, task_count: usize) ->
     plan
 }
 
-/// Internal OCR helper for plan ocr workers with inputs.
+/// Pure planning helper used by tests and production code.
+///
+/// Applies CPU caps, GPU capacity (`devices * jobs_per_gpu`), and fallback rules.
 pub(super) fn plan_ocr_workers_with_inputs(
     resolved_engine: OcrEngine,
     task_count: usize,
@@ -533,17 +582,17 @@ pub(super) fn plan_ocr_workers_with_inputs(
     }
 }
 
-/// Internal OCR helper for ocr jobs per gpu env.
+/// Reads `DPN_OCR_JOBS_PER_GPU` as a positive integer.
 pub(super) fn ocr_jobs_per_gpu_env() -> Option<usize> {
     parse_positive_usize_env("DPN_OCR_JOBS_PER_GPU")
 }
 
-/// Internal OCR helper for ocr max jobs env.
+/// Reads `DPN_OCR_MAX_JOBS` as a positive integer.
 pub(super) fn ocr_max_jobs_env() -> Option<usize> {
     parse_positive_usize_env("DPN_OCR_MAX_JOBS")
 }
 
-/// Internal OCR helper for parse positive usize env.
+/// Parses a required positive integer env value, warning on invalid input.
 pub(super) fn parse_positive_usize_env(key: &str) -> Option<usize> {
     let raw = env::var(key).ok()?;
     match raw.trim().parse::<usize>() {
@@ -555,7 +604,7 @@ pub(super) fn parse_positive_usize_env(key: &str) -> Option<usize> {
     }
 }
 
-/// Internal OCR helper for parse cuda device list.
+/// Parses a comma-separated CUDA device list, removing duplicates and invalid entries.
 pub(super) fn parse_cuda_device_list(value: &str) -> Vec<i32> {
     let mut out = Vec::new();
     for token in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -568,7 +617,7 @@ pub(super) fn parse_cuda_device_list(value: &str) -> Vec<i32> {
     out
 }
 
-/// Internal OCR helper for detect ocr cuda devices.
+/// Resolves CUDA device indexes for OCR from explicit env vars or `nvidia-smi`.
 pub(super) fn detect_ocr_cuda_devices() -> Vec<i32> {
     if let Ok(raw) = env::var("DPN_OCR_CUDA_DEVICES") {
         let parsed = parse_cuda_device_list(&raw);
@@ -619,7 +668,7 @@ pub(super) struct OcrParallelParams {
     total_tasks: usize,
 }
 
-/// Internal OCR helper for run ocr tasks parallel.
+/// Executes OCR tasks in parallel worker threads and returns results in original stream order.
 pub(super) fn run_ocr_tasks_parallel(
     tasks: Vec<OcrTask>,
     worker_plan: OcrWorkerPlan,
@@ -716,7 +765,7 @@ pub(super) fn run_ocr_tasks_parallel(
     Ok(outputs)
 }
 
-/// Internal OCR helper for align cuda visible devices with worker plan.
+/// Ensures `CUDA_VISIBLE_DEVICES` includes all GPUs required by the worker plan.
 pub(super) fn align_cuda_visible_devices_with_worker_plan(device_ids: &[i32]) {
     if device_ids.len() <= 1 {
         return;
@@ -759,7 +808,7 @@ pub(super) struct OcrWorkerBatch {
     pub(super) tasks: Vec<OcrTask>,
 }
 
-/// Internal OCR helper for build ocr worker batches.
+/// Shards OCR tasks across workers in round-robin order, assigning optional GPU ids per worker.
 pub(super) fn build_ocr_worker_batches(
     tasks: Vec<OcrTask>,
     worker_count: usize,
@@ -785,7 +834,7 @@ pub(super) fn build_ocr_worker_batches(
     batches
 }
 
-/// Internal OCR helper for log ocr stream progress.
+/// Emits per-stream OCR progress as a coarse percentage.
 pub(super) fn log_ocr_stream_progress(completed: usize, total: usize) {
     let pct = ((completed as f32 / total as f32) * 100.0)
         .round()
@@ -796,7 +845,7 @@ pub(super) fn log_ocr_stream_progress(completed: usize, total: usize) {
     );
 }
 
-/// Internal OCR helper for finalize ocr outputs.
+/// Writes OCR outputs to disk and converts task outputs into mux-ready subtitle tracks.
 pub(super) fn finalize_ocr_outputs(
     outputs: Vec<OcrTaskOutput>,
     ocr_format: OcrFormat,
@@ -826,7 +875,7 @@ pub(super) fn finalize_ocr_outputs(
     Ok(tracks)
 }
 
-/// Internal OCR helper for build ocr engine.
+/// Selects the effective OCR engine and initializes the first converter instance.
 pub(super) fn build_ocr_engine(
     ocr_engine: OcrEngine,
     ocr_external_command: Option<&str>,
@@ -924,7 +973,7 @@ pub(super) fn build_ocr_engine(
     }
 }
 
-/// Internal OCR helper for create ocr engine.
+/// Creates a concrete OCR converter for the selected engine.
 pub(super) fn create_ocr_engine(
     resolved_engine: OcrEngine,
     ocr_external_command: Option<&str>,
@@ -951,12 +1000,10 @@ pub(super) fn create_ocr_engine(
     }
 }
 
-/// Internal OCR helper for auto engine preference.
 pub(super) fn auto_engine_preference(gpu_available: bool) -> OcrEngine {
     auto_engine_preference_with_capability(gpu_available, prefer_ppocr_v3_for_legacy_nvidia())
 }
 
-/// Internal OCR helper for auto engine preference with capability.
 pub(super) fn auto_engine_preference_with_capability(
     gpu_available: bool,
     prefer_v3_on_gpu: bool,
@@ -971,12 +1018,10 @@ pub(super) fn auto_engine_preference_with_capability(
     }
 }
 
-/// Internal OCR helper for prefer ppocr v3 for legacy nvidia.
 pub(super) fn prefer_ppocr_v3_for_legacy_nvidia() -> bool {
     *LEGACY_NVIDIA_MAXWELL.get_or_init(detect_legacy_nvidia_maxwell)
 }
 
-/// Internal OCR helper for detect legacy nvidia maxwell.
 pub(super) fn detect_legacy_nvidia_maxwell() -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -1024,7 +1069,6 @@ pub(super) fn detect_legacy_nvidia_maxwell() -> bool {
     }
 }
 
-/// Internal OCR helper for disable tesseract quality fallback.
 pub(super) fn disable_tesseract_quality_fallback() -> bool {
     let disabled = env::var("DPN_OCR_DISABLE_TESS_FALLBACK")
         .ok()
@@ -1041,7 +1085,6 @@ pub(super) fn disable_tesseract_quality_fallback() -> bool {
     disabled
 }
 
-/// Internal OCR helper for ppocr require gpu error.
 pub(super) fn ppocr_require_gpu_error(variant: PpOcrVariant, err: &anyhow::Error) -> anyhow::Error {
     anyhow!(
         "{} failed to initialize with DPN_OCR_REQUIRE_GPU=1. \
@@ -1052,7 +1095,6 @@ pub(super) fn ppocr_require_gpu_error(variant: PpOcrVariant, err: &anyhow::Error
     )
 }
 
-/// Internal OCR helper for init ppocr engine.
 pub(super) fn init_ppocr_engine(
     model_dir: &Path,
     require_gpu: bool,
@@ -1103,7 +1145,6 @@ pub(super) fn init_ppocr_engine(
     }
 }
 
-/// Internal OCR helper for init ort environment.
 pub(super) fn init_ort_environment() -> Result<bool> {
     if ORT_ENV_INIT.get().is_some() {
         return Ok(*ORT_ENV_GPU_AVAILABLE.get().unwrap_or(&false));
@@ -1133,13 +1174,11 @@ pub(super) struct OcrCudaDeviceGuard {
 }
 
 impl Drop for OcrCudaDeviceGuard {
-    /// Internal helper for drop.
     fn drop(&mut self) {
         OCR_CUDA_DEVICE_ID.with(|slot| slot.set(self.previous));
     }
 }
 
-/// Internal OCR helper for set thread ocr cuda device.
 pub(super) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDeviceGuard {
     let previous = OCR_CUDA_DEVICE_ID.with(|slot| {
         let prev = slot.get();
@@ -1149,7 +1188,6 @@ pub(super) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDevic
     OcrCudaDeviceGuard { previous }
 }
 
-/// Internal OCR helper for thread ocr cuda device.
 pub(super) fn thread_ocr_cuda_device() -> Option<i32> {
     OCR_CUDA_DEVICE_ID.with(|slot| slot.get())
 }
@@ -1225,7 +1263,6 @@ pub(super) struct PpOcrModels {
 }
 
 impl PpOcrEngine {
-    /// Internal OCR helper for new.
     pub(super) fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
         let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
@@ -1284,7 +1321,6 @@ impl PpOcrEngine {
     }
 }
 
-/// Internal OCR helper for init optional rec profile.
 pub(super) fn init_optional_rec_profile(
     variant: PpOcrVariant,
     profile_label: &'static str,
@@ -1322,7 +1358,6 @@ pub(super) fn init_optional_rec_profile(
     }
 }
 
-/// Internal OCR helper for init ocr lite.
 pub(super) fn init_ocr_lite(
     variant: PpOcrVariant,
     profile_label: &str,
@@ -1349,7 +1384,6 @@ pub(super) fn init_ocr_lite(
     Ok(ocr)
 }
 
-/// Internal OCR helper for configure ort builder.
 pub(super) fn configure_ort_builder(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
     let selection = build_execution_providers().map_err(|err| ort::Error::new(err.to_string()))?;
     let mut builder = builder.with_execution_providers(selection.providers)?;
@@ -1374,7 +1408,6 @@ pub(super) enum ExecutionProviderKind {
 }
 
 impl ExecutionProviderKind {
-    /// Internal helper for label.
     fn label(self) -> &'static str {
         match self {
             ExecutionProviderKind::Cuda => "cuda",
@@ -1390,12 +1423,10 @@ pub(super) struct ExecutionProviderSelection {
     pub(super) gpu_available: bool,
 }
 
-/// Internal OCR helper for require gpu.
 pub(super) fn require_gpu() -> bool {
     env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() == Some("1")
 }
 
-/// Internal OCR helper for skip ppocr cls.
 pub(super) fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
     let configured = env::var("DPN_OCR_SKIP_CLS").ok().and_then(|v| {
         let v = v.trim();
@@ -1418,7 +1449,6 @@ pub(super) fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
     configured.unwrap_or(matches!(variant, PpOcrVariant::V3) && require_gpu)
 }
 
-/// Internal OCR helper for force cpu execution providers.
 pub(super) fn force_cpu_execution_providers() -> bool {
     if env::var("DPN_OCR_FORCE_CPU").ok().as_deref() == Some("1") {
         return true;
@@ -1426,7 +1456,6 @@ pub(super) fn force_cpu_execution_providers() -> bool {
     FORCE_CPU_EP.load(Ordering::Relaxed)
 }
 
-/// Internal OCR helper for format provider kinds.
 pub(super) fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
     kinds
         .iter()
@@ -1436,7 +1465,6 @@ pub(super) fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Internal OCR helper for apply cuda env overrides.
 pub(super) fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExecutionProvider {
     let flags = match env::var("ORT_CUDA_FLAGS") {
         Ok(val) => val,
@@ -1481,7 +1509,6 @@ pub(super) fn apply_cuda_env_overrides(mut ep: CUDAExecutionProvider) -> CUDAExe
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Internal OCR helper for build cuda provider.
 pub(super) fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CUDAExecutionProvider::default();
     if let Some(device_id) = thread_ocr_cuda_device() {
@@ -1524,7 +1551,6 @@ pub(super) fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatc
     }
 }
 
-/// Internal OCR helper for env flag enabled.
 pub(super) fn env_flag_enabled(key: &str) -> bool {
     env::var(key)
         .ok()
@@ -1535,7 +1561,6 @@ pub(super) fn env_flag_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Internal OCR helper for cuda conv algo override.
 pub(super) fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
     let raw = env::var("DPN_OCR_CUDA_CONV_ALGO").ok()?;
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -1561,19 +1586,16 @@ pub(super) fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
     }
 }
 
-/// Internal OCR helper for allow legacy cuda maxwell.
 pub(super) fn allow_legacy_cuda_maxwell() -> bool {
     env_flag_enabled("DPN_OCR_ALLOW_LEGACY_CUDA")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-/// Internal OCR helper for build cuda provider.
 pub(super) fn build_cuda_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("CUDA execution provider is not supported on this platform");
 }
 
 #[cfg(target_os = "windows")]
-/// Internal OCR helper for build directml provider.
 pub(super) fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = DirectMLExecutionProvider::default().build();
     if require_gpu {
@@ -1583,13 +1605,11 @@ pub(super) fn build_directml_provider(require_gpu: bool) -> ExecutionProviderDis
 }
 
 #[cfg(not(target_os = "windows"))]
-/// Internal OCR helper for build directml provider.
 pub(super) fn build_directml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("DirectML execution provider is only supported on Windows");
 }
 
 #[cfg(target_vendor = "apple")]
-/// Internal OCR helper for build coreml provider.
 pub(super) fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CoreMLExecutionProvider::default().build();
     if require_gpu {
@@ -1599,13 +1619,11 @@ pub(super) fn build_coreml_provider(require_gpu: bool) -> ExecutionProviderDispa
 }
 
 #[cfg(not(target_vendor = "apple"))]
-/// Internal OCR helper for build coreml provider.
 pub(super) fn build_coreml_provider(_require_gpu: bool) -> ExecutionProviderDispatch {
     unreachable!("CoreML execution provider is only supported on Apple platforms");
 }
 
 #[cfg(target_os = "windows")]
-/// Internal OCR helper for detect directml available.
 pub(super) fn detect_directml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
@@ -1631,13 +1649,11 @@ pub(super) fn detect_directml_available(force_cpu: bool) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-/// Internal OCR helper for detect directml available.
 pub(super) fn detect_directml_available(_force_cpu: bool) -> bool {
     false
 }
 
 #[cfg(target_vendor = "apple")]
-/// Internal OCR helper for detect coreml available.
 pub(super) fn detect_coreml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
@@ -1663,12 +1679,10 @@ pub(super) fn detect_coreml_available(force_cpu: bool) -> bool {
 }
 
 #[cfg(not(target_vendor = "apple"))]
-/// Internal OCR helper for detect coreml available.
 pub(super) fn detect_coreml_available(_force_cpu: bool) -> bool {
     false
 }
 
-/// Internal OCR helper for select execution provider plan.
 pub(super) fn select_execution_provider_plan(
     require_gpu: bool,
     cuda_available: bool,
@@ -1700,7 +1714,6 @@ pub(super) fn select_execution_provider_plan(
 }
 
 #[cfg(target_os = "linux")]
-/// Internal OCR helper for library visible on system.
 pub(super) fn library_visible_on_system(lib_prefix: &str) -> bool {
     if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
         if output.status.success() {
@@ -1757,7 +1770,6 @@ pub(super) fn library_visible_on_system(lib_prefix: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-/// Internal OCR helper for missing cuda runtime libraries.
 pub(super) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     const REQUIRED: [&str; 4] = [
         "libcudart.so",
@@ -1772,12 +1784,10 @@ pub(super) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
 }
 
 #[cfg(not(target_os = "linux"))]
-/// Internal OCR helper for missing cuda runtime libraries.
 pub(super) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     Vec::new()
 }
 
-/// Internal OCR helper for detect nvidia gpu indexes.
 pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -1805,7 +1815,6 @@ pub(super) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     }
 }
 
-/// Internal OCR helper for build execution providers.
 pub(super) fn build_execution_providers() -> Result<ExecutionProviderSelection> {
     let require_gpu = require_gpu();
     if require_gpu {
@@ -1935,7 +1944,6 @@ pub(super) fn build_execution_providers() -> Result<ExecutionProviderSelection> 
     })
 }
 
-/// Internal OCR helper for resolve model dir.
 pub(super) fn resolve_model_dir() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("DPN_OCR_MODEL_DIR") {
         let path = PathBuf::from(dir);
@@ -1969,7 +1977,6 @@ pub(super) fn resolve_model_dir() -> Result<PathBuf> {
     Ok(fallback)
 }
 
-/// Internal OCR helper for ensure ppocr models.
 pub(super) fn ensure_ppocr_models(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -1987,7 +1994,6 @@ pub(super) fn ensure_ppocr_models(
     Ok(PpOcrModels { det, cls, rec })
 }
 
-/// Internal OCR helper for resolve optional latin rec model.
 pub(super) fn resolve_optional_latin_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -2015,7 +2021,6 @@ pub(super) fn resolve_optional_latin_rec_model(
     )
 }
 
-/// Internal OCR helper for resolve optional japanese rec model.
 pub(super) fn resolve_optional_japanese_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -2043,7 +2048,6 @@ pub(super) fn resolve_optional_japanese_rec_model(
     )
 }
 
-/// Internal OCR helper for resolve optional korean rec model.
 pub(super) fn resolve_optional_korean_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -2069,7 +2073,6 @@ pub(super) fn resolve_optional_korean_rec_model(
     )
 }
 
-/// Internal OCR helper for resolve optional cjk rec model.
 pub(super) fn resolve_optional_cjk_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -2097,7 +2100,6 @@ pub(super) fn resolve_optional_cjk_rec_model(
     )
 }
 
-/// Internal OCR helper for resolve optional rec model with candidates.
 pub(super) fn resolve_optional_rec_model_with_candidates(
     env_key: &str,
     model_dir: &Path,
@@ -2147,7 +2149,6 @@ pub(super) fn resolve_optional_rec_model_with_candidates(
     }
 }
 
-/// Internal OCR helper for ensure model file.
 pub(super) fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
     let path = model_dir.join(spec.filename);
     if path.exists() {
@@ -2173,7 +2174,6 @@ pub(super) fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<Pa
 }
 
 #[cfg(test)]
-/// Internal OCR helper for ensure model file with values.
 pub(super) fn ensure_model_file_with_values(
     model_dir: &Path,
     filename: &str,
@@ -2189,7 +2189,6 @@ pub(super) fn ensure_model_file_with_values(
     Ok(path)
 }
 
-/// Internal OCR helper for download model with values.
 pub(super) fn download_model_with_values(
     path: &Path,
     url: &str,
@@ -2258,7 +2257,6 @@ pub(super) fn download_model_with_values(
     Ok(())
 }
 
-/// Internal OCR helper for sha256 file.
 pub(super) fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -2273,7 +2271,6 @@ pub(super) fn sha256_file(path: &Path) -> Result<String> {
     Ok(to_hex_lower(&hasher.finalize()))
 }
 
-/// Internal OCR helper for to hex lower.
 pub(super) fn to_hex_lower(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
