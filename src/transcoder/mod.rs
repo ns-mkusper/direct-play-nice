@@ -6,12 +6,14 @@ pub mod pipeline;
 pub mod quality;
 
 pub(crate) mod prelude {
+    pub(crate) use crate::devices::{
+        ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice,
+    };
+    pub(crate) use crate::logging::log_relevant_env;
     pub(crate) use anyhow::{anyhow, bail, Context, Result};
     pub(crate) use clap::{ArgMatches, ValueEnum};
-    pub(crate) use crate::devices::{ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice};
     pub(crate) use libc::EINVAL;
     pub(crate) use log::{debug, error, info, trace, warn, Level};
-    pub(crate) use crate::logging::log_relevant_env;
     pub(crate) use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVCodecRef, AVPacket};
     pub(crate) use rsmpeg::avformat::{
         AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef,
