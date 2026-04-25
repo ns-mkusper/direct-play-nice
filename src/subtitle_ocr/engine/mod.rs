@@ -1,14 +1,9 @@
 //! OCR engine selection, worker planning, model provisioning, and execution-provider setup.
 
 use anyhow::{anyhow, bail, Context, Result};
-use paddle_ocr_rs::ocr_lite::OcrLite;
 use std::collections::HashSet;
 use std::ffi::CStr;
-use std::path::{Path, PathBuf};
-use std::sync::{
-    atomic::AtomicBool,
-    OnceLock,
-};
+use std::path::Path;
 
 use super::language::{
     detect_system_ocr_language, list_tesseract_languages, resolve_ocr_language,
@@ -22,6 +17,7 @@ mod models;
 mod providers;
 mod factory;
 mod runtime;
+mod types;
 mod workers;
 #[allow(unused_imports)]
 pub(in crate::subtitle_ocr) use converters::{rec_profile_for_language, OcrRecProfile};
@@ -29,150 +25,8 @@ pub(super) use factory::*;
 pub(super) use models::*;
 pub(super) use providers::*;
 pub(super) use runtime::*;
+pub(super) use types::*;
 pub(super) use workers::*;
-
-pub(super) struct SubtitleCandidate {
-    pub(super) stream_index: i32,
-    pub(super) language_tag: Option<String>,
-}
-
-#[derive(Debug)]
-pub(super) struct OcrTask {
-    pub(super) order: usize,
-    pub(super) stream_index: i32,
-    pub(super) language: String,
-    pub(super) subtitle_path: PathBuf,
-}
-
-#[derive(Debug)]
-pub(super) struct OcrTaskOutput {
-    pub(super) order: usize,
-    pub(super) stream_index: i32,
-    pub(super) language: String,
-    pub(super) subtitle_path: PathBuf,
-    pub(super) cues: Vec<SubtitleCue>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct SubtitleCue {
-    pub(super) start_ms: i64,
-    pub(super) end_ms: i64,
-    pub(super) text: String,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct OcrBoundingBox {
-    pub(super) left: i32,
-    pub(super) top: i32,
-    pub(super) right: i32,
-    pub(super) bottom: i32,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct OcrLine {
-    pub(super) text: String,
-    pub(super) bbox: Option<OcrBoundingBox>,
-    pub(super) score: Option<f32>,
-    pub(super) color: Option<(u8, u8, u8)>,
-    pub(super) italic: bool,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct OcrOutput {
-    pub(super) lines: Vec<OcrLine>,
-}
-
-pub(super) trait SubtitleConverter {
-    /// Extracts OCR text lines from a subtitle image for the requested language.
-    ///
-    /// Implementations should return an empty `OcrOutput` when extraction succeeds but no text is found.
-    fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
-}
-
-pub(super) struct TesseractEngine;
-
-pub(super) struct ExternalEngine {
-    command: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PpOcrVariant {
-    V3,
-    V4,
-}
-
-impl PpOcrVariant {
-    /// Returns a human-readable label used in logs and diagnostics.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            PpOcrVariant::V3 => "PP-OCRv3",
-            PpOcrVariant::V4 => "PP-OCRv4",
-        }
-    }
-
-    /// Returns the detector/classifier/recognizer model specs for this PP-OCR variant.
-    pub(super) fn model_specs(
-        self,
-    ) -> (&'static ModelSpec, &'static ModelSpec, &'static ModelSpec) {
-        match self {
-            PpOcrVariant::V3 => (
-                &PPOCR_V3_DET_MODEL,
-                &PPOCR_V3_CLS_MODEL,
-                &PPOCR_V3_REC_MODEL,
-            ),
-            PpOcrVariant::V4 => (
-                &PPOCR_V4_DET_MODEL,
-                &PPOCR_V4_CLS_MODEL,
-                &PPOCR_V4_REC_MODEL,
-            ),
-        }
-    }
-
-    /// Returns the default latin recognizer model for the current PP-OCR variant.
-    pub(super) fn default_latin_rec_spec(self) -> &'static ModelSpec {
-        match self {
-            PpOcrVariant::V3 => &PPOCR_V3_LATIN_REC_MODEL,
-            PpOcrVariant::V4 => &PPOCR_V4_LATIN_REC_MODEL,
-        }
-    }
-
-    /// Returns the default Japanese recognizer model for the current PP-OCR variant.
-    pub(super) fn default_japanese_rec_spec(self) -> &'static ModelSpec {
-        match self {
-            PpOcrVariant::V3 => &PPOCR_V3_JAPANESE_REC_MODEL,
-            PpOcrVariant::V4 => &PPOCR_V4_JAPANESE_REC_MODEL,
-        }
-    }
-
-    /// Returns the default Korean recognizer model for the current PP-OCR variant.
-    pub(super) fn default_korean_rec_spec(self) -> &'static ModelSpec {
-        match self {
-            PpOcrVariant::V3 => &PPOCR_V3_KOREAN_REC_MODEL,
-            PpOcrVariant::V4 => &PPOCR_V4_KOREAN_REC_MODEL,
-        }
-    }
-
-    /// Returns the default CJK recognizer model for the current PP-OCR variant.
-    pub(super) fn default_cjk_rec_spec(self) -> &'static ModelSpec {
-        match self {
-            PpOcrVariant::V3 => &PPOCR_V3_CJK_REC_MODEL,
-            PpOcrVariant::V4 => &PPOCR_V4_CJK_REC_MODEL,
-        }
-    }
-}
-
-pub(super) struct PpOcrEngine {
-    english_ocr: OcrLite,
-    latin_ocr: Option<OcrLite>,
-    japanese_ocr: Option<OcrLite>,
-    korean_ocr: Option<OcrLite>,
-    cjk_ocr: Option<OcrLite>,
-    variant: PpOcrVariant,
-}
-
-pub(super) static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> = OnceLock::new();
-pub(super) static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
-pub(super) static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Converts bitmap subtitle streams into OCR subtitle tracks.
 ///
