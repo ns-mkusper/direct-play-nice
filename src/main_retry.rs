@@ -6,8 +6,9 @@ use std::ffi::CStr;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::gpu::HwAccel;
 use crate::{
-    convert_video_file, Args, ConversionOutcome, ConversionParams, HwAccel, HwEncoderInitError,
+    convert_video_file, Args, ConversionOutcome, ConversionParams, HwEncoderInitError,
     HwProfileLevelMismatch, PrimaryVideoCriteria,
 };
 
