@@ -36,8 +36,6 @@ pub(crate) mod prelude {
 
     pub(crate) use crate::config;
     pub(crate) use crate::devices;
-    #[cfg(test)]
-    pub(crate) use crate::devices::DeviceFamily;
     pub(crate) use crate::devices::{
         ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice,
     };
@@ -57,7 +55,7 @@ pub(crate) mod prelude {
     };
     pub(crate) use crate::subtitle_ocr;
     pub(crate) use crate::throttle::acquire_slot;
-    pub(crate) use crate::transcoder::app::app_convert::convert_video_file;
+    pub(crate) use crate::transcoder::app::app_convert::{convert_video_file, ConversionParams};
     pub(crate) use crate::transcoder::ffmpeg_diagnostics::*;
     pub(crate) use crate::transcoder::h264::*;
     pub(crate) use crate::transcoder::helpers::*;
@@ -71,4 +69,4 @@ pub(crate) use app::app_entry::run;
 pub(crate) use ffmpeg_diagnostics::configure_ffmpeg_logging;
 pub(crate) use h264::*;
 pub(crate) use pipeline::*;
-pub(crate) use quality::{AudioQuality, QualityLimits, VideoCodecPreference, VideoQuality};
+pub(crate) use quality::{AudioQuality, VideoCodecPreference, VideoQuality};

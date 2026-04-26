@@ -3,7 +3,6 @@ use clap::{ArgMatches, ValueEnum};
 use log::warn;
 use serde::Deserialize;
 
-use crate::devices::Resolution;
 use crate::{config, Args};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
@@ -72,16 +71,6 @@ pub(crate) fn derive_target_bitrate(source: i64, limit: Option<i64>) -> Option<i
         }
         (None, source_value) if source_value > 0 => Some(source_value),
         _ => None,
-    }
-}
-
-pub(crate) fn resolution_to_dimensions(resolution: Resolution) -> (u32, u32) {
-    match resolution {
-        Resolution::Resolution480p => (640, 480),
-        Resolution::Resolution720p => (1280, 720),
-        Resolution::Resolution1080p => (1920, 1080),
-        Resolution::Resolution1440p => (2560, 1440),
-        Resolution::Resolution2160p => (3840, 2160),
     }
 }
 
