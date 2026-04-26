@@ -5,6 +5,9 @@
 
 use anyhow::{anyhow, Result};
 use paddle_ocr_rs::ocr_lite::OcrLite;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -26,6 +29,7 @@ pub(in crate::subtitle_ocr) enum OcrRecProfile {
 
 static REC_PROFILE_OVERRIDES: OnceLock<Vec<(String, OcrRecProfile)>> = OnceLock::new();
 static LANGUAGE_SCRIPT_HINTS: OnceLock<Vec<(String, String)>> = OnceLock::new();
+static ROUTING_MANIFEST: OnceLock<RoutingManifest> = OnceLock::new();
 
 impl SubtitleConverter for TesseractEngine {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
@@ -162,24 +166,26 @@ fn select_profile_ocr_with_fallback<'a>(
 /// - user overrides via `DPN_OCR_REC_PROFILE_OVERRIDES`
 /// - final safe fallback (`Latin`) so OCR still runs for unclassified tags
 pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRecProfile {
+    let manifest = ROUTING_MANIFEST.get_or_init(load_routing_manifest);
     if let Some(profile) = rec_profile_override(language) {
         return profile;
     }
 
     let normalized =
         map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
-    match normalized.as_str() {
-        "eng" => OcrRecProfile::English,
-        "jpn" | "ja" => OcrRecProfile::Japanese,
-        "kor" | "ko" => OcrRecProfile::Korean,
-        "chi_sim" | "chi_tra" | "chi" | "zho" | "zh" => OcrRecProfile::Cjk,
-        _ => {
-            if let Some(script) = resolved_script(language, &normalized) {
-                return profile_for_script(&script);
+    for key in candidate_language_keys(language, &normalized) {
+        if let Some(name) = manifest.language_profiles.get(&key) {
+            if let Some(profile) = parse_profile_name(name) {
+                return profile;
             }
-            OcrRecProfile::Latin
         }
     }
+
+    if let Some(script) = resolved_script(language, &normalized, manifest) {
+        return profile_for_script(&script, manifest);
+    }
+
+    manifest.default_profile
 }
 
 /// Resolves an optional operator override from `DPN_OCR_REC_PROFILE_OVERRIDES`.
@@ -227,11 +233,12 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
         .collect()
 }
 
-fn resolved_script(language: &str, normalized: &str) -> Option<String> {
+fn resolved_script(language: &str, normalized: &str, manifest: &RoutingManifest) -> Option<String> {
     if let Some(script) = script_subtag(language) {
         return Some(script.to_string());
     }
     configured_script_hint(language, normalized)
+        .or_else(|| likely_script_from_manifest(language, normalized, manifest))
 }
 
 /// Extracts the optional 4-letter BCP-47 script subtag (`Latn`, `Cyrl`, ...)
@@ -262,6 +269,47 @@ fn configured_script_hint(language: &str, normalized: &str) -> Option<String> {
     None
 }
 
+fn likely_script_from_manifest(
+    language: &str,
+    normalized: &str,
+    manifest: &RoutingManifest,
+) -> Option<String> {
+    for key in candidate_language_keys(language, normalized) {
+        if let Some(script) = manifest.likely_scripts.get(&key) {
+            return Some(script.clone());
+        }
+    }
+    None
+}
+
+fn candidate_language_keys(language: &str, normalized: &str) -> Vec<String> {
+    let lower_input = language.trim().to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for key in [
+        Some(lower_input.as_str()),
+        Some(normalized),
+        primary_subtag(&lower_input),
+        primary_subtag(normalized),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if seen.insert(key.to_string()) {
+            out.push(key.to_string());
+        }
+    }
+    out
+}
+
+fn primary_subtag(tag: &str) -> Option<&str> {
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.split(['-', '_']).next().unwrap_or(trimmed))
+}
+
 fn parse_language_script_hints() -> Vec<(String, String)> {
     let Ok(raw) = std::env::var("DPN_OCR_LANGUAGE_SCRIPT_HINTS") else {
         return Vec::new();
@@ -282,12 +330,80 @@ fn parse_language_script_hints() -> Vec<(String, String)> {
 /// Maps a BCP-47 script subtag into a rec profile.
 ///
 /// Scripts without dedicated recognizers route to `English` as the neutral fallback.
-fn profile_for_script(script: &str) -> OcrRecProfile {
-    match script.to_ascii_lowercase().as_str() {
-        "latn" => OcrRecProfile::Latin,
-        "jpan" | "hira" | "kana" => OcrRecProfile::Japanese,
-        "hang" | "kore" => OcrRecProfile::Korean,
-        "hani" | "hans" | "hant" | "bopo" => OcrRecProfile::Cjk,
-        _ => OcrRecProfile::English,
+fn profile_for_script(script: &str, manifest: &RoutingManifest) -> OcrRecProfile {
+    let key = script.to_ascii_lowercase();
+    if let Some(name) = manifest.script_profiles.get(&key) {
+        if let Some(profile) = parse_profile_name(name) {
+            return profile;
+        }
+    }
+    OcrRecProfile::English
+}
+
+fn parse_profile_name(value: &str) -> Option<OcrRecProfile> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "english" | "eng" => Some(OcrRecProfile::English),
+        "latin" | "latn" => Some(OcrRecProfile::Latin),
+        "japanese" | "jpn" | "ja" => Some(OcrRecProfile::Japanese),
+        "korean" | "kor" | "ko" => Some(OcrRecProfile::Korean),
+        "cjk" | "zh" | "zho" => Some(OcrRecProfile::Cjk),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RoutingManifestFile {
+    #[serde(default)]
+    default_profile: String,
+    #[serde(default)]
+    language_profiles: HashMap<String, String>,
+    #[serde(default)]
+    script_profiles: HashMap<String, String>,
+    #[serde(default)]
+    likely_scripts: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct RoutingManifest {
+    default_profile: OcrRecProfile,
+    language_profiles: HashMap<String, String>,
+    script_profiles: HashMap<String, String>,
+    likely_scripts: HashMap<String, String>,
+}
+
+fn load_routing_manifest() -> RoutingManifest {
+    const BUILTIN: &str = include_str!("../../../config/ocr-routing.toml");
+    let raw = std::env::var("DPN_OCR_ROUTING_MANIFEST")
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_else(|| BUILTIN.to_string());
+
+    let parsed = toml::from_str::<RoutingManifestFile>(&raw)
+        .ok()
+        .or_else(|| toml::from_str::<RoutingManifestFile>(BUILTIN).ok())
+        .unwrap_or_else(default_routing_manifest_file);
+
+    let default_profile =
+        parse_profile_name(&parsed.default_profile).unwrap_or(OcrRecProfile::Latin);
+    RoutingManifest {
+        default_profile,
+        language_profiles: normalize_manifest_keys(parsed.language_profiles),
+        script_profiles: normalize_manifest_keys(parsed.script_profiles),
+        likely_scripts: normalize_manifest_keys(parsed.likely_scripts),
+    }
+}
+
+fn normalize_manifest_keys(map: HashMap<String, String>) -> HashMap<String, String> {
+    map.into_iter()
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect()
+}
+
+fn default_routing_manifest_file() -> RoutingManifestFile {
+    RoutingManifestFile {
+        default_profile: "latin".to_string(),
+        language_profiles: HashMap::new(),
+        script_profiles: HashMap::new(),
+        likely_scripts: HashMap::new(),
     }
 }
