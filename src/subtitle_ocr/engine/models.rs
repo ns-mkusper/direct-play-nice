@@ -188,6 +188,57 @@ pub(in crate::subtitle_ocr) fn resolve_optional_japanese_rec_model(
     )
 }
 
+/// Resolves an optional multilingual recognizer model from operator override or local cache.
+///
+/// This resolver is intentionally local-first and does not auto-download to avoid
+/// pinning brittle upstream URLs/hashes for fast-moving multilingual model variants.
+pub(in crate::subtitle_ocr) fn resolve_optional_multilingual_rec_model(
+    model_dir: &Path,
+    variant: PpOcrVariant,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = env::var_os("DPN_OCR_REC_MULTILINGUAL_MODEL") {
+        let rec_path = PathBuf::from(path);
+        if !rec_path.is_file() {
+            bail!(
+                "DPN_OCR_REC_MULTILINGUAL_MODEL is set but file does not exist: '{}'",
+                rec_path.display()
+            );
+        }
+        return Ok(Some(rec_path));
+    }
+
+    let mut candidates: Vec<String> = match variant {
+        PpOcrVariant::V3 => vec![
+            "multilingual_PP-OCRv3_rec_infer.onnx".to_string(),
+            "multilingual_PP-OCRv4_rec_infer.onnx".to_string(),
+            "multi_language_PP-OCRv3_rec_infer.onnx".to_string(),
+            "arabic_PP-OCRv3_rec_infer.onnx".to_string(),
+            "cyrillic_PP-OCRv3_rec_infer.onnx".to_string(),
+            "devanagari_PP-OCRv3_rec_infer.onnx".to_string(),
+        ],
+        PpOcrVariant::V4 => vec![
+            "multilingual_PP-OCRv4_rec_infer.onnx".to_string(),
+            "multilingual_PP-OCRv3_rec_infer.onnx".to_string(),
+            "multi_language_PP-OCRv4_rec_infer.onnx".to_string(),
+            "arabic_PP-OCRv4_rec_infer.onnx".to_string(),
+            "cyrillic_PP-OCRv4_rec_infer.onnx".to_string(),
+            "devanagari_PP-OCRv4_rec_infer.onnx".to_string(),
+        ],
+    };
+    if let Some(path) = discover_local_multilingual_rec_model(model_dir) {
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            candidates.insert(0, name.to_string());
+        }
+    }
+    for candidate in candidates {
+        let path = model_dir.join(candidate);
+        if path.is_file() {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 pub(in crate::subtitle_ocr) fn resolve_optional_korean_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -211,6 +262,46 @@ pub(in crate::subtitle_ocr) fn resolve_optional_korean_rec_model(
         "korean",
         variant,
     )
+}
+
+/// Scans the model directory for multilingual/non-Latin PP-OCR recognizer files.
+fn discover_local_multilingual_rec_model(model_dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(model_dir).ok()?;
+    let mut preferred: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("onnx") {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let lower = file_name.to_ascii_lowercase();
+        if !(lower.contains("rec") && lower.contains("pp-ocr")) {
+            continue;
+        }
+        if lower.contains("multilingual")
+            || lower.contains("arabic")
+            || lower.contains("cyrillic")
+            || lower.contains("devanagari")
+        {
+            return Some(path);
+        }
+        // As a weak fallback, accept non-Latin dedicated rec models as "multilingual enough".
+        if preferred.is_none()
+            && (lower.contains("greek")
+                || lower.contains("hebrew")
+                || lower.contains("thai")
+                || lower.contains("tamil")
+                || lower.contains("bengali"))
+        {
+            preferred = Some(path);
+        }
+    }
+    preferred
 }
 
 pub(in crate::subtitle_ocr) fn resolve_optional_cjk_rec_model(

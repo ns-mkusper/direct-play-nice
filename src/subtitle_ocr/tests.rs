@@ -223,8 +223,8 @@ fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
     assert_eq!(rec_profile_for_language("kor"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("ko"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("zho"), OcrRecProfile::Cjk);
-    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::English);
-    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::Multilingual);
+    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::Multilingual);
     assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::Latin);
 }
 
@@ -235,7 +235,10 @@ fn rec_profile_routing_respects_latin_script_hint() {
 
 #[test]
 fn rec_profile_routing_uses_script_subtags_when_present() {
-    assert_eq!(rec_profile_for_language("sr-Cyrl"), OcrRecProfile::English);
+    assert_eq!(
+        rec_profile_for_language("sr-Cyrl"),
+        OcrRecProfile::Multilingual
+    );
     assert_eq!(rec_profile_for_language("zh-Hant"), OcrRecProfile::Cjk);
     assert_eq!(rec_profile_for_language("ko-Hang"), OcrRecProfile::Korean);
 }
@@ -557,6 +560,36 @@ fn test_optional_rec_model_auto_provision_failure_returns_none() {
     .expect("resolver should not hard-fail when optional provisioning fails");
     assert!(resolved.is_none());
     mock.assert();
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_prefers_local_file() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
+    let mut f = File::create(&local).unwrap();
+    f.write_all(b"local-multi").unwrap();
+
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect("resolver should not error");
+    let resolved = resolved.expect("expected local multilingual rec model");
+    assert_eq!(resolved, local);
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_env_override_wins() {
+    let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
+    let tmp = TempDir::new().unwrap();
+    let manual = tmp.path().join("manual_multi.onnx");
+    let mut f = File::create(&manual).unwrap();
+    f.write_all(b"manual-multi").unwrap();
+
+    std::env::set_var(env_key, &manual);
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V3)
+        .expect("resolver should not error");
+    std::env::remove_var(env_key);
+
+    let resolved = resolved.expect("expected env override model");
+    assert_eq!(resolved, manual);
 }
 
 fn is_skippable_ort_runtime_error(msg: &str) -> bool {

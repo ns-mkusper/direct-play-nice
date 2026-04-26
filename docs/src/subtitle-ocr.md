@@ -59,8 +59,8 @@ Default model filenames:
 - v3: `ch_PP-OCRv3_det_infer.onnx`, `ch_ppocr_mobile_v2.0_cls_train.onnx`,
   `en_PP-OCRv3_rec_infer.onnx`
 
-Optional multilingual rec models are also auto-provisioned (downloaded on first
-use if missing in the model directory):
+Optional profile rec models are also auto-provisioned (downloaded on first use
+if missing in the model directory):
 
 - `latin_PP-OCRv3_rec_mobile.onnx`
 - `japan_PP-OCRv4_rec_mobile.onnx`
@@ -70,14 +70,21 @@ use if missing in the model directory):
 Override paths for these optional profiles with:
 
 - `DPN_OCR_REC_LATIN_MODEL`
+- `DPN_OCR_REC_MULTILINGUAL_MODEL`
 - `DPN_OCR_REC_JAPANESE_MODEL`
 - `DPN_OCR_REC_KOREAN_MODEL`
 - `DPN_OCR_REC_CJK_MODEL`
 
+`DPN_OCR_REC_MULTILINGUAL_MODEL` is local-first: if unset, OCR auto-detects a
+compatible multilingual recognizer already present in the model directory
+(for example `multilingual_PP-OCRv4_rec_infer.onnx`) and uses it when script
+routing targets multilingual coverage. Unlike latin/japanese/korean/cjk
+profiles, this profile is not downloaded automatically.
+
 Override recognition profile routing (language -> profile) with:
 
 - `DPN_OCR_REC_PROFILE_OVERRIDES`
-  Example: `spa=latin,rus=english,sr-Latn=latin`
+  Example: `spa=latin,rus=multilingual,sr-Latn=latin`
   Script tags are also recognized automatically (for example `zh-Hant`, `sr-Cyrl`, `sr-Latn`).
 - `DPN_OCR_LANGUAGE_SCRIPT_HINTS`
   Example: `rus=Cyrl,ara=Arab,srp=Cyrl`

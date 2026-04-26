@@ -150,6 +150,7 @@ impl PpOcrVariant {
 pub(in crate::subtitle_ocr) struct PpOcrEngine {
     pub(in crate::subtitle_ocr) english_ocr: OcrLite,
     pub(in crate::subtitle_ocr) latin_ocr: Option<OcrLite>,
+    pub(in crate::subtitle_ocr) multilingual_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) japanese_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) korean_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) cjk_ocr: Option<OcrLite>,

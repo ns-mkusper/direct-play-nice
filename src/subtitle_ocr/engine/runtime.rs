@@ -13,8 +13,9 @@ use std::sync::atomic::Ordering;
 use super::{
     build_execution_providers, ensure_ppocr_models, force_cpu_execution_providers,
     resolve_optional_cjk_rec_model, resolve_optional_japanese_rec_model,
-    resolve_optional_korean_rec_model, resolve_optional_latin_rec_model, skip_ppocr_cls,
-    PpOcrEngine, PpOcrVariant, FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT,
+    resolve_optional_korean_rec_model, resolve_optional_latin_rec_model,
+    resolve_optional_multilingual_rec_model, skip_ppocr_cls, PpOcrEngine, PpOcrVariant,
+    FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT,
 };
 
 /// Builds a clear GPU-required error with the original initialization failure attached.
@@ -140,6 +141,7 @@ impl PpOcrEngine {
     ) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
         let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
+        let multilingual_rec = resolve_optional_multilingual_rec_model(model_dir, variant)?;
         let japanese_rec = resolve_optional_japanese_rec_model(model_dir, variant)?;
         let korean_rec = resolve_optional_korean_rec_model(model_dir, variant)?;
         let cjk_rec = resolve_optional_cjk_rec_model(model_dir, variant)?;
@@ -178,6 +180,13 @@ impl PpOcrEngine {
             None
         };
 
+        let multilingual_ocr = init_optional_rec_profile(
+            variant,
+            "multilingual",
+            &models.det,
+            &models.cls,
+            multilingual_rec,
+        );
         let japanese_ocr =
             init_optional_rec_profile(variant, "japanese", &models.det, &models.cls, japanese_rec);
         let korean_ocr =
@@ -187,6 +196,7 @@ impl PpOcrEngine {
         Ok(Self {
             english_ocr,
             latin_ocr,
+            multilingual_ocr,
             japanese_ocr,
             korean_ocr,
             cjk_ocr,

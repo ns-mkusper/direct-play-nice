@@ -3,6 +3,7 @@
 # `language_profiles` forces a profile for specific language tags/codes.
 # `script_profiles` maps BCP-47 script subtags to a profile.
 # `likely_scripts` fills script when subtitles only provide language codes.
+# Valid profiles: english, latin, multilingual, japanese, korean, cjk.
 
 default_profile = "latin"
 
@@ -30,23 +31,23 @@ hani = "cjk"
 hans = "cjk"
 hant = "cjk"
 bopo = "cjk"
-cyrl = "english"
-arab = "english"
-hebr = "english"
-grek = "english"
-deva = "english"
-thai = "english"
-beng = "english"
-taml = "english"
-telu = "english"
-knda = "english"
-mlym = "english"
-sinh = "english"
-laoo = "english"
-khmr = "english"
-mymr = "english"
-ethi = "english"
-tibt = "english"
+cyrl = "multilingual"
+arab = "multilingual"
+hebr = "multilingual"
+grek = "multilingual"
+deva = "multilingual"
+thai = "multilingual"
+beng = "multilingual"
+taml = "multilingual"
+telu = "multilingual"
+knda = "multilingual"
+mlym = "multilingual"
+sinh = "multilingual"
+laoo = "multilingual"
+khmr = "multilingual"
+mymr = "multilingual"
+ethi = "multilingual"
+tibt = "multilingual"
 
 [likely_scripts]
 eng = "Latn"

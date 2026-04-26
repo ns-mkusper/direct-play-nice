@@ -22,6 +22,7 @@ use super::{ExternalEngine, OcrLine, OcrOutput, PpOcrEngine, SubtitleConverter, 
 pub(in crate::subtitle_ocr) enum OcrRecProfile {
     English,
     Latin,
+    Multilingual,
     Japanese,
     Korean,
     Cjk,
@@ -72,6 +73,7 @@ impl SubtitleConverter for PpOcrEngine {
         let PpOcrEngine {
             english_ocr,
             latin_ocr,
+            multilingual_ocr,
             japanese_ocr,
             korean_ocr,
             cjk_ocr,
@@ -102,6 +104,13 @@ impl SubtitleConverter for PpOcrEngine {
                 english_ocr,
                 "latin",
                 None,
+            ),
+            OcrRecProfile::Multilingual => select_profile_ocr_with_fallback(
+                multilingual_ocr.as_mut(),
+                cjk_ocr.as_mut(),
+                english_ocr,
+                "multilingual",
+                Some("cjk"),
             ),
             OcrRecProfile::English => (english_ocr, "english"),
         };
@@ -223,6 +232,7 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
             let profile = match profile.trim().to_ascii_lowercase().as_str() {
                 "english" | "eng" => OcrRecProfile::English,
                 "latin" | "latn" => OcrRecProfile::Latin,
+                "multilingual" | "multi" => OcrRecProfile::Multilingual,
                 "japanese" | "jpn" | "ja" => OcrRecProfile::Japanese,
                 "korean" | "kor" | "ko" => OcrRecProfile::Korean,
                 "cjk" | "zh" | "zho" => OcrRecProfile::Cjk,
@@ -344,6 +354,7 @@ fn parse_profile_name(value: &str) -> Option<OcrRecProfile> {
     match value.trim().to_ascii_lowercase().as_str() {
         "english" | "eng" => Some(OcrRecProfile::English),
         "latin" | "latn" => Some(OcrRecProfile::Latin),
+        "multilingual" | "multi" => Some(OcrRecProfile::Multilingual),
         "japanese" | "jpn" | "ja" => Some(OcrRecProfile::Japanese),
         "korean" | "kor" | "ko" => Some(OcrRecProfile::Korean),
         "cjk" | "zh" | "zho" => Some(OcrRecProfile::Cjk),
