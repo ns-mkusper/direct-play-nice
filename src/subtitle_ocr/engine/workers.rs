@@ -1,3 +1,8 @@
+//! OCR worker planning and parallel execution.
+//!
+//! Converts planned OCR tasks into worker batches, assigns CUDA devices, runs
+//! per-worker converters, and finalizes serialized subtitle outputs.
+
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use std::env;

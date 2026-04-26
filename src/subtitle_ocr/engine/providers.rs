@@ -1,3 +1,8 @@
+//! ONNX Runtime execution-provider configuration.
+//!
+//! Encapsulates CUDA/DirectML/CoreML/CPU provider selection and legacy GPU
+//! compatibility toggles used by PP-OCR session initialization.
+
 use anyhow::{bail, Result};
 use log::{debug, info, warn};
 #[cfg(any(target_os = "linux", target_os = "windows"))]

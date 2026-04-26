@@ -1,3 +1,8 @@
+//! OCR engine selection and bootstrap.
+//!
+//! Resolves `auto` behavior, applies GPU policy gates, and returns initialized
+//! converter instances for worker execution.
+
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use std::env;

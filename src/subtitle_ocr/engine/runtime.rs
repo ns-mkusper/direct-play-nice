@@ -1,3 +1,8 @@
+//! Runtime initialization for PP-OCR sessions.
+//!
+//! Initializes ORT environment state, builds OcrLite instances per recognizer
+//! profile, and manages per-thread CUDA device affinity for workers.
+
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
 use ort::session::builder::SessionBuilder;

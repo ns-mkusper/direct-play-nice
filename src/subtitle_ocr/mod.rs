@@ -1,3 +1,10 @@
+//! Subtitle OCR subsystem for bitmap subtitle streams.
+//!
+//! This module owns end-to-end OCR conversion used by the transcoder path:
+//! discover bitmap subtitle streams, run OCR, and remux text subtitles.
+//! It is the integration layer over `engine`, `ocr_pipeline`, `text_processing`,
+//! `text_render`, `language`, and `muxing`.
+
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};

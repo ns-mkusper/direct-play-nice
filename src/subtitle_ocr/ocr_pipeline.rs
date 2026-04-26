@@ -1,3 +1,8 @@
+//! Per-stream OCR pipeline execution.
+//!
+//! This module handles bitmap subtitle packet decode, rectangle extraction,
+//! OCR invocation, and cue assembly for a single subtitle stream.
+
 use super::*;
 pub(super) fn discover_candidates(
     input_file: &CStr,

@@ -1,3 +1,8 @@
+//! Shared OCR engine data model.
+//!
+//! Defines task/output structs, OCR line/cue representations, engine variants,
+//! and static flags/caches used across OCR engine modules.
+
 use anyhow::Result;
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use std::collections::HashSet;

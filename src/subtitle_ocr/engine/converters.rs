@@ -1,3 +1,8 @@
+//! Engine-specific OCR adapters.
+//!
+//! Implements `SubtitleConverter` for Tesseract, external command OCR, and
+//! PP-OCR, including language/script to recognizer-profile routing.
+
 use anyhow::{anyhow, Result};
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use std::path::Path;

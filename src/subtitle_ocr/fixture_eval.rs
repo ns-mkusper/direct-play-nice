@@ -1,3 +1,8 @@
+//! Fixture-based OCR evaluation utilities.
+//!
+//! Provides repeatable accuracy scoring against golden OCR fixtures for
+//! regression detection and tuning comparisons.
+
 use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FixtureEvalMode {

@@ -1,3 +1,8 @@
+//! Model provisioning and validation for PP-OCR.
+//!
+//! Resolves model directory paths, downloads expected ONNX assets, and handles
+//! optional recognizer profiles (latin/japanese/korean/cjk).
+
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
 use sha2::{Digest, Sha256};
