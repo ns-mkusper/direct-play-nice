@@ -7,8 +7,6 @@ for bitmap subtitle streams; text subtitles are muxed directly when compatible.
 
 For official GPU architecture/provider references and compatibility links, see
 [Hardware Acceleration](./hardware-acceleration.md).
-For implementation-level internals and change points, see
-[OCR Engine Architecture](./ocr-engine-architecture.md).
 
 ## Defaults
 
@@ -81,6 +79,8 @@ Override recognition profile routing (language -> profile) with:
 - `DPN_OCR_REC_PROFILE_OVERRIDES`
   Example: `spa=latin,rus=english,sr-Latn=latin`
   Script tags are also recognized automatically (for example `zh-Hant`, `sr-Cyrl`, `sr-Latn`).
+- `DPN_OCR_LANGUAGE_SCRIPT_HINTS`
+  Example: `rus=Cyrl,ara=Arab,srp=Cyrl`
 
 ## Config-file example
 

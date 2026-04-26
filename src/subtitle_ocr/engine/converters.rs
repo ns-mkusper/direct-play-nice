@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use paddle_ocr_rs::ocr_lite::OcrLite;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -19,6 +20,7 @@ pub(in crate::subtitle_ocr) enum OcrRecProfile {
 }
 
 static REC_PROFILE_OVERRIDES: OnceLock<Vec<(String, OcrRecProfile)>> = OnceLock::new();
+static LANGUAGE_SCRIPT_HINTS: OnceLock<Vec<(String, String)>> = OnceLock::new();
 
 impl SubtitleConverter for TesseractEngine {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
@@ -58,41 +60,41 @@ impl SubtitleConverter for ExternalEngine {
 
 impl SubtitleConverter for PpOcrEngine {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
+        let PpOcrEngine {
+            english_ocr,
+            latin_ocr,
+            japanese_ocr,
+            korean_ocr,
+            cjk_ocr,
+            variant,
+        } = self;
         let rec_profile = rec_profile_for_language(language);
         let (ocr, rec_label) = match rec_profile {
-            OcrRecProfile::Japanese => {
-                if let Some(japanese_ocr) = self.japanese_ocr.as_mut() {
-                    (japanese_ocr, "japanese")
-                } else if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
-                    (cjk_ocr, "cjk")
-                } else {
-                    (&mut self.english_ocr, "english")
-                }
-            }
-            OcrRecProfile::Korean => {
-                if let Some(korean_ocr) = self.korean_ocr.as_mut() {
-                    (korean_ocr, "korean")
-                } else if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
-                    (cjk_ocr, "cjk")
-                } else {
-                    (&mut self.english_ocr, "english")
-                }
-            }
+            OcrRecProfile::Japanese => select_profile_ocr_with_fallback(
+                japanese_ocr.as_mut(),
+                cjk_ocr.as_mut(),
+                english_ocr,
+                "japanese",
+                Some("cjk"),
+            ),
+            OcrRecProfile::Korean => select_profile_ocr_with_fallback(
+                korean_ocr.as_mut(),
+                cjk_ocr.as_mut(),
+                english_ocr,
+                "korean",
+                Some("cjk"),
+            ),
             OcrRecProfile::Cjk => {
-                if let Some(cjk_ocr) = self.cjk_ocr.as_mut() {
-                    (cjk_ocr, "cjk")
-                } else {
-                    (&mut self.english_ocr, "english")
-                }
+                select_profile_ocr_with_fallback(cjk_ocr.as_mut(), None, english_ocr, "cjk", None)
             }
-            OcrRecProfile::Latin => {
-                if let Some(latin_ocr) = self.latin_ocr.as_mut() {
-                    (latin_ocr, "latin")
-                } else {
-                    (&mut self.english_ocr, "english")
-                }
-            }
-            OcrRecProfile::English => (&mut self.english_ocr, "english"),
+            OcrRecProfile::Latin => select_profile_ocr_with_fallback(
+                latin_ocr.as_mut(),
+                None,
+                english_ocr,
+                "latin",
+                None,
+            ),
+            OcrRecProfile::English => (english_ocr, "english"),
         };
 
         let img = load_image(image_path)?;
@@ -101,7 +103,7 @@ impl SubtitleConverter for PpOcrEngine {
             .map_err(|err| {
                 anyhow!(
                     "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
-                    self.variant.label(),
+                    variant.label(),
                     rec_label,
                     language,
                     err,
@@ -131,6 +133,22 @@ impl SubtitleConverter for PpOcrEngine {
     }
 }
 
+fn select_profile_ocr_with_fallback<'a>(
+    primary: Option<&'a mut OcrLite>,
+    secondary: Option<&'a mut OcrLite>,
+    english: &'a mut OcrLite,
+    primary_label: &'static str,
+    secondary_label: Option<&'static str>,
+) -> (&'a mut OcrLite, &'static str) {
+    if let Some(ocr) = primary {
+        return (ocr, primary_label);
+    }
+    if let (Some(ocr), Some(label)) = (secondary, secondary_label) {
+        return (ocr, label);
+    }
+    (english, "english")
+}
+
 /// Maps a language tag to the PP-OCR recognition profile used for model selection.
 ///
 /// Routing policy:
@@ -151,11 +169,8 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRe
         "kor" | "ko" => OcrRecProfile::Korean,
         "chi_sim" | "chi_tra" | "chi" | "zho" | "zh" => OcrRecProfile::Cjk,
         _ => {
-            if let Some(script) = script_subtag(language) {
-                return profile_for_script(script);
-            }
-            if known_non_latin_code(&normalized) {
-                return OcrRecProfile::English;
+            if let Some(script) = resolved_script(language, &normalized) {
+                return profile_for_script(&script);
             }
             OcrRecProfile::Latin
         }
@@ -207,6 +222,13 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
         .collect()
 }
 
+fn resolved_script(language: &str, normalized: &str) -> Option<String> {
+    if let Some(script) = script_subtag(language) {
+        return Some(script.to_string());
+    }
+    configured_script_hint(language, normalized)
+}
+
 /// Extracts the optional 4-letter BCP-47 script subtag (`Latn`, `Cyrl`, ...)
 /// from a language tag such as `sr-Latn-RS`.
 fn script_subtag(language: &str) -> Option<&str> {
@@ -214,6 +236,42 @@ fn script_subtag(language: &str) -> Option<&str> {
         .trim()
         .split(['-', '_'])
         .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_alphabetic()))
+}
+
+/// Resolves language->script hints from `DPN_OCR_LANGUAGE_SCRIPT_HINTS`.
+///
+/// Example:
+/// `DPN_OCR_LANGUAGE_SCRIPT_HINTS=rus=Cyrl,ara=Arab,srp=Cyrl`
+fn configured_script_hint(language: &str, normalized: &str) -> Option<String> {
+    let hints = LANGUAGE_SCRIPT_HINTS.get_or_init(parse_language_script_hints);
+    if hints.is_empty() {
+        return None;
+    }
+    let input = language.trim().to_ascii_lowercase();
+    let mapped = map_language_tag_to_tesseract(language).map(|s| s.to_ascii_lowercase());
+    for (code, script) in hints {
+        if code == &input || code == normalized || mapped.as_deref() == Some(code.as_str()) {
+            return Some(script.clone());
+        }
+    }
+    None
+}
+
+fn parse_language_script_hints() -> Vec<(String, String)> {
+    let Ok(raw) = std::env::var("DPN_OCR_LANGUAGE_SCRIPT_HINTS") else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .filter_map(|entry| {
+            let (lang, script) = entry.split_once('=')?;
+            let lang = lang.trim().to_ascii_lowercase();
+            let script = script.trim().to_string();
+            if lang.is_empty() || script.is_empty() {
+                return None;
+            }
+            Some((lang, script))
+        })
+        .collect()
 }
 
 /// Maps a BCP-47 script subtag into a rec profile.
@@ -227,36 +285,4 @@ fn profile_for_script(script: &str) -> OcrRecProfile {
         "hani" | "hans" | "hant" | "bopo" => OcrRecProfile::Cjk,
         _ => OcrRecProfile::English,
     }
-}
-
-/// Returns `true` for language codes that are known to be predominantly non-Latin
-/// and have no dedicated profile in the current PP-OCR model set.
-fn known_non_latin_code(normalized: &str) -> bool {
-    matches!(
-        normalized,
-        "ara"
-            | "heb"
-            | "rus"
-            | "ukr"
-            | "ell"
-            | "hin"
-            | "tha"
-            | "fas"
-            | "per"
-            | "urd"
-            | "pus"
-            | "tam"
-            | "tel"
-            | "kan"
-            | "mal"
-            | "ben"
-            | "lao"
-            | "khm"
-            | "mya"
-            | "amh"
-            | "tir"
-            | "dzo"
-            | "bod"
-            | "tib"
-    )
 }

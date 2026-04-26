@@ -223,8 +223,8 @@ fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
     assert_eq!(rec_profile_for_language("kor"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("ko"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("zho"), OcrRecProfile::Cjk);
-    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::English);
-    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::Latin);
+    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::Latin);
     assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::Latin);
 }
 
