@@ -207,7 +207,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_multilingual_rec_model(
         return Ok(Some(rec_path));
     }
 
-    let mut candidates: Vec<String> = match variant {
+    let candidates: Vec<String> = match variant {
         PpOcrVariant::V3 => vec![
             "multilingual_PP-OCRv3_rec_infer.onnx".to_string(),
             "multilingual_PP-OCRv4_rec_infer.onnx".to_string(),
@@ -225,18 +225,13 @@ pub(in crate::subtitle_ocr) fn resolve_optional_multilingual_rec_model(
             "devanagari_PP-OCRv4_rec_infer.onnx".to_string(),
         ],
     };
-    if let Some(path) = discover_local_multilingual_rec_model(model_dir) {
-        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-            candidates.insert(0, name.to_string());
-        }
-    }
     for candidate in candidates {
         let path = model_dir.join(candidate);
         if path.is_file() {
             return Ok(Some(path));
         }
     }
-    Ok(None)
+    Ok(discover_local_multilingual_rec_model(model_dir))
 }
 
 pub(in crate::subtitle_ocr) fn resolve_optional_korean_rec_model(

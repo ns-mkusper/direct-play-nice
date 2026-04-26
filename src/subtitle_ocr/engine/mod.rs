@@ -17,6 +17,8 @@ mod providers;
 mod runtime;
 mod types;
 mod workers;
+#[cfg(test)]
+pub(in crate::subtitle_ocr) use converters::rec_profile_for_language_with_test_config;
 #[allow(unused_imports)]
 pub(in crate::subtitle_ocr) use converters::{rec_profile_for_language, OcrRecProfile};
 pub(super) use factory::*;

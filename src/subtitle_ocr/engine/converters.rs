@@ -176,10 +176,20 @@ fn select_profile_ocr_with_fallback<'a>(
 /// - final safe fallback (`Latin`) so OCR still runs for unclassified tags
 pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRecProfile {
     let manifest = ROUTING_MANIFEST.get_or_init(load_routing_manifest);
-    if let Some(profile) = rec_profile_override(language) {
+    let overrides = REC_PROFILE_OVERRIDES.get_or_init(parse_rec_profile_overrides);
+    let hints = LANGUAGE_SCRIPT_HINTS.get_or_init(parse_language_script_hints);
+    rec_profile_for_language_with_inputs(language, manifest, overrides, hints)
+}
+
+fn rec_profile_for_language_with_inputs(
+    language: &str,
+    manifest: &RoutingManifest,
+    overrides: &[(String, OcrRecProfile)],
+    script_hints: &[(String, String)],
+) -> OcrRecProfile {
+    if let Some(profile) = rec_profile_override_from(overrides, language) {
         return profile;
     }
-
     let normalized =
         map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
     for key in candidate_language_keys(language, &normalized) {
@@ -190,7 +200,7 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRe
         }
     }
 
-    if let Some(script) = resolved_script(language, &normalized, manifest) {
+    if let Some(script) = resolved_script(language, &normalized, manifest, script_hints) {
         return profile_for_script(&script, manifest);
     }
 
@@ -201,8 +211,10 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRe
 ///
 /// Example:
 /// `DPN_OCR_REC_PROFILE_OVERRIDES=rus=english,sr-Latn=latin,ja=japanese`
-fn rec_profile_override(language: &str) -> Option<OcrRecProfile> {
-    let overrides = REC_PROFILE_OVERRIDES.get_or_init(parse_rec_profile_overrides);
+fn rec_profile_override_from(
+    overrides: &[(String, OcrRecProfile)],
+    language: &str,
+) -> Option<OcrRecProfile> {
     if overrides.is_empty() {
         return None;
     }
@@ -222,6 +234,10 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
     let Ok(raw) = std::env::var("DPN_OCR_REC_PROFILE_OVERRIDES") else {
         return Vec::new();
     };
+    parse_rec_profile_overrides_from_raw(&raw)
+}
+
+fn parse_rec_profile_overrides_from_raw(raw: &str) -> Vec<(String, OcrRecProfile)> {
     raw.split(',')
         .filter_map(|entry| {
             let (lang, profile) = entry.split_once('=')?;
@@ -243,11 +259,16 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
         .collect()
 }
 
-fn resolved_script(language: &str, normalized: &str, manifest: &RoutingManifest) -> Option<String> {
+fn resolved_script(
+    language: &str,
+    normalized: &str,
+    manifest: &RoutingManifest,
+    script_hints: &[(String, String)],
+) -> Option<String> {
     if let Some(script) = script_subtag(language) {
         return Some(script.to_string());
     }
-    configured_script_hint(language, normalized)
+    configured_script_hint_from(script_hints, language, normalized)
         .or_else(|| likely_script_from_manifest(language, normalized, manifest))
 }
 
@@ -264,8 +285,11 @@ fn script_subtag(language: &str) -> Option<&str> {
 ///
 /// Example:
 /// `DPN_OCR_LANGUAGE_SCRIPT_HINTS=rus=Cyrl,ara=Arab,srp=Cyrl`
-fn configured_script_hint(language: &str, normalized: &str) -> Option<String> {
-    let hints = LANGUAGE_SCRIPT_HINTS.get_or_init(parse_language_script_hints);
+fn configured_script_hint_from(
+    hints: &[(String, String)],
+    language: &str,
+    normalized: &str,
+) -> Option<String> {
     if hints.is_empty() {
         return None;
     }
@@ -324,6 +348,10 @@ fn parse_language_script_hints() -> Vec<(String, String)> {
     let Ok(raw) = std::env::var("DPN_OCR_LANGUAGE_SCRIPT_HINTS") else {
         return Vec::new();
     };
+    parse_language_script_hints_from_raw(&raw)
+}
+
+fn parse_language_script_hints_from_raw(raw: &str) -> Vec<(String, String)> {
     raw.split(',')
         .filter_map(|entry| {
             let (lang, script) = entry.split_once('=')?;
@@ -416,5 +444,43 @@ fn default_routing_manifest_file() -> RoutingManifestFile {
         language_profiles: HashMap::new(),
         script_profiles: HashMap::new(),
         likely_scripts: HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+pub(in crate::subtitle_ocr) fn rec_profile_for_language_with_test_config(
+    language: &str,
+    manifest_toml: Option<&str>,
+    overrides_raw: Option<&str>,
+    script_hints_raw: Option<&str>,
+) -> OcrRecProfile {
+    let manifest = manifest_toml
+        .map(parse_routing_manifest_from_raw)
+        .unwrap_or_else(load_routing_manifest);
+    let overrides = overrides_raw
+        .map(parse_rec_profile_overrides_from_raw)
+        .unwrap_or_default();
+    let script_hints = script_hints_raw
+        .map(parse_language_script_hints_from_raw)
+        .unwrap_or_default();
+    rec_profile_for_language_with_inputs(language, &manifest, &overrides, &script_hints)
+}
+
+#[cfg(test)]
+fn parse_routing_manifest_from_raw(raw: &str) -> RoutingManifest {
+    let parsed =
+        toml::from_str::<RoutingManifestFile>(raw).unwrap_or_else(|_| RoutingManifestFile {
+            default_profile: "latin".to_string(),
+            language_profiles: HashMap::new(),
+            script_profiles: HashMap::new(),
+            likely_scripts: HashMap::new(),
+        });
+    let default_profile =
+        parse_profile_name(&parsed.default_profile).unwrap_or(OcrRecProfile::Latin);
+    RoutingManifest {
+        default_profile,
+        language_profiles: normalize_manifest_keys(parsed.language_profiles),
+        script_profiles: normalize_manifest_keys(parsed.script_profiles),
+        likely_scripts: normalize_manifest_keys(parsed.likely_scripts),
     }
 }
