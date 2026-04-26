@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
-## [0.1.0-alpha.12] - 2026-04-26
+## [0.1.0-beta.1] - 2026-04-26
 
 ### 📌 Release Highlights
 
