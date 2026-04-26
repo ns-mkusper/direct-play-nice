@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.1.0-beta.1] - 2026-04-26
 
-### 📌 Release Highlights
+### 📌 Beta 1 Highlights
 
 - Landed a large OCR/transcoding refactor focused on clearer module boundaries,
   better reuse, and lower maintenance overhead across the core pipeline.
