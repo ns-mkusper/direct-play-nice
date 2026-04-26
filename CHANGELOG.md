@@ -8,6 +8,47 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [0.1.0-alpha.12] - 2026-04-26
+
+### 📌 Release Highlights
+
+- Landed a large OCR/transcoding refactor focused on clearer module boundaries,
+  better reuse, and lower maintenance overhead across the core pipeline.
+- Removed vendored third-party OCR source trees from the repository and moved to
+  upstream crate and runtime consumption, reducing repo size and vendoring risk.
+- Added stronger benchmark and fixture-evaluation coverage for OCR quality,
+  fallback behavior, and GPU execution health.
+- Hardened benchmark runner orchestration so post-merge release validation is
+  more deterministic on the self-hosted Plex benchmark runner.
+
+### 🧠 OCR & Language Pipeline
+
+- Added fixture-driven OCR evaluation (`--probe-ocr-fixtures`) with truth-backed
+  CER/WER/similarity reporting for `hybrid`, `strict-gain`, and `pure-onnx`
+  modes.
+- Expanded OCR benchmark diagnostics with explicit fallback counts/rates and
+  averaged confidence/score signals to make quality regressions visible.
+- Improved fallback policy transparency by logging effective non-English
+  Tesseract fallback settings and warning when forced fallback policy is enabled.
+
+### 🧱 Architecture & Code Quality
+
+- Split and clarified core OCR/transcoder responsibilities across dedicated
+  modules (engine setup/core/pipeline/muxing/render and related entrypoints).
+- Reworked broad import patterns and low-signal inline documentation toward
+  clearer contracts and easier refactors.
+- Performed style and cleanup passes to reduce duplication, improve naming and
+  readability, and tighten idiomatic Rust usage under strict `clippy`.
+
+### ⚙️ CI, Benchmarks, and Release Flow
+
+- Added benchmark-runner smoke validation workflow to verify dependency/toolchain
+  readiness and benchmark source availability before release-critical merges.
+- Kept strict verification gates (`fmt`, strict `clippy`, docs with warnings as
+  errors, targeted CLI/OCR tests, concurrency scripts) aligned with refactors.
+- Confirmed post-merge benchmark execution on the self-hosted runner with
+  hardware-accelerated transcode and multi-GPU OCR telemetry artifacts.
+
 ## [0.1.0-alpha.5] - 2026-04-21
 
 ### 📌 Release Highlights
