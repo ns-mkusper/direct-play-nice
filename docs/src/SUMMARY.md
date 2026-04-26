@@ -6,6 +6,7 @@
 - [Command Reference](./command-reference.md)
 - [Quality Controls](./quality-controls.md)
 - [Subtitle OCR](./subtitle-ocr.md)
+- [OCR Engine Architecture](./ocr-engine-architecture.md)
 - [Hardware Acceleration](./hardware-acceleration.md)
 - [Plex Refresh](./plex-refresh.md)
 - [Sonarr/Radarr Integration](./servarr.md)

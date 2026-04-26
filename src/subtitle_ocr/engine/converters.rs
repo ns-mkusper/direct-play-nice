@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use super::super::language::map_language_tag_to_tesseract;
 use super::super::text_render::{
@@ -16,6 +17,8 @@ pub(in crate::subtitle_ocr) enum OcrRecProfile {
     Korean,
     Cjk,
 }
+
+static REC_PROFILE_OVERRIDES: OnceLock<Vec<(String, OcrRecProfile)>> = OnceLock::new();
 
 impl SubtitleConverter for TesseractEngine {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
@@ -130,8 +133,16 @@ impl SubtitleConverter for PpOcrEngine {
 
 /// Maps a language tag to the PP-OCR recognition profile used for model selection.
 ///
-/// Unknown tags intentionally fall back to `English` so OCR can still proceed.
+/// Routing policy:
+/// - explicit language aliases for profiles with dedicated recognizers
+/// - BCP-47 script hints (`xx-Latn`, `xx-Hant`, ...)
+/// - user overrides via `DPN_OCR_REC_PROFILE_OVERRIDES`
+/// - final safe fallback (`Latin`) so OCR still runs for unclassified tags
 pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRecProfile {
+    if let Some(profile) = rec_profile_override(language) {
+        return profile;
+    }
+
     let normalized =
         map_language_tag_to_tesseract(language).unwrap_or_else(|| language.to_ascii_lowercase());
     match normalized.as_str() {
@@ -139,10 +150,113 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRe
         "jpn" | "ja" => OcrRecProfile::Japanese,
         "kor" | "ko" => OcrRecProfile::Korean,
         "chi_sim" | "chi_tra" | "chi" | "zho" | "zh" => OcrRecProfile::Cjk,
-        "fra" | "fre" | "spa" | "deu" | "ger" | "ita" | "por" | "nld" | "swe" | "dan" | "nor"
-        | "fin" | "ron" | "pol" | "ces" | "slk" | "hun" | "tur" | "cat" | "glg" | "ind" | "vie" => {
+        _ => {
+            if let Some(script) = script_subtag(language) {
+                return profile_for_script(script);
+            }
+            if known_non_latin_code(&normalized) {
+                return OcrRecProfile::English;
+            }
             OcrRecProfile::Latin
         }
+    }
+}
+
+/// Resolves an optional operator override from `DPN_OCR_REC_PROFILE_OVERRIDES`.
+///
+/// Example:
+/// `DPN_OCR_REC_PROFILE_OVERRIDES=rus=english,sr-Latn=latin,ja=japanese`
+fn rec_profile_override(language: &str) -> Option<OcrRecProfile> {
+    let overrides = REC_PROFILE_OVERRIDES.get_or_init(parse_rec_profile_overrides);
+    if overrides.is_empty() {
+        return None;
+    }
+    let input = language.trim().to_ascii_lowercase();
+    let mapped = map_language_tag_to_tesseract(language).map(|s| s.to_ascii_lowercase());
+    overrides.iter().find_map(|(code, profile)| {
+        if code == &input || mapped.as_deref() == Some(code.as_str()) {
+            Some(*profile)
+        } else {
+            None
+        }
+    })
+}
+
+/// Parses `DPN_OCR_REC_PROFILE_OVERRIDES` into `(language_code, profile)` entries.
+fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
+    let Ok(raw) = std::env::var("DPN_OCR_REC_PROFILE_OVERRIDES") else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .filter_map(|entry| {
+            let (lang, profile) = entry.split_once('=')?;
+            let lang = lang.trim().to_ascii_lowercase();
+            if lang.is_empty() {
+                return None;
+            }
+            let profile = match profile.trim().to_ascii_lowercase().as_str() {
+                "english" | "eng" => OcrRecProfile::English,
+                "latin" | "latn" => OcrRecProfile::Latin,
+                "japanese" | "jpn" | "ja" => OcrRecProfile::Japanese,
+                "korean" | "kor" | "ko" => OcrRecProfile::Korean,
+                "cjk" | "zh" | "zho" => OcrRecProfile::Cjk,
+                _ => return None,
+            };
+            Some((lang, profile))
+        })
+        .collect()
+}
+
+/// Extracts the optional 4-letter BCP-47 script subtag (`Latn`, `Cyrl`, ...)
+/// from a language tag such as `sr-Latn-RS`.
+fn script_subtag(language: &str) -> Option<&str> {
+    language
+        .trim()
+        .split(['-', '_'])
+        .find(|part| part.len() == 4 && part.chars().all(|ch| ch.is_ascii_alphabetic()))
+}
+
+/// Maps a BCP-47 script subtag into a rec profile.
+///
+/// Scripts without dedicated recognizers route to `English` as the neutral fallback.
+fn profile_for_script(script: &str) -> OcrRecProfile {
+    match script.to_ascii_lowercase().as_str() {
+        "latn" => OcrRecProfile::Latin,
+        "jpan" | "hira" | "kana" => OcrRecProfile::Japanese,
+        "hang" | "kore" => OcrRecProfile::Korean,
+        "hani" | "hans" | "hant" | "bopo" => OcrRecProfile::Cjk,
         _ => OcrRecProfile::English,
     }
+}
+
+/// Returns `true` for language codes that are known to be predominantly non-Latin
+/// and have no dedicated profile in the current PP-OCR model set.
+fn known_non_latin_code(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "ara"
+            | "heb"
+            | "rus"
+            | "ukr"
+            | "ell"
+            | "hin"
+            | "tha"
+            | "fas"
+            | "per"
+            | "urd"
+            | "pus"
+            | "tam"
+            | "tel"
+            | "kan"
+            | "mal"
+            | "ben"
+            | "lao"
+            | "khm"
+            | "mya"
+            | "amh"
+            | "tir"
+            | "dzo"
+            | "bod"
+            | "tib"
+    )
 }

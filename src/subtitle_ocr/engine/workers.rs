@@ -8,12 +8,12 @@ use std::sync::{
 };
 use std::thread;
 
-use super::{
-    create_ocr_engine, force_cpu_execution_providers, ocr_single_stream, set_thread_ocr_cuda_device,
-    write_ass, write_srt, OcrEngine, OcrFormat, OcrSubtitleTrack, OcrTask, OcrTaskOutput,
-    ORT_ENV_GPU_AVAILABLE,
-};
 use super::detect_nvidia_gpu_indexes;
+use super::{
+    create_ocr_engine, force_cpu_execution_providers, ocr_single_stream,
+    set_thread_ocr_cuda_device, write_ass, write_srt, OcrEngine, OcrFormat, OcrSubtitleTrack,
+    OcrTask, OcrTaskOutput, ORT_ENV_GPU_AVAILABLE,
+};
 
 /// Applies `DPN_OCR_CUDA_DEVICES` onto `CUDA_VISIBLE_DEVICES` before OCR initialization.
 ///

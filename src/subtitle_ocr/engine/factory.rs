@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use super::{
     init_ort_environment, init_ppocr_engine, prefer_ppocr_v3_for_legacy_nvidia, require_gpu,
-    resolve_model_dir, DISABLE_TESS_FALLBACK_LOGGED, ExternalEngine, OcrEngine, PpOcrVariant,
-    SubtitleConverter, TesseractEngine,
+    resolve_model_dir, ExternalEngine, OcrEngine, PpOcrVariant, SubtitleConverter, TesseractEngine,
+    DISABLE_TESS_FALLBACK_LOGGED,
 };
 
 /// Selects the effective OCR engine and initializes the first converter instance.

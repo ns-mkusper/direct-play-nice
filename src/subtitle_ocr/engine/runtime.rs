@@ -9,7 +9,7 @@ use super::{
     build_execution_providers, ensure_ppocr_models, force_cpu_execution_providers,
     resolve_optional_cjk_rec_model, resolve_optional_japanese_rec_model,
     resolve_optional_korean_rec_model, resolve_optional_latin_rec_model, skip_ppocr_cls,
-    FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT, PpOcrEngine, PpOcrVariant,
+    PpOcrEngine, PpOcrVariant, FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT,
 };
 
 /// Builds a clear GPU-required error with the original initialization failure attached.
@@ -112,7 +112,9 @@ impl Drop for OcrCudaDeviceGuard {
     }
 }
 
-pub(in crate::subtitle_ocr) fn set_thread_ocr_cuda_device(device_id: Option<i32>) -> OcrCudaDeviceGuard {
+pub(in crate::subtitle_ocr) fn set_thread_ocr_cuda_device(
+    device_id: Option<i32>,
+) -> OcrCudaDeviceGuard {
     let previous = OCR_CUDA_DEVICE_ID.with(|slot| {
         let prev = slot.get();
         slot.set(device_id);
@@ -126,7 +128,11 @@ pub(in crate::subtitle_ocr) fn thread_ocr_cuda_device() -> Option<i32> {
 }
 
 impl PpOcrEngine {
-    pub(in crate::subtitle_ocr) fn new(model_dir: &Path, variant: PpOcrVariant, skip_cls: bool) -> Result<Self> {
+    pub(in crate::subtitle_ocr) fn new(
+        model_dir: &Path,
+        variant: PpOcrVariant,
+        skip_cls: bool,
+    ) -> Result<Self> {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
         let latin_rec = resolve_optional_latin_rec_model(model_dir, variant)?;
         let japanese_rec = resolve_optional_japanese_rec_model(model_dir, variant)?;

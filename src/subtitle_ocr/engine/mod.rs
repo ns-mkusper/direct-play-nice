@@ -5,17 +5,15 @@ use std::collections::HashSet;
 use std::ffi::CStr;
 use std::path::Path;
 
-use super::language::{
-    detect_system_ocr_language, list_tesseract_languages, resolve_ocr_language,
-};
+use super::language::{detect_system_ocr_language, list_tesseract_languages, resolve_ocr_language};
 use super::ocr_pipeline::{discover_candidates, ocr_single_stream, probe_video_dimensions};
 use super::text_render::{write_ass, write_srt};
 use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
 
 mod converters;
+mod factory;
 mod models;
 mod providers;
-mod factory;
 mod runtime;
 mod types;
 mod workers;

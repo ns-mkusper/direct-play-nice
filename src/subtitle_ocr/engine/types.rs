@@ -153,5 +153,7 @@ pub(in crate::subtitle_ocr) struct PpOcrEngine {
 
 pub(in crate::subtitle_ocr) static TESSERACT_LANG_CACHE: OnceLock<Result<HashSet<String>>> =
     OnceLock::new();
-pub(in crate::subtitle_ocr) static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
-pub(in crate::subtitle_ocr) static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool = AtomicBool::new(false);
+pub(in crate::subtitle_ocr) static DISABLE_TESS_FALLBACK_LOGGED: AtomicBool =
+    AtomicBool::new(false);
+pub(in crate::subtitle_ocr) static FORCE_TESS_NON_ENGLISH_LOGGED: AtomicBool =
+    AtomicBool::new(false);

@@ -217,13 +217,27 @@ fn rec_profile_routing_prefers_english_for_eng_and_latin_for_romance_langs() {
 }
 
 #[test]
-fn rec_profile_routing_defaults_to_english_for_unknown_or_non_latin_codes() {
+fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
     assert_eq!(rec_profile_for_language("jpn"), OcrRecProfile::Japanese);
     assert_eq!(rec_profile_for_language("ja"), OcrRecProfile::Japanese);
     assert_eq!(rec_profile_for_language("kor"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("ko"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("zho"), OcrRecProfile::Cjk);
-    assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_routing_respects_latin_script_hint() {
+    assert_eq!(rec_profile_for_language("sr-Latn"), OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_routing_uses_script_subtags_when_present() {
+    assert_eq!(rec_profile_for_language("sr-Cyrl"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("zh-Hant"), OcrRecProfile::Cjk);
+    assert_eq!(rec_profile_for_language("ko-Hang"), OcrRecProfile::Korean);
 }
 
 #[test]
