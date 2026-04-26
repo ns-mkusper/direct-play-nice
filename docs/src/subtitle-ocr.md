@@ -85,11 +85,13 @@ Override recognition profile routing (language -> profile) with:
 
 - `DPN_OCR_REC_PROFILE_OVERRIDES`
   Example: `spa=latin,rus=multilingual,sr-Latn=latin`
-  Script tags are also recognized automatically (for example `zh-Hant`, `sr-Cyrl`, `sr-Latn`).
+  Script tags are also recognized automatically (for example `zh-Hant`,
+  `sr-Cyrl`, `sr-Latn`).
 - `DPN_OCR_LANGUAGE_SCRIPT_HINTS`
   Example: `rus=Cyrl,ara=Arab,srp=Cyrl`
 - `DPN_OCR_ROUTING_MANIFEST`
-  Path to custom TOML routing manifest (default: `config/ocr-routing.toml` in the repo source tree).
+  Path to custom TOML routing manifest
+  (default: `config/ocr-routing.toml` in the repo source tree).
 
 ## Config-file example
 
