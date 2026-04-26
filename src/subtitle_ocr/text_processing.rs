@@ -1,3 +1,8 @@
+//! OCR post-processing and quality heuristics.
+//!
+//! Contains spacing cleanup, language-sensitive normalization, and quality
+//! scoring used to decide when Tesseract fallback should replace PP-OCR text.
+
 use super::{normalize_utf8_text, OcrLine};
 
 const OCR_GEOMETRY_MAX_HEIGHT_WIDTH_RATIO: f32 = 4.0;

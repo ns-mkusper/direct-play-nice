@@ -1,9 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
-use log::info;
 use rsmpeg::avcodec::AVCodecContext;
 use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::ra;
 use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
@@ -20,44 +18,7 @@ use crate::types::{
     UnsupportedVideoPolicy,
 };
 
-pub(crate) struct ProgressTracker {
-    duration_us: i64,
-    last_reported_percent: i64,
-}
-
-impl ProgressTracker {
-    pub(crate) fn new(duration_us: i64) -> Self {
-        Self {
-            duration_us: duration_us.max(1),
-            last_reported_percent: -1,
-        }
-    }
-
-    pub(crate) fn report(&mut self, pts: i64, time_base: ffi::AVRational) {
-        if pts == ffi::AV_NOPTS_VALUE {
-            return;
-        }
-        let current_us =
-            unsafe { ffi::av_rescale_q(pts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) };
-        if current_us < 0 {
-            return;
-        }
-        let percent = ((current_us * 100) / self.duration_us).clamp(0, 100);
-        if percent >= self.last_reported_percent + 5
-            || (percent == 100 && self.last_reported_percent < 100)
-        {
-            info!("Progress: {}%", percent);
-            self.last_reported_percent = percent;
-        }
-    }
-
-    pub(crate) fn finish(&mut self) {
-        if self.last_reported_percent < 100 {
-            self.last_reported_percent = 100;
-            info!("Progress: 100%");
-        }
-    }
-}
+pub(crate) use crate::cli::progress::ProgressTracker;
 
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657

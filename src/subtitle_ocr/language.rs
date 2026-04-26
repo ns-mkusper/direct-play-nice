@@ -1,5 +1,9 @@
-use super::*;
+//! Language/tag normalization helpers for OCR selection and fallback.
+//!
+//! This module maps stream metadata and environment defaults into normalized
+//! OCR language codes and Tesseract-compatible pack names.
 
+use super::*;
 pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<i64> {
     if value == ffi::AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 {
         return None;

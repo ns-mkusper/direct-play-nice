@@ -15,3 +15,24 @@ Cargo.lock
 
 # mdBook build output
 docs/book/
+
+# Private key / certificate material
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+id_rsa
+id_ecdsa
+id_ed25519
+*private-key*
+
+# Repository hygiene:
+# - Never vendor third-party crates in this repo (use crates.io/git deps instead).
+# - Never commit local benchmark/dev scratch artifacts.
+vendor/
+tmp_*/
+*.tmp
+*.local
+*.log
+*-custom-script.png

@@ -7,10 +7,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::gpu::HwAccel;
-use crate::{
-    convert_video_file, Args, ConversionOutcome, ConversionParams, HwEncoderInitError,
-    HwProfileLevelMismatch, PrimaryVideoCriteria,
+use crate::transcoder::{
+    app::app_convert::ConversionParams, convert_video_file, ConversionOutcome, HwEncoderInitError,
+    HwProfileLevelMismatch,
 };
+use crate::{Args, PrimaryVideoCriteria};
 
 pub(super) fn cleanup_partial_output(path: &CStr) {
     let output_path = PathBuf::from(path.to_string_lossy().into_owned());

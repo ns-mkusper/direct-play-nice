@@ -1,5 +1,9 @@
-use super::*;
+//! OCR text I/O adapters.
+//!
+//! Wraps Tesseract/external command execution and handles subtitle text
+//! serialization to SRT/ASS.
 
+use super::*;
 pub(super) struct TesseractCandidate {
     pub(super) text: String,
     pub(super) psm: u8,

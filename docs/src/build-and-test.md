@@ -34,3 +34,14 @@ ENABLE_NVENC_TESTS=1 cargo test nvenc_matrix -- --test-threads=1
 export VCPKG_ROOT=/opt/vcpkg
 export RUST_LOG=${RUST_LOG:-WARN}
 ```
+
+## Quality gates
+
+Run the same strict checks used in CI before opening a PR:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+cargo test --no-run
+```

@@ -1,35 +1,27 @@
+//! Subtitle OCR subsystem for bitmap subtitle streams.
+//!
+//! This module owns end-to-end OCR conversion used by the transcoder path:
+//! discover bitmap subtitle streams, run OCR, and remux text subtitles.
+//! It is the integration layer over `engine`, `ocr_pipeline`, `text_processing`,
+//! `text_render`, `language`, and `muxing`.
+
 use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use ort::execution_providers::cuda::{CUDAExecutionProvider, CuDNNConvAlgorithmSearch};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use ort::execution_providers::ArenaExtendStrategy;
-#[cfg(target_vendor = "apple")]
-use ort::execution_providers::CoreMLExecutionProvider;
-#[cfg(target_os = "windows")]
-use ort::execution_providers::DirectMLExecutionProvider;
-use ort::execution_providers::{
-    CPUExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
-};
-use ort::session::builder::SessionBuilder;
-use paddle_ocr_rs::ocr_lite::OcrLite;
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use rsmpeg::avutil::{ra, AVDictionary};
 use rsmpeg::ffi;
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use sha2::Digest;
+#[cfg(test)]
+use sha2::Sha256;
 use std::collections::HashSet;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, OnceLock,
-};
-use std::thread;
+use std::sync::atomic::Ordering;
 
 use crate::{OcrEngine, OcrFormat, SubMode};
 use text_processing::{
@@ -49,17 +41,20 @@ pub struct OcrSubtitleTrack {
     pub format: OcrFormat,
 }
 
-include!("engine_setup.rs");
+mod engine;
 mod fixture_eval;
 mod language;
 mod muxing;
 mod ocr_pipeline;
 mod text_render;
 
+pub(crate) use engine::convert_bitmap_subtitles;
+use engine::*;
 pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
 use language::*;
 pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};
-use ocr_pipeline::*;
+#[cfg(test)]
+use ocr_pipeline::{quality_fallback_thresholds, OcrQualityBaseline};
 use text_render::*;
 
 #[cfg(test)]

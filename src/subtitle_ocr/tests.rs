@@ -217,13 +217,183 @@ fn rec_profile_routing_prefers_english_for_eng_and_latin_for_romance_langs() {
 }
 
 #[test]
-fn rec_profile_routing_defaults_to_english_for_unknown_or_non_latin_codes() {
+fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
     assert_eq!(rec_profile_for_language("jpn"), OcrRecProfile::Japanese);
     assert_eq!(rec_profile_for_language("ja"), OcrRecProfile::Japanese);
     assert_eq!(rec_profile_for_language("kor"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("ko"), OcrRecProfile::Korean);
     assert_eq!(rec_profile_for_language("zho"), OcrRecProfile::Cjk);
-    assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::English);
+    assert_eq!(rec_profile_for_language("rus"), OcrRecProfile::Multilingual);
+    assert_eq!(rec_profile_for_language("ara"), OcrRecProfile::Multilingual);
+    assert_eq!(rec_profile_for_language("zzz"), OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_routing_respects_latin_script_hint() {
+    assert_eq!(rec_profile_for_language("sr-Latn"), OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_routing_uses_script_subtags_when_present() {
+    assert_eq!(
+        rec_profile_for_language("sr-Cyrl"),
+        OcrRecProfile::Multilingual
+    );
+    assert_eq!(rec_profile_for_language("zh-Hant"), OcrRecProfile::Cjk);
+    assert_eq!(rec_profile_for_language("ko-Hang"), OcrRecProfile::Korean);
+}
+
+#[test]
+fn rec_profile_routing_matrix_covers_common_language_families() {
+    let cases = [
+        ("eng", OcrRecProfile::English),
+        ("en", OcrRecProfile::English),
+        ("fra", OcrRecProfile::Latin),
+        ("deu", OcrRecProfile::Latin),
+        ("ita", OcrRecProfile::Latin),
+        ("por", OcrRecProfile::Latin),
+        ("jpn", OcrRecProfile::Japanese),
+        ("kor", OcrRecProfile::Korean),
+        ("zho", OcrRecProfile::Cjk),
+        ("chi_sim", OcrRecProfile::Cjk),
+        ("chi_tra", OcrRecProfile::Cjk),
+        ("rus", OcrRecProfile::Multilingual),
+        ("ukr", OcrRecProfile::Multilingual),
+        ("ara", OcrRecProfile::Multilingual),
+        ("fas", OcrRecProfile::Multilingual),
+        ("heb", OcrRecProfile::Multilingual),
+        ("ell", OcrRecProfile::Multilingual),
+        ("hin", OcrRecProfile::Multilingual),
+        ("ben", OcrRecProfile::Multilingual),
+        ("tam", OcrRecProfile::Multilingual),
+        ("tha", OcrRecProfile::Multilingual),
+        ("lao", OcrRecProfile::Multilingual),
+        ("khm", OcrRecProfile::Multilingual),
+        ("mya", OcrRecProfile::Multilingual),
+        ("amh", OcrRecProfile::Multilingual),
+        ("dzo", OcrRecProfile::Multilingual),
+        ("zzz", OcrRecProfile::Latin),
+    ];
+    for (language, expected) in cases {
+        assert_eq!(
+            rec_profile_for_language(language),
+            expected,
+            "unexpected routing for language {language}"
+        );
+    }
+}
+
+#[test]
+fn rec_profile_routing_matrix_covers_script_tag_variants() {
+    let cases = [
+        ("sr-Latn", OcrRecProfile::Latin),
+        ("sr-Cyrl", OcrRecProfile::Multilingual),
+        ("fa-Arab", OcrRecProfile::Multilingual),
+        ("el-Grek", OcrRecProfile::Multilingual),
+        ("he-Hebr", OcrRecProfile::Multilingual),
+        ("zh-Hans", OcrRecProfile::Cjk),
+        ("zh-Hant", OcrRecProfile::Cjk),
+        ("ja-Jpan", OcrRecProfile::Japanese),
+        ("ko-Kore", OcrRecProfile::Korean),
+    ];
+    for (language, expected) in cases {
+        assert_eq!(
+            rec_profile_for_language(language),
+            expected,
+            "unexpected script routing for language tag {language}"
+        );
+    }
+}
+
+#[test]
+fn rec_profile_custom_routing_override_precedence_is_deterministic() {
+    let manifest = r#"
+default_profile = "english"
+
+[language_profiles]
+rus = "multilingual"
+
+[script_profiles]
+cyrl = "multilingual"
+
+[likely_scripts]
+rus = "Cyrl"
+"#;
+    let profile =
+        rec_profile_for_language_with_test_config("rus", Some(manifest), Some("rus=latin"), None);
+    assert_eq!(profile, OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_custom_routing_language_profile_beats_script_profile() {
+    let manifest = r#"
+default_profile = "english"
+
+[language_profiles]
+sr = "latin"
+
+[script_profiles]
+cyrl = "multilingual"
+"#;
+    let profile = rec_profile_for_language_with_test_config("sr-Cyrl", Some(manifest), None, None);
+    assert_eq!(profile, OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_custom_routing_uses_script_hints_when_no_tag_or_alias_match() {
+    let manifest = r#"
+default_profile = "latin"
+
+[script_profiles]
+arab = "multilingual"
+"#;
+    let profile =
+        rec_profile_for_language_with_test_config("arb", Some(manifest), None, Some("arb=Arab"));
+    assert_eq!(profile, OcrRecProfile::Multilingual);
+}
+
+#[test]
+fn rec_profile_custom_routing_uses_tesseract_alias_in_language_lookup() {
+    let manifest = r#"
+default_profile = "english"
+
+[language_profiles]
+fra = "cjk"
+"#;
+    let profile = rec_profile_for_language_with_test_config("fre", Some(manifest), None, None);
+    assert_eq!(profile, OcrRecProfile::Cjk);
+}
+
+#[test]
+fn rec_profile_custom_routing_tolerates_case_and_whitespace_in_manifest() {
+    let manifest = r#"
+default_profile = " LATIN "
+
+[language_profiles]
+" RU " = " MULTILINGUAL "
+
+[script_profiles]
+" CyRL " = " MULTILINGUAL "
+"#;
+    let profile = rec_profile_for_language_with_test_config("ru", Some(manifest), None, None);
+    assert_eq!(profile, OcrRecProfile::Multilingual);
+}
+
+#[test]
+fn rec_profile_custom_routing_invalid_manifest_falls_back_to_default() {
+    let profile = rec_profile_for_language_with_test_config("zzz", Some("not-toml"), None, None);
+    assert_eq!(profile, OcrRecProfile::Latin);
+}
+
+#[test]
+fn rec_profile_custom_routing_ignores_invalid_override_entries() {
+    let profile = rec_profile_for_language_with_test_config(
+        "rus",
+        None,
+        Some("rus=not-a-profile,ara=multi"),
+        None,
+    );
+    assert_eq!(profile, OcrRecProfile::Multilingual);
 }
 
 #[test]
@@ -543,6 +713,89 @@ fn test_optional_rec_model_auto_provision_failure_returns_none() {
     .expect("resolver should not hard-fail when optional provisioning fails");
     assert!(resolved.is_none());
     mock.assert();
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_prefers_local_file() {
+    let tmp = TempDir::new().unwrap();
+    let local = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
+    let mut f = File::create(&local).unwrap();
+    f.write_all(b"local-multi").unwrap();
+
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect("resolver should not error");
+    let resolved = resolved.expect("expected local multilingual rec model");
+    assert_eq!(resolved, local);
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_env_override_wins() {
+    let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
+    let tmp = TempDir::new().unwrap();
+    let manual = tmp.path().join("manual_multi.onnx");
+    let mut f = File::create(&manual).unwrap();
+    f.write_all(b"manual-multi").unwrap();
+
+    std::env::set_var(env_key, &manual);
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V3)
+        .expect("resolver should not error");
+    std::env::remove_var(env_key);
+
+    let resolved = resolved.expect("expected env override model");
+    assert_eq!(resolved, manual);
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_env_override_missing_path_errors() {
+    let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
+    let tmp = TempDir::new().unwrap();
+    std::env::set_var(env_key, tmp.path().join("does-not-exist.onnx"));
+    let err = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect_err("expected missing override path to error");
+    std::env::remove_var(env_key);
+    assert!(err
+        .to_string()
+        .contains("DPN_OCR_REC_MULTILINGUAL_MODEL is set but file does not exist"));
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_prefers_variant_specific_candidate() {
+    let tmp = TempDir::new().unwrap();
+    let v3 = tmp.path().join("multilingual_PP-OCRv3_rec_infer.onnx");
+    let v4 = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
+    File::create(&v3).unwrap();
+    File::create(&v4).unwrap();
+
+    let resolved_v4 = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect("resolver should not error")
+        .expect("expected multilingual model");
+    let resolved_v3 = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V3)
+        .expect("resolver should not error")
+        .expect("expected multilingual model");
+
+    assert_eq!(resolved_v4, v4);
+    assert_eq!(resolved_v3, v3);
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_ignores_non_rec_or_non_onnx_files() {
+    let tmp = TempDir::new().unwrap();
+    File::create(tmp.path().join("multilingual_PP-OCRv4_det_infer.onnx")).unwrap();
+    File::create(tmp.path().join("multilingual_PP-OCRv4_rec_infer.txt")).unwrap();
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect("resolver should not error");
+    assert!(resolved.is_none());
+}
+
+#[test]
+fn test_optional_multilingual_rec_model_accepts_non_latin_dedicated_rec_fallback() {
+    let tmp = TempDir::new().unwrap();
+    let greek = tmp.path().join("greek_PP-OCRv4_rec_infer.onnx");
+    File::create(&greek).unwrap();
+    let resolved = resolve_optional_multilingual_rec_model(tmp.path(), PpOcrVariant::V4)
+        .expect("resolver should not error")
+        .expect("expected non-latin rec fallback");
+    assert_eq!(resolved, greek);
 }
 
 fn is_skippable_ort_runtime_error(msg: &str) -> bool {

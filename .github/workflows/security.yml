@@ -34,3 +34,18 @@ jobs:
           tool: cargo-audit
       - name: Run cargo audit
         run: cargo audit
+
+  secret-scan:
+    name: Secret Scan
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

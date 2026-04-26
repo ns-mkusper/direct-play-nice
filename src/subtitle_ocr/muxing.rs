@@ -1,5 +1,9 @@
-use super::*;
+//! Subtitle remux helpers for OCR outputs.
+//!
+//! Converts generated text subtitle files into container subtitle streams and
+//! preserves language/default metadata in the output container.
 
+use super::*;
 pub(super) struct PendingPacket {
     ts: i64,
     packet: AVPacket,
