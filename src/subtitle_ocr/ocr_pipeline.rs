@@ -4,7 +4,7 @@
 //! OCR invocation, and cue assembly for a single subtitle stream.
 
 use super::*;
-/// Executes the discover candidates routine.
+/// Runs the discover candidates operation.
 pub(super) fn discover_candidates(
     input_file: &CStr,
     sub_mode: SubMode,
@@ -37,7 +37,7 @@ pub(super) fn discover_candidates(
     Ok(out)
 }
 
-/// Executes the probe video dimensions routine.
+/// Runs the probe video dimensions operation.
 pub(super) fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
     let ictx = AVFormatContextInput::open(input_file).ok()?;
     for stream in ictx.streams() {
@@ -50,18 +50,18 @@ pub(super) fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
 }
 
 #[derive(Debug, Default, Clone)]
-/// Stores data for OcrQualityBaseline.
+/// Holds state for OcrQualityBaseline.
 pub(super) struct OcrQualityBaseline {
     samples: usize,
     quality_sum: f32,
     confidence_sum: f32,
 }
 
-/// Implements behavior for `OcrQualityBaseline`.
+/// Provides methods for `OcrQualityBaseline`.
 impl OcrQualityBaseline {
     const WINDOW_MS: i64 = 3 * 60 * 1_000;
 
-    /// Executes the observe routine.
+    /// Runs the observe operation.
     pub(super) fn observe(&mut self, quality: f32, confidence: f32, timestamp_ms: i64) {
         if !(0..=Self::WINDOW_MS).contains(&timestamp_ms) {
             return;
@@ -77,7 +77,7 @@ impl OcrQualityBaseline {
         self.confidence_sum += confidence;
     }
 
-    /// Executes the avg quality routine.
+    /// Runs the avg quality operation.
     fn avg_quality(&self) -> Option<f32> {
         if self.samples == 0 {
             None
@@ -86,7 +86,7 @@ impl OcrQualityBaseline {
         }
     }
 
-    /// Executes the avg confidence routine.
+    /// Runs the avg confidence operation.
     fn avg_confidence(&self) -> Option<f32> {
         if self.samples == 0 {
             None
@@ -97,14 +97,14 @@ impl OcrQualityBaseline {
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Stores data for OcrFallbackThresholds.
+/// Holds state for OcrFallbackThresholds.
 pub(super) struct OcrFallbackThresholds {
     pub(super) quality: f32,
     pub(super) confidence: f32,
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Executes the ocr single stream routine.
+/// Runs the ocr single stream operation.
 pub(super) fn ocr_single_stream(
     input_path: &str,
     stream_index: i32,
@@ -222,7 +222,7 @@ pub(super) fn ocr_single_stream(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Executes the subtitle to cues routine.
+/// Runs the subtitle to cues operation.
 pub(super) fn subtitle_to_cues(
     subtitle: *const ffi::AVSubtitle,
     fallback_start_ms: i64,
@@ -335,7 +335,7 @@ pub(super) fn subtitle_to_cues(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Executes the extract subtitle lines routine.
+/// Runs the extract subtitle lines operation.
 pub(super) fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     language: &str,
@@ -558,7 +558,7 @@ pub(super) fn extract_subtitle_lines(
     Ok((lines, had_imagery))
 }
 
-/// Executes the force tesseract non english enabled routine.
+/// Runs the force tesseract non english enabled operation.
 pub(super) fn force_tesseract_non_english_enabled() -> bool {
     let enabled = env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
         .ok()
@@ -575,7 +575,7 @@ pub(super) fn force_tesseract_non_english_enabled() -> bool {
     enabled
 }
 
-/// Executes the tesseract quality fallback min gain routine.
+/// Runs the tesseract quality fallback min gain operation.
 pub(super) fn tesseract_quality_fallback_min_gain() -> f32 {
     match env::var("DPN_OCR_TESS_FALLBACK_MIN_GAIN") {
         Ok(v) => match v.trim().parse::<f32>() {
@@ -592,7 +592,7 @@ pub(super) fn tesseract_quality_fallback_min_gain() -> f32 {
     }
 }
 
-/// Executes the quality fallback thresholds routine.
+/// Runs the quality fallback thresholds operation.
 pub(super) fn quality_fallback_thresholds(
     baseline: &OcrQualityBaseline,
 ) -> Option<OcrFallbackThresholds> {

@@ -8,7 +8,7 @@ mod tests {
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
-    /// Executes the append suffix preserves extension routine.
+    /// Runs the append suffix preserves extension operation.
     fn append_suffix_preserves_extension() {
         let base = PathBuf::from("Episode.mkv");
         let suffixed = append_suffix(&base, ".tmp");
@@ -16,7 +16,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve output path match input routine.
+    /// Runs the resolve output path match input operation.
     fn resolve_output_path_match_input() {
         let base = PathBuf::from("Movie.mkv");
         let resolved = resolve_output_path(&base, "match-input", "").unwrap();
@@ -24,7 +24,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve output path custom extension routine.
+    /// Runs the resolve output path custom extension operation.
     fn resolve_output_path_custom_extension() {
         let base = PathBuf::from("Movie.mkv");
         let resolved = resolve_output_path(&base, "mp4", "").unwrap();
@@ -32,7 +32,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve output path with suffix and extension routine.
+    /// Runs the resolve output path with suffix and extension operation.
     fn resolve_output_path_with_suffix_and_extension() {
         let base = PathBuf::from("Movie.mkv");
         let resolved = resolve_output_path(&base, "mp4", ".fixed").unwrap();
@@ -40,7 +40,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve output path with suffix and match input routine.
+    /// Runs the resolve output path with suffix and match input operation.
     fn resolve_output_path_with_suffix_and_match_input() {
         let base = PathBuf::from("Episode.mkv");
         let resolved = resolve_output_path(&base, "match-input", "fixed").unwrap();
@@ -48,7 +48,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses sonarr fallback routine.
+    /// Runs the resolve media path uses sonarr fallback operation.
     fn resolve_media_path_uses_sonarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses sonarr source only routine.
+    /// Runs the resolve media path uses sonarr source only operation.
     fn resolve_media_path_uses_sonarr_source_only() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses sonarr episodefile paths routine.
+    /// Runs the resolve media path uses sonarr episodefile paths operation.
     fn resolve_media_path_uses_sonarr_episodefile_paths() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media paths handles multiple sonarr entries routine.
+    /// Runs the resolve media paths handles multiple sonarr entries operation.
     fn resolve_media_paths_handles_multiple_sonarr_entries() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses radarr fallback routine.
+    /// Runs the resolve media path uses radarr fallback operation.
     fn resolve_media_path_uses_radarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses radarr source only routine.
+    /// Runs the resolve media path uses radarr source only operation.
     fn resolve_media_path_uses_radarr_source_only() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media path uses radarr moviefile paths routine.
+    /// Runs the resolve media path uses radarr moviefile paths operation.
     fn resolve_media_path_uses_radarr_moviefile_paths() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the resolve media paths handles multiple radarr entries routine.
+    /// Runs the resolve media paths handles multiple radarr entries operation.
     fn resolve_media_paths_handles_multiple_radarr_entries() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("radarr_moviefile_path");
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the sonarr default suffix is fixed routine.
+    /// Runs the sonarr default suffix is fixed operation.
     fn sonarr_default_suffix_is_fixed() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempdir().unwrap();
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the radarr default suffix is empty routine.
+    /// Runs the radarr default suffix is empty operation.
     fn radarr_default_suffix_is_empty() {
         let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = tempdir().unwrap();
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    /// Executes the finalize success restores original when promote fails routine.
+    /// Runs the finalize success restores original when promote fails operation.
     fn finalize_success_restores_original_when_promote_fails() {
         let tmp = tempdir().unwrap();
         let input = tmp.path().join("Episode.mkv");

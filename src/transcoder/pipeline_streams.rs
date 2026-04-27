@@ -1,6 +1,6 @@
 use crate::transcoder::prelude::*;
 
-/// Executes the ensure software frame routine.
+/// Runs the ensure software frame operation.
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
         let transfer_format = unsafe {
@@ -57,7 +57,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     }
 }
 
-/// Executes the process video stream routine.
+/// Runs the process video stream operation.
 pub(crate) fn process_video_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
@@ -205,7 +205,7 @@ pub(crate) fn process_video_stream(
     Ok(())
 }
 
-/// Executes the process audio stream routine.
+/// Runs the process audio stream operation.
 pub(crate) fn process_audio_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
@@ -341,7 +341,7 @@ pub(crate) fn process_audio_stream(
     Ok(())
 }
 
-/// Executes the process subtitle stream routine.
+/// Runs the process subtitle stream operation.
 pub(crate) fn process_subtitle_stream(
     stream_processing_context: &mut StreamProcessingContext,
     input_stream: &AVStreamRef,
@@ -494,7 +494,7 @@ pub(crate) fn process_subtitle_stream(
     Ok(())
 }
 
-/// Executes the is image based subtitle routine.
+/// Runs the is image based subtitle operation.
 pub(crate) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
@@ -505,7 +505,7 @@ pub(crate) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     )
 }
 
-/// Executes the load encode and write routine.
+/// Runs the load encode and write operation.
 pub(crate) fn load_encode_and_write(
     fifo: &mut AVAudioFifo,
     output_format_context: &mut AVFormatContextOutput,

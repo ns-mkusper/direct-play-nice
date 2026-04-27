@@ -32,12 +32,12 @@ pub(in crate::subtitle_ocr) static ORT_ENV_GPU_AVAILABLE: OnceLock<bool> = OnceL
 pub(in crate::subtitle_ocr) static FORCE_CPU_EP: AtomicBool = AtomicBool::new(false);
 pub(in crate::subtitle_ocr) static LEGACY_NVIDIA_MAXWELL: OnceLock<bool> = OnceLock::new();
 
-/// Executes the prefer ppocr v3 for legacy nvidia routine.
+/// Runs the prefer ppocr v3 for legacy nvidia operation.
 pub(in crate::subtitle_ocr) fn prefer_ppocr_v3_for_legacy_nvidia() -> bool {
     *LEGACY_NVIDIA_MAXWELL.get_or_init(detect_legacy_nvidia_maxwell)
 }
 
-/// Executes the detect legacy nvidia maxwell routine.
+/// Runs the detect legacy nvidia maxwell operation.
 pub(in crate::subtitle_ocr) fn detect_legacy_nvidia_maxwell() -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -84,12 +84,12 @@ pub(in crate::subtitle_ocr) fn detect_legacy_nvidia_maxwell() -> bool {
     }
 }
 
-/// Executes the require gpu routine.
+/// Runs the require gpu operation.
 pub(in crate::subtitle_ocr) fn require_gpu() -> bool {
     env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() == Some("1")
 }
 
-/// Executes the skip ppocr cls routine.
+/// Runs the skip ppocr cls operation.
 pub(in crate::subtitle_ocr) fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu: bool) -> bool {
     let configured = env::var("DPN_OCR_SKIP_CLS").ok().and_then(|v| {
         let v = v.trim();
@@ -112,7 +112,7 @@ pub(in crate::subtitle_ocr) fn skip_ppocr_cls(variant: PpOcrVariant, require_gpu
     configured.unwrap_or(matches!(variant, PpOcrVariant::V3) && require_gpu)
 }
 
-/// Executes the force cpu execution providers routine.
+/// Runs the force cpu execution providers operation.
 pub(in crate::subtitle_ocr) fn force_cpu_execution_providers() -> bool {
     if env::var("DPN_OCR_FORCE_CPU").ok().as_deref() == Some("1") {
         return true;
@@ -120,7 +120,7 @@ pub(in crate::subtitle_ocr) fn force_cpu_execution_providers() -> bool {
     FORCE_CPU_EP.load(Ordering::Relaxed)
 }
 
-/// Executes the format provider kinds routine.
+/// Runs the format provider kinds operation.
 pub(in crate::subtitle_ocr) fn format_provider_kinds(kinds: &[ExecutionProviderKind]) -> String {
     kinds
         .iter()
@@ -130,7 +130,7 @@ pub(in crate::subtitle_ocr) fn format_provider_kinds(kinds: &[ExecutionProviderK
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Executes the apply cuda env overrides routine.
+/// Runs the apply cuda env overrides operation.
 pub(in crate::subtitle_ocr) fn apply_cuda_env_overrides(
     mut ep: CUDAExecutionProvider,
 ) -> CUDAExecutionProvider {
@@ -177,7 +177,7 @@ pub(in crate::subtitle_ocr) fn apply_cuda_env_overrides(
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Executes the build cuda provider routine.
+/// Runs the build cuda provider operation.
 pub(in crate::subtitle_ocr) fn build_cuda_provider(require_gpu: bool) -> ExecutionProviderDispatch {
     let mut ep = CUDAExecutionProvider::default();
     if let Some(device_id) = thread_ocr_cuda_device() {
@@ -220,7 +220,7 @@ pub(in crate::subtitle_ocr) fn build_cuda_provider(require_gpu: bool) -> Executi
     }
 }
 
-/// Executes the env flag enabled routine.
+/// Runs the env flag enabled operation.
 pub(in crate::subtitle_ocr) fn env_flag_enabled(key: &str) -> bool {
     env::var(key)
         .ok()
@@ -232,7 +232,7 @@ pub(in crate::subtitle_ocr) fn env_flag_enabled(key: &str) -> bool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-/// Executes the cuda conv algo override routine.
+/// Runs the cuda conv algo override operation.
 pub(in crate::subtitle_ocr) fn cuda_conv_algo_override() -> Option<CuDNNConvAlgorithmSearch> {
     let raw = env::var("DPN_OCR_CUDA_CONV_ALGO").ok()?;
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -258,13 +258,13 @@ pub(in crate::subtitle_ocr) fn cuda_conv_algo_override() -> Option<CuDNNConvAlgo
     }
 }
 
-/// Executes the allow legacy cuda maxwell routine.
+/// Runs the allow legacy cuda maxwell operation.
 pub(in crate::subtitle_ocr) fn allow_legacy_cuda_maxwell() -> bool {
     env_flag_enabled("DPN_OCR_ALLOW_LEGACY_CUDA")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-/// Executes the build cuda provider routine.
+/// Runs the build cuda provider operation.
 pub(in crate::subtitle_ocr) fn build_cuda_provider(
     _require_gpu: bool,
 ) -> ExecutionProviderDispatch {
@@ -272,13 +272,13 @@ pub(in crate::subtitle_ocr) fn build_cuda_provider(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-/// Executes the cuda conv algo override routine.
+/// Runs the cuda conv algo override operation.
 pub(in crate::subtitle_ocr) fn cuda_conv_algo_override() -> Option<()> {
     None
 }
 
 #[cfg(target_os = "windows")]
-/// Executes the build directml provider routine.
+/// Runs the build directml provider operation.
 pub(in crate::subtitle_ocr) fn build_directml_provider(
     require_gpu: bool,
 ) -> ExecutionProviderDispatch {
@@ -290,7 +290,7 @@ pub(in crate::subtitle_ocr) fn build_directml_provider(
 }
 
 #[cfg(not(target_os = "windows"))]
-/// Executes the build directml provider routine.
+/// Runs the build directml provider operation.
 pub(in crate::subtitle_ocr) fn build_directml_provider(
     _require_gpu: bool,
 ) -> ExecutionProviderDispatch {
@@ -298,7 +298,7 @@ pub(in crate::subtitle_ocr) fn build_directml_provider(
 }
 
 #[cfg(target_vendor = "apple")]
-/// Executes the build coreml provider routine.
+/// Runs the build coreml provider operation.
 pub(in crate::subtitle_ocr) fn build_coreml_provider(
     require_gpu: bool,
 ) -> ExecutionProviderDispatch {
@@ -310,7 +310,7 @@ pub(in crate::subtitle_ocr) fn build_coreml_provider(
 }
 
 #[cfg(not(target_vendor = "apple"))]
-/// Executes the build coreml provider routine.
+/// Runs the build coreml provider operation.
 pub(in crate::subtitle_ocr) fn build_coreml_provider(
     _require_gpu: bool,
 ) -> ExecutionProviderDispatch {
@@ -318,7 +318,7 @@ pub(in crate::subtitle_ocr) fn build_coreml_provider(
 }
 
 #[cfg(target_os = "windows")]
-/// Executes the detect directml available routine.
+/// Runs the detect directml available operation.
 pub(in crate::subtitle_ocr) fn detect_directml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
@@ -344,13 +344,13 @@ pub(in crate::subtitle_ocr) fn detect_directml_available(force_cpu: bool) -> boo
 }
 
 #[cfg(not(target_os = "windows"))]
-/// Executes the detect directml available routine.
+/// Runs the detect directml available operation.
 pub(in crate::subtitle_ocr) fn detect_directml_available(_force_cpu: bool) -> bool {
     false
 }
 
 #[cfg(target_vendor = "apple")]
-/// Executes the detect coreml available routine.
+/// Runs the detect coreml available operation.
 pub(in crate::subtitle_ocr) fn detect_coreml_available(force_cpu: bool) -> bool {
     if force_cpu {
         return false;
@@ -376,12 +376,12 @@ pub(in crate::subtitle_ocr) fn detect_coreml_available(force_cpu: bool) -> bool 
 }
 
 #[cfg(not(target_vendor = "apple"))]
-/// Executes the detect coreml available routine.
+/// Runs the detect coreml available operation.
 pub(in crate::subtitle_ocr) fn detect_coreml_available(_force_cpu: bool) -> bool {
     false
 }
 
-/// Executes the select execution provider plan routine.
+/// Runs the select execution provider plan operation.
 pub(in crate::subtitle_ocr) fn select_execution_provider_plan(
     require_gpu: bool,
     cuda_available: bool,
@@ -413,7 +413,7 @@ pub(in crate::subtitle_ocr) fn select_execution_provider_plan(
 }
 
 #[cfg(target_os = "linux")]
-/// Executes the library visible on system routine.
+/// Runs the library visible on system operation.
 pub(in crate::subtitle_ocr) fn library_visible_on_system(lib_prefix: &str) -> bool {
     if let Ok(output) = Command::new("ldconfig").arg("-p").output() {
         if output.status.success() {
@@ -470,7 +470,7 @@ pub(in crate::subtitle_ocr) fn library_visible_on_system(lib_prefix: &str) -> bo
 }
 
 #[cfg(target_os = "linux")]
-/// Executes the missing cuda runtime libraries routine.
+/// Runs the missing cuda runtime libraries operation.
 pub(in crate::subtitle_ocr) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     const REQUIRED: [&str; 4] = [
         "libcudart.so",
@@ -485,12 +485,12 @@ pub(in crate::subtitle_ocr) fn missing_cuda_runtime_libraries() -> Vec<&'static 
 }
 
 #[cfg(not(target_os = "linux"))]
-/// Executes the missing cuda runtime libraries routine.
+/// Runs the missing cuda runtime libraries operation.
 pub(in crate::subtitle_ocr) fn missing_cuda_runtime_libraries() -> Vec<&'static str> {
     Vec::new()
 }
 
-/// Executes the detect nvidia gpu indexes routine.
+/// Runs the detect nvidia gpu indexes operation.
 pub(in crate::subtitle_ocr) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
@@ -518,7 +518,7 @@ pub(in crate::subtitle_ocr) fn detect_nvidia_gpu_indexes() -> Vec<i32> {
     }
 }
 
-/// Executes the build execution providers routine.
+/// Runs the build execution providers operation.
 pub(in crate::subtitle_ocr) fn build_execution_providers() -> Result<ExecutionProviderSelection> {
     let require_gpu = require_gpu();
     if require_gpu {
@@ -639,7 +639,7 @@ pub(in crate::subtitle_ocr) fn build_execution_providers() -> Result<ExecutionPr
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Enumerates options for ExecutionProviderKind.
+/// Defines options for ExecutionProviderKind.
 pub(in crate::subtitle_ocr) enum ExecutionProviderKind {
     Cuda,
     DirectML,
@@ -647,9 +647,9 @@ pub(in crate::subtitle_ocr) enum ExecutionProviderKind {
     Cpu,
 }
 
-/// Implements behavior for `ExecutionProviderKind`.
+/// Provides methods for `ExecutionProviderKind`.
 impl ExecutionProviderKind {
-    /// Executes the label routine.
+    /// Runs the label operation.
     fn label(self) -> &'static str {
         match self {
             ExecutionProviderKind::Cuda => "cuda",
@@ -660,7 +660,7 @@ impl ExecutionProviderKind {
     }
 }
 
-/// Stores data for ExecutionProviderSelection.
+/// Holds state for ExecutionProviderSelection.
 pub(in crate::subtitle_ocr) struct ExecutionProviderSelection {
     pub(in crate::subtitle_ocr) providers: Vec<ExecutionProviderDispatch>,
     pub(in crate::subtitle_ocr) gpu_available: bool,

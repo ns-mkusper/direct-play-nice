@@ -1,20 +1,20 @@
 use crate::transcoder::prelude::*;
 
-/// Stores data for DirectPlayAssessment.
+/// Holds state for DirectPlayAssessment.
 pub(crate) struct DirectPlayAssessment {
     pub(crate) compatible: bool,
     pub(crate) reasons: Vec<String>,
 }
 
 #[derive(Debug, Default)]
-/// Stores data for ConversionOutcome.
+/// Holds state for ConversionOutcome.
 pub(crate) struct ConversionOutcome {
     pub(crate) h264_verification: Option<H264Verification>,
 }
 
-/// Implements behavior for `ConversionOutcome`.
+/// Provides methods for `ConversionOutcome`.
 impl ConversionOutcome {
-    /// Executes the profile verified routine.
+    /// Runs the profile verified operation.
     pub(crate) fn profile_verified(&self) -> bool {
         self.h264_verification
             .as_ref()
@@ -24,7 +24,7 @@ impl ConversionOutcome {
 }
 
 #[derive(Clone, Copy)]
-/// Stores data for DirectPlayConstraints.
+/// Holds state for DirectPlayConstraints.
 pub(crate) struct DirectPlayConstraints<'a> {
     pub(crate) target_is_mp4: bool,
     pub(crate) sub_mode: SubMode,
@@ -39,7 +39,7 @@ pub(crate) struct DirectPlayConstraints<'a> {
     pub(crate) primary_criteria: PrimaryVideoCriteria,
 }
 
-/// Executes the assess direct play compatibility routine.
+/// Runs the assess direct play compatibility operation.
 pub(crate) fn assess_direct_play_compatibility(
     input_file: &CStr,
     constraints: DirectPlayConstraints<'_>,
@@ -258,7 +258,7 @@ pub(crate) fn assess_direct_play_compatibility(
     })
 }
 
-/// Executes the estimate stream fps routine.
+/// Runs the estimate stream fps operation.
 fn estimate_stream_fps(stream: &AVStreamRef) -> Option<f64> {
     if let Some(rational) = stream.guess_framerate() {
         rational_to_f64(rational)
@@ -268,7 +268,7 @@ fn estimate_stream_fps(stream: &AVStreamRef) -> Option<f64> {
     }
 }
 
-/// Executes the rational to f64 routine.
+/// Runs the rational to f64 operation.
 pub(crate) fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
     if rational.num <= 0 || rational.den <= 0 {
         None

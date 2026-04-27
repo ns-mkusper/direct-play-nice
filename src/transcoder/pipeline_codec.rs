@@ -1,6 +1,6 @@
 use crate::transcoder::prelude::*;
 
-/// Executes the preferred audio frame size routine.
+/// Runs the preferred audio frame size operation.
 pub(crate) fn preferred_audio_frame_size(encode_context: &AVCodecContext, fifo_size: i32) -> i32 {
     if encode_context.frame_size > 0 {
         return encode_context.frame_size;
@@ -15,12 +15,12 @@ pub(crate) fn preferred_audio_frame_size(encode_context: &AVCodecContext, fifo_s
 
 const MAX_REASONABLE_FPS: f64 = 300.0;
 
-/// Executes the is valid framerate routine.
+/// Runs the is valid framerate operation.
 fn is_valid_framerate(r: ffi::AVRational) -> bool {
     r.num > 0 && r.den > 0 && (r.num as f64 / r.den as f64) <= MAX_REASONABLE_FPS
 }
 
-/// Executes the derive stream framerate routine.
+/// Runs the derive stream framerate operation.
 fn derive_stream_framerate(
     decode_context: &AVCodecContext,
     input_stream: &AVStreamRef,
@@ -58,7 +58,7 @@ fn derive_stream_framerate(
     None
 }
 
-/// Executes the configure video timing routine.
+/// Runs the configure video timing operation.
 fn configure_video_timing(
     decode_context: &AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -86,7 +86,7 @@ fn configure_video_timing(
             debug!(
                 "Input time base {} implies {:.1} fps; overriding to fallback time base {}",
                 rational_to_string(encode_time_base),
-                // Implements behavior for `ied_fps,`.
+                // Provides methods for `ied_fps,`.
                 implied_fps,
                 rational_to_string(fallback)
             );
@@ -98,7 +98,7 @@ fn configure_video_timing(
     output_stream.set_time_base(encode_time_base);
 }
 
-/// Stores data for H264VideoCodecParams.
+/// Holds state for H264VideoCodecParams.
 pub(crate) struct H264VideoCodecParams<'a> {
     pub(crate) h264_profile: H264Profile,
     pub(crate) h264_level: H264Level,
@@ -109,7 +109,7 @@ pub(crate) struct H264VideoCodecParams<'a> {
     pub(crate) is_constant_quality_mode: bool,
 }
 
-/// Executes the set h264 video codec par routine.
+/// Runs the set h264 video codec par operation.
 pub(crate) fn set_h264_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -214,7 +214,7 @@ pub(crate) fn set_h264_video_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
-/// Stores data for HevcVideoCodecParams.
+/// Holds state for HevcVideoCodecParams.
 pub(crate) struct HevcVideoCodecParams<'a> {
     pub(crate) quality_limits: &'a QualityLimits,
     pub(crate) device_max_resolution: Resolution,
@@ -223,7 +223,7 @@ pub(crate) struct HevcVideoCodecParams<'a> {
     pub(crate) is_constant_quality_mode: bool,
 }
 
-/// Executes the set hevc video codec par routine.
+/// Runs the set hevc video codec par operation.
 pub(crate) fn set_hevc_video_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -312,7 +312,7 @@ pub(crate) fn set_hevc_video_codec_par(
     // Codec parameters are extracted after the encoder is opened.
 }
 
-/// Executes the set audio codec par routine.
+/// Runs the set audio codec par operation.
 pub(crate) fn set_audio_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -368,7 +368,7 @@ pub(crate) fn set_audio_codec_par(
     Ok(())
 }
 
-/// Executes the set subtitle codec par routine.
+/// Runs the set subtitle codec par operation.
 pub(crate) fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,

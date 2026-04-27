@@ -304,7 +304,7 @@ pub fn print_probe() {
     }
 }
 
-/// Executes the media type to str routine.
+/// Runs the media type to str operation.
 fn media_type_to_str(t: ffi::AVMediaType) -> &'static str {
     match t {
         ffi::AVMEDIA_TYPE_VIDEO => "video",

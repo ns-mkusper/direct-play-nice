@@ -4,13 +4,13 @@
 //! preserves language/default metadata in the output container.
 
 use super::*;
-/// Stores data for PendingPacket.
+/// Holds state for PendingPacket.
 pub(super) struct PendingPacket {
     ts: i64,
     packet: AVPacket,
 }
 
-/// Stores data for SubtitleMuxer.
+/// Holds state for SubtitleMuxer.
 pub(super) struct SubtitleMuxer {
     input_ctx: AVFormatContextInput,
     input_stream_index: usize,
@@ -21,9 +21,9 @@ pub(super) struct SubtitleMuxer {
     last_written_dts: Option<i64>,
 }
 
-/// Implements behavior for `SubtitleMuxer`.
+/// Provides methods for `SubtitleMuxer`.
 impl SubtitleMuxer {
-    /// Executes the collect packets routine.
+    /// Runs the collect packets operation.
     fn collect_packets(&mut self, output_time_base: ffi::AVRational) -> Result<Vec<PendingPacket>> {
         let mut out = Vec::new();
         loop {
@@ -58,7 +58,7 @@ impl SubtitleMuxer {
     }
 }
 
-/// Executes the remux copy streams routine.
+/// Runs the remux copy streams operation.
 pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
     let output_extension = output_path
@@ -132,7 +132,7 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     Ok(())
 }
 
-/// Executes the mux text tracks from routine.
+/// Runs the mux text tracks from operation.
 pub fn mux_text_tracks_from(
     input_file: &CStr,
     output_file: &CStr,
@@ -254,7 +254,7 @@ pub fn mux_text_tracks_from(
     Ok(())
 }
 
-/// Executes the build subtitle muxer routine.
+/// Runs the build subtitle muxer operation.
 pub(super) fn build_subtitle_muxer(
     track: &OcrSubtitleTrack,
     output_ctx: &mut AVFormatContextOutput,
@@ -319,7 +319,7 @@ pub(super) fn build_subtitle_muxer(
     })
 }
 
-/// Executes the select subtitle codec id routine.
+/// Runs the select subtitle codec id operation.
 pub(super) fn select_subtitle_codec_id(
     format: OcrFormat,
     is_mp4: bool,
@@ -337,14 +337,14 @@ pub(super) fn select_subtitle_codec_id(
     }
 }
 
-/// Executes the build language metadata routine.
+/// Runs the build language metadata operation.
 pub(super) fn build_language_metadata(language: &str) -> Option<AVDictionary> {
     let key = CString::new("language").ok()?;
     let value = CString::new(language).ok()?;
     Some(AVDictionary::new(&key, &value, 0))
 }
 
-/// Executes the set subtitle codec par routine.
+/// Runs the set subtitle codec par operation.
 pub(super) fn set_subtitle_codec_par(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -373,7 +373,7 @@ pub(super) fn set_subtitle_codec_par(
     }
 }
 
-/// Executes the encode subtitle packet routine.
+/// Runs the encode subtitle packet operation.
 pub(super) fn encode_subtitle_packet(
     encode_context: &mut AVCodecContext,
     subtitle: &rsmpeg::avcodec::AVSubtitle,
@@ -459,7 +459,7 @@ pub(super) fn encode_subtitle_packet(
     Ok(Some(encoded_packet))
 }
 
-/// Executes the packet ts routine.
+/// Runs the packet ts operation.
 pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
     let ts = if packet.pts != ffi::AV_NOPTS_VALUE {
         packet.pts

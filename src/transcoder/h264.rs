@@ -1,12 +1,12 @@
 use crate::transcoder::prelude::*;
 
-/// Stores data for H264RateLimit.
+/// Holds state for H264RateLimit.
 pub(crate) struct H264RateLimit {
     pub(crate) max_bitrate_bits: i64,
     pub(crate) max_buffer_bits: i64,
 }
 
-/// Executes the h264 high profile rate limits routine.
+/// Runs the h264 high profile rate limits operation.
 pub(crate) fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264RateLimit> {
     use H264Level::*;
     const K: i64 = 1_000;
@@ -36,7 +36,7 @@ pub(crate) fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264Rate
     })
 }
 
-/// Executes the enforce h264 constraints routine.
+/// Runs the enforce h264 constraints operation.
 pub(crate) fn enforce_h264_constraints(
     encode_context: &mut AVCodecContext,
     target_profile: H264Profile,
@@ -108,13 +108,13 @@ pub(crate) fn enforce_h264_constraints(
     }
 }
 
-/// Executes the should apply profile option routine.
+/// Runs the should apply profile option operation.
 pub(crate) fn should_apply_profile_option(encoder_name: &str) -> bool {
     let encoder_name_lower = encoder_name.to_ascii_lowercase();
     encoder_name_lower.contains("x264") || encoder_name_lower.contains("nvenc")
 }
 
-/// Executes the level option value for encoder routine.
+/// Runs the level option value for encoder operation.
 pub(crate) fn level_option_value_for_encoder(encoder_name: &str, level: H264Level) -> String {
     let lower = encoder_name.to_ascii_lowercase();
     if lower.contains("nvenc") || lower.contains("amf") || lower.contains("qsv") {
@@ -124,7 +124,7 @@ pub(crate) fn level_option_value_for_encoder(encoder_name: &str, level: H264Leve
     }
 }
 
-/// Executes the apply h264 profile option routine.
+/// Runs the apply h264 profile option operation.
 pub(crate) fn apply_h264_profile_option(
     ctx_ptr: *mut ffi::AVCodecContext,
     encoder_name: &str,
@@ -141,7 +141,7 @@ pub(crate) fn apply_h264_profile_option(
     }
 }
 
-/// Executes the nvenc profile value routine.
+/// Runs the nvenc profile value operation.
 fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
     match profile {
         H264Profile::Baseline => Some(0),
@@ -153,7 +153,7 @@ fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
 }
 
 #[derive(Debug)]
-/// Stores data for HwProfileLevelMismatch.
+/// Holds state for HwProfileLevelMismatch.
 pub(crate) struct HwProfileLevelMismatch {
     pub(crate) encoder: String,
     pub(crate) expected_profile: H264Profile,
@@ -164,9 +164,9 @@ pub(crate) struct HwProfileLevelMismatch {
     pub(crate) output_path: String,
 }
 
-/// Implements behavior for `HwProfileLevelMismatch`.
+/// Provides methods for `HwProfileLevelMismatch`.
 impl HwProfileLevelMismatch {
-    /// Executes the new routine.
+    /// Runs the new operation.
     fn new(
         encoder: String,
         expected_profile: H264Profile,
@@ -188,9 +188,9 @@ impl HwProfileLevelMismatch {
     }
 }
 
-/// Implements behavior for `HwProfileLevelMismatch`.
+/// Provides methods for `HwProfileLevelMismatch`.
 impl std::fmt::Display for HwProfileLevelMismatch {
-    /// Executes the fmt routine.
+    /// Runs the fmt operation.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -205,27 +205,27 @@ impl std::fmt::Display for HwProfileLevelMismatch {
     }
 }
 
-/// Implements behavior for `HwProfileLevelMismatch {}`.
+/// Provides methods for `HwProfileLevelMismatch {}`.
 impl std::error::Error for HwProfileLevelMismatch {}
 
 #[derive(Debug)]
-/// Stores data for HwEncoderInitError.
+/// Holds state for HwEncoderInitError.
 pub(crate) struct HwEncoderInitError {
     pub(crate) encoder: String,
     pub(crate) message: String,
 }
 
-/// Implements behavior for `HwEncoderInitError`.
+/// Provides methods for `HwEncoderInitError`.
 impl HwEncoderInitError {
-    /// Executes the new routine.
+    /// Runs the new operation.
     pub(crate) fn new(encoder: String, message: String) -> Self {
         Self { encoder, message }
     }
 }
 
-/// Implements behavior for `HwEncoderInitError`.
+/// Provides methods for `HwEncoderInitError`.
 impl std::fmt::Display for HwEncoderInitError {
-    /// Executes the fmt routine.
+    /// Runs the fmt operation.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -235,20 +235,20 @@ impl std::fmt::Display for HwEncoderInitError {
     }
 }
 
-/// Implements behavior for `HwEncoderInitError {}`.
+/// Provides methods for `HwEncoderInitError {}`.
 impl std::error::Error for HwEncoderInitError {}
 
 #[derive(Debug)]
-/// Stores data for DecoderError.
+/// Holds state for DecoderError.
 pub(crate) struct DecoderError {
     codec: String,
     stream_index: i32,
     message: String,
 }
 
-/// Implements behavior for `DecoderError`.
+/// Provides methods for `DecoderError`.
 impl DecoderError {
-    /// Executes the new routine.
+    /// Runs the new operation.
     pub(crate) fn new(codec: String, stream_index: i32, message: String) -> Self {
         Self {
             codec,
@@ -258,9 +258,9 @@ impl DecoderError {
     }
 }
 
-/// Implements behavior for `DecoderError`.
+/// Provides methods for `DecoderError`.
 impl std::fmt::Display for DecoderError {
-    /// Executes the fmt routine.
+    /// Runs the fmt operation.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -270,11 +270,11 @@ impl std::fmt::Display for DecoderError {
     }
 }
 
-/// Implements behavior for `DecoderError {}`.
+/// Provides methods for `DecoderError {}`.
 impl std::error::Error for DecoderError {}
 
 #[derive(Debug, Clone)]
-/// Stores data for H264Verification.
+/// Holds state for H264Verification.
 pub(crate) struct H264Verification {
     pub(crate) expected_profile: H264Profile,
     pub(crate) expected_level: H264Level,
@@ -282,15 +282,15 @@ pub(crate) struct H264Verification {
     pub(crate) actual_level: H264Level,
 }
 
-/// Implements behavior for `H264Verification`.
+/// Provides methods for `H264Verification`.
 impl H264Verification {
-    /// Executes the is valid routine.
+    /// Runs the is valid operation.
     pub(crate) fn is_valid(&self) -> bool {
         self.actual_profile == self.expected_profile && self.actual_level == self.expected_level
     }
 }
 
-/// Executes the verify output h264 profile level routine.
+/// Runs the verify output h264 profile level operation.
 pub(crate) fn verify_output_h264_profile_level(
     output_file: &CStr,
     output_path: &Path,
@@ -343,7 +343,7 @@ pub(crate) fn verify_output_h264_profile_level(
     }
 }
 
-/// Executes the check h264 profile level constraints routine.
+/// Runs the check h264 profile level constraints operation.
 pub(crate) fn check_h264_profile_level_constraints(
     stream_codec_id: ffi::AVCodecID,
     raw_profile: i32,
@@ -381,7 +381,7 @@ pub(crate) fn check_h264_profile_level_constraints(
     }
 }
 
-/// Executes the set codec option str routine.
+/// Runs the set codec option str operation.
 pub(crate) unsafe fn set_codec_option_str(
     ctx: *mut ffi::AVCodecContext,
     key: &str,
@@ -427,7 +427,7 @@ pub(crate) unsafe fn set_codec_option_str(
     }
 }
 
-/// Executes the set codec option i64 routine.
+/// Runs the set codec option i64 operation.
 pub(crate) unsafe fn set_codec_option_i64(
     ctx: *mut ffi::AVCodecContext,
     key: &str,

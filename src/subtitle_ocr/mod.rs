@@ -35,7 +35,7 @@ use text_processing::{ppocr_spacing_needs_fallback, split_glued_ascii_token};
 mod text_processing;
 
 #[derive(Debug, Clone)]
-/// Stores data for OcrSubtitleTrack.
+/// Holds state for OcrSubtitleTrack.
 pub struct OcrSubtitleTrack {
     pub language: String,
     pub subtitle_path: PathBuf,

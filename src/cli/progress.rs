@@ -8,7 +8,7 @@ pub(crate) struct ProgressTracker {
     last_reported_percent: i64,
 }
 
-/// Implements behavior for `ProgressTracker`.
+/// Provides methods for `ProgressTracker`.
 impl ProgressTracker {
     /// Builds a tracker for a media item duration in microseconds.
     pub(crate) fn new(duration_us: i64) -> Self {

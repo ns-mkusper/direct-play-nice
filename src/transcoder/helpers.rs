@@ -1,6 +1,6 @@
 use crate::transcoder::prelude::*;
 
-/// Executes the describe bitrate routine.
+/// Runs the describe bitrate operation.
 pub(crate) fn describe_bitrate(bitrate: Option<i64>) -> String {
     match bitrate {
         Some(bps) => format!("{} bps", bps),
@@ -8,7 +8,7 @@ pub(crate) fn describe_bitrate(bitrate: Option<i64>) -> String {
     }
 }
 
-/// Executes the describe resolution routine.
+/// Runs the describe resolution operation.
 pub(crate) fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
     match dimensions {
         Some((w, h)) => format!("max {}x{}", w, h),
@@ -16,7 +16,7 @@ pub(crate) fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
     }
 }
 
-/// Executes the describe codec routine.
+/// Runs the describe codec operation.
 pub(crate) fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     match codec_id {
         ffi::AV_CODEC_ID_H264 => "H.264",
@@ -31,7 +31,7 @@ pub(crate) fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     }
 }
 
-/// Executes the ensure decoder pkt time base routine.
+/// Runs the ensure decoder pkt time base operation.
 pub(crate) fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: ffi::AVRational) {
     unsafe {
         let current = (*ctx.as_ptr()).pkt_timebase;
@@ -41,7 +41,7 @@ pub(crate) fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: 
     }
 }
 
-/// Executes the enable strict decode failure routine.
+/// Runs the enable strict decode failure operation.
 pub(crate) fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
     // Fail fast on broken bitstreams instead of writing partially decoded output.
     unsafe {
@@ -56,7 +56,7 @@ const H264_SW_DECODER_NAMES: &[&str] = &["h264"];
 const HEVC_HW_DECODER_NAMES: &[&str] = &["hevc_cuvid"];
 const HEVC_SW_DECODER_NAMES: &[&str] = &["hevc"];
 
-/// Executes the preferred decoder names routine.
+/// Runs the preferred decoder names operation.
 fn preferred_decoder_names(codec_id: ffi::AVCodecID, prefer_hw: bool) -> &'static [&'static str] {
     match codec_id {
         ffi::AV_CODEC_ID_AV1 => {
@@ -84,7 +84,7 @@ fn preferred_decoder_names(codec_id: ffi::AVCodecID, prefer_hw: bool) -> &'stati
     }
 }
 
-/// Executes the find decoder with fallback routine.
+/// Runs the find decoder with fallback operation.
 pub(crate) fn find_decoder_with_fallback(
     codec_id: ffi::AVCodecID,
     prefer_hw: bool,
@@ -137,7 +137,7 @@ unsafe extern "C" fn select_cuda_hw_format(
     *pix_fmts
 }
 
-/// Executes the configure cuda hw decoder routine.
+/// Runs the configure cuda hw decoder operation.
 pub(crate) fn configure_cuda_hw_decoder(
     decode_context: &mut AVCodecContext,
     device: *mut ffi::AVBufferRef,
@@ -161,21 +161,21 @@ pub(crate) fn configure_cuda_hw_decoder(
     Ok(())
 }
 
-/// Executes the devices support codec routine.
+/// Runs the devices support codec operation.
 pub(crate) fn devices_support_codec(devices: &[&StreamingDevice], codec: ffi::AVCodecID) -> bool {
     devices
         .iter()
         .all(|device| device.video_codecs.contains(&codec))
 }
 
-/// Executes the describe h264 profile routine.
+/// Runs the describe h264 profile operation.
 pub(crate) fn describe_h264_profile(profile: i32) -> String {
     H264Profile::try_from(profile)
         .map(|p| format!("{:?}", p))
         .unwrap_or_else(|_| format!("profile({})", profile))
 }
 
-/// Executes the describe h264 level routine.
+/// Runs the describe h264 level operation.
 pub(crate) fn describe_h264_level(level: i32) -> String {
     H264Level::try_from(level)
         .map(|l| l.ffmpeg_name().to_string())
