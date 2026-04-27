@@ -1,3 +1,5 @@
+//! Cross-process throttling utilities for limiting concurrent conversions.
+
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use log::{debug, info, warn};

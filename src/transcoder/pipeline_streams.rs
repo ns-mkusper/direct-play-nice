@@ -1,3 +1,5 @@
+//! Per-stream decode/encode processing for video, audio, and subtitles.
+
 use crate::transcoder::prelude::*;
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {

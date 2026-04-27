@@ -1,3 +1,5 @@
+//! Case-insensitive environment variable lookup and parsing helpers.
+
 use std::env;
 
 /// Parses common truthy/falsey env string values into a boolean.

@@ -1,3 +1,5 @@
+//! Tests for Sonarr/Radarr environment and path-resolution behavior.
+
 #[cfg(test)]
 mod tests {
     use crate::servarr::*;

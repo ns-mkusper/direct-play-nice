@@ -1,3 +1,5 @@
+//! Top-level conversion orchestration from parsed args to execution.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
@@ -26,6 +28,7 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         }
     }
     if let Some((cfg, _)) = &loaded_config {
+        // Apply config only when the user did not set the same option explicitly.
         apply_config_overrides(&mut args, cfg, &matches_snapshot);
     }
     let config_plex = loaded_config
@@ -64,7 +67,7 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         _ => {}
     }
 
-    // Stream probing early exit
+    // Probe modes are inspection-only and never enter conversion planning.
     if args.probe_streams {
         match args.output {
             OutputFormat::Json => {
@@ -103,7 +106,7 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         return Ok(());
     }
 
-    // Additional probe early exits (supports combined --probe-hw --probe-codecs)
+    // Additional probe early exits (supports combined --probe-hw --probe-codecs).
     if args.probe_hw || args.probe_codecs {
         let want_json = args.probe_json || matches!(args.output, OutputFormat::Json);
         if want_json {
@@ -125,6 +128,7 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         return Ok(());
     }
     let base_args = args.clone();
+    // Batch mode runs conversion once per Servarr-resolved input path.
     let run_queue: Vec<Option<ReplacePlan>> = match servarr_preparation {
         IntegrationPreparation::None => vec![None],
         IntegrationPreparation::Replace(plan) => vec![Some(plan)],

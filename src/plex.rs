@@ -1,3 +1,5 @@
+//! Plex refresh integration and API request orchestration.
+
 use crate::config::PlexSettings;
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};

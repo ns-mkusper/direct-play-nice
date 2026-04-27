@@ -1,3 +1,5 @@
+//! Common transcoder helpers for packet/frame timing and IO setup.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) fn describe_bitrate(bitrate: Option<i64>) -> String {

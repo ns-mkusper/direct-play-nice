@@ -1,6 +1,13 @@
+//! Core transcode loop for decode, transform, encode, and mux operations.
+
 use crate::transcoder::prelude::*;
 
 #[derive(Clone, Copy)]
+/// Immutable conversion plan resolved before stream processing starts.
+///
+/// This bundles policy-level decisions (codecs, quality caps, stream policy) so
+/// retry flows can rerun conversion with a modified hardware preference while
+/// keeping all other inputs identical.
 pub(crate) struct ConversionParams<'a> {
     pub(crate) sub_mode: SubMode,
     pub(crate) target_video_codec: ffi::AVCodecID,
@@ -46,6 +53,7 @@ pub(crate) fn convert_video_file(
         hw_accel,
     } = params;
 
+    // H.264 profile/level checks are only meaningful when the output codec is H.264.
     let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
         h264_constraints
     } else {
@@ -66,6 +74,7 @@ pub(crate) fn convert_video_file(
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
     if container_duration_us <= 0 {
+        // Keep progress reporting alive for containers with missing/invalid duration.
         container_duration_us = 1;
     }
     let mut progress_tracker = Some(ProgressTracker::new(container_duration_us));
@@ -105,6 +114,7 @@ pub(crate) fn convert_video_file(
     let mut hardware_encoder_used = false;
     let mut hw_decode_blacklist: HashSet<ffi::AVCodecID> = HashSet::new();
 
+    // Exactly one video stream is treated as the primary conversion target.
     let primary_index = select_primary_video_stream_index(
         &input_format_context,
         primary_video_stream_index,
@@ -155,6 +165,8 @@ pub(crate) fn convert_video_file(
                 .to_string_lossy()
                 .into_owned()
         };
+        // Disable hardware decode per codec after the first hard failure to
+        // avoid repeated slow failures on every stream with that codec.
         let prefer_hw_decode = allow_cuda_hw_decode
             && shared_hw_device.is_some()
             && input_codec_type == ffi::AVMEDIA_TYPE_VIDEO
@@ -329,6 +341,8 @@ pub(crate) fn convert_video_file(
 
         let is_video_stream = decode_context.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
         if is_video_stream && stream.index as usize != primary_index {
+            // Secondary video streams are controlled by unsupported-video policy.
+            // This keeps multi-video files deterministic for direct-play targets.
             match uv_policy {
                 UnsupportedVideoPolicy::Ignore => {
                     warn!(

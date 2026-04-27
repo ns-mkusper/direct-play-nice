@@ -1,3 +1,5 @@
+//! Sonarr/Radarr integration planning, path preparation, and file replacement flow.
+
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use std::env;
@@ -12,6 +14,7 @@ mod path_policy;
 mod servarr_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported Servarr integration sources.
 pub enum IntegrationKind {
     Sonarr,
     Radarr,
@@ -48,6 +51,10 @@ impl IntegrationKind {
 }
 
 #[derive(Debug, Clone)]
+/// Fully-resolved atomic replacement plan for one media file.
+///
+/// Replacement is always staged through `temp_output_path` and `backup_path` so
+/// failures can roll back to the original source file.
 pub struct ReplacePlan {
     pub kind: IntegrationKind,
     pub event_type: String,
@@ -115,7 +122,7 @@ impl ReplacePlan {
 
         let had_original = self.input_path.exists();
 
-        // Move the original file aside
+        // Move the original aside first, so final promotion can be an atomic rename.
         if had_original {
             fs::rename(&self.input_path, &self.backup_path).with_context(|| {
                 format!(
@@ -127,7 +134,7 @@ impl ReplacePlan {
             })?;
         }
 
-        // Promote the converted temp file into place
+        // Promote the converted temp file into place; restore backup on failure.
         if let Err(promote_err) = fs::rename(&self.temp_output_path, &self.final_output_path) {
             if had_original && self.backup_path.exists() && !self.input_path.exists() {
                 if let Err(restore_err) = fs::rename(&self.backup_path, &self.input_path) {
@@ -198,6 +205,7 @@ impl ReplacePlan {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Borrowed view of CLI path-related arguments used by Servarr planning.
 pub struct ArgsView<'a> {
     pub has_input: bool,
     pub has_output: bool,
@@ -206,6 +214,7 @@ pub struct ArgsView<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// Preparation result for integration-triggered runs.
 pub enum IntegrationPreparation {
     None,
     Skip { reason: String },

@@ -1,3 +1,5 @@
+//! Configuration loading, source resolution, and TOML deserialization.
+
 use crate::gpu::HwAccel;
 use crate::{
     AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,

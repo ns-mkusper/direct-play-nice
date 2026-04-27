@@ -1,3 +1,5 @@
+//! FFmpeg log bridging and diagnostics formatting helpers.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) fn av_error_to_string(err: i32) -> String {

@@ -1,3 +1,5 @@
+//! Retry and recovery helpers for conversion failures and fallback paths.
+
 use anyhow::{anyhow, bail, Result};
 use log::warn;
 use rsmpeg::avformat::AVFormatContextInput;

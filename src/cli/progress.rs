@@ -1,3 +1,5 @@
+//! Progress tracking and terminal progress-bar rendering utilities.
+
 use log::info;
 use rsmpeg::avutil::ra;
 use rsmpeg::ffi;

@@ -1,3 +1,5 @@
+//! Pipeline module composition and re-exports for stream processing stages.
+
 #[path = "pipeline_assessment.rs"]
 pub mod pipeline_assessment;
 #[path = "pipeline_codec.rs"]

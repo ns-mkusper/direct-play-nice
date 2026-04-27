@@ -1,3 +1,5 @@
+//! Program entrypoint that initializes logging and dispatches command execution.
+
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use std::env;

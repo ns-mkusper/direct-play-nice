@@ -1,3 +1,5 @@
+//! Logging initialization and environment diagnostic helpers.
+
 use log::info;
 use std::env;
 

@@ -1,3 +1,5 @@
+//! Integration-style unit tests for CLI wiring and conversion helpers.
+
 #[cfg(test)]
 mod rate_limit_tests {
     use crate::*;

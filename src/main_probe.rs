@@ -1,3 +1,5 @@
+//! Probe commands that inspect media streams, codecs, and hardware support.
+
 use anyhow::Result;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;

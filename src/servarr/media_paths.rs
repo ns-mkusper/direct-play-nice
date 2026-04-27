@@ -1,3 +1,5 @@
+//! Sonarr/Radarr media-path parsing and normalization.
+
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::path::{Path, PathBuf};

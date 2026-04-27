@@ -1,3 +1,5 @@
+//! Transcoder module surface, re-exports, and shared internal prelude.
+
 pub mod app;
 pub mod ffmpeg_diagnostics;
 pub mod h264;
@@ -6,6 +8,8 @@ pub mod pipeline;
 pub mod quality;
 
 pub(crate) mod prelude {
+    // Centralized imports for transcoder submodules. This keeps leaf modules
+    // focused on pipeline logic instead of repeating long FFmpeg type imports.
     pub(crate) use anyhow::{anyhow, bail, Context, Result};
     pub(crate) use clap::{ArgMatches, ValueEnum};
     pub(crate) use libc::EINVAL;

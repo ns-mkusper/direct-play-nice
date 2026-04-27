@@ -1,3 +1,5 @@
+//! Direct-play compatibility assessment and conversion outcome tracking.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) struct DirectPlayAssessment {
@@ -6,6 +8,7 @@ pub(crate) struct DirectPlayAssessment {
 }
 
 #[derive(Debug, Default)]
+/// Post-conversion signals consumed by retry and warning logic.
 pub(crate) struct ConversionOutcome {
     pub(crate) h264_verification: Option<H264Verification>,
 }
@@ -20,6 +23,7 @@ impl ConversionOutcome {
 }
 
 #[derive(Clone, Copy)]
+/// Inputs required to evaluate whether a source can direct-play unchanged.
 pub(crate) struct DirectPlayConstraints<'a> {
     pub(crate) target_is_mp4: bool,
     pub(crate) sub_mode: SubMode,
@@ -64,6 +68,7 @@ pub(crate) fn assess_direct_play_compatibility(
         )
     })?;
 
+    // Collect every incompatibility so users can see the full decision context.
     let mut reasons = Vec::new();
     let video_par = video_stream.codecpar();
     let input_path = PathBuf::from(input_file.to_string_lossy().into_owned());
@@ -132,6 +137,7 @@ pub(crate) fn assess_direct_play_compatibility(
     if let Some(max_video_bitrate) = quality_limits.max_video_bitrate {
         let mut video_bit_rate = video_par.bit_rate;
         if video_bit_rate <= 0 {
+            // Some demuxers expose bitrate only through the raw codecpar pointer.
             video_bit_rate = unsafe { (*(*video_stream.as_ptr()).codecpar).bit_rate };
         }
         if video_bit_rate <= 0 {
@@ -192,6 +198,7 @@ pub(crate) fn assess_direct_play_compatibility(
         if let Some(max_audio_bitrate) = quality_limits.max_audio_bitrate {
             let mut audio_bit_rate = codecpar.bit_rate;
             if audio_bit_rate <= 0 {
+                // Mirror video-path fallback for containers with sparse stream metadata.
                 audio_bit_rate = unsafe { (*(*stream.as_ptr()).codecpar).bit_rate };
             }
 

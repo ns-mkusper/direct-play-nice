@@ -1,3 +1,5 @@
+//! Codec selection and encoder/decoder configuration helpers.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) fn preferred_audio_frame_size(encode_context: &AVCodecContext, fifo_size: i32) -> i32 {

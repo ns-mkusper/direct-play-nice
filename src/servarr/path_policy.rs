@@ -1,3 +1,5 @@
+//! Output-path policy rules for extension and suffix handling.
+
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
