@@ -4,6 +4,7 @@ use std::env;
 const SONARR_PREFIX: &str = "sonarr_";
 const RADARR_PREFIX: &str = "radarr_";
 
+/// Executes the relevant env routine.
 fn relevant_env(kind: super::servarr::IntegrationKind) -> Vec<(String, String)> {
     let prefix = match kind {
         super::servarr::IntegrationKind::Sonarr => SONARR_PREFIX,
@@ -17,10 +18,12 @@ fn relevant_env(kind: super::servarr::IntegrationKind) -> Vec<(String, String)> 
     entries
 }
 
+/// Executes the collect relevant env routine.
 pub fn collect_relevant_env(kind: super::servarr::IntegrationKind) -> Vec<(String, String)> {
     relevant_env(kind)
 }
 
+/// Executes the log relevant env routine.
 pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
     let entries = relevant_env(kind);
     let header = format!("ServeArr env snapshot ({} entries):", entries.len());
@@ -41,6 +44,7 @@ pub fn log_relevant_env(kind: super::servarr::IntegrationKind) {
     }
 }
 
+/// Executes the should redact env value routine.
 fn should_redact_env_value(key_lower: &str) -> bool {
     key_lower.contains("token")
         || key_lower.contains("password")
@@ -54,6 +58,7 @@ mod tests {
     use super::should_redact_env_value;
 
     #[test]
+    /// Executes the redacts sensitive keys routine.
     fn redacts_sensitive_keys() {
         assert!(should_redact_env_value("sonarr_apikey"));
         assert!(should_redact_env_value("radarr_api_key"));
@@ -63,6 +68,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the keeps non sensitive keys routine.
     fn keeps_non_sensitive_keys() {
         assert!(!should_redact_env_value("sonarr_series_path"));
         assert!(!should_redact_env_value("radarr_movie_title"));

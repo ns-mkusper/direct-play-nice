@@ -22,6 +22,7 @@ pub enum Resolution {
     Resolution2160p,
 }
 
+/// Implements behavior for `Resolution`.
 impl Resolution {
     /// Returns canonical `(width, height)` dimensions.
     pub fn to_dimensions(self) -> (u32, u32) {
@@ -86,21 +87,27 @@ pub enum H264Level {
     Level5_2 = 52,
 }
 
+/// Implements behavior for `H264Level`.
 impl PartialOrd for H264Level {
+    /// Executes the partial cmp routine.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+/// Implements behavior for `H264Level`.
 impl Ord for H264Level {
+    /// Executes the cmp routine.
     fn cmp(&self, other: &Self) -> Ordering {
         (*self as u32).cmp(&(*other as u32))
     }
 }
 
+/// Implements behavior for `H264Level`.
 impl TryFrom<i32> for H264Level {
     type Error = &'static str;
 
+    /// Executes the try from routine.
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
             10 => Ok(H264Level::Level1),
@@ -124,6 +131,7 @@ impl TryFrom<i32> for H264Level {
     }
 }
 
+/// Implements behavior for `H264Level`.
 impl H264Level {
     /// Returns FFmpeg's textual representation for this level.
     pub fn ffmpeg_name(&self) -> &'static str {
@@ -168,9 +176,11 @@ pub enum H264Profile {
     High444 = ffi::AV_PROFILE_H264_HIGH_444 as isize,
 }
 
+/// Implements behavior for `H264Profile`.
 impl TryFrom<i32> for H264Profile {
     type Error = &'static str;
 
+    /// Executes the try from routine.
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
             x if x == ffi::AV_PROFILE_H264_BASELINE as i32 => Ok(H264Profile::Baseline),
@@ -185,15 +195,18 @@ impl TryFrom<i32> for H264Profile {
     }
 }
 
+/// Implements behavior for `H264Profile`.
 impl TryFrom<u32> for H264Profile {
     type Error = &'static str;
 
+    /// Executes the try from routine.
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         let value = i32::try_from(value).map_err(|_| "Invalid H.264 profile value")?;
         H264Profile::try_from(value)
     }
 }
 
+/// Implements behavior for `H264Profile`.
 impl H264Profile {
     /// Returns FFmpeg's textual representation for this profile.
     pub fn ffmpeg_name(&self) -> &'static str {
@@ -222,6 +235,7 @@ pub enum ContainerFormat {
     Mkv,
 }
 
+/// Implements behavior for `ContainerFormat`.
 impl ContainerFormat {
     /// Returns the standard lowercase extension for this container.
     pub fn as_str(self) -> &'static str {
@@ -258,6 +272,7 @@ pub enum DeviceFamily {
     FireTv,
 }
 
+/// Implements behavior for `DeviceFamily`.
 impl DeviceFamily {
     /// Returns this family as a canonical identifier string.
     pub fn as_str(self) -> &'static str {
@@ -373,6 +388,7 @@ pub struct PlannedOutputProfile {
     pub target_audio_bitrate: Option<i64>,
 }
 
+/// Implements behavior for `StreamingDevice`.
 impl StreamingDevice {
     /// Returns one video codec shared by all provided devices.
     pub fn get_common_video_codec(devices: &[&StreamingDevice]) -> Result<ffi::AVCodecID> {
@@ -608,6 +624,7 @@ pub fn plan_output_profile(
     })
 }
 
+/// Implements behavior for `ResolvedTargetProfile`.
 impl ResolvedTargetProfile {
     #[allow(dead_code)]
     /// Returns whether this profile is playable by `device`.
@@ -646,6 +663,7 @@ mod tests {
     use crate::devices::device_profile::*;
 
     #[test]
+    /// Executes the h264 profile try from accepts known profiles routine.
     fn h264_profile_try_from_accepts_known_profiles() {
         assert_eq!(
             H264Profile::try_from(ffi::AV_PROFILE_H264_BASELINE).expect("baseline should map"),
@@ -658,6 +676,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the h264 profile try from rejects unknown value routine.
     fn h264_profile_try_from_rejects_unknown_value() {
         assert!(H264Profile::try_from(-1).is_err());
     }

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::{env_helpers, IntegrationKind};
 
+/// Stores data for MediaPathKeys.
 struct MediaPathKeys {
     direct_keys: &'static [&'static str],
     primary_keys: &'static [&'static str],
@@ -49,6 +50,7 @@ pub(super) fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>>
     ))
 }
 
+/// Executes the media path keys routine.
 fn media_path_keys(kind: IntegrationKind) -> MediaPathKeys {
     match kind {
         IntegrationKind::Sonarr => MediaPathKeys {
@@ -88,6 +90,7 @@ fn media_path_keys(kind: IntegrationKind) -> MediaPathKeys {
     }
 }
 
+/// Executes the resolve fallback paths routine.
 fn resolve_fallback_paths(
     integration_label: &str,
     primary_label: &str,
@@ -135,6 +138,7 @@ fn resolve_fallback_paths(
     None
 }
 
+/// Executes the join root and relative routine.
 fn join_root_and_relative(
     integration_label: &str,
     base_label: &str,
@@ -156,6 +160,7 @@ fn join_root_and_relative(
     joined
 }
 
+/// Executes the join root and source file routine.
 fn join_root_and_source_file(
     integration_label: &str,
     base_label: &str,
@@ -180,6 +185,7 @@ fn join_root_and_source_file(
     joined
 }
 
+/// Executes the collect source paths routine.
 fn collect_source_paths(integration_label: &str, source_paths: &[String]) -> Vec<PathBuf> {
     let mut collected = Vec::new();
     for source in source_paths {

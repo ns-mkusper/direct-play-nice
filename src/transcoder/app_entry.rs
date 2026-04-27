@@ -1,5 +1,6 @@
 use crate::transcoder::prelude::*;
 
+/// Executes the run routine.
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let loaded_config = config::load(args.config_file.as_deref())?;
     if loaded_config.is_none() {
@@ -139,6 +140,7 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     Ok(())
 }
 
+/// Executes the run conversion routine.
 fn run_conversion(
     base_args: &Args,
     plan: Option<ReplacePlan>,
@@ -592,6 +594,7 @@ fn run_conversion(
     }
 }
 
+/// Executes the ocr multi gpu requested routine.
 fn ocr_multi_gpu_requested() -> bool {
     let Ok(raw) = std::env::var("DPN_OCR_CUDA_DEVICES") else {
         return false;

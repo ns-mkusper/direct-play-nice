@@ -7,6 +7,7 @@ use crate::{config, Args};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates options for UnsupportedVideoPolicy.
 pub(crate) enum UnsupportedVideoPolicy {
     Convert,
     Ignore,
@@ -15,6 +16,7 @@ pub(crate) enum UnsupportedVideoPolicy {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates options for SubMode.
 pub(crate) enum SubMode {
     Auto,
     Force,
@@ -23,6 +25,7 @@ pub(crate) enum SubMode {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates options for OcrEngine.
 pub(crate) enum OcrEngine {
     Auto,
     Tesseract,
@@ -33,6 +36,7 @@ pub(crate) enum OcrEngine {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates options for OcrFormat.
 pub(crate) enum OcrFormat {
     Srt,
     Ass,
@@ -40,6 +44,7 @@ pub(crate) enum OcrFormat {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates options for PrimaryVideoCriteria.
 pub(crate) enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
@@ -47,12 +52,14 @@ pub(crate) enum PrimaryVideoCriteria {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
+/// Enumerates options for OutputFormat.
 pub(crate) enum OutputFormat {
     Text,
     Json,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
+/// Enumerates options for StreamsFilter.
 pub(crate) enum StreamsFilter {
     All,
     Video,
@@ -60,6 +67,7 @@ pub(crate) enum StreamsFilter {
     Subtitle,
 }
 
+/// Executes the derive target bitrate routine.
 pub(crate) fn derive_target_bitrate(source: i64, limit: Option<i64>) -> Option<i64> {
     match (limit, source) {
         (Some(limit), source_value) if limit > 0 => {
@@ -74,6 +82,7 @@ pub(crate) fn derive_target_bitrate(source: i64, limit: Option<i64>) -> Option<i
     }
 }
 
+/// Executes the clamp dimensions routine.
 pub(crate) fn clamp_dimensions(
     source_width: i32,
     source_height: i32,
@@ -157,6 +166,7 @@ pub(crate) fn clamp_dimensions(
     (target_width, target_height)
 }
 
+/// Executes the default video bitrate routine.
 pub(crate) fn default_video_bitrate(width: i32, height: i32) -> i64 {
     let max_dim = width.max(height).max(1) as u32;
     match max_dim {
@@ -169,6 +179,7 @@ pub(crate) fn default_video_bitrate(width: i32, height: i32) -> i64 {
     }
 }
 
+/// Executes the nearest video preset routine.
 pub(crate) fn nearest_video_preset(width: i32, height: i32, bitrate: i64) -> &'static str {
     let max_dim = width.max(height).max(1);
     let bitrate = if bitrate > 0 {
@@ -192,6 +203,7 @@ pub(crate) fn nearest_video_preset(width: i32, height: i32, bitrate: i64) -> &'s
     }
 }
 
+/// Executes the nearest audio preset routine.
 pub(crate) fn nearest_audio_preset(bitrate: i64) -> &'static str {
     let bitrate = if bitrate > 0 { bitrate } else { 192_000 };
     const PRESETS: &[(i64, &str)] = &[
@@ -215,12 +227,14 @@ pub(crate) fn nearest_audio_preset(bitrate: i64) -> &'static str {
     best.1
 }
 
+/// Executes the cli value provided routine.
 fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
     matches
         .value_source(id)
         .is_some_and(|source| source != ValueSource::DefaultValue)
 }
 
+/// Executes the apply config overrides routine.
 pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMatches) {
     if args.streaming_devices.is_none() {
         if let Some(devices) = cfg.streaming_devices.as_ref() {

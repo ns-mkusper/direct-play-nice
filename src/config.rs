@@ -15,6 +15,7 @@ pub const CONFIG_ENV_VAR: &str = "DIRECT_PLAY_NICE_CONFIG";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
+/// Stores data for Config.
 pub struct Config {
     pub streaming_devices: Option<StreamingDevicesSetting>,
     pub video_quality: Option<VideoQuality>,
@@ -41,6 +42,7 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
+/// Stores data for PlexSettings.
 pub struct PlexSettings {
     pub refresh: Option<bool>,
     pub url: Option<String>,
@@ -49,17 +51,20 @@ pub struct PlexSettings {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+/// Enumerates options for StreamingDevicesSetting.
 pub enum StreamingDevicesSetting {
     Single(String),
     List(Vec<String>),
 }
 
+/// Enumerates options for ConfigSource.
 pub enum ConfigSource {
     Cli(PathBuf),
     Env(PathBuf),
     Default(PathBuf),
 }
 
+/// Executes the load routine.
 pub fn load(cli_path: Option<&Path>) -> Result<Option<(Config, ConfigSource)>> {
     if let Some(path) = cli_path {
         let cfg = read_from_path(path)?;
@@ -82,6 +87,7 @@ pub fn load(cli_path: Option<&Path>) -> Result<Option<(Config, ConfigSource)>> {
     Ok(None)
 }
 
+/// Executes the read from path routine.
 fn read_from_path(path: &Path) -> Result<Config> {
     if !path.exists() {
         return Err(anyhow!(
@@ -96,6 +102,7 @@ fn read_from_path(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
+/// Executes the resolve default path routine.
 fn resolve_default_path() -> Option<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
         let mut path = PathBuf::from(xdg);
@@ -122,12 +129,14 @@ mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::NamedTempFile;
 
+    /// Executes the env lock routine.
     fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
     #[test]
+    /// Executes the load from cli path routine.
     fn load_from_cli_path() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
@@ -151,6 +160,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the load from env path routine.
     fn load_from_env_path() {
         let _guard = env_lock();
         let mut tmp = NamedTempFile::new().unwrap();
@@ -178,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the absent config returns none routine.
     fn absent_config_returns_none() {
         let _guard = env_lock();
         let original_cfg = env::var_os(CONFIG_ENV_VAR);
@@ -206,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the parses subtitle ocr settings routine.
     fn parses_subtitle_ocr_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(

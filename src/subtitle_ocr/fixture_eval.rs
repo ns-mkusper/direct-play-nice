@@ -5,13 +5,16 @@
 
 use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates options for FixtureEvalMode.
 pub(super) enum FixtureEvalMode {
     Hybrid,
     StrictGain,
     PureOnnx,
 }
 
+/// Implements behavior for `FixtureEvalMode`.
 impl FixtureEvalMode {
+    /// Executes the name routine.
     fn name(self) -> &'static str {
         match self {
             FixtureEvalMode::Hybrid => "hybrid",
@@ -20,6 +23,7 @@ impl FixtureEvalMode {
         }
     }
 
+    /// Executes the min gain routine.
     fn min_gain(self) -> Option<f32> {
         match self {
             FixtureEvalMode::Hybrid => Some(0.08),
@@ -30,6 +34,7 @@ impl FixtureEvalMode {
 }
 
 #[derive(Debug, serde::Deserialize)]
+/// Stores data for FixtureExpected.
 pub(super) struct FixtureExpected {
     expected_text: String,
     language: Option<String>,
@@ -37,6 +42,7 @@ pub(super) struct FixtureExpected {
 }
 
 #[derive(Debug)]
+/// Stores data for FixtureSpec.
 pub(super) struct FixtureSpec {
     name: String,
     language: String,
@@ -46,6 +52,7 @@ pub(super) struct FixtureSpec {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+/// Stores data for FixtureResult.
 pub(crate) struct FixtureResult {
     pub name: String,
     pub language: String,
@@ -64,6 +71,7 @@ pub(crate) struct FixtureResult {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+/// Stores data for FixtureLanguageSummary.
 pub(crate) struct FixtureLanguageSummary {
     pub language: String,
     pub fixture_count: usize,
@@ -74,6 +82,7 @@ pub(crate) struct FixtureLanguageSummary {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+/// Stores data for FixtureModeSummary.
 pub(crate) struct FixtureModeSummary {
     pub mode: String,
     pub fixture_count: usize,
@@ -88,12 +97,14 @@ pub(crate) struct FixtureModeSummary {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+/// Stores data for OcrFixtureEvalReport.
 pub(crate) struct OcrFixtureEvalReport {
     pub fixture_dir: String,
     pub engine: String,
     pub modes: Vec<FixtureModeSummary>,
 }
 
+/// Executes the evaluate ocr fixture accuracy routine.
 pub(crate) fn evaluate_ocr_fixture_accuracy(
     fixture_dir: &Path,
     ocr_engine: OcrEngine,
@@ -134,6 +145,7 @@ pub(crate) fn evaluate_ocr_fixture_accuracy(
     })
 }
 
+/// Executes the render ocr fixture report markdown routine.
 pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) -> String {
     let mut lines = Vec::new();
     lines.push("# OCR Fixture Accuracy Report".to_string());
@@ -187,6 +199,7 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
     lines.join("\n")
 }
 
+/// Executes the resolve eval variant routine.
 pub(super) fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant> {
     match ocr_engine {
         OcrEngine::PpOcrV3 => Ok(PpOcrVariant::V3),
@@ -203,6 +216,7 @@ pub(super) fn resolve_eval_variant(ocr_engine: OcrEngine) -> Result<PpOcrVariant
     }
 }
 
+/// Executes the init ppocr engine safe routine.
 pub(super) fn init_ppocr_engine_safe(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -223,6 +237,7 @@ pub(super) fn init_ppocr_engine_safe(
     }
 }
 
+/// Executes the panic payload to string routine.
 pub(super) fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(msg) = payload.downcast_ref::<&str>() {
         (*msg).to_string()
@@ -233,6 +248,7 @@ pub(super) fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) ->
     }
 }
 
+/// Executes the load fixture specs routine.
 pub(super) fn load_fixture_specs(fixture_dir: &Path) -> Result<Vec<FixtureSpec>> {
     let mut fixtures = Vec::new();
     for entry in fs::read_dir(fixture_dir)
@@ -268,6 +284,7 @@ pub(super) fn load_fixture_specs(fixture_dir: &Path) -> Result<Vec<FixtureSpec>>
     Ok(fixtures)
 }
 
+/// Executes the evaluate fixture routine.
 pub(super) fn evaluate_fixture(
     engine: &mut PpOcrEngine,
     spec: &FixtureSpec,
@@ -353,6 +370,7 @@ pub(super) fn evaluate_fixture(
     })
 }
 
+/// Executes the summarize mode routine.
 pub(super) fn summarize_mode(
     mode: FixtureEvalMode,
     fixtures: Vec<FixtureResult>,
@@ -404,6 +422,7 @@ pub(super) fn summarize_mode(
     }
 }
 
+/// Executes the avg routine.
 pub(super) fn avg<I>(iter: I) -> f32
 where
     I: Iterator<Item = f32>,
@@ -421,6 +440,7 @@ where
     }
 }
 
+/// Executes the normalize text for word similarity routine.
 pub(super) fn normalize_text_for_word_similarity(input: &str) -> String {
     input
         .to_uppercase()
@@ -429,6 +449,7 @@ pub(super) fn normalize_text_for_word_similarity(input: &str) -> String {
         .join(" ")
 }
 
+/// Executes the normalize text for char similarity routine.
 pub(super) fn normalize_text_for_char_similarity(input: &str) -> String {
     input
         .to_uppercase()
@@ -437,6 +458,7 @@ pub(super) fn normalize_text_for_char_similarity(input: &str) -> String {
         .collect()
 }
 
+/// Executes the word error rate eval routine.
 pub(super) fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
@@ -469,6 +491,7 @@ pub(super) fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     dp[m][n] as f32 / expected_words.len() as f32
 }
 
+/// Executes the char error rate eval routine.
 pub(super) fn char_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_chars: Vec<char> = expected.chars().collect();
     let actual_chars: Vec<char> = actual.chars().collect();

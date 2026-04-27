@@ -6,6 +6,7 @@ use std::ffi::CStr;
 
 use crate::types::StreamsFilter;
 
+/// Executes the print streams info routine.
 pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Result<()> {
     let ictx = AVFormatContextInput::open(input_file)?;
     println!("Input: {}", input_file.to_string_lossy());
@@ -82,6 +83,7 @@ pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Re
 }
 
 #[derive(Serialize)]
+/// Stores data for JsonStreamInfo.
 struct JsonStreamInfo {
     index: i32,
     stream_id: i32,
@@ -108,6 +110,7 @@ struct JsonStreamInfo {
 }
 
 #[derive(Serialize)]
+/// Stores data for JsonProbe.
 pub(super) struct JsonProbe {
     input: String,
     duration_ms: Option<i64>,
@@ -115,6 +118,7 @@ pub(super) struct JsonProbe {
 }
 
 #[derive(Serialize)]
+/// Stores data for JsonDisposition.
 struct JsonDisposition {
     default: bool,
     forced: bool,
@@ -122,6 +126,7 @@ struct JsonDisposition {
     visual_impaired: bool,
 }
 
+/// Executes the gather streams info json routine.
 pub(super) fn gather_streams_info_json(
     input_file: &CStr,
     filter: StreamsFilter,

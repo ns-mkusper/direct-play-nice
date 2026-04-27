@@ -12,12 +12,15 @@ mod path_policy;
 mod servarr_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates options for IntegrationKind.
 pub enum IntegrationKind {
     Sonarr,
     Radarr,
 }
 
+/// Implements behavior for `IntegrationKind`.
 impl IntegrationKind {
+    /// Executes the label routine.
     fn label(self) -> &'static str {
         match self {
             IntegrationKind::Sonarr => "Sonarr",
@@ -25,6 +28,7 @@ impl IntegrationKind {
         }
     }
 
+    /// Executes the episode path var routine.
     fn episode_path_var(self) -> &'static str {
         match self {
             IntegrationKind::Sonarr => "sonarr_episodefile_path",
@@ -32,6 +36,7 @@ impl IntegrationKind {
         }
     }
 
+    /// Executes the title var routine.
     fn title_var(self) -> &'static str {
         match self {
             IntegrationKind::Sonarr => "sonarr_series_title",
@@ -39,6 +44,7 @@ impl IntegrationKind {
         }
     }
 
+    /// Executes the is upgrade var routine.
     fn is_upgrade_var(self) -> &'static str {
         match self {
             IntegrationKind::Sonarr => "sonarr_isupgrade",
@@ -48,6 +54,7 @@ impl IntegrationKind {
 }
 
 #[derive(Debug, Clone)]
+/// Stores data for ReplacePlan.
 pub struct ReplacePlan {
     pub kind: IntegrationKind,
     pub event_type: String,
@@ -61,7 +68,9 @@ pub struct ReplacePlan {
     pub temp_output_cstring: CString,
 }
 
+/// Implements behavior for `ReplacePlan`.
 impl ReplacePlan {
+    /// Executes the assign to args routine.
     pub fn assign_to_args(
         &self,
         input_slot: &mut Option<CString>,
@@ -75,6 +84,7 @@ impl ReplacePlan {
         }
     }
 
+    /// Executes the log summary routine.
     pub fn log_summary(&self) {
         let title = self.display_name.as_deref().unwrap_or_else(|| {
             self.input_path
@@ -110,6 +120,7 @@ impl ReplacePlan {
         }
     }
 
+    /// Executes the finalize success routine.
     pub fn finalize_success(self) -> Result<PathBuf> {
         use std::fs;
 
@@ -169,6 +180,7 @@ impl ReplacePlan {
         Ok(self.final_output_path)
     }
 
+    /// Executes the abort on failure routine.
     pub fn abort_on_failure(&self) -> Result<()> {
         use std::fs;
 
@@ -198,6 +210,7 @@ impl ReplacePlan {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Stores data for ArgsView.
 pub struct ArgsView<'a> {
     pub has_input: bool,
     pub has_output: bool,
@@ -206,6 +219,7 @@ pub struct ArgsView<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// Enumerates options for IntegrationPreparation.
 pub enum IntegrationPreparation {
     None,
     Skip { reason: String },
@@ -213,6 +227,7 @@ pub enum IntegrationPreparation {
     Batch(Vec<ReplacePlan>),
 }
 
+/// Executes the prepare from env routine.
 pub fn prepare_from_env(view: ArgsView<'_>) -> Result<IntegrationPreparation> {
     if let Some(event) = env::var("sonarr_eventtype").ok().filter(|v| !v.is_empty()) {
         return handle_event(IntegrationKind::Sonarr, event, view);
@@ -225,6 +240,7 @@ pub fn prepare_from_env(view: ArgsView<'_>) -> Result<IntegrationPreparation> {
     Ok(IntegrationPreparation::None)
 }
 
+/// Executes the handle event routine.
 fn handle_event(
     kind: IntegrationKind,
     event_type: String,
@@ -248,6 +264,7 @@ fn handle_event(
     }
 }
 
+/// Executes the prepare download routine.
 fn prepare_download(
     kind: IntegrationKind,
     event_type: String,
@@ -344,6 +361,7 @@ fn prepare_download(
     }
 }
 
+/// Executes the resolve output path routine.
 fn resolve_output_path(
     input_path: &Path,
     desired_ext: &str,
@@ -352,22 +370,27 @@ fn resolve_output_path(
     path_policy::resolve_output_path(input_path, desired_ext, desired_suffix)
 }
 
+/// Executes the append suffix routine.
 fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     path_policy::append_suffix(path, suffix)
 }
 
+/// Executes the resolve media paths routine.
 fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>> {
     media_paths::resolve_media_paths(kind)
 }
 
+/// Executes the path to cstring routine.
 fn path_to_cstring(path: &Path) -> Result<CString> {
     path_policy::path_to_cstring(path)
 }
 
+/// Executes the parse boolish routine.
 fn parse_boolish(value: String) -> Option<bool> {
     env_helpers::parse_boolish(value)
 }
 
+/// Executes the get env ignore case routine.
 fn get_env_ignore_case(key: &str) -> Option<String> {
     env_helpers::get_env_ignore_case(key)
 }

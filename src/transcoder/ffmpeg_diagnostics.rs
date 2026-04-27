@@ -1,5 +1,6 @@
 use crate::transcoder::prelude::*;
 
+/// Executes the av error to string routine.
 pub(crate) fn av_error_to_string(err: i32) -> String {
     let mut buf = [0i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
     unsafe {
@@ -11,6 +12,7 @@ pub(crate) fn av_error_to_string(err: i32) -> String {
     }
 }
 
+/// Executes the pix fmt name routine.
 pub(crate) fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
     unsafe {
         let ptr = ffi::av_get_pix_fmt_name(fmt);
@@ -22,6 +24,7 @@ pub(crate) fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
     }
 }
 
+/// Executes the sample fmt name routine.
 fn sample_fmt_name(fmt: ffi::AVSampleFormat) -> String {
     unsafe {
         let ptr = ffi::av_get_sample_fmt_name(fmt);
@@ -33,10 +36,12 @@ fn sample_fmt_name(fmt: ffi::AVSampleFormat) -> String {
     }
 }
 
+/// Executes the sample fmt name from i32 routine.
 fn sample_fmt_name_from_i32(fmt: i32) -> String {
     sample_fmt_name(fmt as ffi::AVSampleFormat)
 }
 
+/// Executes the media type name routine.
 fn media_type_name(media_type: ffi::AVMediaType) -> String {
     unsafe {
         let ptr = ffi::av_get_media_type_string(media_type);
@@ -48,6 +53,7 @@ fn media_type_name(media_type: ffi::AVMediaType) -> String {
     }
 }
 
+/// Executes the codec id name routine.
 fn codec_id_name(codec_id: ffi::AVCodecID) -> String {
     unsafe {
         let ptr = ffi::avcodec_get_name(codec_id);
@@ -59,6 +65,7 @@ fn codec_id_name(codec_id: ffi::AVCodecID) -> String {
     }
 }
 
+/// Executes the profile label routine.
 fn profile_label(codec_id: ffi::AVCodecID, profile: i32) -> String {
     if codec_id == ffi::AV_CODEC_ID_H264 {
         format!("{} ({})", profile, describe_h264_profile(profile))
@@ -67,6 +74,7 @@ fn profile_label(codec_id: ffi::AVCodecID, profile: i32) -> String {
     }
 }
 
+/// Executes the level label routine.
 fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
     if codec_id == ffi::AV_CODEC_ID_H264 {
         format!("{} ({})", level, describe_h264_level(level))
@@ -75,6 +83,7 @@ fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
     }
 }
 
+/// Executes the field order name routine.
 fn field_order_name(order: ffi::AVFieldOrder) -> &'static str {
     match order {
         ffi::AV_FIELD_UNKNOWN => "unknown",
@@ -87,6 +96,7 @@ fn field_order_name(order: ffi::AVFieldOrder) -> &'static str {
     }
 }
 
+/// Executes the color range name routine.
 fn color_range_name(range: ffi::AVColorRange) -> String {
     unsafe {
         let ptr = ffi::av_color_range_name(range);
@@ -98,6 +108,7 @@ fn color_range_name(range: ffi::AVColorRange) -> String {
     }
 }
 
+/// Executes the color primaries name routine.
 fn color_primaries_name(primaries: ffi::AVColorPrimaries) -> String {
     unsafe {
         let ptr = ffi::av_color_primaries_name(primaries);
@@ -109,6 +120,7 @@ fn color_primaries_name(primaries: ffi::AVColorPrimaries) -> String {
     }
 }
 
+/// Executes the color trc name routine.
 fn color_trc_name(trc: ffi::AVColorTransferCharacteristic) -> String {
     unsafe {
         let ptr = ffi::av_color_transfer_name(trc);
@@ -120,6 +132,7 @@ fn color_trc_name(trc: ffi::AVColorTransferCharacteristic) -> String {
     }
 }
 
+/// Executes the color space name routine.
 fn color_space_name(space: ffi::AVColorSpace) -> String {
     unsafe {
         let ptr = ffi::av_color_space_name(space);
@@ -131,6 +144,7 @@ fn color_space_name(space: ffi::AVColorSpace) -> String {
     }
 }
 
+/// Executes the chroma location name routine.
 fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
     unsafe {
         let ptr = ffi::av_chroma_location_name(loc);
@@ -142,6 +156,7 @@ fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
     }
 }
 
+/// Executes the channel order name routine.
 fn channel_order_name(order: ffi::AVChannelOrder) -> &'static str {
     match order {
         ffi::AV_CHANNEL_ORDER_UNSPEC => "unspecified",
@@ -152,6 +167,7 @@ fn channel_order_name(order: ffi::AVChannelOrder) -> &'static str {
     }
 }
 
+/// Executes the describe channel layout routine.
 fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
     unsafe {
         if layout.nb_channels <= 0 {
@@ -178,10 +194,12 @@ fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
     }
 }
 
+/// Executes the rational to string routine.
 pub(crate) fn rational_to_string(r: ffi::AVRational) -> String {
     format!("{}/{}", r.num, r.den)
 }
 
+/// Executes the codec params format string routine.
 fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> String {
     match media_type {
         mt if mt == ffi::AVMEDIA_TYPE_VIDEO => {
@@ -196,6 +214,7 @@ fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> Stri
     }
 }
 
+/// Executes the build codec context lines routine.
 fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
     unsafe {
         let mut lines = Vec::new();
@@ -302,6 +321,7 @@ fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
     }
 }
 
+/// Executes the build codec parameters lines routine.
 fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<String>> {
     unsafe {
         let mut params = ffi::avcodec_parameters_alloc();
@@ -426,6 +446,7 @@ fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<S
     }
 }
 
+/// Executes the build encoder debug dump routine.
 fn build_encoder_debug_dump(raw: *const ffi::AVCodecContext) -> Option<String> {
     if raw.is_null() {
         return None;
@@ -439,6 +460,7 @@ fn build_encoder_debug_dump(raw: *const ffi::AVCodecContext) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+/// Executes the log encoder state routine.
 pub(crate) fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name: &str) {
     unsafe {
         let raw = ctx.as_ptr();
@@ -477,6 +499,7 @@ pub(crate) fn log_encoder_state(stage: &str, ctx: &AVCodecContext, encoder_name:
     }
 }
 
+/// Executes the parse ffmpeg log level routine.
 fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -500,6 +523,7 @@ fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
     Some(level)
 }
 
+/// Executes the ffmpeg log level name routine.
 fn ffmpeg_log_level_name(level: i32) -> &'static str {
     match level {
         x if x <= ffi::AV_LOG_QUIET => "quiet",
@@ -514,6 +538,7 @@ fn ffmpeg_log_level_name(level: i32) -> &'static str {
     }
 }
 
+/// Executes the configure ffmpeg logging routine.
 pub(crate) fn configure_ffmpeg_logging() {
     let default_level = ffi::AV_LOG_WARNING as i32;
     let requested = env::var("FFMPEG_LOG_LEVEL").ok();
@@ -534,6 +559,7 @@ pub(crate) fn configure_ffmpeg_logging() {
     }
 }
 
+/// Executes the apply hw encoder quality routine.
 pub(crate) fn apply_hw_encoder_quality(
     ctx: *mut ffi::AVCodecContext,
     encoder_name: &str,

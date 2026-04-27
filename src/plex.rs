@@ -8,6 +8,7 @@ use std::time::Duration;
 use ureq::{Agent, AgentBuilder, Error as UreqError};
 
 #[derive(Debug, Clone)]
+/// Stores data for PlexSection.
 struct PlexSection {
     id: String,
     title: Option<String>,
@@ -15,13 +16,16 @@ struct PlexSection {
 }
 
 #[derive(Debug)]
+/// Stores data for PlexRefresher.
 pub struct PlexRefresher {
     base_url: String,
     token: String,
     agent: Agent,
 }
 
+/// Implements behavior for `PlexRefresher`.
 impl PlexRefresher {
+    /// Executes the from sources routine.
     pub fn from_sources(
         config: Option<&PlexSettings>,
         cli_flag: bool,
@@ -87,6 +91,7 @@ impl PlexRefresher {
         }))
     }
 
+    /// Executes the refresh path routine.
     pub fn refresh_path(&self, path: &Path) -> Result<()> {
         let canonical = canonicalize_or(path);
         let target_dir = if canonical.is_dir() {
@@ -143,6 +148,7 @@ impl PlexRefresher {
         Ok(())
     }
 
+    /// Executes the refresh section routine.
     fn refresh_section(&self, section: &PlexSection, dir_for_query: &str) -> Result<()> {
         let url = format!("{}/library/sections/{}/refresh", self.base_url, section.id);
         info!(
@@ -165,6 +171,7 @@ impl PlexRefresher {
         Ok(())
     }
 
+    /// Executes the fetch sections routine.
     fn fetch_sections(&self) -> Result<Vec<PlexSection>> {
         let url = format!("{}/library/sections", self.base_url);
         info!("Querying Plex library sections from {}.", url);
@@ -222,6 +229,7 @@ impl PlexRefresher {
     }
 }
 
+/// Executes the parse boolish routine.
 fn parse_boolish(input: String) -> Option<bool> {
     let trimmed = input.trim().to_ascii_lowercase();
     match trimmed.as_str() {
@@ -231,6 +239,7 @@ fn parse_boolish(input: String) -> Option<bool> {
     }
 }
 
+/// Executes the canonicalize or routine.
 fn canonicalize_or(path: &Path) -> PathBuf {
     match path.canonicalize() {
         Ok(p) => p,
@@ -238,11 +247,13 @@ fn canonicalize_or(path: &Path) -> PathBuf {
     }
 }
 
+/// Executes the directory within routine.
 fn directory_within(canonical_target: &Path, root: &Path) -> bool {
     let root = canonicalize_or(root);
     canonical_target.starts_with(&root)
 }
 
+/// Executes the normalize path for query routine.
 fn normalize_path_for_query(path: &Path) -> String {
     let mut repr = path.to_string_lossy().to_string();
     if cfg!(windows) {
@@ -253,6 +264,7 @@ fn normalize_path_for_query(path: &Path) -> String {
     repr
 }
 
+/// Executes the map ureq error routine.
 fn map_ureq_error(err: UreqError, context: &str) -> anyhow::Error {
     match err {
         UreqError::Status(code, resp) => {
@@ -274,6 +286,7 @@ mod tests {
     use crate::plex::*;
 
     #[test]
+    /// Executes the parse boolish true values routine.
     fn parse_boolish_true_values() {
         for val in ["1", "true", "YES", "Enabled"] {
             assert_eq!(parse_boolish(val.to_string()), Some(true));
@@ -281,6 +294,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the parse boolish false values routine.
     fn parse_boolish_false_values() {
         for val in ["0", "false", "NO", "Disabled"] {
             assert_eq!(parse_boolish(val.to_string()), Some(false));
@@ -288,11 +302,13 @@ mod tests {
     }
 
     #[test]
+    /// Executes the parse boolish unknown routine.
     fn parse_boolish_unknown() {
         assert_eq!(parse_boolish("maybe".to_string()), None);
     }
 
     #[test]
+    /// Executes the refresher uses config defaults routine.
     fn refresher_uses_config_defaults() {
         let plex_cfg = PlexSettings {
             refresh: Some(true),
@@ -309,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    /// Executes the cli overrides config routine.
     fn cli_overrides_config() {
         let plex_cfg = PlexSettings {
             refresh: Some(true),

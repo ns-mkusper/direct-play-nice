@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use super::PpOcrVariant;
 
+/// Stores data for ModelSpec.
 pub(in crate::subtitle_ocr) struct ModelSpec {
     pub(in crate::subtitle_ocr) filename: &'static str,
     pub(in crate::subtitle_ocr) url: &'static str,
@@ -78,12 +79,14 @@ pub(in crate::subtitle_ocr) const PPOCR_V3_JAPANESE_REC_MODEL: ModelSpec =
 pub(in crate::subtitle_ocr) const PPOCR_V3_KOREAN_REC_MODEL: ModelSpec = PPOCR_V4_KOREAN_REC_MODEL;
 pub(in crate::subtitle_ocr) const PPOCR_V3_CJK_REC_MODEL: ModelSpec = PPOCR_V4_CJK_REC_MODEL;
 
+/// Stores data for PpOcrModels.
 pub(in crate::subtitle_ocr) struct PpOcrModels {
     pub(in crate::subtitle_ocr) det: PathBuf,
     pub(in crate::subtitle_ocr) cls: PathBuf,
     pub(in crate::subtitle_ocr) rec: PathBuf,
 }
 
+/// Executes the resolve model dir routine.
 pub(in crate::subtitle_ocr) fn resolve_model_dir() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("DPN_OCR_MODEL_DIR") {
         let path = PathBuf::from(dir);
@@ -117,6 +120,7 @@ pub(in crate::subtitle_ocr) fn resolve_model_dir() -> Result<PathBuf> {
     Ok(fallback)
 }
 
+/// Executes the ensure ppocr models routine.
 pub(in crate::subtitle_ocr) fn ensure_ppocr_models(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -134,6 +138,7 @@ pub(in crate::subtitle_ocr) fn ensure_ppocr_models(
     Ok(PpOcrModels { det, cls, rec })
 }
 
+/// Executes the resolve optional latin rec model routine.
 pub(in crate::subtitle_ocr) fn resolve_optional_latin_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -161,6 +166,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_latin_rec_model(
     )
 }
 
+/// Executes the resolve optional japanese rec model routine.
 pub(in crate::subtitle_ocr) fn resolve_optional_japanese_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -234,6 +240,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_multilingual_rec_model(
     Ok(discover_local_multilingual_rec_model(model_dir))
 }
 
+/// Executes the resolve optional korean rec model routine.
 pub(in crate::subtitle_ocr) fn resolve_optional_korean_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -299,6 +306,7 @@ fn discover_local_multilingual_rec_model(model_dir: &Path) -> Option<PathBuf> {
     preferred
 }
 
+/// Executes the resolve optional cjk rec model routine.
 pub(in crate::subtitle_ocr) fn resolve_optional_cjk_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
@@ -326,6 +334,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_cjk_rec_model(
     )
 }
 
+/// Executes the resolve optional rec model with candidates routine.
 pub(in crate::subtitle_ocr) fn resolve_optional_rec_model_with_candidates(
     env_key: &str,
     model_dir: &Path,
@@ -375,6 +384,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_rec_model_with_candidates(
     }
 }
 
+/// Executes the ensure model file routine.
 pub(in crate::subtitle_ocr) fn ensure_model_file(
     model_dir: &Path,
     spec: &ModelSpec,
@@ -403,6 +413,7 @@ pub(in crate::subtitle_ocr) fn ensure_model_file(
 }
 
 #[cfg(test)]
+/// Executes the ensure model file with values routine.
 pub(in crate::subtitle_ocr) fn ensure_model_file_with_values(
     model_dir: &Path,
     filename: &str,
@@ -418,6 +429,7 @@ pub(in crate::subtitle_ocr) fn ensure_model_file_with_values(
     Ok(path)
 }
 
+/// Executes the download model with values routine.
 pub(in crate::subtitle_ocr) fn download_model_with_values(
     path: &Path,
     url: &str,
@@ -486,6 +498,7 @@ pub(in crate::subtitle_ocr) fn download_model_with_values(
     Ok(())
 }
 
+/// Executes the sha256 file routine.
 pub(in crate::subtitle_ocr) fn sha256_file(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -500,6 +513,7 @@ pub(in crate::subtitle_ocr) fn sha256_file(path: &Path) -> Result<String> {
     Ok(to_hex_lower(&hasher.finalize()))
 }
 
+/// Executes the to hex lower routine.
 pub(in crate::subtitle_ocr) fn to_hex_lower(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

@@ -24,6 +24,7 @@ const COMMON_TRIGRAMS: [&str; 40] = [
     "ter",
 ];
 
+/// Executes the language uses spaces routine.
 pub(super) fn language_uses_spaces(language: &str) -> bool {
     let lang = language.to_lowercase();
     matches!(
@@ -57,6 +58,7 @@ pub(super) fn language_uses_spaces(language: &str) -> bool {
     )
 }
 
+/// Executes the ppocr spacing needs fallback routine.
 pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     if lines.is_empty() {
         return false;
@@ -80,6 +82,7 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     has_letters && long_token && !has_spaces
 }
 
+/// Executes the postprocess ocr text routine.
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     let mut out = normalize_utf8_text(text);
     if out.is_empty() {
@@ -163,11 +166,13 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     normalize_utf8_text(&out)
 }
 
+/// Executes the is english language routine.
 pub(super) fn is_english_language(language: &str) -> bool {
     let lang = language.trim().to_ascii_lowercase();
     matches!(lang.as_str(), "eng" | "en" | "en-us" | "en_us")
 }
 
+/// Executes the normalize english ocr confusions routine.
 fn normalize_english_ocr_confusions(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut token = String::new();
@@ -213,6 +218,7 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
     out
 }
 
+/// Executes the split glued english phrases routine.
 fn split_glued_english_phrases(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     let mut token = String::new();
@@ -242,6 +248,7 @@ fn split_glued_english_phrases(input: &str) -> String {
     out
 }
 
+/// Executes the split glued ascii token routine.
 pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     if token.len() < 5 || !token.is_ascii() {
         return None;
@@ -305,6 +312,7 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     segment_glued_english_token(token)
 }
 
+/// Executes the ascii language likelihood routine.
 fn ascii_language_likelihood(token: &str) -> f32 {
     let lower = token.to_ascii_lowercase();
     let mut cleaned = String::with_capacity(lower.len());
@@ -363,6 +371,7 @@ fn ascii_language_likelihood(token: &str) -> f32 {
     normalized.max(NGRAM_FLOOR_SCORE)
 }
 
+/// Executes the segment glued english token routine.
 fn segment_glued_english_token(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
     if lower.len() < 5 || ascii_language_likelihood(&lower) > NGRAM_SEGMENTATION_SKIP_THRESHOLD {
@@ -451,6 +460,7 @@ fn segment_glued_english_token(token: &str) -> Option<String> {
     )
 }
 
+/// Executes the split glued contraction routine.
 fn split_glued_contraction(token: &str, lower: &str) -> Option<String> {
     let apostrophe = token.find('\'')?;
     if apostrophe == 0 || apostrophe + 1 >= token.len() {
@@ -480,6 +490,7 @@ fn split_glued_contraction(token: &str, lower: &str) -> Option<String> {
     None
 }
 
+/// Executes the insert space after punctuation routine.
 fn insert_space_after_punctuation(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     let chars: Vec<char> = input.chars().collect();
@@ -496,6 +507,7 @@ fn insert_space_after_punctuation(input: &str) -> String {
     out
 }
 
+/// Executes the insert space between letters and digits routine.
 fn insert_space_between_letters_and_digits(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     let chars: Vec<char> = input.chars().collect();
@@ -524,6 +536,7 @@ fn insert_space_between_letters_and_digits(input: &str) -> String {
     out
 }
 
+/// Executes the insert space before opening quote routine.
 fn insert_space_before_opening_quote(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 4);
     let chars: Vec<char> = input.chars().collect();
@@ -542,6 +555,7 @@ fn insert_space_before_opening_quote(input: &str) -> String {
     out
 }
 
+/// Executes the replace case insensitive ascii routine.
 fn replace_case_insensitive_ascii(input: &str, from: &str, to: &str) -> String {
     if from.is_empty() {
         return input.to_string();
@@ -579,6 +593,7 @@ fn replace_case_insensitive_ascii(input: &str, from: &str, to: &str) -> String {
     out
 }
 
+/// Executes the lines text for quality routine.
 pub(super) fn lines_text_for_quality(lines: &[OcrLine]) -> String {
     normalize_utf8_text(
         &lines
@@ -590,6 +605,7 @@ pub(super) fn lines_text_for_quality(lines: &[OcrLine]) -> String {
     )
 }
 
+/// Executes the ppocr average confidence routine.
 pub(super) fn ppocr_average_confidence(lines: &[OcrLine]) -> Option<f32> {
     let mut weighted_sum = 0.0f32;
     let mut total_weight = 0.0f32;
@@ -628,6 +644,7 @@ pub(super) fn ppocr_average_confidence(lines: &[OcrLine]) -> Option<f32> {
     }
 }
 
+/// Executes the ocr text quality score routine.
 pub(super) fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
     let text = normalize_utf8_text(text);
     if text.is_empty() {
@@ -697,6 +714,7 @@ pub(super) fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
     (score + coverage_bonus).clamp(0.0, 1.0)
 }
 
+/// Executes the ppocr needs quality fallback routine.
 pub(super) fn ppocr_needs_quality_fallback(lines: &[OcrLine], language: &str) -> bool {
     if lines.is_empty() {
         return false;
@@ -712,6 +730,7 @@ pub(super) fn ppocr_needs_quality_fallback(lines: &[OcrLine], language: &str) ->
     quality < 0.45
 }
 
+/// Executes the prune impossible geometry routine.
 pub(super) fn prune_impossible_geometry(lines: &mut Vec<OcrLine>, language: &str) -> usize {
     if !language_uses_spaces(language) || lines.is_empty() {
         return 0;
@@ -733,6 +752,7 @@ pub(super) fn prune_impossible_geometry(lines: &mut Vec<OcrLine>, language: &str
     before.saturating_sub(lines.len())
 }
 
+/// Executes the ppocr geometry needs fallback routine.
 fn ppocr_geometry_needs_fallback(lines: &[OcrLine], language: &str) -> bool {
     if !language_uses_spaces(language) {
         return false;

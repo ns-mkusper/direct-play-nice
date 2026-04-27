@@ -31,6 +31,7 @@ pub(crate) enum StreamingDeviceSelection {
 
 #[derive(Parser, Clone)]
 #[command(author, version, about, long_about = None)]
+/// Stores data for Args.
 pub(crate) struct Args {
     /// Target device family/model, or "all" (default). Examples: chromecast, roku, apple_tv, fire_tv.
     #[arg(
@@ -254,11 +255,14 @@ pub(crate) struct Args {
     pub(crate) plex_token: Option<String>,
 }
 
+/// Implements behavior for `Args`.
 impl Args {
+    /// Executes the parse cstring routine.
     pub(crate) fn parse_cstring(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|e| format!("Invalid CString: {}", e))
     }
 
+    /// Executes the parse bitrate routine.
     pub(crate) fn parse_bitrate(input: &str) -> Result<i64, String> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -320,6 +324,7 @@ impl Args {
         Ok(bits_per_second)
     }
 
+    /// Executes the parse device selection routine.
     pub(crate) fn parse_device_selection(input: &str) -> Result<StreamingDeviceSelection, String> {
         let normalized = input.trim();
         if normalized.is_empty() {
@@ -357,11 +362,13 @@ impl Args {
 }
 
 #[allow(dead_code)]
+/// Enumerates options for StreamExtras.
 pub(crate) enum StreamExtras {
     Some((SwrContext, AVAudioFifo)),
     None,
 }
 
+/// Stores data for StreamProcessingContext.
 pub(crate) struct StreamProcessingContext {
     pub(crate) decode_context: AVCodecContext,
     pub(crate) encode_context: AVCodecContext,
@@ -377,7 +384,9 @@ pub(crate) struct StreamProcessingContext {
     pub(crate) decoder_name: String,
 }
 
+/// Implements behavior for `StreamProcessingContext`.
 impl std::fmt::Debug for StreamProcessingContext {
+    /// Executes the fmt routine.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamProcessingContext")
             .field("stream_index", &self.stream_index)
@@ -390,6 +399,7 @@ impl std::fmt::Debug for StreamProcessingContext {
     }
 }
 
+/// Executes the init audio resampler routine.
 pub(crate) fn init_audio_resampler(
     decode_context: &mut AVCodecContext,
     encode_context: &mut AVCodecContext,
@@ -409,6 +419,7 @@ pub(crate) fn init_audio_resampler(
     Ok(resample_context)
 }
 
+/// Executes the add samples to fifo routine.
 pub(crate) fn add_samples_to_fifo(
     fifo: &mut AVAudioFifo,
     samples_buffer: &AVSamples,
@@ -420,6 +431,7 @@ pub(crate) fn add_samples_to_fifo(
     Ok(())
 }
 
+/// Executes the init output audio frame routine.
 pub(crate) fn init_output_audio_frame(
     nb_samples: i32,
     ch_layout: ffi::AVChannelLayout,
@@ -439,6 +451,7 @@ pub(crate) fn init_output_audio_frame(
     Ok(frame)
 }
 
+/// Executes the encode and write frame routine.
 pub(crate) fn encode_and_write_frame(
     encode_context: &mut AVCodecContext,
     output_format_context: &mut AVFormatContextOutput,
@@ -480,6 +493,7 @@ pub(crate) fn encode_and_write_frame(
     Ok(())
 }
 
+/// Executes the is eagain error routine.
 pub(crate) fn is_eagain_error(err: &RsmpegError) -> bool {
     let raw = err.raw_error().unwrap_or_default();
     raw == ffi::AVERROR(ffi::EAGAIN) || raw == -(ffi::EAGAIN as i32)

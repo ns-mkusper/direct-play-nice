@@ -2,6 +2,7 @@ use crate::transcoder::prelude::*;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Enumerates options for VideoCodecPreference.
 pub(crate) enum VideoCodecPreference {
     Auto,
     H264,
@@ -9,6 +10,7 @@ pub(crate) enum VideoCodecPreference {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+/// Enumerates options for VideoQuality.
 pub(crate) enum VideoQuality {
     /// Leave video resolution/bitrate untouched.
     #[value(
@@ -57,7 +59,9 @@ pub(crate) enum VideoQuality {
     P2160,
 }
 
+/// Implements behavior for `VideoQuality`.
 impl VideoQuality {
+    /// Executes the targets routine.
     fn targets(self) -> (Option<(u32, u32)>, Option<i64>) {
         match self {
             VideoQuality::MatchSource => (None, None),
@@ -71,7 +75,9 @@ impl VideoQuality {
     }
 }
 
+/// Implements behavior for `VideoQuality`.
 impl std::fmt::Display for VideoQuality {
+    /// Executes the fmt routine.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
             VideoQuality::MatchSource => "match-source",
@@ -87,6 +93,7 @@ impl std::fmt::Display for VideoQuality {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+/// Enumerates options for AudioQuality.
 pub(crate) enum AudioQuality {
     /// Leave audio bitrate untouched.
     #[value(
@@ -132,7 +139,9 @@ pub(crate) enum AudioQuality {
     K96,
 }
 
+/// Implements behavior for `AudioQuality`.
 impl AudioQuality {
+    /// Executes the bitrate routine.
     fn bitrate(self) -> Option<i64> {
         match self {
             AudioQuality::MatchSource => None,
@@ -147,7 +156,9 @@ impl AudioQuality {
     }
 }
 
+/// Implements behavior for `AudioQuality`.
 impl std::fmt::Display for AudioQuality {
+    /// Executes the fmt routine.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
             AudioQuality::MatchSource => "match-source",
@@ -164,19 +175,23 @@ impl std::fmt::Display for AudioQuality {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
+/// Stores data for QualityLimits.
 pub(crate) struct QualityLimits {
     pub(crate) max_video_dimensions: Option<(u32, u32)>,
     pub(crate) max_video_bitrate: Option<i64>,
     pub(crate) max_audio_bitrate: Option<i64>,
 }
 
+/// Implements behavior for `QualityLimits`.
 impl QualityLimits {
+    /// Executes the apply video quality routine.
     pub(crate) fn apply_video_quality(&mut self, video_quality: VideoQuality) {
         let (dimensions, bitrate) = video_quality.targets();
         self.max_video_dimensions = dimensions;
         self.max_video_bitrate = bitrate;
     }
 
+    /// Executes the apply audio quality routine.
     pub(crate) fn apply_audio_quality(&mut self, audio_quality: AudioQuality) {
         self.max_audio_bitrate = audio_quality.bitrate();
     }

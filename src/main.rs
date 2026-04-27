@@ -31,6 +31,7 @@ pub(crate) use types::{
 #[cfg(test)]
 pub(crate) use transcoder::prelude::*;
 
+/// Executes the main routine.
 fn main() -> Result<()> {
     if env::var_os("RUST_LOG").is_none() {
         env::set_var("RUST_LOG", "info");

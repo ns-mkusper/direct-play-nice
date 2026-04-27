@@ -4,6 +4,7 @@
 //! OCR language codes and Tesseract-compatible pack names.
 
 use super::*;
+/// Executes the timestamp to ms routine.
 pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<i64> {
     if value == ffi::AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 {
         return None;
@@ -11,6 +12,7 @@ pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<
     Some(unsafe { ffi::av_rescale_q(value, time_base, ffi::AVRational { num: 1, den: 1000 }) })
 }
 
+/// Executes the extract language tag from metadata routine.
 pub(super) fn extract_language_tag_from_metadata(
     dict: &rsmpeg::avutil::AVDictionary,
 ) -> Option<String> {
@@ -29,6 +31,7 @@ pub(super) fn extract_language_tag_from_metadata(
     None
 }
 
+/// Executes the resolve ocr language routine.
 pub(super) fn resolve_ocr_language(
     tag: Option<&str>,
     default_lang: Option<&str>,
@@ -85,6 +88,7 @@ pub(super) fn resolve_ocr_language(
         .unwrap_or_else(|| "eng".to_string())
 }
 
+/// Executes the detect system ocr language routine.
 pub(super) fn detect_system_ocr_language() -> Option<String> {
     for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(raw) = env::var_os(var) {
@@ -109,6 +113,7 @@ pub(super) fn detect_system_ocr_language() -> Option<String> {
     None
 }
 
+/// Executes the map language tag to tesseract routine.
 pub(super) fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
     let normalized = input.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -156,6 +161,7 @@ pub(super) fn map_language_tag_to_tesseract(input: &str) -> Option<String> {
     Some(mapped.to_string())
 }
 
+/// Executes the list tesseract languages routine.
 pub(super) fn list_tesseract_languages() -> Result<HashSet<String>> {
     let output = Command::new("tesseract")
         .arg("--list-langs")
@@ -190,16 +196,19 @@ pub(super) fn list_tesseract_languages() -> Result<HashSet<String>> {
     Ok(langs)
 }
 
+/// Executes the tesseract languages cached routine.
 pub(super) fn tesseract_languages_cached() -> Option<&'static HashSet<String>> {
     let cached = TESSERACT_LANG_CACHE.get_or_init(list_tesseract_languages);
     cached.as_ref().ok()
 }
 
+/// Executes the resolve tesseract fallback language routine.
 pub(super) fn resolve_tesseract_fallback_language(language: &str) -> Option<String> {
     let langs = tesseract_languages_cached()?;
     resolve_tesseract_fallback_language_with_available(language, langs)
 }
 
+/// Executes the resolve tesseract fallback language with available routine.
 pub(super) fn resolve_tesseract_fallback_language_with_available(
     language: &str,
     langs: &HashSet<String>,
@@ -216,6 +225,7 @@ pub(super) fn resolve_tesseract_fallback_language_with_available(
     None
 }
 
+/// Executes the codec name routine.
 pub(super) fn codec_name(codec_id: ffi::AVCodecID) -> String {
     unsafe {
         CStr::from_ptr(ffi::avcodec_get_name(codec_id))
@@ -224,6 +234,7 @@ pub(super) fn codec_name(codec_id: ffi::AVCodecID) -> String {
     }
 }
 
+/// Executes the is image based subtitle routine.
 pub(super) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
