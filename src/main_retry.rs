@@ -1,3 +1,5 @@
+//! Retry and recovery logic for conversion failures, including hardware-to-software fallback decisions.
+
 use anyhow::{anyhow, bail, Result};
 use log::warn;
 use rsmpeg::avformat::AVFormatContextInput;

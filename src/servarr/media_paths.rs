@@ -1,3 +1,5 @@
+//! Media-path normalization helpers for Sonarr/Radarr event payloads and multi-path parsing.
+
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::path::{Path, PathBuf};

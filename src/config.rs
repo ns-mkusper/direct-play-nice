@@ -1,3 +1,5 @@
+//! Configuration subsystem for resolving config sources and deserializing TOML into runtime settings.
+
 use crate::gpu::HwAccel;
 use crate::{
     AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,

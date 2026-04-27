@@ -1,3 +1,5 @@
+//! Shared runtime types and helpers used across CLI parsing and FFmpeg stream-processing paths.
+
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
 use rsmpeg::avcodec::AVCodecContext;
@@ -23,6 +25,10 @@ pub(crate) use crate::cli::progress::ProgressTracker;
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+/// Normalized target-device selector used by CLI parsing and config overrides.
+///
+/// A single CLI token may resolve to either a concrete model, a family, or the
+/// sentinel `All` value.
 pub(crate) enum StreamingDeviceSelection {
     All,
     Family(DeviceFamily),
@@ -287,6 +293,7 @@ impl Args {
             .parse()
             .map_err(|_| format!("Failed to parse bitrate '{}': invalid number", input))?;
 
+        // Accept common human input variants like "8mbps", "8 mbit", or "8M/s".
         let mut normalized_suffix = suffix.trim().to_string();
         for trailing in ["/s", "ps", "bps", "bits", "bit"] {
             if normalized_suffix.ends_with(trailing) {
@@ -362,6 +369,10 @@ pub(crate) enum StreamExtras {
     None,
 }
 
+/// Per-stream state carried across decode/encode/mux iterations.
+///
+/// `skip_stream` lets setup code keep stream ordering aligned with FFmpeg stream
+/// indexes while disabling actual processing for selected streams.
 pub(crate) struct StreamProcessingContext {
     pub(crate) decode_context: AVCodecContext,
     pub(crate) encode_context: AVCodecContext,

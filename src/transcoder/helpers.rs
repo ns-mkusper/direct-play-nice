@@ -1,3 +1,5 @@
+//! General transcoder utility collection used across pipeline stages, including packet/frame timing and IO setup helpers.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) fn describe_bitrate(bitrate: Option<i64>) -> String {

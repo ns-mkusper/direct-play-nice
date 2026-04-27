@@ -1,3 +1,5 @@
+//! Progress-reporting utilities for long-running operations, including elapsed-time tracking and terminal bar updates.
+
 use log::info;
 use rsmpeg::avutil::ra;
 use rsmpeg::ffi;

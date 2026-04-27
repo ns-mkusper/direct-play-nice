@@ -1,3 +1,5 @@
+//! Sidecar subtitle utilities for writing OCR outputs and handling subtitle post-processing tasks.
+
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::collections::HashMap;

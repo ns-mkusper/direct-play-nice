@@ -1,3 +1,5 @@
+//! Environment variable utilities focused on case-insensitive lookup and value parsing for integrations.
+
 use std::env;
 
 /// Parses common truthy/falsey env string values into a boolean.

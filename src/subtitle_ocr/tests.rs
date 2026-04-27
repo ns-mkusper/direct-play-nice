@@ -1,3 +1,5 @@
+//! OCR subsystem tests covering engine selection, parsing behavior, and subtitle text-processing outcomes.
+
 use crate::subtitle_ocr::*;
 use mockito::Server;
 use std::fs::File;

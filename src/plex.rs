@@ -1,3 +1,5 @@
+//! Plex integration utilities for triggering post-conversion library refresh requests.
+
 use crate::config::PlexSettings;
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};

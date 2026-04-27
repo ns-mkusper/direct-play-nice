@@ -1,4 +1,4 @@
-//! Built-in streaming-device catalog and lookup helpers.
+//! Streaming-device catalog module that aggregates built-in profiles and lookup/selection helpers.
 
 /// Apple TV model definitions.
 pub mod apple_tv;

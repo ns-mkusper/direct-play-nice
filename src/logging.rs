@@ -1,3 +1,5 @@
+//! Logging support for runtime initialization and targeted environment diagnostics.
+
 use log::info;
 use std::env;
 

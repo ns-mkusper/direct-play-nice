@@ -1,7 +1,10 @@
+//! Quality-policy definitions for user presets, bitrate caps, and derived runtime quality limits.
+
 use crate::transcoder::prelude::*;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Explicit video codec preference; `Auto` selects the best common codec.
 pub(crate) enum VideoCodecPreference {
     Auto,
     H264,
@@ -9,6 +12,7 @@ pub(crate) enum VideoCodecPreference {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+/// User-facing video quality presets mapped to resolution and bitrate caps.
 pub(crate) enum VideoQuality {
     /// Leave video resolution/bitrate untouched.
     #[value(
@@ -59,6 +63,7 @@ pub(crate) enum VideoQuality {
 
 impl VideoQuality {
     fn targets(self) -> (Option<(u32, u32)>, Option<i64>) {
+        // Tuple semantics: (max resolution, max target bitrate).
         match self {
             VideoQuality::MatchSource => (None, None),
             VideoQuality::P360 => (Some((640, 360)), Some(1_200_000)),
@@ -87,6 +92,7 @@ impl std::fmt::Display for VideoQuality {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+/// User-facing audio quality presets mapped to target AAC bitrates.
 pub(crate) enum AudioQuality {
     /// Leave audio bitrate untouched.
     #[value(
@@ -164,6 +170,7 @@ impl std::fmt::Display for AudioQuality {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
+/// Effective quality caps after combining presets and device-specific ceilings.
 pub(crate) struct QualityLimits {
     pub(crate) max_video_dimensions: Option<(u32, u32)>,
     pub(crate) max_video_bitrate: Option<i64>,

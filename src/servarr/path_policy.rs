@@ -1,3 +1,5 @@
+//! Output path-policy rules that apply extension and suffix transformations for replacement outputs.
+
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

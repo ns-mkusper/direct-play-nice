@@ -1,3 +1,5 @@
+//! Shared policy enums and merge helpers used to reconcile CLI arguments with configuration defaults.
+
 use clap::parser::ValueSource;
 use clap::{ArgMatches, ValueEnum};
 use log::warn;
@@ -7,6 +9,7 @@ use crate::{config, Args};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Policy for handling non-primary or unsupported video streams.
 pub(crate) enum UnsupportedVideoPolicy {
     Convert,
     Ignore,
@@ -15,6 +18,7 @@ pub(crate) enum UnsupportedVideoPolicy {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Subtitle processing strategy applied during conversion.
 pub(crate) enum SubMode {
     Auto,
     Force,
@@ -23,6 +27,7 @@ pub(crate) enum SubMode {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// OCR backend selector for bitmap-subtitle conversion.
 pub(crate) enum OcrEngine {
     Auto,
     Tesseract,
@@ -33,6 +38,7 @@ pub(crate) enum OcrEngine {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Output subtitle format produced by OCR.
 pub(crate) enum OcrFormat {
     Srt,
     Ass,
@@ -40,6 +46,7 @@ pub(crate) enum OcrFormat {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Ranking key used when auto-selecting the primary video stream.
 pub(crate) enum PrimaryVideoCriteria {
     Resolution,
     Bitrate,
@@ -47,12 +54,14 @@ pub(crate) enum PrimaryVideoCriteria {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
+/// Output rendering format for probe/report commands.
 pub(crate) enum OutputFormat {
     Text,
     Json,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
+/// Stream subset used by `--probe-streams`.
 pub(crate) enum StreamsFilter {
     All,
     Video,
@@ -80,6 +89,8 @@ pub(crate) fn clamp_dimensions(
     device_cap: (u32, u32),
     quality_cap: Option<(u32, u32)>,
 ) -> (i32, i32) {
+    // Keep dimensions valid for encoder/pixel-format requirements, then fit
+    // source aspect ratio inside the strictest active cap.
     if source_width <= 0 || source_height <= 0 {
         return (source_width.max(1), source_height.max(1));
     }
@@ -131,6 +142,8 @@ pub(crate) fn clamp_dimensions(
 
     const WIDTH_ALIGNMENT: i32 = 16;
     if target_width >= WIDTH_ALIGNMENT && target_width % WIDTH_ALIGNMENT != 0 {
+        // Prefer width alignment to 16 when possible. Many encoders are faster
+        // and more reliable on 16-aligned widths, especially for hardware paths.
         let aspect_ratio = source_width as f64 / source_height as f64;
         let max_width_i32 = max_width as i32;
         let max_height_i32 = max_height as i32;
@@ -222,6 +235,8 @@ fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
 }
 
 pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMatches) {
+    // Precedence rule: explicit CLI input always wins over config values.
+    // `value_source` lets us distinguish user-provided values from clap defaults.
     if args.streaming_devices.is_none() {
         if let Some(devices) = cfg.streaming_devices.as_ref() {
             let raw_values: Vec<String> = match devices {

@@ -1,4 +1,4 @@
-//! Language/tag normalization helpers for OCR selection and fallback.
+//! OCR language normalization utilities that map metadata tags to engine-specific recognition settings.
 //!
 //! This module maps stream metadata and environment defaults into normalized
 //! OCR language codes and Tesseract-compatible pack names.

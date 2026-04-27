@@ -1,3 +1,5 @@
+//! H.264 constraint utilities for profile/level handling, validation, and compatibility enforcement.
+
 use crate::transcoder::prelude::*;
 
 pub(crate) struct H264RateLimit {
@@ -9,6 +11,7 @@ pub(crate) fn h264_high_profile_rate_limits(level: H264Level) -> Option<H264Rate
     use H264Level::*;
     const K: i64 = 1_000;
 
+    // Values are aligned with Annex A High-profile limits used for encoder caps.
     let (rate_kbits, buffer_kbits) = match level {
         Level1 => (80, 175),
         Level1_1 => (240, 500),
@@ -40,6 +43,8 @@ pub(crate) fn enforce_h264_constraints(
     target_level: H264Level,
     encoder_name: &str,
 ) {
+    // FFmpeg backends expose profile/level controls inconsistently across encoders.
+    // We set codec options first, then force struct fields as a last-resort fallback.
     let level_option_value = level_option_value_for_encoder(encoder_name, target_level);
     let ctx_ptr = encode_context.as_mut_ptr();
     if should_apply_profile_option(encoder_name) {
@@ -146,6 +151,7 @@ fn nvenc_profile_value(profile: H264Profile) -> Option<i64> {
 }
 
 #[derive(Debug)]
+/// Raised when encoded output exceeds negotiated H.264 profile/level limits.
 pub(crate) struct HwProfileLevelMismatch {
     pub(crate) encoder: String,
     pub(crate) expected_profile: H264Profile,
@@ -196,6 +202,7 @@ impl std::fmt::Display for HwProfileLevelMismatch {
 impl std::error::Error for HwProfileLevelMismatch {}
 
 #[derive(Debug)]
+/// Raised when hardware encoder initialization fails and requires a retry path.
 pub(crate) struct HwEncoderInitError {
     pub(crate) encoder: String,
     pub(crate) message: String,
@@ -220,6 +227,7 @@ impl std::fmt::Display for HwEncoderInitError {
 impl std::error::Error for HwEncoderInitError {}
 
 #[derive(Debug)]
+/// Raised when a decoder fails for a specific stream and codec.
 pub(crate) struct DecoderError {
     codec: String,
     stream_index: i32,
@@ -249,6 +257,7 @@ impl std::fmt::Display for DecoderError {
 impl std::error::Error for DecoderError {}
 
 #[derive(Debug, Clone)]
+/// Captures expected vs actual H.264 profile/level observed in output validation.
 pub(crate) struct H264Verification {
     pub(crate) expected_profile: H264Profile,
     pub(crate) expected_level: H264Level,
