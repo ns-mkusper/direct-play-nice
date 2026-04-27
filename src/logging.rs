@@ -1,3 +1,5 @@
+//! Module for logging.
+
 use log::info;
 use std::env;
 

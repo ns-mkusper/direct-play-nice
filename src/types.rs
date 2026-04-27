@@ -1,3 +1,5 @@
+//! Module for types.
+
 use clap::parser::ValueSource;
 use clap::{ArgMatches, ValueEnum};
 use log::warn;

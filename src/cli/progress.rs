@@ -1,3 +1,5 @@
+//! Module for progress.
+
 use log::info;
 use rsmpeg::avutil::ra;
 use rsmpeg::ffi;

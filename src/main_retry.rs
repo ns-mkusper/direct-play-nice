@@ -1,3 +1,5 @@
+//! Module for main retry.
+
 use anyhow::{anyhow, bail, Result};
 use log::warn;
 use rsmpeg::avformat::AVFormatContextInput;

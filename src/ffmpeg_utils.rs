@@ -1,3 +1,5 @@
+//! Module for ffmpeg utils.
+
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
 use rsmpeg::avcodec::AVCodecContext;

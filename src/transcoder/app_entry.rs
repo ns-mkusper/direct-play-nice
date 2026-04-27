@@ -1,3 +1,5 @@
+//! Module for app entry.
+
 use crate::transcoder::prelude::*;
 
 /// Runs the run operation.

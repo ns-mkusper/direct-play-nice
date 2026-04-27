@@ -1,3 +1,5 @@
+//! Module for helpers.
+
 use crate::transcoder::prelude::*;
 
 /// Runs the describe bitrate operation.

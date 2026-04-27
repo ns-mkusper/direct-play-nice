@@ -1,3 +1,5 @@
+//! Module for env helpers.
+
 use std::env;
 
 /// Parses common truthy/falsey env string values into a boolean.

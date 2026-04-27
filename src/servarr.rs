@@ -1,3 +1,5 @@
+//! Module for servarr.
+
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use std::env;

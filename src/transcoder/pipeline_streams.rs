@@ -1,3 +1,5 @@
+//! Module for pipeline streams.
+
 use crate::transcoder::prelude::*;
 
 /// Runs the ensure software frame operation.

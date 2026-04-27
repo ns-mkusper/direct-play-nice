@@ -1,3 +1,5 @@
+//! Module for main.
+
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use std::env;

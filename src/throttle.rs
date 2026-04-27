@@ -1,3 +1,5 @@
+//! Module for throttle.
+
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use log::{debug, info, warn};

@@ -1,3 +1,5 @@
+//! Module for main sidecar.
+
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::collections::HashMap;

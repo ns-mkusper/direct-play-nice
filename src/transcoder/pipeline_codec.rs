@@ -1,3 +1,5 @@
+//! Module for pipeline codec.
+
 use crate::transcoder::prelude::*;
 
 /// Runs the preferred audio frame size operation.

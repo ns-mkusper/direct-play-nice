@@ -1,3 +1,5 @@
+//! Module for h264.
+
 use crate::transcoder::prelude::*;
 
 /// Holds state for H264RateLimit.

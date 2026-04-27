@@ -1,3 +1,5 @@
+//! Module for ffmpeg diagnostics.
+
 use crate::transcoder::prelude::*;
 
 /// Runs the av error to string operation.

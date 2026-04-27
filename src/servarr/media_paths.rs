@@ -1,3 +1,5 @@
+//! Module for media paths.
+
 use anyhow::{anyhow, Result};
 use log::debug;
 use std::path::{Path, PathBuf};

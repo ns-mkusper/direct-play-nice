@@ -1,3 +1,5 @@
+//! Module for quality.
+
 use crate::transcoder::prelude::*;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]

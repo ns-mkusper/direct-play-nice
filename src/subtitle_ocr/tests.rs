@@ -1,3 +1,5 @@
+//! Module for tests.
+
 use crate::subtitle_ocr::*;
 use mockito::Server;
 use std::fs::File;

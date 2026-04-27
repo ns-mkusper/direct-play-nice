@@ -1,3 +1,5 @@
+//! Module for servarr tests.
+
 #[cfg(test)]
 mod tests {
     use crate::servarr::*;

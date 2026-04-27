@@ -1,3 +1,5 @@
+//! Module for plex.
+
 use crate::config::PlexSettings;
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};

@@ -1,3 +1,5 @@
+//! Module for main probe.
+
 use anyhow::Result;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;

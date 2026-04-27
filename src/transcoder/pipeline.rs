@@ -1,3 +1,5 @@
+//! Module for pipeline.
+
 #[path = "pipeline_assessment.rs"]
 pub mod pipeline_assessment;
 #[path = "pipeline_codec.rs"]

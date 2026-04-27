@@ -1,3 +1,5 @@
+//! Module for app convert.
+
 use crate::transcoder::prelude::*;
 
 #[derive(Clone, Copy)]

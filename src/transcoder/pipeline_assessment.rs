@@ -1,3 +1,5 @@
+//! Module for pipeline assessment.
+
 use crate::transcoder::prelude::*;
 
 /// Holds state for DirectPlayAssessment.

@@ -1,3 +1,5 @@
+//! Module for main tests.
+
 #[cfg(test)]
 mod rate_limit_tests {
     use crate::*;

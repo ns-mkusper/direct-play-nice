@@ -1,3 +1,5 @@
+//! Module for config.
+
 use crate::gpu::HwAccel;
 use crate::{
     AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,
