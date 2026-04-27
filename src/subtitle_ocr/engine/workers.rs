@@ -55,7 +55,6 @@ pub(in crate::subtitle_ocr) fn apply_ocr_cuda_visible_devices_override() {
 }
 
 #[derive(Debug, Clone)]
-/// Holds state for OcrWorkerPlan.
 pub(in crate::subtitle_ocr) struct OcrWorkerPlan {
     pub(in crate::subtitle_ocr) worker_count: usize,
     pub(in crate::subtitle_ocr) device_ids: Vec<i32>,
@@ -237,7 +236,6 @@ pub(in crate::subtitle_ocr) fn detect_ocr_cuda_devices() -> Vec<i32> {
     detected
 }
 
-/// Holds state for OcrParallelParams.
 pub(in crate::subtitle_ocr) struct OcrParallelParams {
     pub(in crate::subtitle_ocr) input_path: String,
     pub(in crate::subtitle_ocr) work_dir: PathBuf,
@@ -383,7 +381,6 @@ pub(in crate::subtitle_ocr) fn align_cuda_visible_devices_with_worker_plan(devic
 }
 
 #[derive(Debug)]
-/// Holds state for OcrWorkerBatch.
 pub(in crate::subtitle_ocr) struct OcrWorkerBatch {
     pub(in crate::subtitle_ocr) assigned_device: Option<i32>,
     pub(in crate::subtitle_ocr) tasks: Vec<OcrTask>,

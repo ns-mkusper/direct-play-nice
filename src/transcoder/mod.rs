@@ -1,5 +1,3 @@
-//! Module for transcoder.
-
 pub mod app;
 pub mod ffmpeg_diagnostics;
 pub mod h264;

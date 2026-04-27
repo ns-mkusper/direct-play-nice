@@ -17,14 +17,12 @@ use super::{
     PPOCR_V4_REC_MODEL,
 };
 
-/// Holds state for SubtitleCandidate.
 pub(in crate::subtitle_ocr) struct SubtitleCandidate {
     pub(in crate::subtitle_ocr) stream_index: i32,
     pub(in crate::subtitle_ocr) language_tag: Option<String>,
 }
 
 #[derive(Debug)]
-/// Holds state for OcrTask.
 pub(in crate::subtitle_ocr) struct OcrTask {
     pub(in crate::subtitle_ocr) order: usize,
     pub(in crate::subtitle_ocr) stream_index: i32,
@@ -33,7 +31,6 @@ pub(in crate::subtitle_ocr) struct OcrTask {
 }
 
 #[derive(Debug)]
-/// Holds state for OcrTaskOutput.
 pub(in crate::subtitle_ocr) struct OcrTaskOutput {
     pub(in crate::subtitle_ocr) order: usize,
     pub(in crate::subtitle_ocr) stream_index: i32,
@@ -43,7 +40,6 @@ pub(in crate::subtitle_ocr) struct OcrTaskOutput {
 }
 
 #[derive(Debug, Clone)]
-/// Holds state for SubtitleCue.
 pub(in crate::subtitle_ocr) struct SubtitleCue {
     pub(in crate::subtitle_ocr) start_ms: i64,
     pub(in crate::subtitle_ocr) end_ms: i64,
@@ -51,7 +47,6 @@ pub(in crate::subtitle_ocr) struct SubtitleCue {
 }
 
 #[derive(Debug, Clone)]
-/// Holds state for OcrBoundingBox.
 pub(in crate::subtitle_ocr) struct OcrBoundingBox {
     pub(in crate::subtitle_ocr) left: i32,
     pub(in crate::subtitle_ocr) top: i32,
@@ -60,7 +55,6 @@ pub(in crate::subtitle_ocr) struct OcrBoundingBox {
 }
 
 #[derive(Debug, Clone)]
-/// Holds state for OcrLine.
 pub(in crate::subtitle_ocr) struct OcrLine {
     pub(in crate::subtitle_ocr) text: String,
     pub(in crate::subtitle_ocr) bbox: Option<OcrBoundingBox>,
@@ -70,7 +64,6 @@ pub(in crate::subtitle_ocr) struct OcrLine {
 }
 
 #[derive(Debug, Default)]
-/// Holds state for OcrOutput.
 pub(in crate::subtitle_ocr) struct OcrOutput {
     pub(in crate::subtitle_ocr) lines: Vec<OcrLine>,
 }
@@ -82,22 +75,18 @@ pub(in crate::subtitle_ocr) trait SubtitleConverter {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
 }
 
-/// Holds state for TesseractEngine.
 pub(in crate::subtitle_ocr) struct TesseractEngine;
 
-/// Holds state for ExternalEngine.
 pub(in crate::subtitle_ocr) struct ExternalEngine {
     pub(in crate::subtitle_ocr) command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Defines options for PpOcrVariant.
 pub(in crate::subtitle_ocr) enum PpOcrVariant {
     V3,
     V4,
 }
 
-/// Provides methods for `PpOcrVariant`.
 impl PpOcrVariant {
     /// Returns a human-readable label used in logs and diagnostics.
     pub(in crate::subtitle_ocr) fn label(self) -> &'static str {
@@ -158,7 +147,6 @@ impl PpOcrVariant {
     }
 }
 
-/// Holds state for PpOcrEngine.
 pub(in crate::subtitle_ocr) struct PpOcrEngine {
     pub(in crate::subtitle_ocr) english_ocr: OcrLite,
     pub(in crate::subtitle_ocr) latin_ocr: Option<OcrLite>,

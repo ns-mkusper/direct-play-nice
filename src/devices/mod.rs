@@ -80,7 +80,6 @@ mod tests {
     use crate::devices::*;
 
     #[test]
-    /// Runs the resolve all is compatible with every device operation.
     fn resolve_all_is_compatible_with_every_device() {
         let all: Vec<&StreamingDevice> = STREAMING_DEVICES.iter().collect();
         let profile = resolve_target_profile(&all).expect("all profile should resolve");

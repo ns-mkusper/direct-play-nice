@@ -1,5 +1,3 @@
-//! Module for throttle.
-
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use log::{debug, info, warn};
@@ -22,20 +20,17 @@ const LOCK_DIR_ENV: &str = "DIRECT_PLAY_NICE_LOCK_DIR";
 const DISABLE_CUDA_PIN_ENV: &str = "DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN";
 
 #[derive(Clone)]
-/// Holds state for SlotSpec.
 struct SlotSpec {
     gpu: Option<GpuKind>,
     path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
-/// Defines options for GpuKind.
 enum GpuKind {
     Nvidia { index: usize },
     Amd { index: usize, identifier: String },
 }
 
-/// Holds state for SlotGuard.
 pub struct SlotGuard {
     file: File,
     path: PathBuf,
@@ -43,9 +38,7 @@ pub struct SlotGuard {
     prev_env: Option<PrevGpuEnv>,
 }
 
-/// Provides methods for `SlotGuard`.
 impl Drop for SlotGuard {
-    /// Runs the drop operation.
     fn drop(&mut self) {
         if let Some(prev) = self.prev_env.take() {
             prev.restore();
@@ -63,9 +56,7 @@ impl Drop for SlotGuard {
     }
 }
 
-/// Provides methods for `SlotGuard`.
 impl SlotGuard {
-    /// Runs the apply gpu affinity operation.
     fn apply_gpu_affinity(&mut self) {
         match &self.gpu {
             Some(GpuKind::Nvidia { index }) => {
@@ -103,7 +94,6 @@ impl SlotGuard {
     }
 }
 
-/// Runs the cuda visible devices pin disabled operation.
 fn cuda_visible_devices_pin_disabled() -> bool {
     std::env::var(DISABLE_CUDA_PIN_ENV)
         .ok()
@@ -114,7 +104,6 @@ fn cuda_visible_devices_pin_disabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Holds state for PrevGpuEnv.
 struct PrevGpuEnv {
     cuda_visible: Option<Option<String>>,
     gpu_device_ordinal: Option<Option<String>>,
@@ -124,9 +113,7 @@ struct PrevGpuEnv {
     gpu_identifier: Option<Option<String>>,
 }
 
-/// Provides methods for `PrevGpuEnv`.
 impl PrevGpuEnv {
-    /// Runs the capture operation.
     fn capture() -> Self {
         PrevGpuEnv {
             cuda_visible: Some(std::env::var("CUDA_VISIBLE_DEVICES").ok()),
@@ -138,7 +125,6 @@ impl PrevGpuEnv {
         }
     }
 
-    /// Runs the restore operation.
     fn restore(self) {
         restore_env("CUDA_VISIBLE_DEVICES", self.cuda_visible);
         restore_env("GPU_DEVICE_ORDINAL", self.gpu_device_ordinal);
@@ -149,7 +135,6 @@ impl PrevGpuEnv {
     }
 }
 
-/// Runs the restore env operation.
 fn restore_env(key: &str, value: Option<Option<String>>) {
     match value {
         Some(Some(val)) => std::env::set_var(key, val),
@@ -158,7 +143,6 @@ fn restore_env(key: &str, value: Option<Option<String>>) {
     }
 }
 
-/// Runs the acquire slot operation.
 pub fn acquire_slot() -> Result<SlotGuard> {
     let specs = slot_specs();
     let mut logged_wait = false;
@@ -206,13 +190,11 @@ pub fn acquire_slot() -> Result<SlotGuard> {
     }
 }
 
-/// Runs the slot specs operation.
 fn slot_specs() -> &'static [SlotSpec] {
     static SPECS: OnceLock<Vec<SlotSpec>> = OnceLock::new();
     SPECS.get_or_init(build_slot_specs)
 }
 
-/// Runs the build slot specs operation.
 fn build_slot_specs() -> Vec<SlotSpec> {
     let base_dir = lock_directory();
     if let Err(err) = fs::create_dir_all(&base_dir) {
@@ -239,7 +221,6 @@ fn build_slot_specs() -> Vec<SlotSpec> {
     }]
 }
 
-/// Runs the build override slots operation.
 fn build_override_slots(base: &Path, gpus: &[GpuKind], max_jobs: usize) -> Vec<SlotSpec> {
     let mut specs = Vec::new();
     let total = max_jobs.max(1);
@@ -256,7 +237,6 @@ fn build_override_slots(base: &Path, gpus: &[GpuKind], max_jobs: usize) -> Vec<S
     specs
 }
 
-/// Runs the build gpu slots operation.
 fn build_gpu_slots(base: &Path, gpus: &[GpuKind], jobs_per_gpu: usize) -> Vec<SlotSpec> {
     let jobs = jobs_per_gpu.max(1);
     let mut specs = Vec::new();
@@ -283,7 +263,6 @@ fn build_gpu_slots(base: &Path, gpus: &[GpuKind], jobs_per_gpu: usize) -> Vec<Sl
     specs
 }
 
-/// Runs the lock directory operation.
 fn lock_directory() -> PathBuf {
     if let Ok(path) = std::env::var(LOCK_DIR_ENV) {
         PathBuf::from(path)
@@ -292,7 +271,6 @@ fn lock_directory() -> PathBuf {
     }
 }
 
-/// Runs the max jobs override operation.
 fn max_jobs_override() -> Option<usize> {
     if let Ok(val) = std::env::var(MAX_JOBS_ENV) {
         if let Ok(parsed) = val.trim().parse::<usize>() {
@@ -309,7 +287,6 @@ fn max_jobs_override() -> Option<usize> {
     None
 }
 
-/// Runs the jobs per gpu operation.
 fn jobs_per_gpu() -> usize {
     if let Ok(val) = std::env::var(JOBS_PER_GPU_ENV) {
         if let Ok(parsed) = val.trim().parse::<usize>() {
@@ -329,7 +306,6 @@ fn jobs_per_gpu() -> usize {
     DEFAULT_JOBS_PER_GPU
 }
 
-/// Runs the detect gpus operation.
 fn detect_gpus() -> Vec<GpuKind> {
     let mut gpus = detect_nvidia_gpus();
     let amd = detect_amd_gpus();
@@ -337,7 +313,6 @@ fn detect_gpus() -> Vec<GpuKind> {
     gpus
 }
 
-/// Runs the detect nvidia gpus operation.
 fn detect_nvidia_gpus() -> Vec<GpuKind> {
     let output = match Command::new("nvidia-smi")
         .arg("--query-gpu=index")
@@ -370,7 +345,6 @@ fn detect_nvidia_gpus() -> Vec<GpuKind> {
         .collect()
 }
 
-/// Runs the detect amd gpus operation.
 fn detect_amd_gpus() -> Vec<GpuKind> {
     if cfg!(target_os = "windows") {
         detect_amd_gpus_windows()
@@ -379,7 +353,6 @@ fn detect_amd_gpus() -> Vec<GpuKind> {
     }
 }
 
-/// Runs the detect amd gpus unix operation.
 fn detect_amd_gpus_unix() -> Vec<GpuKind> {
     let output = match Command::new("rocm-smi")
         .arg("--showid")
@@ -417,7 +390,6 @@ fn detect_amd_gpus_unix() -> Vec<GpuKind> {
     gpus
 }
 
-/// Runs the detect amd gpus windows operation.
 fn detect_amd_gpus_windows() -> Vec<GpuKind> {
     let output = match Command::new("powershell")
         .args([

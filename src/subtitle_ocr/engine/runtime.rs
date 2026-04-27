@@ -108,20 +108,16 @@ thread_local! {
     static OCR_CUDA_DEVICE_ID: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
 }
 
-/// Holds state for OcrCudaDeviceGuard.
 pub(in crate::subtitle_ocr) struct OcrCudaDeviceGuard {
     previous: Option<i32>,
 }
 
-/// Provides methods for `OcrCudaDeviceGuard`.
 impl Drop for OcrCudaDeviceGuard {
-    /// Runs the drop operation.
     fn drop(&mut self) {
         OCR_CUDA_DEVICE_ID.with(|slot| slot.set(self.previous));
     }
 }
 
-/// Runs the set thread ocr cuda device operation.
 pub(in crate::subtitle_ocr) fn set_thread_ocr_cuda_device(
     device_id: Option<i32>,
 ) -> OcrCudaDeviceGuard {
@@ -133,14 +129,11 @@ pub(in crate::subtitle_ocr) fn set_thread_ocr_cuda_device(
     OcrCudaDeviceGuard { previous }
 }
 
-/// Runs the thread ocr cuda device operation.
 pub(in crate::subtitle_ocr) fn thread_ocr_cuda_device() -> Option<i32> {
     OCR_CUDA_DEVICE_ID.with(|slot| slot.get())
 }
 
-/// Provides methods for `PpOcrEngine`.
 impl PpOcrEngine {
-    /// Runs the new operation.
     pub(in crate::subtitle_ocr) fn new(
         model_dir: &Path,
         variant: PpOcrVariant,

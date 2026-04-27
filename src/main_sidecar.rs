@@ -1,5 +1,3 @@
-//! Module for main sidecar.
-
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::collections::HashMap;
@@ -10,7 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{subtitle_ocr, OcrEngine, OcrFormat, SubMode};
 
-/// Holds state for OcrSidecarRequest.
 pub(super) struct OcrSidecarRequest<'a> {
     pub(super) input_file: &'a CStr,
     pub(super) mux_source_file: &'a CStr,
@@ -23,7 +20,6 @@ pub(super) struct OcrSidecarRequest<'a> {
     pub(super) ocr_write_srt_sidecar: bool,
 }
 
-/// Runs the post process ocr subtitles operation.
 pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<()> {
     let OcrSidecarRequest {
         input_file,
@@ -58,16 +54,13 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
     Ok(())
 }
 
-/// Holds state for OcrWorkDir.
 struct OcrWorkDir {
     path: PathBuf,
 }
 
 static OCR_WORK_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Provides methods for `OcrWorkDir`.
 impl OcrWorkDir {
-    /// Runs the create operation.
     fn create() -> Result<Self> {
         let mut path = std::env::temp_dir();
         let now = std::time::SystemTime::now()
@@ -86,15 +79,12 @@ impl OcrWorkDir {
         Ok(Self { path })
     }
 
-    /// Runs the path operation.
     fn path(&self) -> &Path {
         &self.path
     }
 }
 
-/// Provides methods for `OcrWorkDir`.
 impl Drop for OcrWorkDir {
-    /// Runs the drop operation.
     fn drop(&mut self) {
         if let Err(err) = fs::remove_dir_all(&self.path) {
             debug!(
@@ -106,7 +96,6 @@ impl Drop for OcrWorkDir {
     }
 }
 
-/// Runs the sanitize sidecar language operation.
 fn sanitize_sidecar_language(language: &str) -> String {
     let normalized: String = language
         .trim()
@@ -121,7 +110,6 @@ fn sanitize_sidecar_language(language: &str) -> String {
     }
 }
 
-/// Runs the sidecar path for track operation.
 pub(super) fn sidecar_path_for_track(
     output_path: &Path,
     language: &str,
@@ -140,7 +128,6 @@ pub(super) fn sidecar_path_for_track(
     parent.join(suffix)
 }
 
-/// Runs the write ocr srt sidecars operation.
 pub(super) fn write_ocr_srt_sidecars(
     output_file: &CStr,
     tracks: &[subtitle_ocr::OcrSubtitleTrack],

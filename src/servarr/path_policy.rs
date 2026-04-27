@@ -1,5 +1,3 @@
-//! Module for path policy.
-
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

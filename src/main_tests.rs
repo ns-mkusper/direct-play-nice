@@ -1,11 +1,8 @@
-//! Module for main tests.
-
 #[cfg(test)]
 mod rate_limit_tests {
     use crate::*;
 
     #[test]
-    /// Runs the level 4 1 limits match table operation.
     fn level_4_1_limits_match_table() {
         let limits = h264_high_profile_rate_limits(H264Level::Level4_1).unwrap();
         assert_eq!(limits.max_bitrate_bits, 62_500_000);
@@ -20,14 +17,12 @@ mod video_tests {
     use std::process::Command;
     use tempfile::tempdir;
 
-    /// Runs the ffmpeg present operation.
     fn ffmpeg_present() -> bool {
         let out = Command::new("ffmpeg").arg("-version").output();
         matches!(out, Ok(o) if o.status.success())
     }
 
     #[test]
-    /// Runs the profile option applies to supported encoders operation.
     fn profile_option_applies_to_supported_encoders() {
         assert!(should_apply_profile_option("libx264"));
         assert!(should_apply_profile_option("LIBX264"));
@@ -37,7 +32,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the enforce h264 constraints sets target profile and level for nvenc operation.
     fn enforce_h264_constraints_sets_target_profile_and_level_for_nvenc() {
         let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
@@ -52,7 +46,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the enforce h264 constraints sets target profile and level for x264 operation.
     fn enforce_h264_constraints_sets_target_profile_and_level_for_x264() {
         let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
@@ -62,7 +55,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the nvenc rate controls obey level limits operation.
     fn nvenc_rate_controls_obey_level_limits() {
         let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
@@ -89,7 +81,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the level option values match encoder type operation.
     fn level_option_values_match_encoder_type() {
         assert_eq!(
             level_option_value_for_encoder("h264_nvenc", H264Level::Level4_1),
@@ -106,7 +97,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the h264 constraints ignore non h264 streams operation.
     fn h264_constraints_ignore_non_h264_streams() {
         let mut reasons = Vec::new();
         check_h264_profile_level_constraints(
@@ -124,7 +114,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the h264 constraints flag out of bounds profiles and levels operation.
     fn h264_constraints_flag_out_of_bounds_profiles_and_levels() {
         let mut reasons = Vec::new();
         check_h264_profile_level_constraints(
@@ -146,7 +135,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the verify output detects nvenc mismatch operation.
     fn verify_output_detects_nvenc_mismatch() {
         if !ffmpeg_present() {
             eprintln!("skipping verify_output_detects_nvenc_mismatch: ffmpeg not found on PATH");
@@ -194,7 +182,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the parse new device models operation.
     fn parse_new_device_models() {
         let models = devices::STREAMING_DEVICES
             .iter()
@@ -218,7 +205,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the min level respects strictest device operation.
     fn min_level_respects_strictest_device() {
         use devices::StreamingDevice;
         let devices = devices::STREAMING_DEVICES;
@@ -233,7 +219,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the parse device selection accepts new models operation.
     fn parse_device_selection_accepts_new_models() {
         let selection = Args::parse_device_selection("google_tv_streamer").unwrap();
         match selection {
@@ -245,7 +230,6 @@ mod video_tests {
     }
 
     #[test]
-    /// Runs the parse device selection accepts families operation.
     fn parse_device_selection_accepts_families() {
         let selection = Args::parse_device_selection("roku").unwrap();
         assert!(matches!(
@@ -260,7 +244,6 @@ mod direct_play_tests {
     use crate::*;
 
     #[test]
-    /// Runs the rational to f64 handles valid fraction operation.
     fn rational_to_f64_handles_valid_fraction() {
         let val = rational_to_f64(ffi::AVRational {
             num: 60000,
@@ -272,7 +255,6 @@ mod direct_play_tests {
     }
 
     #[test]
-    /// Runs the rational to f64 rejects non positive operation.
     fn rational_to_f64_rejects_non_positive() {
         assert!(rational_to_f64(ffi::AVRational { num: 0, den: 1 }).is_none());
         assert!(rational_to_f64(ffi::AVRational { num: 1, den: 0 }).is_none());
@@ -285,7 +267,6 @@ mod ocr_sidecar_tests {
     use tempfile::tempdir;
 
     #[test]
-    /// Runs the sidecar paths are stable and language scoped operation.
     fn sidecar_paths_are_stable_and_language_scoped() {
         let output = PathBuf::from("/tmp/movie.fixed.mp4");
         let p1 = sidecar_path_for_track(&output, "eng", 1);
@@ -297,7 +278,6 @@ mod ocr_sidecar_tests {
     }
 
     #[test]
-    /// Runs the sidecar writer copies only srt tracks operation.
     fn sidecar_writer_copies_only_srt_tracks() {
         let dir = tempdir().expect("tmpdir");
         let output_path = dir.path().join("sample.mp4");

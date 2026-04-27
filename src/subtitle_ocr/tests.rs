@@ -1,5 +1,3 @@
-//! Module for tests.
-
 use crate::subtitle_ocr::*;
 use mockito::Server;
 use std::fs::File;
@@ -8,7 +6,6 @@ use std::ptr;
 use strsim::jaro_winkler;
 use tempfile::TempDir;
 
-/// Runs the normalize text for word similarity operation.
 fn normalize_text_for_word_similarity(input: &str) -> String {
     input
         .to_uppercase()
@@ -17,7 +14,6 @@ fn normalize_text_for_word_similarity(input: &str) -> String {
         .join(" ")
 }
 
-/// Runs the normalize text for char similarity operation.
 fn normalize_text_for_char_similarity(input: &str) -> String {
     input
         .to_uppercase()
@@ -27,7 +23,6 @@ fn normalize_text_for_char_similarity(input: &str) -> String {
 }
 
 #[allow(clippy::needless_range_loop)]
-/// Runs the char error rate operation.
 fn char_error_rate(expected: &str, actual: &str) -> f32 {
     let expected_chars: Vec<char> = expected.chars().collect();
     let actual_chars: Vec<char> = actual.chars().collect();
@@ -61,14 +56,12 @@ fn char_error_rate(expected: &str, actual: &str) -> f32 {
 }
 
 #[test]
-/// Runs the external ocr command parser requires program name operation.
 fn external_ocr_command_parser_requires_program_name() {
     assert!(parse_external_ocr_argv("").is_err());
     assert!(parse_external_ocr_argv("   ").is_err());
 }
 
 #[test]
-/// Runs the external ocr command parser splits args without shell operation.
 fn external_ocr_command_parser_splits_args_without_shell() {
     let argv = parse_external_ocr_argv("python3 /opt/ocr/run.py --mode fast")
         .expect("parser should accept executable + args");
@@ -79,7 +72,6 @@ fn external_ocr_command_parser_splits_args_without_shell() {
 }
 
 #[test]
-/// Runs the overlap sanitization truncates earlier block operation.
 fn overlap_sanitization_truncates_earlier_block() {
     let mut cues = vec![
         SubtitleCue {
@@ -99,14 +91,12 @@ fn overlap_sanitization_truncates_earlier_block() {
 }
 
 #[test]
-/// Runs the srt timestamp formats correctly operation.
 fn srt_timestamp_formats_correctly() {
     assert_eq!(format_srt_timestamp(0), "00:00:00,000");
     assert_eq!(format_srt_timestamp(3_723_004), "01:02:03,004");
 }
 
 #[test]
-/// Runs the language mapping handles iso tags operation.
 fn language_mapping_handles_iso_tags() {
     assert_eq!(map_language_tag_to_tesseract("en"), Some("eng".to_string()));
     assert_eq!(
@@ -121,7 +111,6 @@ fn language_mapping_handles_iso_tags() {
 }
 
 #[test]
-/// Runs the resolve language prefers stream metadata then config then system then english operation.
 fn resolve_language_prefers_stream_metadata_then_config_then_system_then_english() {
     let available = ["eng", "spa", "fra"]
         .iter()
@@ -165,7 +154,6 @@ fn resolve_language_prefers_stream_metadata_then_config_then_system_then_english
 }
 
 #[test]
-/// Runs the resolve language ai prefers tags without lang list operation.
 fn resolve_language_ai_prefers_tags_without_lang_list() {
     let available = HashSet::<String>::new();
 
@@ -184,7 +172,6 @@ fn resolve_language_ai_prefers_tags_without_lang_list() {
 }
 
 #[test]
-/// Runs the non english fallback requires matching tesseract pack operation.
 fn non_english_fallback_requires_matching_tesseract_pack() {
     let available = ["eng"].iter().map(|s| (*s).to_string()).collect();
     assert_eq!(
@@ -198,7 +185,6 @@ fn non_english_fallback_requires_matching_tesseract_pack() {
 }
 
 #[test]
-/// Runs the english fallback prefers eng when available operation.
 fn english_fallback_prefers_eng_when_available() {
     let available = ["eng"].iter().map(|s| (*s).to_string()).collect();
     assert_eq!(
@@ -208,7 +194,6 @@ fn english_fallback_prefers_eng_when_available() {
 }
 
 #[test]
-/// Runs the fallback uses mapped language code when available operation.
 fn fallback_uses_mapped_language_code_when_available() {
     let available = ["fra", "spa"].iter().map(|s| (*s).to_string()).collect();
     assert_eq!(
@@ -222,7 +207,6 @@ fn fallback_uses_mapped_language_code_when_available() {
 }
 
 #[test]
-/// Runs the rec profile routing prefers english for eng and latin for romance langs operation.
 fn rec_profile_routing_prefers_english_for_eng_and_latin_for_romance_langs() {
     assert_eq!(rec_profile_for_language("eng"), OcrRecProfile::English);
     assert_eq!(rec_profile_for_language("en"), OcrRecProfile::English);
@@ -233,7 +217,6 @@ fn rec_profile_routing_prefers_english_for_eng_and_latin_for_romance_langs() {
 }
 
 #[test]
-/// Runs the rec profile routing handles dedicated and non latin codes operation.
 fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
     assert_eq!(rec_profile_for_language("jpn"), OcrRecProfile::Japanese);
     assert_eq!(rec_profile_for_language("ja"), OcrRecProfile::Japanese);
@@ -246,13 +229,11 @@ fn rec_profile_routing_handles_dedicated_and_non_latin_codes() {
 }
 
 #[test]
-/// Runs the rec profile routing respects latin script hint operation.
 fn rec_profile_routing_respects_latin_script_hint() {
     assert_eq!(rec_profile_for_language("sr-Latn"), OcrRecProfile::Latin);
 }
 
 #[test]
-/// Runs the rec profile routing uses script subtags when present operation.
 fn rec_profile_routing_uses_script_subtags_when_present() {
     assert_eq!(
         rec_profile_for_language("sr-Cyrl"),
@@ -263,7 +244,6 @@ fn rec_profile_routing_uses_script_subtags_when_present() {
 }
 
 #[test]
-/// Runs the rec profile routing matrix covers common language families operation.
 fn rec_profile_routing_matrix_covers_common_language_families() {
     let cases = [
         ("eng", OcrRecProfile::English),
@@ -304,7 +284,6 @@ fn rec_profile_routing_matrix_covers_common_language_families() {
 }
 
 #[test]
-/// Runs the rec profile routing matrix covers script tag variants operation.
 fn rec_profile_routing_matrix_covers_script_tag_variants() {
     let cases = [
         ("sr-Latn", OcrRecProfile::Latin),
@@ -327,7 +306,6 @@ fn rec_profile_routing_matrix_covers_script_tag_variants() {
 }
 
 #[test]
-/// Runs the rec profile custom routing override precedence is deterministic operation.
 fn rec_profile_custom_routing_override_precedence_is_deterministic() {
     let manifest = r#"
 default_profile = "english"
@@ -347,7 +325,6 @@ rus = "Cyrl"
 }
 
 #[test]
-/// Runs the rec profile custom routing language profile beats script profile operation.
 fn rec_profile_custom_routing_language_profile_beats_script_profile() {
     let manifest = r#"
 default_profile = "english"
@@ -363,7 +340,6 @@ cyrl = "multilingual"
 }
 
 #[test]
-/// Runs the rec profile custom routing uses script hints when no tag or alias match operation.
 fn rec_profile_custom_routing_uses_script_hints_when_no_tag_or_alias_match() {
     let manifest = r#"
 default_profile = "latin"
@@ -377,7 +353,6 @@ arab = "multilingual"
 }
 
 #[test]
-/// Runs the rec profile custom routing uses tesseract alias in language lookup operation.
 fn rec_profile_custom_routing_uses_tesseract_alias_in_language_lookup() {
     let manifest = r#"
 default_profile = "english"
@@ -390,7 +365,6 @@ fra = "cjk"
 }
 
 #[test]
-/// Runs the rec profile custom routing tolerates case and whitespace in manifest operation.
 fn rec_profile_custom_routing_tolerates_case_and_whitespace_in_manifest() {
     let manifest = r#"
 default_profile = " LATIN "
@@ -406,14 +380,12 @@ default_profile = " LATIN "
 }
 
 #[test]
-/// Runs the rec profile custom routing invalid manifest falls back to default operation.
 fn rec_profile_custom_routing_invalid_manifest_falls_back_to_default() {
     let profile = rec_profile_for_language_with_test_config("zzz", Some("not-toml"), None, None);
     assert_eq!(profile, OcrRecProfile::Latin);
 }
 
 #[test]
-/// Runs the rec profile custom routing ignores invalid override entries operation.
 fn rec_profile_custom_routing_ignores_invalid_override_entries() {
     let profile = rec_profile_for_language_with_test_config(
         "rus",
@@ -425,7 +397,6 @@ fn rec_profile_custom_routing_ignores_invalid_override_entries() {
 }
 
 #[test]
-/// Runs the plan workers ppocr caps by gpu capacity operation.
 fn plan_workers_ppocr_caps_by_gpu_capacity() {
     let plan =
         plan_ocr_workers_with_inputs(OcrEngine::PpOcrV3, 8, 32, None, 2, true, vec![1, 0, 1]);
@@ -434,7 +405,6 @@ fn plan_workers_ppocr_caps_by_gpu_capacity() {
 }
 
 #[test]
-/// Runs the plan workers ppocr no detected devices falls back to one operation.
 fn plan_workers_ppocr_no_detected_devices_falls_back_to_one() {
     let plan =
         plan_ocr_workers_with_inputs(OcrEngine::PpOcrV4, 6, 16, Some(8), 1, true, Vec::new());
@@ -443,7 +413,6 @@ fn plan_workers_ppocr_no_detected_devices_falls_back_to_one() {
 }
 
 #[test]
-/// Runs the plan workers non ppocr ignores gpu device pool operation.
 fn plan_workers_non_ppocr_ignores_gpu_device_pool() {
     let plan =
         plan_ocr_workers_with_inputs(OcrEngine::Tesseract, 5, 64, Some(3), 4, true, vec![0, 1]);
@@ -452,14 +421,12 @@ fn plan_workers_non_ppocr_ignores_gpu_device_pool() {
 }
 
 #[test]
-/// Runs the parse cuda device list deduplicates and ignores invalid entries operation.
 fn parse_cuda_device_list_deduplicates_and_ignores_invalid_entries() {
     let parsed = parse_cuda_device_list("2,abc,1,2, ,0");
     assert_eq!(parsed, vec![0, 1, 2]);
 }
 
 #[test]
-/// Runs the worker batches shard streams across cuda devices operation.
 fn worker_batches_shard_streams_across_cuda_devices() {
     let tasks = (0..4usize)
         .map(|i| OcrTask {
@@ -482,7 +449,6 @@ fn worker_batches_shard_streams_across_cuda_devices() {
 }
 
 #[test]
-/// Runs the worker batches round robin when tasks exceed workers operation.
 fn worker_batches_round_robin_when_tasks_exceed_workers() {
     let tasks = (0..5usize)
         .map(|i| OcrTask {
@@ -508,7 +474,6 @@ fn worker_batches_round_robin_when_tasks_exceed_workers() {
 }
 
 #[test]
-/// Runs the bounding box to ass position operation.
 fn bounding_box_to_ass_position() {
     let bbox = OcrBoundingBox {
         left: 80,
@@ -523,7 +488,6 @@ fn bounding_box_to_ass_position() {
 }
 
 #[test]
-/// Runs the color extraction to ass hex operation.
 fn color_extraction_to_ass_hex() {
     let color = ass_color_from_rgb(255, 0, 0);
     assert_eq!(color, "&H0000FF&");
@@ -532,7 +496,6 @@ fn color_extraction_to_ass_hex() {
 }
 
 #[test]
-/// Runs the dominant color from rect prefers visible palette operation.
 fn dominant_color_from_rect_prefers_visible_palette() {
     let mut pixels = vec![1u8; 4];
     let mut palette = vec![0u8; 256 * 4];
@@ -561,7 +524,6 @@ fn dominant_color_from_rect_prefers_visible_palette() {
 }
 
 #[test]
-/// Runs the test model downloads successfully operation.
 fn test_model_downloads_successfully() {
     let mut server = Server::new();
     let body = b"dummy-onnx-model";
@@ -588,7 +550,6 @@ fn test_model_downloads_successfully() {
 }
 
 #[test]
-/// Runs the test skips download if cached operation.
 fn test_skips_download_if_cached() {
     let mut server = Server::new();
     let _mock = server
@@ -614,7 +575,6 @@ fn test_skips_download_if_cached() {
 }
 
 #[test]
-/// Runs the test handles corrupted download operation.
 fn test_handles_corrupted_download() {
     let mut server = Server::new();
     let body = b"partial-data-should-fail";
@@ -645,7 +605,6 @@ fn test_handles_corrupted_download() {
 }
 
 #[test]
-/// Runs the test downloader handles 404 operation.
 fn test_downloader_handles_404() {
     let mut server = Server::new();
     let mock = server
@@ -668,7 +627,6 @@ fn test_downloader_handles_404() {
 }
 
 #[test]
-/// Runs the test optional rec model auto provision downloads when missing operation.
 fn test_optional_rec_model_auto_provision_downloads_when_missing() {
     let mut server = Server::new();
     let body = b"auto-provision-rec-model";
@@ -702,7 +660,6 @@ fn test_optional_rec_model_auto_provision_downloads_when_missing() {
 }
 
 #[test]
-/// Runs the test optional rec model env override wins over auto provision operation.
 fn test_optional_rec_model_env_override_wins_over_auto_provision() {
     let env_key = "DPN_TEST_REC_MODEL_OVERRIDE";
     let tmp = TempDir::new().unwrap();
@@ -731,7 +688,6 @@ fn test_optional_rec_model_env_override_wins_over_auto_provision() {
 }
 
 #[test]
-/// Runs the test optional rec model auto provision failure returns none operation.
 fn test_optional_rec_model_auto_provision_failure_returns_none() {
     let mut server = Server::new();
     let mock = server
@@ -760,7 +716,6 @@ fn test_optional_rec_model_auto_provision_failure_returns_none() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model prefers local file operation.
 fn test_optional_multilingual_rec_model_prefers_local_file() {
     let tmp = TempDir::new().unwrap();
     let local = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
@@ -774,7 +729,6 @@ fn test_optional_multilingual_rec_model_prefers_local_file() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model env override wins operation.
 fn test_optional_multilingual_rec_model_env_override_wins() {
     let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
     let tmp = TempDir::new().unwrap();
@@ -792,7 +746,6 @@ fn test_optional_multilingual_rec_model_env_override_wins() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model env override missing path errors operation.
 fn test_optional_multilingual_rec_model_env_override_missing_path_errors() {
     let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
     let tmp = TempDir::new().unwrap();
@@ -806,7 +759,6 @@ fn test_optional_multilingual_rec_model_env_override_missing_path_errors() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model prefers variant specific candidate operation.
 fn test_optional_multilingual_rec_model_prefers_variant_specific_candidate() {
     let tmp = TempDir::new().unwrap();
     let v3 = tmp.path().join("multilingual_PP-OCRv3_rec_infer.onnx");
@@ -826,7 +778,6 @@ fn test_optional_multilingual_rec_model_prefers_variant_specific_candidate() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model ignores non rec or non onnx files operation.
 fn test_optional_multilingual_rec_model_ignores_non_rec_or_non_onnx_files() {
     let tmp = TempDir::new().unwrap();
     File::create(tmp.path().join("multilingual_PP-OCRv4_det_infer.onnx")).unwrap();
@@ -837,7 +788,6 @@ fn test_optional_multilingual_rec_model_ignores_non_rec_or_non_onnx_files() {
 }
 
 #[test]
-/// Runs the test optional multilingual rec model accepts non latin dedicated rec fallback operation.
 fn test_optional_multilingual_rec_model_accepts_non_latin_dedicated_rec_fallback() {
     let tmp = TempDir::new().unwrap();
     let greek = tmp.path().join("greek_PP-OCRv4_rec_infer.onnx");
@@ -848,7 +798,6 @@ fn test_optional_multilingual_rec_model_accepts_non_latin_dedicated_rec_fallback
     assert_eq!(resolved, greek);
 }
 
-/// Runs the is skippable ort runtime error operation.
 fn is_skippable_ort_runtime_error(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
     // CI runners often have an unexpected ORT runtime on PATH/LD path.
@@ -860,7 +809,6 @@ fn is_skippable_ort_runtime_error(msg: &str) -> bool {
 }
 
 #[test]
-/// Runs the test onnx session initializes with fallbacks operation.
 fn test_onnx_session_initializes_with_fallbacks() {
     let init_result = std::panic::catch_unwind(init_ort_environment);
     match init_result {
@@ -901,7 +849,6 @@ fn test_onnx_session_initializes_with_fallbacks() {
 }
 
 #[test]
-/// Runs the test gpu requirement env gate operation.
 fn test_gpu_requirement_env_gate() {
     if std::env::var("DPN_OCR_REQUIRE_GPU").ok().as_deref() != Some("1") {
         return;
@@ -916,7 +863,6 @@ fn test_gpu_requirement_env_gate() {
 }
 
 #[test]
-/// Runs the test provider selection prefers cuda when available operation.
 fn test_provider_selection_prefers_cuda_when_available() {
     let (kinds, gpu_available) = select_execution_provider_plan(false, true, true, true).unwrap();
     assert!(gpu_available);
@@ -925,7 +871,6 @@ fn test_provider_selection_prefers_cuda_when_available() {
 }
 
 #[test]
-/// Runs the test provider selection requires gpu flag operation.
 fn test_provider_selection_requires_gpu_flag() {
     let err = select_execution_provider_plan(true, false, false, false)
         .expect_err("Expected error when requiring GPU without providers");
@@ -937,7 +882,6 @@ fn test_provider_selection_requires_gpu_flag() {
 }
 
 #[test]
-/// Runs the test auto engine prefers ppocr with gpu operation.
 fn test_auto_engine_prefers_ppocr_with_gpu() {
     assert_eq!(
         auto_engine_preference_with_capability(true, false),
@@ -946,7 +890,6 @@ fn test_auto_engine_prefers_ppocr_with_gpu() {
 }
 
 #[test]
-/// Runs the test auto engine prefers ppocr v3 on legacy gpu operation.
 fn test_auto_engine_prefers_ppocr_v3_on_legacy_gpu() {
     assert_eq!(
         auto_engine_preference_with_capability(true, true),
@@ -955,7 +898,6 @@ fn test_auto_engine_prefers_ppocr_v3_on_legacy_gpu() {
 }
 
 #[test]
-/// Runs the test auto engine prefers tesseract without gpu operation.
 fn test_auto_engine_prefers_tesseract_without_gpu() {
     assert_eq!(
         auto_engine_preference_with_capability(false, false),
@@ -964,7 +906,6 @@ fn test_auto_engine_prefers_tesseract_without_gpu() {
 }
 
 #[test]
-/// Runs the test text similarity wer like threshold operation.
 fn test_text_similarity_wer_like_threshold() {
     let expected = "THIS OCR QUALITY TEST USES MANY WORDS TO ALLOW SMALL ERRORS WITHOUT FAILING STRICT THRESHOLDS IN CI RUNS TODAY ALWAYS FOR STABILITY CHECKS EACH TIME";
     let actual = "THIS OCR QUALITY TEST USES MANY WORDS TO ALLOW SMALL ERRORS WITHOUT FAILING STRICT THRESHOLDS IN CI RUNS TODAY ALWAYS FOR STABIL1TY CHECKS EACH TIME";
@@ -995,7 +936,6 @@ fn test_text_similarity_wer_like_threshold() {
 }
 
 #[test]
-/// Runs the test spatial iou threshold operation.
 fn test_spatial_iou_threshold() {
     let a = OcrBoundingBox {
         left: 100,
@@ -1014,7 +954,6 @@ fn test_spatial_iou_threshold() {
 }
 
 #[test]
-/// Runs the test ppocr spacing inserts space for gap operation.
 fn test_ppocr_spacing_inserts_space_for_gap() {
     let lines = vec![
         OcrLine {
@@ -1049,7 +988,6 @@ fn test_ppocr_spacing_inserts_space_for_gap() {
 }
 
 #[test]
-/// Runs the test ppocr spacing keeps compact tokens operation.
 fn test_ppocr_spacing_keeps_compact_tokens() {
     let lines = vec![
         OcrLine {
@@ -1084,7 +1022,6 @@ fn test_ppocr_spacing_keeps_compact_tokens() {
 }
 
 #[test]
-/// Runs the test ppocr spacing fallback detection operation.
 fn test_ppocr_spacing_fallback_detection() {
     let lines = vec![OcrLine {
         text: "BythistimeIobserved".to_string(),
@@ -1102,7 +1039,6 @@ fn test_ppocr_spacing_fallback_detection() {
 }
 
 #[test]
-/// Runs the test quality score penalizes noise operation.
 fn test_quality_score_penalizes_noise() {
     let clean = "By this time, I observed that the rain had stopped.";
     let noisy = "Bythistime,I0bserved @&| the rain had st0pped";
@@ -1115,7 +1051,6 @@ fn test_quality_score_penalizes_noise() {
 }
 
 #[test]
-/// Runs the test quality fallback detection triggers on noisy text operation.
 fn test_quality_fallback_detection_triggers_on_noisy_text() {
     let lines = vec![OcrLine {
         text: "BythistimeI0bserved@&|".to_string(),
@@ -1133,7 +1068,6 @@ fn test_quality_fallback_detection_triggers_on_noisy_text() {
 }
 
 #[test]
-/// Runs the test quality fallback detection avoids good english text operation.
 fn test_quality_fallback_detection_avoids_good_english_text() {
     let lines = vec![OcrLine {
         text: "By this time, I observed the village from afar.".to_string(),
@@ -1151,7 +1085,6 @@ fn test_quality_fallback_detection_avoids_good_english_text() {
 }
 
 #[test]
-/// Runs the test ppocr average confidence is area weighted operation.
 fn test_ppocr_average_confidence_is_area_weighted() {
     let lines = vec![
         OcrLine {
@@ -1187,7 +1120,6 @@ fn test_ppocr_average_confidence_is_area_weighted() {
 }
 
 #[test]
-/// Runs the test quality fallback detection triggers on impossible geometry operation.
 fn test_quality_fallback_detection_triggers_on_impossible_geometry() {
     let lines = vec![OcrLine {
         text: "ThisIsClearlyHorizontalSubtitleText".to_string(),
@@ -1205,7 +1137,6 @@ fn test_quality_fallback_detection_triggers_on_impossible_geometry() {
 }
 
 #[test]
-/// Runs the test prune impossible geometry discards vertical hallucinations operation.
 fn test_prune_impossible_geometry_discards_vertical_hallucinations() {
     let mut lines = vec![
         OcrLine {
@@ -1240,7 +1171,6 @@ fn test_prune_impossible_geometry_discards_vertical_hallucinations() {
 }
 
 #[test]
-/// Runs the test quality thresholds adapt to stream baseline operation.
 fn test_quality_thresholds_adapt_to_stream_baseline() {
     let mut baseline = OcrQualityBaseline::default();
     for _ in 0..16 {
@@ -1260,7 +1190,6 @@ fn test_quality_thresholds_adapt_to_stream_baseline() {
 }
 
 #[test]
-/// Runs the test quality thresholds ignore samples after baseline window operation.
 fn test_quality_thresholds_ignore_samples_after_baseline_window() {
     let mut baseline = OcrQualityBaseline::default();
     for _ in 0..16 {
@@ -1273,7 +1202,6 @@ fn test_quality_thresholds_ignore_samples_after_baseline_window() {
 }
 
 #[test]
-/// Runs the test postprocess english glue and punctuation operation.
 fn test_postprocess_english_glue_and_punctuation() {
     let src = "ConstableCrane? Notonlyme. beforehewentintotheriver";
     let got = postprocess_ocr_text(src, "eng");
@@ -1284,7 +1212,6 @@ fn test_postprocess_english_glue_and_punctuation() {
 }
 
 #[test]
-/// Runs the test postprocess english deglues common tokens operation.
 fn test_postprocess_english_deglues_common_tokens() {
     let src = "Ibegpardon. Standdown! Ihavenot Loppedoff? Ishall return in the l9th century.";
     let got = postprocess_ocr_text(src, "eng");
@@ -1295,7 +1222,6 @@ fn test_postprocess_english_deglues_common_tokens() {
 }
 
 #[test]
-/// Runs the test postprocess english fixes silence glue cases operation.
 fn test_postprocess_english_fixes_silence_glue_cases() {
     let src = "to be as dark as itis now. Whylost? He'salive?";
     let got = postprocess_ocr_text(src, "eng");
@@ -1303,7 +1229,6 @@ fn test_postprocess_english_fixes_silence_glue_cases() {
 }
 
 #[test]
-/// Runs the test split glued token dp segmentation operation.
 fn test_split_glued_token_dp_segmentation() {
     assert_eq!(
         split_glued_ascii_token("Ibegpardon").as_deref(),
@@ -1317,7 +1242,6 @@ fn test_split_glued_token_dp_segmentation() {
 }
 
 #[test]
-/// Runs the test postprocess non english passthrough operation.
 fn test_postprocess_non_english_passthrough() {
     let src = "Notonlyme";
     let got = postprocess_ocr_text(src, "jpn");
@@ -1325,7 +1249,6 @@ fn test_postprocess_non_english_passthrough() {
 }
 
 #[test]
-/// Runs the test color distance threshold operation.
 fn test_color_distance_threshold() {
     let mut pixels = vec![1u8; 4];
     let mut palette = vec![0u8; 256 * 4];
@@ -1355,7 +1278,6 @@ fn test_color_distance_threshold() {
 }
 
 #[test]
-/// Runs the test golden dataset quality operation.
 fn test_golden_dataset_quality() {
     if std::env::var("DPN_OCR_GOLDEN").ok().as_deref() != Some("1") {
         eprintln!("Skipping golden OCR quality test (set DPN_OCR_GOLDEN=1 to enable).");
@@ -1404,7 +1326,6 @@ fn test_golden_dataset_quality() {
     };
 
     #[derive(serde::Deserialize)]
-    /// Holds state for GoldenExpected.
     struct GoldenExpected {
         expected_text: String,
         expected_bbox: [i32; 4],
@@ -1488,7 +1409,6 @@ fn test_golden_dataset_quality() {
 }
 
 #[test]
-/// Runs the test multilang prerendered fixture accuracy and performance operation.
 fn test_multilang_prerendered_fixture_accuracy_and_performance() {
     if std::env::var("DPN_OCR_MULTILANG_FIXTURES").ok().as_deref() != Some("1") {
         eprintln!(
@@ -1539,7 +1459,6 @@ fn test_multilang_prerendered_fixture_accuracy_and_performance() {
     };
 
     #[derive(serde::Deserialize)]
-    /// Holds state for MultiLangExpected.
     struct MultiLangExpected {
         language: String,
         expected_text: String,
@@ -1615,7 +1534,6 @@ fn test_multilang_prerendered_fixture_accuracy_and_performance() {
 
 #[test]
 #[ignore]
-/// Runs the test manual ppocr v3 single image probe operation.
 fn test_manual_ppocr_v3_single_image_probe() {
     if std::env::var("DPN_OCR_MANUAL_PPOCR_V3").ok().as_deref() != Some("1") {
         eprintln!("Skipping manual PP-OCRv3 probe (set DPN_OCR_MANUAL_PPOCR_V3=1 to enable).");

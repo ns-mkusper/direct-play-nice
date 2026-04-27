@@ -136,7 +136,6 @@ pub fn convert_bitmap_subtitles(
     finalize_ocr_outputs(outputs, ocr_format, video_dimensions)
 }
 
-/// Provides methods for `OcrFormat`.
 impl OcrFormat {
     /// File extension used when writing OCR output for this subtitle format.
     fn extension(self) -> &'static str {

@@ -1,5 +1,3 @@
-//! Module for main.
-
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use std::env;
@@ -33,7 +31,6 @@ pub(crate) use types::{
 #[cfg(test)]
 pub(crate) use transcoder::prelude::*;
 
-/// Runs the main operation.
 fn main() -> Result<()> {
     if env::var_os("RUST_LOG").is_none() {
         env::set_var("RUST_LOG", "info");

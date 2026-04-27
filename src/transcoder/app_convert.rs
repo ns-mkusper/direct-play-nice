@@ -1,9 +1,6 @@
-//! Module for app convert.
-
 use crate::transcoder::prelude::*;
 
 #[derive(Clone, Copy)]
-/// Holds state for ConversionParams.
 pub(crate) struct ConversionParams<'a> {
     pub(crate) sub_mode: SubMode,
     pub(crate) target_video_codec: ffi::AVCodecID,
@@ -21,15 +18,12 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) hw_accel: HwAccel,
 }
 
-/// Provides methods for `ConversionParams`.
 impl ConversionParams<'_> {
-    /// Runs the with hw accel operation.
     pub(crate) fn with_hw_accel(self, hw_accel: HwAccel) -> Self {
         Self { hw_accel, ..self }
     }
 }
 
-/// Runs the convert video file operation.
 pub(crate) fn convert_video_file(
     input_file: &CStr,
     output_file: &CStr,

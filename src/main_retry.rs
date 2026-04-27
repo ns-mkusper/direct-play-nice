@@ -1,5 +1,3 @@
-//! Module for main retry.
-
 use anyhow::{anyhow, bail, Result};
 use log::warn;
 use rsmpeg::avformat::AVFormatContextInput;
@@ -15,7 +13,6 @@ use crate::transcoder::{
 };
 use crate::{Args, PrimaryVideoCriteria};
 
-/// Runs the cleanup partial output operation.
 pub(super) fn cleanup_partial_output(path: &CStr) {
     let output_path = PathBuf::from(path.to_string_lossy().into_owned());
     if output_path.exists() {
@@ -29,7 +26,6 @@ pub(super) fn cleanup_partial_output(path: &CStr) {
     }
 }
 
-/// Runs the retry with software encoder operation.
 pub(super) fn retry_with_software_encoder(
     input_file: &CStr,
     output_file: &CStr,
@@ -38,7 +34,6 @@ pub(super) fn retry_with_software_encoder(
     convert_video_file(input_file, output_file, params.with_hw_accel(HwAccel::None))
 }
 
-/// Runs the handle hw profile mismatch operation.
 pub(super) fn handle_hw_profile_mismatch(
     mismatch: HwProfileLevelMismatch,
     args: &Args,
@@ -71,7 +66,6 @@ pub(super) fn handle_hw_profile_mismatch(
     retry_with_software_encoder(input_file, output_file, params)
 }
 
-/// Runs the handle hw encoder init error operation.
 pub(super) fn handle_hw_encoder_init_error(
     init_error: HwEncoderInitError,
     args: &Args,
@@ -91,7 +85,6 @@ pub(super) fn handle_hw_encoder_init_error(
     retry_with_software_encoder(input_file, output_file, params)
 }
 
-/// Runs the select primary video stream index operation.
 pub(super) fn select_primary_video_stream_index(
     input_ctx: &AVFormatContextInput,
     override_index: Option<usize>,

@@ -4,14 +4,12 @@
 //! serialization to SRT/ASS.
 
 use super::*;
-/// Holds state for TesseractCandidate.
 pub(super) struct TesseractCandidate {
     pub(super) text: String,
     pub(super) psm: u8,
     pub(super) quality: f32,
 }
 
-/// Runs the ppocr engine label operation.
 pub(super) fn ppocr_engine_label(ocr_engine: OcrEngine) -> &'static str {
     match ocr_engine {
         OcrEngine::PpOcrV3 => "PP-OCRv3",
@@ -20,12 +18,10 @@ pub(super) fn ppocr_engine_label(ocr_engine: OcrEngine) -> &'static str {
     }
 }
 
-/// Runs the run tesseract operation.
 pub(super) fn run_tesseract(image_path: &Path, language: &str) -> Result<String> {
     Ok(run_tesseract_best_effort(image_path, language)?.text)
 }
 
-/// Runs the run tesseract best effort operation.
 pub(super) fn run_tesseract_best_effort(
     image_path: &Path,
     language: &str,
@@ -76,7 +72,6 @@ pub(super) fn run_tesseract_best_effort(
     })
 }
 
-/// Runs the run tesseract with psm operation.
 pub(super) fn run_tesseract_with_psm(image_path: &Path, language: &str, psm: u8) -> Result<String> {
     let output = Command::new("tesseract")
         .arg(image_path)
@@ -114,7 +109,6 @@ pub(super) fn run_tesseract_with_psm(image_path: &Path, language: &str, psm: u8)
     )))
 }
 
-/// Runs the run external ocr command operation.
 pub(super) fn run_external_ocr_command(
     image_path: &Path,
     language: &str,
@@ -149,7 +143,6 @@ pub(super) fn run_external_ocr_command(
     )))
 }
 
-/// Runs the parse external ocr argv operation.
 pub(super) fn parse_external_ocr_argv(ocr_external_command: &str) -> Result<Vec<String>> {
     let argv = shlex::split(ocr_external_command).ok_or_else(|| {
         anyhow!("Invalid --ocr-external-command value: could not parse command/arguments safely")
@@ -160,7 +153,6 @@ pub(super) fn parse_external_ocr_argv(ocr_external_command: &str) -> Result<Vec<
     Ok(argv)
 }
 
-/// Runs the rect to pgm operation.
 pub(super) fn rect_to_pgm(
     rect: &ffi::AVSubtitleRect,
     ocr_engine: OcrEngine,
@@ -276,7 +268,6 @@ pub(super) fn rect_to_pgm(
     Some((out, has_visible_pixels))
 }
 
-/// Runs the upscale grayscale nearest operation.
 pub(super) fn upscale_grayscale_nearest(
     raster: &[u8],
     width: usize,
@@ -306,7 +297,6 @@ pub(super) fn upscale_grayscale_nearest(
     (out, out_w, out_h)
 }
 
-/// Runs the dominant color from rect operation.
 pub(super) fn dominant_color_from_rect(rect: &ffi::AVSubtitleRect) -> Option<(u8, u8, u8)> {
     if rect.w <= 0 || rect.h <= 0 || rect.data[0].is_null() || rect.data[1].is_null() {
         return None;
@@ -360,7 +350,6 @@ pub(super) fn dominant_color_from_rect(rect: &ffi::AVSubtitleRect) -> Option<(u8
     Some((r, g, b))
 }
 
-/// Runs the write srt operation.
 pub(super) fn write_srt(path: &Path, cues: &[SubtitleCue]) -> Result<()> {
     let mut body = String::new();
 
@@ -380,7 +369,6 @@ pub(super) fn write_srt(path: &Path, cues: &[SubtitleCue]) -> Result<()> {
     Ok(())
 }
 
-/// Runs the write ass operation.
 pub(super) fn write_ass(
     path: &Path,
     cues: &[SubtitleCue],
@@ -417,7 +405,6 @@ pub(super) fn write_ass(
     Ok(())
 }
 
-/// Runs the sanitize cues operation.
 pub(super) fn sanitize_cues(cues: &mut Vec<SubtitleCue>, format: OcrFormat) {
     cues.sort_by_key(|cue| cue.start_ms);
 
@@ -432,7 +419,6 @@ pub(super) fn sanitize_cues(cues: &mut Vec<SubtitleCue>, format: OcrFormat) {
     cues.retain(|cue| cue.end_ms > cue.start_ms && !cue.text.trim().is_empty());
 }
 
-/// Runs the format srt timestamp operation.
 pub(super) fn format_srt_timestamp(total_ms: i64) -> String {
     let ms = total_ms.max(0);
     let hours = ms / 3_600_000;
@@ -442,7 +428,6 @@ pub(super) fn format_srt_timestamp(total_ms: i64) -> String {
     format!("{:02}:{:02}:{:02},{:03}", hours, minutes, seconds, millis)
 }
 
-/// Runs the format ass timestamp operation.
 pub(super) fn format_ass_timestamp(total_ms: i64) -> String {
     let ms = total_ms.max(0);
     let hours = ms / 3_600_000;
@@ -452,7 +437,6 @@ pub(super) fn format_ass_timestamp(total_ms: i64) -> String {
     format!("{}:{:02}:{:02}.{:02}", hours, minutes, seconds, centis)
 }
 
-/// Runs the normalize utf8 text operation.
 pub(super) fn normalize_utf8_text(input: &str) -> String {
     input
         .replace('\r', "")
@@ -463,7 +447,6 @@ pub(super) fn normalize_utf8_text(input: &str) -> String {
         .join("\n")
 }
 
-/// Runs the strip ass formatting operation.
 pub(super) fn strip_ass_formatting(ass: &str) -> String {
     let text_payload = ass.rsplit_once(',').map(|(_, rhs)| rhs).unwrap_or(ass);
     let mut out = String::new();
@@ -479,7 +462,6 @@ pub(super) fn strip_ass_formatting(ass: &str) -> String {
     normalize_utf8_text(&out.replace("\\N", "\n"))
 }
 
-/// Runs the ass position from bbox operation.
 pub(super) fn ass_position_from_bbox(
     bbox: &OcrBoundingBox,
     video_dimensions: Option<(u32, u32)>,
@@ -495,7 +477,6 @@ pub(super) fn ass_position_from_bbox(
     (x, y)
 }
 
-/// Runs the format ass text with style operation.
 pub(super) fn format_ass_text_with_style(
     text: &str,
     pos: Option<(i32, i32)>,
@@ -519,7 +500,6 @@ pub(super) fn format_ass_text_with_style(
     }
 }
 
-/// Runs the ass escape operation.
 pub(super) fn ass_escape(text: &str) -> String {
     let replaced = text.replace('\r', "");
     let replaced = replaced.replace('\\', "\\\\");
@@ -528,12 +508,10 @@ pub(super) fn ass_escape(text: &str) -> String {
     replaced.replace('\n', "\\N")
 }
 
-/// Runs the ass color from rgb operation.
 pub(super) fn ass_color_from_rgb(r: u8, g: u8, b: u8) -> String {
     format!("&H{:02X}{:02X}{:02X}&", b, g, r)
 }
 
-/// Runs the parse ass color operation.
 pub(super) fn parse_ass_color(text: &str) -> Option<(u8, u8, u8)> {
     let marker = "\\c&H";
     let start = text.find(marker)?;
@@ -550,7 +528,6 @@ pub(super) fn parse_ass_color(text: &str) -> Option<(u8, u8, u8)> {
 }
 
 #[cfg(test)]
-/// Runs the intersection over union operation.
 pub(super) fn intersection_over_union(a: &OcrBoundingBox, b: &OcrBoundingBox) -> f32 {
     let x_left = a.left.max(b.left);
     let y_top = a.top.max(b.top);
@@ -572,7 +549,6 @@ pub(super) fn intersection_over_union(a: &OcrBoundingBox, b: &OcrBoundingBox) ->
 }
 
 #[cfg(test)]
-/// Runs the rgb distance operation.
 pub(super) fn rgb_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
     let dr = a.0 as f32 - b.0 as f32;
     let dg = a.1 as f32 - b.1 as f32;
@@ -582,7 +558,6 @@ pub(super) fn rgb_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
 
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
-/// Runs the word error rate operation.
 pub(super) fn word_error_rate(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
@@ -615,7 +590,6 @@ pub(super) fn word_error_rate(expected: &str, actual: &str) -> f32 {
     dp[m][n] as f32 / expected_words.len() as f32
 }
 
-/// Runs the bounding box from points operation.
 pub(super) fn bounding_box_from_points(
     points: &[paddle_ocr_rs::ocr_result::Point],
 ) -> Option<OcrBoundingBox> {
@@ -642,7 +616,6 @@ pub(super) fn bounding_box_from_points(
     })
 }
 
-/// Runs the offset bbox operation.
 pub(super) fn offset_bbox(bbox: &mut OcrBoundingBox, offset_x: i32, offset_y: i32) {
     bbox.left += offset_x;
     bbox.right += offset_x;
@@ -650,7 +623,6 @@ pub(super) fn offset_bbox(bbox: &mut OcrBoundingBox, offset_x: i32, offset_y: i3
     bbox.bottom += offset_y;
 }
 
-/// Runs the sort ocr lines operation.
 pub(super) fn sort_ocr_lines(a: &OcrLine, b: &OcrLine) -> std::cmp::Ordering {
     match (&a.bbox, &b.bbox) {
         (Some(a_box), Some(b_box)) => {
@@ -666,7 +638,6 @@ pub(super) fn sort_ocr_lines(a: &OcrLine, b: &OcrLine) -> std::cmp::Ordering {
     }
 }
 
-/// Runs the merge ocr lines with spacing operation.
 pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
     if lines.is_empty() {
         return Vec::new();
@@ -688,7 +659,6 @@ pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> 
 
     with_bbox.sort_by(sort_ocr_lines);
 
-    /// Holds state for LineGroup.
     struct LineGroup {
         items: Vec<OcrLine>,
         center_y: f32,
@@ -804,7 +774,6 @@ pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> 
     merged
 }
 
-/// Runs the load image operation.
 pub(super) fn load_image(path: &Path) -> Result<image::RgbImage> {
     let img = image::open(path).with_context(|| format!("loading image '{}'", path.display()))?;
     Ok(img.to_rgb8())

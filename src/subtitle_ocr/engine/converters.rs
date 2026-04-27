@@ -19,7 +19,6 @@ use super::super::text_render::{
 use super::{ExternalEngine, OcrLine, OcrOutput, PpOcrEngine, SubtitleConverter, TesseractEngine};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Defines options for OcrRecProfile.
 pub(in crate::subtitle_ocr) enum OcrRecProfile {
     English,
     Latin,
@@ -33,9 +32,7 @@ static REC_PROFILE_OVERRIDES: OnceLock<Vec<(String, OcrRecProfile)>> = OnceLock:
 static LANGUAGE_SCRIPT_HINTS: OnceLock<Vec<(String, String)>> = OnceLock::new();
 static ROUTING_MANIFEST: OnceLock<RoutingManifest> = OnceLock::new();
 
-/// Provides methods for `TesseractEngine`.
 impl SubtitleConverter for TesseractEngine {
-    /// Runs the extract lines operation.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let text = run_tesseract(image_path, language)?;
         if text.is_empty() {
@@ -53,9 +50,7 @@ impl SubtitleConverter for TesseractEngine {
     }
 }
 
-/// Provides methods for `ExternalEngine`.
 impl SubtitleConverter for ExternalEngine {
-    /// Runs the extract lines operation.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let text = run_external_ocr_command(image_path, language, &self.command)?;
         if text.is_empty() {
@@ -73,9 +68,7 @@ impl SubtitleConverter for ExternalEngine {
     }
 }
 
-/// Provides methods for `PpOcrEngine`.
 impl SubtitleConverter for PpOcrEngine {
-    /// Runs the extract lines operation.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let PpOcrEngine {
             english_ocr,
@@ -158,7 +151,6 @@ impl SubtitleConverter for PpOcrEngine {
     }
 }
 
-/// Runs the select profile ocr with fallback operation.
 fn select_profile_ocr_with_fallback<'a>(
     primary: Option<&'a mut OcrLite>,
     secondary: Option<&'a mut OcrLite>,
@@ -189,7 +181,6 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language(language: &str) -> OcrRe
     rec_profile_for_language_with_inputs(language, manifest, overrides, hints)
 }
 
-/// Runs the rec profile for language with inputs operation.
 fn rec_profile_for_language_with_inputs(
     language: &str,
     manifest: &RoutingManifest,
@@ -246,7 +237,6 @@ fn parse_rec_profile_overrides() -> Vec<(String, OcrRecProfile)> {
     parse_rec_profile_overrides_from_raw(&raw)
 }
 
-/// Runs the parse rec profile overrides from raw operation.
 fn parse_rec_profile_overrides_from_raw(raw: &str) -> Vec<(String, OcrRecProfile)> {
     raw.split(',')
         .filter_map(|entry| {
@@ -269,7 +259,6 @@ fn parse_rec_profile_overrides_from_raw(raw: &str) -> Vec<(String, OcrRecProfile
         .collect()
 }
 
-/// Runs the resolved script operation.
 fn resolved_script(
     language: &str,
     normalized: &str,
@@ -314,7 +303,6 @@ fn configured_script_hint_from(
     None
 }
 
-/// Runs the likely script from manifest operation.
 fn likely_script_from_manifest(
     language: &str,
     normalized: &str,
@@ -328,7 +316,6 @@ fn likely_script_from_manifest(
     None
 }
 
-/// Runs the candidate language keys operation.
 fn candidate_language_keys(language: &str, normalized: &str) -> Vec<String> {
     let lower_input = language.trim().to_ascii_lowercase();
     let mut out = Vec::new();
@@ -349,7 +336,6 @@ fn candidate_language_keys(language: &str, normalized: &str) -> Vec<String> {
     out
 }
 
-/// Runs the primary subtag operation.
 fn primary_subtag(tag: &str) -> Option<&str> {
     let trimmed = tag.trim();
     if trimmed.is_empty() {
@@ -358,7 +344,6 @@ fn primary_subtag(tag: &str) -> Option<&str> {
     Some(trimmed.split(['-', '_']).next().unwrap_or(trimmed))
 }
 
-/// Runs the parse language script hints operation.
 fn parse_language_script_hints() -> Vec<(String, String)> {
     let Ok(raw) = std::env::var("DPN_OCR_LANGUAGE_SCRIPT_HINTS") else {
         return Vec::new();
@@ -366,7 +351,6 @@ fn parse_language_script_hints() -> Vec<(String, String)> {
     parse_language_script_hints_from_raw(&raw)
 }
 
-/// Runs the parse language script hints from raw operation.
 fn parse_language_script_hints_from_raw(raw: &str) -> Vec<(String, String)> {
     raw.split(',')
         .filter_map(|entry| {
@@ -394,7 +378,6 @@ fn profile_for_script(script: &str, manifest: &RoutingManifest) -> OcrRecProfile
     OcrRecProfile::English
 }
 
-/// Runs the parse profile name operation.
 fn parse_profile_name(value: &str) -> Option<OcrRecProfile> {
     match value.trim().to_ascii_lowercase().as_str() {
         "english" | "eng" => Some(OcrRecProfile::English),
@@ -408,7 +391,6 @@ fn parse_profile_name(value: &str) -> Option<OcrRecProfile> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-/// Holds state for RoutingManifestFile.
 struct RoutingManifestFile {
     #[serde(default)]
     default_profile: String,
@@ -421,7 +403,6 @@ struct RoutingManifestFile {
 }
 
 #[derive(Debug, Clone)]
-/// Holds state for RoutingManifest.
 struct RoutingManifest {
     default_profile: OcrRecProfile,
     language_profiles: HashMap<String, String>,
@@ -429,7 +410,6 @@ struct RoutingManifest {
     likely_scripts: HashMap<String, String>,
 }
 
-/// Runs the load routing manifest operation.
 fn load_routing_manifest() -> RoutingManifest {
     const BUILTIN: &str = include_str!("../../../config/ocr-routing.toml");
     let raw = std::env::var("DPN_OCR_ROUTING_MANIFEST")
@@ -452,14 +432,12 @@ fn load_routing_manifest() -> RoutingManifest {
     }
 }
 
-/// Runs the normalize manifest keys operation.
 fn normalize_manifest_keys(map: HashMap<String, String>) -> HashMap<String, String> {
     map.into_iter()
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect()
 }
 
-/// Runs the default routing manifest file operation.
 fn default_routing_manifest_file() -> RoutingManifestFile {
     RoutingManifestFile {
         default_profile: "latin".to_string(),
@@ -470,7 +448,6 @@ fn default_routing_manifest_file() -> RoutingManifestFile {
 }
 
 #[cfg(test)]
-/// Runs the rec profile for language with test config operation.
 pub(in crate::subtitle_ocr) fn rec_profile_for_language_with_test_config(
     language: &str,
     manifest_toml: Option<&str>,
@@ -490,7 +467,6 @@ pub(in crate::subtitle_ocr) fn rec_profile_for_language_with_test_config(
 }
 
 #[cfg(test)]
-/// Runs the parse routing manifest from raw operation.
 fn parse_routing_manifest_from_raw(raw: &str) -> RoutingManifest {
     let parsed =
         toml::from_str::<RoutingManifestFile>(raw).unwrap_or_else(|_| RoutingManifestFile {
