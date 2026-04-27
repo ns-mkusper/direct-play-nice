@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/direct_play_nice/badge.svg)](https://docs.rs/direct_play_nice)
 [![CI](https://github.com/ns-mkusper/direct-play-nice/actions/workflows/ci.yml/badge.svg)](https://github.com/ns-mkusper/direct-play-nice/actions/workflows/ci.yml)
 
-`direct-play-nice` is a CLI tool that converts video files to profiles more
+`direct-play-nice` is a cross-platform CLI tool that converts video files to profiles more
 likely to Direct Play across common streaming devices.
 
 ## What Is Direct Play?
