@@ -109,7 +109,6 @@ pub(crate) fn convert_video_file(
     let mut logged_audio_encoder = false;
     let mut desired_h264_profile: Option<H264Profile> = None;
     let mut desired_h264_level: Option<H264Level> = None;
-    let mut h264_verification: Option<H264Verification> = None;
     let mut last_video_encoder_name: Option<String> = None;
     let mut hardware_encoder_used = false;
     let mut hw_decode_blacklist: HashSet<ffi::AVCodecID> = HashSet::new();
@@ -692,19 +691,73 @@ pub(crate) fn convert_video_file(
         stream_contexts.push(stream_process_context);
     }
 
-    // Write the header of the output file container.
+    write_output_header(&mut output_format_context, video_streams_added)?;
+    process_packets(
+        &mut input_format_context,
+        &mut stream_contexts,
+        &mut output_format_context,
+        &mut progress_tracker,
+    )?;
+    flush_stream_contexts(&mut stream_contexts, &mut output_format_context)?;
+
+    if let Some(progress) = progress_tracker.as_mut() {
+        progress.finish();
+    }
+
+    log_output_stream_summaries(
+        &stream_contexts,
+        target_video_codec,
+        target_audio_codec,
+        requested_video_quality,
+        requested_audio_quality,
+    );
+
+    output_format_context.write_trailer()?;
+
+    let h264_verification = verify_h264_output(H264VerificationRequest {
+        target_video_codec,
+        skip_codec_check,
+        desired_h264_profile,
+        desired_h264_level,
+        output_file,
+        output_path,
+        last_video_encoder_name: last_video_encoder_name.as_deref(),
+        hardware_encoder_used,
+    })?;
+
+    if let Some(mut device) = shared_hw_device {
+        unsafe {
+            ffi::av_buffer_unref(&mut device);
+        }
+    }
+
+    Ok(ConversionOutcome { h264_verification })
+}
+
+/// Writes the container header and improves the error when multi-video output is unsupported.
+fn write_output_header(
+    output_format_context: &mut AVFormatContextOutput,
+    video_streams_added: usize,
+) -> Result<()> {
     if let Err(e) = output_format_context.write_header(&mut None) {
         if video_streams_added > 1 {
             bail!(
                 "Failed to write container header ({}). The output container may not support multiple video streams. Try --unsupported-video-policy=ignore to drop extra video streams.",
                 e
             );
-        } else {
-            return Err(anyhow!(e)).context("Error writing output file header");
         }
+        return Err(anyhow!(e)).context("Error writing output file header");
     }
+    Ok(())
+}
 
-    // Demux streams
+/// Reads, routes, and processes all demuxed packets through their stream contexts.
+fn process_packets(
+    input_format_context: &mut AVFormatContextInput,
+    stream_contexts: &mut [StreamProcessingContext],
+    output_format_context: &mut AVFormatContextOutput,
+    progress_tracker: &mut Option<ProgressTracker>,
+) -> Result<()> {
     loop {
         let mut packet = match input_format_context.read_packet()? {
             Some(x) => x,
@@ -725,32 +778,25 @@ pub(crate) fn convert_video_file(
         let input_stream: &rsmpeg::avformat::AVStreamRef<'_> =
             &input_format_context.streams()[packet.stream_index as usize];
         match stream_processing_context.media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
-                process_video_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                    progress_tracker.as_mut(),
-                )?;
-            }
-            ffi::AVMEDIA_TYPE_AUDIO => {
-                process_audio_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                )?;
-            }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
-                process_subtitle_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                )?;
-            }
-
+            ffi::AVMEDIA_TYPE_VIDEO => process_video_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+                progress_tracker.as_mut(),
+            )?,
+            ffi::AVMEDIA_TYPE_AUDIO => process_audio_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+            )?,
+            ffi::AVMEDIA_TYPE_SUBTITLE => process_subtitle_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+            )?,
             unsupported_type => {
                 debug!(
                     "Encountered unsupported stream type ({}). Not setting up Codec.",
@@ -759,9 +805,15 @@ pub(crate) fn convert_video_file(
             }
         }
     }
+    Ok(())
+}
 
-    // After processing all packets, flush each encoder
-    for context in &mut stream_contexts {
+/// Flushes all encoders and drains buffered audio data before container finalization.
+fn flush_stream_contexts(
+    stream_contexts: &mut [StreamProcessingContext],
+    output_format_context: &mut AVFormatContextOutput,
+) -> Result<()> {
+    for context in stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 encode_and_write_frame(
@@ -782,7 +834,7 @@ pub(crate) fn convert_video_file(
                     while fifo.size() > 0 {
                         load_encode_and_write(
                             fifo,
-                            &mut output_format_context,
+                            output_format_context,
                             &mut context.encode_context,
                             context.output_stream_index,
                             &mut context.pts,
@@ -807,12 +859,18 @@ pub(crate) fn convert_video_file(
             }
         }
     }
+    Ok(())
+}
 
-    if let Some(progress) = progress_tracker.as_mut() {
-        progress.finish();
-    }
-
-    for context in &stream_contexts {
+/// Logs final per-stream output characteristics after all data has been encoded.
+fn log_output_stream_summaries(
+    stream_contexts: &[StreamProcessingContext],
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    requested_video_quality: VideoQuality,
+    requested_audio_quality: AudioQuality,
+) {
+    for context in stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 let preset = if requested_video_quality == VideoQuality::MatchSource {
@@ -880,32 +938,40 @@ pub(crate) fn convert_video_file(
             _ => {}
         }
     }
+}
 
-    output_format_context.write_trailer()?;
+/// Runs post-write H.264 profile/level validation when enabled and applicable.
+struct H264VerificationRequest<'a> {
+    target_video_codec: ffi::AVCodecID,
+    skip_codec_check: bool,
+    desired_h264_profile: Option<H264Profile>,
+    desired_h264_level: Option<H264Level>,
+    output_file: &'a CStr,
+    output_path: &'a Path,
+    last_video_encoder_name: Option<&'a str>,
+    hardware_encoder_used: bool,
+}
 
-    if target_video_codec == ffi::AV_CODEC_ID_H264 {
-        if skip_codec_check {
-            info!("Skipping H.264 profile/level verification (--skip-codec-check).");
-        } else if let (Some(expected_profile), Some(expected_level)) =
-            (desired_h264_profile, desired_h264_level)
-        {
-            let verification = verify_output_h264_profile_level(
-                output_file,
-                output_path,
-                expected_profile,
-                expected_level,
-                last_video_encoder_name.as_deref(),
-                hardware_encoder_used,
-            )?;
-            h264_verification = Some(verification);
-        }
+fn verify_h264_output(request: H264VerificationRequest<'_>) -> Result<Option<H264Verification>> {
+    if request.target_video_codec != ffi::AV_CODEC_ID_H264 {
+        return Ok(None);
     }
-
-    if let Some(mut device) = shared_hw_device {
-        unsafe {
-            ffi::av_buffer_unref(&mut device);
-        }
+    if request.skip_codec_check {
+        info!("Skipping H.264 profile/level verification (--skip-codec-check).");
+        return Ok(None);
     }
-
-    Ok(ConversionOutcome { h264_verification })
+    if let (Some(expected_profile), Some(expected_level)) =
+        (request.desired_h264_profile, request.desired_h264_level)
+    {
+        let verification = verify_output_h264_profile_level(
+            request.output_file,
+            request.output_path,
+            expected_profile,
+            expected_level,
+            request.last_video_encoder_name,
+            request.hardware_encoder_used,
+        )?;
+        return Ok(Some(verification));
+    }
+    Ok(None)
 }

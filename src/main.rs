@@ -6,6 +6,7 @@ use std::env;
 
 mod cli;
 mod config;
+mod config_merge;
 mod devices;
 mod ffmpeg_utils;
 mod gpu;

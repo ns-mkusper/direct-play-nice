@@ -7,6 +7,7 @@ pub mod helpers;
 pub mod pipeline;
 pub mod quality;
 
+#[allow(unused_imports)]
 pub(crate) mod prelude {
     // Centralized imports for transcoder submodules. This keeps leaf modules
     // focused on pipeline logic instead of repeating long FFmpeg type imports.
@@ -39,6 +40,7 @@ pub(crate) mod prelude {
     };
 
     pub(crate) use crate::config;
+    pub(crate) use crate::config_merge::apply_config_overrides;
     pub(crate) use crate::devices;
     pub(crate) use crate::devices::{
         ContainerFormat, H264Level, H264Profile, Resolution, StreamingDevice,

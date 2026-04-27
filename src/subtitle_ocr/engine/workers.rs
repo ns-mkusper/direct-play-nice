@@ -16,8 +16,8 @@ use std::thread;
 use super::detect_nvidia_gpu_indexes;
 use super::{
     create_ocr_engine, force_cpu_execution_providers, ocr_single_stream,
-    set_thread_ocr_cuda_device, write_ass, write_srt, OcrEngine, OcrFormat, OcrSubtitleTrack,
-    OcrTask, OcrTaskOutput, ORT_ENV_GPU_AVAILABLE,
+    set_thread_ocr_cuda_device, write_ass, write_srt, OcrEngine, OcrFormat, OcrStreamRequest,
+    OcrSubtitleTrack, OcrTask, OcrTaskOutput, ORT_ENV_GPU_AVAILABLE,
 };
 
 /// Applies `DPN_OCR_CUDA_DEVICES` onto `CUDA_VISIBLE_DEVICES` before OCR initialization.
@@ -307,16 +307,16 @@ pub(in crate::subtitle_ocr) fn run_ocr_tasks_parallel(
                 );
             }
             for task in worker_tasks {
-                let cues = ocr_single_stream(
-                    &input_path,
-                    task.stream_index,
-                    &task.language,
-                    &work_dir,
+                let request = OcrStreamRequest {
+                    input_path: &input_path,
+                    stream_index: task.stream_index,
+                    language: &task.language,
+                    work_dir: &work_dir,
                     ocr_format,
                     video_dimensions,
-                    resolved_engine,
-                    &mut *engine,
-                )?;
+                    ocr_engine: resolved_engine,
+                };
+                let cues = ocr_single_stream(&request, &mut *engine)?;
 
                 local_outputs.push(OcrTaskOutput {
                     order: task.order,
