@@ -1,4 +1,4 @@
-//! Shared device profile types and constraint aggregation helpers.
+//! Shared device-profile model and aggregation utilities for cross-device compatibility constraints.
 
 use std::{cmp::Ordering, convert::TryFrom};
 

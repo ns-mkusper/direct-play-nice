@@ -1,4 +1,4 @@
-//! FFmpeg log bridging and diagnostics formatting helpers.
+//! FFmpeg diagnostics helpers that bridge native logging and format actionable runtime diagnostics.
 
 use crate::transcoder::prelude::*;
 

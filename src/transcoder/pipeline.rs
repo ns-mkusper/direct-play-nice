@@ -1,4 +1,4 @@
-//! Pipeline module composition and re-exports for stream processing stages.
+//! Pipeline module composition layer that groups stream-stage modules and re-exports their shared interfaces.
 
 #[path = "pipeline_assessment.rs"]
 pub mod pipeline_assessment;

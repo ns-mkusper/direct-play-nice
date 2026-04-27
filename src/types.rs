@@ -1,4 +1,4 @@
-//! Shared enums and argument/config merge helpers used across the binary.
+//! Shared policy enums and merge helpers used to reconcile CLI arguments with configuration defaults.
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, ValueEnum};

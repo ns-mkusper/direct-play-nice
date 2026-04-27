@@ -1,4 +1,4 @@
-//! Per-stream decode/encode processing for video, audio, and subtitles.
+//! Stream-processing routines that execute per-stream decode/encode flows for video, audio, and subtitle data.
 
 use crate::transcoder::prelude::*;
 

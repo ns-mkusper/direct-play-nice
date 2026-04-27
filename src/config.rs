@@ -1,4 +1,4 @@
-//! Configuration loading, source resolution, and TOML deserialization.
+//! Configuration subsystem for resolving config sources and deserializing TOML into runtime settings.
 
 use crate::gpu::HwAccel;
 use crate::{

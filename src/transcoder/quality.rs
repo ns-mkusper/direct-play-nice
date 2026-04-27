@@ -1,4 +1,4 @@
-//! Quality presets, bitrate caps, and user-facing quality descriptions.
+//! Quality-policy definitions for user presets, bitrate caps, and derived runtime quality limits.
 
 use crate::transcoder::prelude::*;
 

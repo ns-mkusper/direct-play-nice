@@ -1,4 +1,4 @@
-//! Codec selection and encoder/decoder configuration helpers.
+//! Codec-planning utilities for selecting compatible codecs and configuring encoder/decoder contexts.
 
 use crate::transcoder::prelude::*;
 

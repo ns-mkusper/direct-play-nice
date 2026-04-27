@@ -1,4 +1,4 @@
-//! CLI argument types and shared FFmpeg stream-processing helpers.
+//! Shared runtime types and helpers used across CLI parsing and FFmpeg stream-processing paths.
 
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};

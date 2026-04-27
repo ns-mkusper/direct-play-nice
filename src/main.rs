@@ -1,4 +1,4 @@
-//! Program entrypoint that initializes logging and dispatches command execution.
+//! Binary entrypoint for process setup and dispatch into the conversion/probe command flow.
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};

@@ -1,4 +1,4 @@
-//! Plex refresh integration and API request orchestration.
+//! Plex integration utilities for triggering post-conversion library refresh requests.
 
 use crate::config::PlexSettings;
 use anyhow::{anyhow, Result};

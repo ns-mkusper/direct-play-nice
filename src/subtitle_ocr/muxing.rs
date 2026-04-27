@@ -1,4 +1,4 @@
-//! Subtitle remux helpers for OCR outputs.
+//! Subtitle remuxing utilities that merge OCR-generated text tracks back into output containers.
 //!
 //! Converts generated text subtitle files into container subtitle streams and
 //! preserves language/default metadata in the output container.

@@ -1,4 +1,4 @@
-//! H.264 profile and level utilities plus compatibility checks.
+//! H.264 constraint utilities for profile/level handling, validation, and compatibility enforcement.
 
 use crate::transcoder::prelude::*;
 

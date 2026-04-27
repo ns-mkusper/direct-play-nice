@@ -1,4 +1,4 @@
-//! Progress tracking and terminal progress-bar rendering utilities.
+//! Progress-reporting utilities for long-running operations, including elapsed-time tracking and terminal bar updates.
 
 use log::info;
 use rsmpeg::avutil::ra;

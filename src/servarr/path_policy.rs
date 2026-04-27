@@ -1,4 +1,4 @@
-//! Output-path policy rules for extension and suffix handling.
+//! Output path-policy rules that apply extension and suffix transformations for replacement outputs.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;

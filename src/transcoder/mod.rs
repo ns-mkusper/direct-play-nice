@@ -1,4 +1,4 @@
-//! Transcoder module surface, re-exports, and shared internal prelude.
+//! Transcoder module root defining subsystem boundaries, shared prelude imports, and public re-exports.
 
 pub mod app;
 pub mod ffmpeg_diagnostics;

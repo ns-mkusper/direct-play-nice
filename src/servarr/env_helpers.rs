@@ -1,4 +1,4 @@
-//! Case-insensitive environment variable lookup and parsing helpers.
+//! Environment variable utilities focused on case-insensitive lookup and value parsing for integrations.
 
 use std::env;
 

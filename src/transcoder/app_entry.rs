@@ -1,4 +1,4 @@
-//! Top-level conversion orchestration from parsed args to execution.
+//! High-level conversion orchestration from parsed arguments through planning, probing, and execution.
 
 use crate::transcoder::prelude::*;
 

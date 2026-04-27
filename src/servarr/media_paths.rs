@@ -1,4 +1,4 @@
-//! Sonarr/Radarr media-path parsing and normalization.
+//! Media-path normalization helpers for Sonarr/Radarr event payloads and multi-path parsing.
 
 use anyhow::{anyhow, Result};
 use log::debug;

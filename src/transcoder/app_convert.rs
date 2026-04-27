@@ -1,4 +1,4 @@
-//! Core transcode loop for decode, transform, encode, and mux operations.
+//! Core transcoding execution path that coordinates decode, transform, encode, and mux stages.
 
 use crate::transcoder::prelude::*;
 

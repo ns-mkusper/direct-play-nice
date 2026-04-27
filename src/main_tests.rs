@@ -1,4 +1,4 @@
-//! Integration-style unit tests for CLI wiring and conversion helpers.
+//! Test cases that validate CLI wiring and conversion helper behavior at module-integration scope.
 
 #[cfg(test)]
 mod rate_limit_tests {

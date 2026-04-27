@@ -1,4 +1,4 @@
-//! Tests for OCR engine selection, parsing, and subtitle text processing.
+//! OCR subsystem tests covering engine selection, parsing behavior, and subtitle text-processing outcomes.
 
 use crate::subtitle_ocr::*;
 use mockito::Server;

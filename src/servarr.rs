@@ -1,4 +1,4 @@
-//! Sonarr/Radarr integration planning, path preparation, and file replacement flow.
+//! Sonarr/Radarr integration workflow for event handling, path planning, and atomic media replacement.
 
 use anyhow::{bail, Context, Result};
 use log::{info, warn};

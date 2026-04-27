@@ -1,4 +1,4 @@
-//! Tests for Sonarr/Radarr environment and path-resolution behavior.
+//! Tests that verify Sonarr/Radarr environment parsing and output-path resolution behavior.
 
 #[cfg(test)]
 mod tests {

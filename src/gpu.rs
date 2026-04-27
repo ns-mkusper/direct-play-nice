@@ -1,4 +1,4 @@
-//! FFmpeg hardware-device and codec probing helpers.
+//! Hardware capability helpers for FFmpeg device probing, encoder discovery, and acceleration checks.
 
 use clap::ValueEnum;
 use rsmpeg::avcodec::{AVCodec, AVCodecRef};

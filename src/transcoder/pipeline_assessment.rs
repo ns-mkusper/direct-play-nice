@@ -1,4 +1,4 @@
-//! Direct-play compatibility assessment and conversion outcome tracking.
+//! Direct-play evaluation helpers that explain compatibility decisions and track post-conversion verification outcomes.
 
 use crate::transcoder::prelude::*;
 
