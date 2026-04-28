@@ -6,7 +6,9 @@ use std::ffi::CStr;
 use std::path::Path;
 
 use super::language::{detect_system_ocr_language, list_tesseract_languages, resolve_ocr_language};
-use super::ocr_pipeline::{discover_candidates, ocr_single_stream, probe_video_dimensions};
+use super::ocr_pipeline::{
+    discover_candidates, ocr_single_stream, probe_video_dimensions, OcrStreamRequest,
+};
 use super::text_render::{write_ass, write_srt};
 use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
 
@@ -98,16 +100,16 @@ pub fn convert_bitmap_subtitles(
         let mut outputs = Vec::with_capacity(tasks.len());
         let total_tasks = tasks.len().max(1);
         for (idx, task) in tasks.into_iter().enumerate() {
-            let cues = ocr_single_stream(
-                &input_path,
-                task.stream_index,
-                &task.language,
+            let request = OcrStreamRequest {
+                input_path: &input_path,
+                stream_index: task.stream_index,
+                language: &task.language,
                 work_dir,
                 ocr_format,
                 video_dimensions,
-                resolved_engine,
-                &mut *seed_engine,
-            )?;
+                ocr_engine: resolved_engine,
+            };
+            let cues = ocr_single_stream(&request, &mut *seed_engine)?;
             outputs.push(OcrTaskOutput {
                 order: task.order,
                 stream_index: task.stream_index,

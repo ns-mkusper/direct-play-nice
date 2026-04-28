@@ -22,6 +22,7 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) requested_video_quality: VideoQuality,
     pub(crate) requested_audio_quality: AudioQuality,
     pub(crate) skip_codec_check: bool,
+    pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
     pub(crate) hw_accel: HwAccel,
 }
 
@@ -50,6 +51,7 @@ pub(crate) fn convert_video_file(
         requested_video_quality,
         requested_audio_quality,
         skip_codec_check,
+        subtitle_failure_policy,
         hw_accel,
     } = params;
 
@@ -66,18 +68,11 @@ pub(crate) fn convert_video_file(
 
     let mut output_format_context = AVFormatContextOutput::create(output_file)?;
 
-    let output_path_str = output_file
-        .to_str()
-        .map_err(|_| anyhow!("Output path is not valid UTF-8"))?;
-    let output_path = Path::new(output_path_str);
+    let output_path_buf = cstr_to_path_buf(output_file);
+    let output_path = output_path_buf.as_path();
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
-    let mut container_duration_us = unsafe { (*input_format_context.as_mut_ptr()).duration };
-    if container_duration_us <= 0 {
-        // Keep progress reporting alive for containers with missing/invalid duration.
-        container_duration_us = 1;
-    }
-    let mut progress_tracker = Some(ProgressTracker::new(container_duration_us));
+    let mut progress_tracker = create_progress_tracker(&mut input_format_context);
 
     info!(
         "Target codecs resolved: video={}, audio={}",
@@ -109,7 +104,6 @@ pub(crate) fn convert_video_file(
     let mut logged_audio_encoder = false;
     let mut desired_h264_profile: Option<H264Profile> = None;
     let mut desired_h264_level: Option<H264Level> = None;
-    let mut h264_verification: Option<H264Verification> = None;
     let mut last_video_encoder_name: Option<String> = None;
     let mut hardware_encoder_used = false;
     let mut hw_decode_blacklist: HashSet<ffi::AVCodecID> = HashSet::new();
@@ -125,46 +119,13 @@ pub(crate) fn convert_video_file(
 
     for stream in input_format_context.streams() {
         let input_codec_type = stream.codecpar().codec_type;
-        if input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
-            warn!(
-                "Skipping attachment stream {} ({}).",
-                stream.index,
-                unsafe {
-                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
-                        .to_string_lossy()
-                }
-            );
-            continue;
-        }
-
-        if input_codec_type == ffi::AVMEDIA_TYPE_DATA {
-            warn!("Skipping data stream {} ({}).", stream.index, unsafe {
-                CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id)).to_string_lossy()
-            });
-            continue;
-        }
-
-        // Skip attached picture (cover art) streams; treat them like metadata.
-        let disposition_flags = unsafe { (*stream.as_ptr()).disposition };
-        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
-            info!(
-                "Skipping attached-picture stream {} ({}).",
-                stream.index,
-                unsafe {
-                    CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
-                        .to_string_lossy()
-                }
-            );
+        if should_skip_auxiliary_stream(stream, input_codec_type) {
             continue;
         }
 
         let input_stream_codecpar = stream.codecpar();
         let input_codec_id = input_stream_codecpar.codec_id;
-        let codec_name = unsafe {
-            CStr::from_ptr(ffi::avcodec_get_name(input_codec_id))
-                .to_string_lossy()
-                .into_owned()
-        };
+        let input_codec_name = codec_name(input_codec_id);
         // Disable hardware decode per codec after the first hard failure to
         // avoid repeated slow failures on every stream with that codec.
         let prefer_hw_decode = allow_cuda_hw_decode
@@ -176,7 +137,7 @@ pub(crate) fn convert_video_file(
             None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
                 warn!(
                     "Skipping subtitle stream {} (codec {}): decoder not available.",
-                    stream.index, codec_name
+                    stream.index, input_codec_name
                 );
                 continue;
             }
@@ -184,22 +145,16 @@ pub(crate) fn convert_video_file(
                 bail!(
                     "Decoder not found for stream {} (codec {}).",
                     stream.index,
-                    codec_name
+                    input_codec_name
                 );
             }
         };
         let mut decoder_name_owned = decoder.name().to_string_lossy().into_owned();
         debug!(
             "Selected decoder '{}' for stream {} (codec {})",
-            decoder_name_owned, stream.index, codec_name
+            decoder_name_owned, stream.index, input_codec_name
         );
-        let mut decode_context = AVCodecContext::new(&decoder);
-        decode_context.apply_codecpar(&input_stream_codecpar)?;
-        enable_strict_decode_failure(&mut decode_context);
-        decode_context.set_time_base(stream.time_base);
-        if let Some(framerate) = stream.guess_framerate() {
-            decode_context.set_framerate(framerate);
-        }
+        let mut decode_context = new_decode_context(&decoder, stream)?;
 
         let mut hw_decoder_active = false;
         let mut need_software_retry = false;
@@ -223,12 +178,7 @@ pub(crate) fn convert_video_file(
                             stream.index,
                             err
                         );
-                        unsafe {
-                            let ctx_ptr = decode_context.as_mut_ptr();
-                            (*ctx_ptr).hw_device_ctx = ptr::null_mut();
-                            (*ctx_ptr).hw_frames_ctx = ptr::null_mut();
-                            (*ctx_ptr).get_format = None;
-                        }
+                        clear_decoder_hardware_state(&mut decode_context);
                         if hw_decode_blacklist.insert(input_codec_id) {
                             debug!(
                                 "Disabling CUDA hardware decode for codec {} after init failure",
@@ -249,13 +199,7 @@ pub(crate) fn convert_video_file(
                     "Retrying stream {} with software decoder '{}'",
                     stream.index, decoder_name_owned
                 );
-                decode_context = AVCodecContext::new(&decoder);
-                decode_context.apply_codecpar(&input_stream_codecpar)?;
-                enable_strict_decode_failure(&mut decode_context);
-                decode_context.set_time_base(stream.time_base);
-                if let Some(framerate) = stream.guess_framerate() {
-                    decode_context.set_framerate(framerate);
-                }
+                decode_context = new_decode_context(&decoder, stream)?;
             } else {
                 warn!(
                     "Hardware decoder '{}' unavailable and no software fallback found for stream {}",
@@ -282,13 +226,7 @@ pub(crate) fn convert_video_file(
                         "Retrying stream {} with software decoder '{}'",
                         stream.index, decoder_name_owned
                     );
-                    decode_context = AVCodecContext::new(&decoder);
-                    decode_context.apply_codecpar(&input_stream_codecpar)?;
-                    enable_strict_decode_failure(&mut decode_context);
-                    decode_context.set_time_base(stream.time_base);
-                    if let Some(framerate) = stream.guess_framerate() {
-                        decode_context.set_framerate(framerate);
-                    }
+                    decode_context = new_decode_context(&decoder, stream)?;
                     fallback_error = decode_context.open(None).err();
                     hw_decoder_active = false;
                     if hw_decode_blacklist.insert(input_codec_id) {
@@ -312,14 +250,14 @@ pub(crate) fn convert_video_file(
             if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
                 warn!(
                     "Skipping subtitle stream {} (codec {}): failed to open decoder ({}).",
-                    stream.index, codec_name, err
+                    stream.index, input_codec_name, err
                 );
                 continue;
             } else {
                 return Err(anyhow!(
                     "Error opening decoder for stream {} (codec {}): {}",
                     stream.index,
-                    codec_name,
+                    input_codec_name,
                     err
                 ));
             }
@@ -373,10 +311,7 @@ pub(crate) fn convert_video_file(
                 info!(
                     "Deferring bitmap subtitle stream {} (codec {}) to OCR side pass.",
                     stream.index,
-                    unsafe {
-                        CStr::from_ptr(ffi::avcodec_get_name(decode_context.codec_id))
-                            .to_string_lossy()
-                    }
+                    codec_name(decode_context.codec_id)
                 );
                 continue;
             }
@@ -514,11 +449,7 @@ pub(crate) fn convert_video_file(
                     output_stream.index,
                     src_par.width,
                     src_par.height,
-                    unsafe {
-                        CStr::from_ptr(ffi::avcodec_get_name(src_par.codec_id))
-                            .to_str()
-                            .unwrap_or("unknown")
-                    },
+                    codec_name(src_par.codec_id),
                     encode_context.width,
                     encode_context.height,
                     describe_codec(target_video_codec),
@@ -577,11 +508,7 @@ pub(crate) fn convert_video_file(
                     output_stream.index,
                     src_audio_channels,
                     src_audio.sample_rate,
-                    unsafe {
-                        CStr::from_ptr(ffi::avcodec_get_name(src_audio.codec_id))
-                            .to_str()
-                            .unwrap_or("unknown")
-                    },
+                    codec_name(src_audio.codec_id),
                     encode_context.ch_layout.nb_channels,
                     encode_context.sample_rate,
                     describe_codec(target_audio_codec),
@@ -598,9 +525,20 @@ pub(crate) fn convert_video_file(
                     "Audio stream {} target bitrate: {} bps",
                     output_stream.index, encode_context.bit_rate
                 );
-                // Initialize the resampler to be able to convert audio sample formats.
-                resample_context =
-                    init_audio_resampler(&mut decode_context, &mut encode_context).ok();
+                // Always route decoded audio through swresample. The packet
+                // loop writes the converted `AVSamples` buffer into the FIFO,
+                // so continuing without a resampler would feed the encoder
+                // uninitialized samples rather than valid decoded audio.
+                resample_context = Some(
+                    init_audio_resampler(&mut decode_context, &mut encode_context).with_context(
+                        || {
+                            format!(
+                                "Failed to initialize audio resampler for input stream {}",
+                                stream.index
+                            )
+                        },
+                    )?,
+                );
 
                 // Initialize the FIFO buffer to store audio samples to be encoded.
                 frame_buffer = Some(AVAudioFifo::new(
@@ -624,11 +562,7 @@ pub(crate) fn convert_video_file(
                 info!(
                     "Subtitle stream {}: {} -> {}",
                     output_stream.index,
-                    unsafe {
-                        CStr::from_ptr(ffi::avcodec_get_name(stream.codecpar().codec_id))
-                            .to_str()
-                            .unwrap_or("unknown")
-                    },
+                    codec_name(stream.codecpar().codec_id),
                     describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
                 );
             }
@@ -675,16 +609,17 @@ pub(crate) fn convert_video_file(
         output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
-            input_stream_index: stream.index,
-            output_stream_index: output_stream.index,
             decode_context,
             encode_context,
+            input_stream_index: InputStreamId::new(stream.index),
+            output_stream_index: OutputStreamId::new(output_stream.index),
             media_type,
             frame_buffer,
             resample_context,
             pts: AtomicI64::new(0),
             last_written_dts: None,
             skip_stream: false,
+            subtitle_failure_policy,
             hw_device_ctx: hw_device_ctx_ptr,
             decoder_name: decoder.name().to_string_lossy().into_owned(),
         };
@@ -692,19 +627,71 @@ pub(crate) fn convert_video_file(
         stream_contexts.push(stream_process_context);
     }
 
-    // Write the header of the output file container.
+    write_output_header(&mut output_format_context, video_streams_added)?;
+    process_packets(
+        &mut input_format_context,
+        &mut stream_contexts,
+        &mut output_format_context,
+        &mut progress_tracker,
+    )?;
+    flush_stream_contexts(&mut stream_contexts, &mut output_format_context)?;
+
+    if let Some(progress) = progress_tracker.as_mut() {
+        progress.finish();
+    }
+
+    log_output_stream_summaries(
+        &stream_contexts,
+        target_video_codec,
+        target_audio_codec,
+        requested_video_quality,
+        requested_audio_quality,
+    );
+
+    output_format_context.write_trailer()?;
+
+    let h264_verification = verify_h264_output(H264VerificationRequest {
+        target_video_codec,
+        skip_codec_check,
+        desired_h264_profile,
+        desired_h264_level,
+        output_file,
+        output_path,
+        last_video_encoder_name: last_video_encoder_name.as_deref(),
+        hardware_encoder_used,
+    })?;
+
+    if let Some(device) = shared_hw_device {
+        unref_buffer_ref(device);
+    }
+
+    Ok(ConversionOutcome { h264_verification })
+}
+
+/// Writes the container header and improves the error when multi-video output is unsupported.
+fn write_output_header(
+    output_format_context: &mut AVFormatContextOutput,
+    video_streams_added: usize,
+) -> Result<()> {
     if let Err(e) = output_format_context.write_header(&mut None) {
         if video_streams_added > 1 {
             bail!(
                 "Failed to write container header ({}). The output container may not support multiple video streams. Try --unsupported-video-policy=ignore to drop extra video streams.",
                 e
             );
-        } else {
-            return Err(anyhow!(e)).context("Error writing output file header");
         }
+        return Err(anyhow!(e)).context("Error writing output file header");
     }
+    Ok(())
+}
 
-    // Demux streams
+/// Reads, routes, and processes all demuxed packets through their stream contexts.
+fn process_packets(
+    input_format_context: &mut AVFormatContextInput,
+    stream_contexts: &mut [StreamProcessingContext],
+    output_format_context: &mut AVFormatContextOutput,
+    progress_tracker: &mut Option<ProgressTracker>,
+) -> Result<()> {
     loop {
         let mut packet = match input_format_context.read_packet()? {
             Some(x) => x,
@@ -713,7 +700,7 @@ pub(crate) fn convert_video_file(
 
         let Some(stream_processing_context) = stream_contexts
             .iter_mut()
-            .find(|context| context.input_stream_index == packet.stream_index)
+            .find(|context| context.input_stream_index.as_i32() == packet.stream_index)
         else {
             debug!(
                 "Skipping packet for stream {} with no processing context (likely attachment).",
@@ -725,32 +712,25 @@ pub(crate) fn convert_video_file(
         let input_stream: &rsmpeg::avformat::AVStreamRef<'_> =
             &input_format_context.streams()[packet.stream_index as usize];
         match stream_processing_context.media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
-                process_video_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                    progress_tracker.as_mut(),
-                )?;
-            }
-            ffi::AVMEDIA_TYPE_AUDIO => {
-                process_audio_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                )?;
-            }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
-                process_subtitle_stream(
-                    stream_processing_context,
-                    input_stream,
-                    &mut output_format_context,
-                    &mut packet,
-                )?;
-            }
-
+            ffi::AVMEDIA_TYPE_VIDEO => process_video_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+                progress_tracker.as_mut(),
+            )?,
+            ffi::AVMEDIA_TYPE_AUDIO => process_audio_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+            )?,
+            ffi::AVMEDIA_TYPE_SUBTITLE => process_subtitle_stream(
+                stream_processing_context,
+                input_stream,
+                output_format_context,
+                &mut packet,
+            )?,
             unsupported_type => {
                 debug!(
                     "Encountered unsupported stream type ({}). Not setting up Codec.",
@@ -759,22 +739,26 @@ pub(crate) fn convert_video_file(
             }
         }
     }
+    Ok(())
+}
 
-    // After processing all packets, flush each encoder
-    for context in &mut stream_contexts {
+/// Flushes all encoders and drains buffered audio data before container finalization.
+fn flush_stream_contexts(
+    stream_contexts: &mut [StreamProcessingContext],
+    output_format_context: &mut AVFormatContextOutput,
+) -> Result<()> {
+    for context in stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 encode_and_write_frame(
                     &mut context.encode_context,
-                    &mut output_format_context,
-                    context.output_stream_index as usize,
+                    output_format_context,
+                    context.output_stream_index.as_usize(),
                     None,
                 )
                 .context("Failed to flush video encoder.")?;
-                if let Some(mut dev) = context.hw_device_ctx {
-                    unsafe {
-                        ffi::av_buffer_unref(&mut dev);
-                    }
+                if let Some(dev) = context.hw_device_ctx {
+                    unref_buffer_ref(dev);
                 }
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
@@ -782,9 +766,9 @@ pub(crate) fn convert_video_file(
                     while fifo.size() > 0 {
                         load_encode_and_write(
                             fifo,
-                            &mut output_format_context,
+                            output_format_context,
                             &mut context.encode_context,
-                            context.output_stream_index,
+                            context.output_stream_index.as_i32(),
                             &mut context.pts,
                         )
                         .context("Failed to drain buffered audio samples.")?;
@@ -792,8 +776,8 @@ pub(crate) fn convert_video_file(
                 }
                 encode_and_write_frame(
                     &mut context.encode_context,
-                    &mut output_format_context,
-                    context.output_stream_index as usize,
+                    output_format_context,
+                    context.output_stream_index.as_usize(),
                     None,
                 )
                 .context("Failed to flush audio encoder.")?;
@@ -807,12 +791,18 @@ pub(crate) fn convert_video_file(
             }
         }
     }
+    Ok(())
+}
 
-    if let Some(progress) = progress_tracker.as_mut() {
-        progress.finish();
-    }
-
-    for context in &stream_contexts {
+/// Logs final per-stream output characteristics after all data has been encoded.
+fn log_output_stream_summaries(
+    stream_contexts: &[StreamProcessingContext],
+    target_video_codec: ffi::AVCodecID,
+    target_audio_codec: ffi::AVCodecID,
+    requested_video_quality: VideoQuality,
+    requested_audio_quality: AudioQuality,
+) {
+    for context in stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
                 let preset = if requested_video_quality == VideoQuality::MatchSource {
@@ -880,32 +870,40 @@ pub(crate) fn convert_video_file(
             _ => {}
         }
     }
+}
 
-    output_format_context.write_trailer()?;
+/// Runs post-write H.264 profile/level validation when enabled and applicable.
+struct H264VerificationRequest<'a> {
+    target_video_codec: ffi::AVCodecID,
+    skip_codec_check: bool,
+    desired_h264_profile: Option<H264Profile>,
+    desired_h264_level: Option<H264Level>,
+    output_file: &'a CStr,
+    output_path: &'a Path,
+    last_video_encoder_name: Option<&'a str>,
+    hardware_encoder_used: bool,
+}
 
-    if target_video_codec == ffi::AV_CODEC_ID_H264 {
-        if skip_codec_check {
-            info!("Skipping H.264 profile/level verification (--skip-codec-check).");
-        } else if let (Some(expected_profile), Some(expected_level)) =
-            (desired_h264_profile, desired_h264_level)
-        {
-            let verification = verify_output_h264_profile_level(
-                output_file,
-                output_path,
-                expected_profile,
-                expected_level,
-                last_video_encoder_name.as_deref(),
-                hardware_encoder_used,
-            )?;
-            h264_verification = Some(verification);
-        }
+fn verify_h264_output(request: H264VerificationRequest<'_>) -> Result<Option<H264Verification>> {
+    if request.target_video_codec != ffi::AV_CODEC_ID_H264 {
+        return Ok(None);
     }
-
-    if let Some(mut device) = shared_hw_device {
-        unsafe {
-            ffi::av_buffer_unref(&mut device);
-        }
+    if request.skip_codec_check {
+        info!("Skipping H.264 profile/level verification (--skip-codec-check).");
+        return Ok(None);
     }
-
-    Ok(ConversionOutcome { h264_verification })
+    if let (Some(expected_profile), Some(expected_level)) =
+        (request.desired_h264_profile, request.desired_h264_level)
+    {
+        let verification = verify_output_h264_profile_level(
+            request.output_file,
+            request.output_path,
+            expected_profile,
+            expected_level,
+            request.last_video_encoder_name,
+            request.hardware_encoder_used,
+        )?;
+        return Ok(Some(verification));
+    }
+    Ok(None)
 }

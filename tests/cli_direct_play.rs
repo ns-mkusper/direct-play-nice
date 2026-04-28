@@ -27,6 +27,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg("--validate-output")
         .arg(&input)
         .arg(&output);
     common::assert_cli_success(cmd);

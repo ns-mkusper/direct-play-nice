@@ -116,3 +116,8 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
 ]
+
+[patch.crates-io]
+# Keep the Rust-side ort 2.0.0-rc.10 API required by paddle-ocr-rs while
+# allowing deployments to load the older ONNX Runtime 1.16 shared library.
+ort = { git = "https://github.com/ns-mkusper/ort.git", rev = "16452198ebbbe0e7bd7a4bb2f6d488b4623f20b1" }

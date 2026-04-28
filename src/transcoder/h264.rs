@@ -1,6 +1,7 @@
 //! H.264 constraint utilities for profile/level handling, validation, and compatibility enforcement.
 
 use crate::transcoder::prelude::*;
+use std::ffi::c_void;
 
 pub(crate) struct H264RateLimit {
     pub(crate) max_bitrate_bits: i64,

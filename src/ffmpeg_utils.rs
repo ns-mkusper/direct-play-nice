@@ -8,8 +8,8 @@ use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 use rsmpeg::swresample::SwrContext;
-use std::ffi::CString;
-use std::path::PathBuf;
+use std::ffi::{CStr, CString};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicI64;
 
 use crate::devices::{self, DeviceFamily};
@@ -17,7 +17,7 @@ use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
     OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, StreamsFilter, SubMode,
-    UnsupportedVideoPolicy,
+    SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -189,6 +189,15 @@ pub(crate) struct Args {
     )]
     pub(crate) sub_mode: SubMode,
 
+    /// Policy for subtitle decode/encode failures after a stream has been selected.
+    #[arg(
+        long = "subtitle-failure-policy",
+        value_enum,
+        default_value_t = SubtitleFailurePolicy::SkipStream,
+        id = "subtitle_failure_policy"
+    )]
+    pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
+
     /// Default Tesseract language code used when subtitle stream language is missing (e.g. eng, spa, jpn).
     #[arg(long = "ocr-default-language", id = "ocr_default_language")]
     pub(crate) ocr_default_language: Option<String>,
@@ -234,6 +243,14 @@ pub(crate) struct Args {
         id = "skip_codec_check"
     )]
     pub(crate) skip_codec_check: bool,
+
+    /// Reopen the produced media file and verify expected stream codecs before reporting success.
+    #[arg(
+        long = "validate-output",
+        default_value_t = false,
+        id = "validate_output"
+    )]
+    pub(crate) validate_output: bool,
 
     /// Delete the source file after a successful conversion for direct CLI runs.
     /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.
@@ -363,29 +380,101 @@ impl Args {
     }
 }
 
+/// Converts a Rust path to the C string required by FFmpeg APIs.
+///
+/// The CLI stores paths at the boundary, but FFmpeg accepts NUL-terminated byte
+/// strings. Centralizing this conversion keeps interior-NUL validation and
+/// diagnostic wording consistent.
+pub(crate) fn path_to_cstring(path: &Path) -> Result<CString> {
+    CString::new(path.to_string_lossy().into_owned())
+        .with_context(|| format!("Path contains an interior NUL byte: '{}'", path.display()))
+}
+
+/// Converts an FFmpeg-facing C string back into a Rust path for filesystem work
+/// such as cleanup, deletion, and extension checks.
+pub(crate) fn cstr_to_path_buf(path: &CStr) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().into_owned())
+}
+
 #[allow(dead_code)]
 pub(crate) enum StreamExtras {
     Some((SwrContext, AVAudioFifo)),
     None,
 }
 
+/// Stream index from the demuxed input container.
+///
+/// This type intentionally does not auto-convert to an output stream index;
+/// input indexes are only valid when reading packets or looking up input
+/// streams.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputStreamId(i32);
+
+impl InputStreamId {
+    pub(crate) fn new(index: i32) -> Self {
+        Self(index)
+    }
+
+    pub(crate) fn as_i32(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for InputStreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Stream index assigned by the output muxer.
+///
+/// Encoded packets and output stream metadata must use this index, never the
+/// demuxed input index.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutputStreamId(i32);
+
+impl OutputStreamId {
+    pub(crate) fn new(index: i32) -> Self {
+        Self(index)
+    }
+
+    pub(crate) fn as_i32(self) -> i32 {
+        self.0
+    }
+
+    pub(crate) fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl std::fmt::Display for OutputStreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Per-stream state carried across decode/encode/mux iterations.
 ///
-/// `input_stream_index` and `output_stream_index` are tracked separately because
-/// ignored input streams can shift output stream numbering. `skip_stream` lets
-/// setup code keep stream ordering aligned with FFmpeg stream indexes while
-/// disabling actual processing for selected streams.
+/// FFmpeg packets arrive with input stream indexes, while encoded packets must
+/// be written with output stream indexes. Those spaces diverge whenever the
+/// pipeline skips attachments, data streams, attached pictures, or unsupported
+/// streams, so both indexes are stored explicitly and must not be conflated.
+///
+/// `skip_stream` lets runtime code disable a stream after setup, for example
+/// after repeated subtitle timestamp failures, without changing the established
+/// input-to-output mapping.
 pub(crate) struct StreamProcessingContext {
-    pub(crate) input_stream_index: i32,
-    pub(crate) output_stream_index: i32,
     pub(crate) decode_context: AVCodecContext,
     pub(crate) encode_context: AVCodecContext,
+    pub(crate) input_stream_index: InputStreamId,
+    pub(crate) output_stream_index: OutputStreamId,
     pub(crate) media_type: ffi::AVMediaType,
     pub(crate) frame_buffer: Option<AVAudioFifo>, // TODO: Support video stream buffers too?
     pub(crate) resample_context: Option<SwrContext>,
     pub(crate) pts: AtomicI64,
     pub(crate) last_written_dts: Option<i64>,
     pub(crate) skip_stream: bool,
+    pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
     #[allow(dead_code)]
     pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
     pub(crate) decoder_name: String,

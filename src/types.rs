@@ -1,11 +1,7 @@
 //! Shared policy enums and merge helpers used to reconcile CLI arguments with configuration defaults.
 
-use clap::parser::ValueSource;
-use clap::{ArgMatches, ValueEnum};
-use log::warn;
+use clap::ValueEnum;
 use serde::Deserialize;
-
-use crate::{config, Args};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -23,6 +19,16 @@ pub(crate) enum SubMode {
     Auto,
     Force,
     Skip,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Policy for subtitle decode/encode failures after a subtitle stream was selected.
+pub(crate) enum SubtitleFailurePolicy {
+    /// Warn, disable only the failing subtitle stream, and keep A/V conversion running.
+    SkipStream,
+    /// Abort conversion when any selected subtitle stream fails.
+    Fail,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
@@ -226,170 +232,4 @@ pub(crate) fn nearest_audio_preset(bitrate: i64) -> &'static str {
         }
     }
     best.1
-}
-
-fn cli_value_provided(matches: &ArgMatches, id: &str) -> bool {
-    matches
-        .value_source(id)
-        .is_some_and(|source| source != ValueSource::DefaultValue)
-}
-
-pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matches: &ArgMatches) {
-    // Precedence rule: explicit CLI input always wins over config values.
-    // `value_source` lets us distinguish user-provided values from clap defaults.
-    if args.streaming_devices.is_none() {
-        if let Some(devices) = cfg.streaming_devices.as_ref() {
-            let raw_values: Vec<String> = match devices {
-                config::StreamingDevicesSetting::Single(value) => value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|entry| !entry.is_empty())
-                    .map(|s| s.to_string())
-                    .collect(),
-                config::StreamingDevicesSetting::List(values) => values
-                    .iter()
-                    .flat_map(|value| value.split(','))
-                    .map(str::trim)
-                    .filter(|entry| !entry.is_empty())
-                    .map(|s| s.to_string())
-                    .collect(),
-            };
-
-            let selections: std::result::Result<Vec<_>, _> = raw_values
-                .iter()
-                .map(|entry| Args::parse_device_selection(entry))
-                .collect();
-            match selections {
-                Ok(list) if !list.is_empty() => args.streaming_devices = Some(list),
-                Ok(_) => {}
-                Err(err) => warn!("Failed to parse config streaming_devices: {}", err),
-            }
-        }
-    }
-
-    if args.max_video_bitrate.is_none() && !cli_value_provided(matches, "max_video_bitrate") {
-        if let Some(bitrate) = cfg.max_video_bitrate.as_deref() {
-            match Args::parse_bitrate(bitrate) {
-                Ok(bps) => args.max_video_bitrate = Some(bps),
-                Err(err) => warn!(
-                    "Failed to parse config max_video_bitrate='{}': {}",
-                    bitrate, err
-                ),
-            }
-        }
-    }
-
-    if args.max_audio_bitrate.is_none() && !cli_value_provided(matches, "max_audio_bitrate") {
-        if let Some(bitrate) = cfg.max_audio_bitrate.as_deref() {
-            match Args::parse_bitrate(bitrate) {
-                Ok(bps) => args.max_audio_bitrate = Some(bps),
-                Err(err) => warn!(
-                    "Failed to parse config max_audio_bitrate='{}': {}",
-                    bitrate, err
-                ),
-            }
-        }
-    }
-
-    if !cli_value_provided(matches, "video_quality") {
-        if let Some(video_quality) = cfg.video_quality {
-            args.video_quality = video_quality;
-        }
-    }
-
-    if !cli_value_provided(matches, "video_codec") {
-        if let Some(video_codec) = cfg.video_codec {
-            args.video_codec = video_codec;
-        }
-    }
-
-    if !cli_value_provided(matches, "audio_quality") {
-        if let Some(audio_quality) = cfg.audio_quality {
-            args.audio_quality = audio_quality;
-        }
-    }
-
-    if !cli_value_provided(matches, "hw_accel") {
-        if let Some(hw_accel) = cfg.hw_accel {
-            args.hw_accel = hw_accel;
-        }
-    }
-
-    if !cli_value_provided(matches, "unsupported_video_policy") {
-        if let Some(policy) = cfg.unsupported_video_policy {
-            args.unsupported_video_policy = policy;
-        }
-    }
-
-    if !cli_value_provided(matches, "primary_video_stream_index")
-        && cfg.primary_video_stream_index.is_some()
-    {
-        args.primary_video_stream_index = cfg.primary_video_stream_index;
-    }
-
-    if !cli_value_provided(matches, "primary_video_criteria") {
-        if let Some(criteria) = cfg.primary_video_criteria {
-            args.primary_video_criteria = criteria;
-        }
-    }
-
-    if !cli_value_provided(matches, "servarr_output_extension") {
-        if let Some(ext) = cfg.servarr_output_extension.as_ref() {
-            args.servarr_output_extension = ext.clone();
-        }
-    }
-
-    if !cli_value_provided(matches, "servarr_output_suffix") {
-        if let Some(suffix) = cfg.servarr_output_suffix.as_ref() {
-            args.servarr_output_suffix = suffix.clone();
-        }
-    }
-
-    if !cli_value_provided(matches, "sub_mode") {
-        if let Some(sub_mode) = cfg.sub_mode {
-            args.sub_mode = sub_mode;
-        }
-    }
-
-    if !cli_value_provided(matches, "ocr_default_language") {
-        if let Some(default_language) = cfg.ocr_default_language.as_ref() {
-            args.ocr_default_language = Some(default_language.clone());
-        }
-    }
-
-    if !cli_value_provided(matches, "ocr_engine") {
-        if let Some(ocr_engine) = cfg.ocr_engine {
-            args.ocr_engine = ocr_engine;
-        }
-    }
-
-    if !cli_value_provided(matches, "ocr_format") {
-        if let Some(ocr_format) = cfg.ocr_format {
-            args.ocr_format = ocr_format;
-        }
-    }
-
-    if !cli_value_provided(matches, "ocr_external_command") {
-        if let Some(ocr_external_command) = cfg.ocr_external_command.as_ref() {
-            args.ocr_external_command = Some(ocr_external_command.clone());
-        }
-    }
-
-    if !cli_value_provided(matches, "ocr_write_srt_sidecar") {
-        if let Some(ocr_write_srt_sidecar) = cfg.ocr_write_srt_sidecar {
-            args.ocr_write_srt_sidecar = ocr_write_srt_sidecar;
-        }
-    }
-
-    if !cli_value_provided(matches, "skip_codec_check") {
-        if let Some(skip_codec_check) = cfg.skip_codec_check {
-            args.skip_codec_check = skip_codec_check;
-        }
-    }
-
-    if args.delete_source.is_none() {
-        if let Some(delete_source) = cfg.delete_source {
-            args.delete_source = Some(delete_source);
-        }
-    }
 }

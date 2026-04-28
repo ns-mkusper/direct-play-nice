@@ -247,6 +247,118 @@ fn cli_skips_mkv_font_attachment_streams() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn cli_keeps_av_when_skipped_subtitle_is_between_them() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let dir = tmp.path();
+    let video = dir.join("mapped_video.mkv");
+    let audio = dir.join("mapped_audio.mp2");
+    let subs = dir.join("middle.srt");
+    let input = dir.join("input_with_mid_subtitle.mkv");
+
+    std::fs::write(
+        &subs,
+        "1\n00:00:00,000 --> 00:00:01,000\nmiddle subtitle\n\n",
+    )?;
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
+                &video.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg video generation failed"
+    );
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=750:sample_rate=44100:duration=2",
+                "-c:a",
+                "mp2",
+                &audio.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg audio generation failed"
+    );
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &subs.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:0",
+                "-map",
+                "2:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:s",
+                "srt",
+                &input.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg mux with middle subtitle stream failed"
+    );
+
+    let output = dir.join("out_mid_subtitle.mp4");
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg(&input)
+        .arg(&output);
+    cmd.assert().success().stdout(str::is_empty());
+
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
+    let mut saw_v = false;
+    let mut saw_a = false;
+    for st in octx.streams() {
+        let par = st.codecpar();
+        assert_ne!(
+            par.codec_type,
+            ffi::AVMEDIA_TYPE_SUBTITLE,
+            "subtitle stream leaked despite --sub-mode=skip"
+        );
+        saw_v |= par.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
+        saw_a |= par.codec_type == ffi::AVMEDIA_TYPE_AUDIO;
+    }
+    assert!(
+        saw_v && saw_a,
+        "output lost A/V streams after subtitle skip"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn cli_skips_webvtt_subtitles_but_keeps_text_streams() -> Result<(), Box<dyn std::error::Error>> {
     ensure_ffmpeg_present();
 

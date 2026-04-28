@@ -2,8 +2,8 @@
 
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, UnsupportedVideoPolicy,
-    VideoCodecPreference, VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, SubtitleFailurePolicy,
+    UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -31,6 +31,7 @@ pub struct Config {
     pub servarr_output_extension: Option<String>,
     pub servarr_output_suffix: Option<String>,
     pub sub_mode: Option<SubMode>,
+    pub subtitle_failure_policy: Option<SubtitleFailurePolicy>,
     pub ocr_default_language: Option<String>,
     pub ocr_engine: Option<OcrEngine>,
     pub ocr_format: Option<OcrFormat>,

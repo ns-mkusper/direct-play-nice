@@ -95,31 +95,46 @@ pub(super) struct OcrFallbackThresholds {
     pub(super) confidence: f32,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn ocr_single_stream(
-    input_path: &str,
+/// Immutable request parameters required to OCR one subtitle stream.
+pub(super) struct OcrStreamRequest<'a> {
+    pub(super) input_path: &'a str,
+    pub(super) stream_index: i32,
+    pub(super) language: &'a str,
+    pub(super) work_dir: &'a Path,
+    pub(super) ocr_format: OcrFormat,
+    pub(super) video_dimensions: Option<(u32, u32)>,
+    pub(super) ocr_engine: OcrEngine,
+}
+
+/// Per-packet/per-subtitle context used when turning decoded subtitle data into cues.
+struct CueBuildParams<'a> {
+    language: &'a str,
     stream_index: i32,
-    language: &str,
-    work_dir: &Path,
+    packet_seq: usize,
+    work_dir: &'a Path,
     ocr_format: OcrFormat,
     video_dimensions: Option<(u32, u32)>,
     ocr_engine: OcrEngine,
+}
+
+pub(super) fn ocr_single_stream(
+    request: &OcrStreamRequest<'_>,
     engine: &mut dyn SubtitleConverter,
 ) -> Result<Vec<SubtitleCue>> {
-    let input_cstr = CString::new(input_path).context("input path has interior NUL")?;
+    let input_cstr = CString::new(request.input_path).context("input path has interior NUL")?;
     let mut ictx = AVFormatContextInput::open(input_cstr.as_c_str())?;
 
     let (stream_time_base, stream_codec_id) = ictx
         .streams()
         .iter()
-        .find(|st| st.index == stream_index)
+        .find(|st| st.index == request.stream_index)
         .map(|st| (st.time_base, st.codecpar().codec_id))
-        .ok_or_else(|| anyhow!("subtitle stream {} not found", stream_index))?;
+        .ok_or_else(|| anyhow!("subtitle stream {} not found", request.stream_index))?;
 
     let decoder = AVCodec::find_decoder(stream_codec_id).ok_or_else(|| {
         anyhow!(
             "decoder unavailable for subtitle stream {} ({})",
-            stream_index,
+            request.stream_index,
             codec_name(stream_codec_id)
         )
     })?;
@@ -127,7 +142,7 @@ pub(super) fn ocr_single_stream(
     let mut decode_context = AVCodecContext::new(&decoder);
     let mut applied_codecpar = false;
     for st in ictx.streams() {
-        if st.index == stream_index {
+        if st.index == request.stream_index {
             decode_context.apply_codecpar(&st.codecpar())?;
             applied_codecpar = true;
             break;
@@ -136,7 +151,7 @@ pub(super) fn ocr_single_stream(
     if !applied_codecpar {
         bail!(
             "subtitle stream {} codec parameters unavailable",
-            stream_index
+            request.stream_index
         );
     }
     decode_context.set_time_base(stream_time_base);
@@ -152,7 +167,7 @@ pub(super) fn ocr_single_stream(
             None => break,
         };
 
-        if packet.stream_index != stream_index {
+        if packet.stream_index != request.stream_index {
             continue;
         }
 
@@ -166,17 +181,20 @@ pub(super) fn ocr_single_stream(
             let fallback_dur_ms = timestamp_to_ms(src_dur, stream_time_base)
                 .unwrap_or(0)
                 .max(0);
+            let cue_params = CueBuildParams {
+                language: request.language,
+                stream_index: request.stream_index,
+                packet_seq,
+                work_dir: request.work_dir,
+                ocr_format: request.ocr_format,
+                video_dimensions: request.video_dimensions,
+                ocr_engine: request.ocr_engine,
+            };
             let mut new_cues = subtitle_to_cues(
                 subtitle.as_ptr(),
                 fallback_start_ms,
                 fallback_dur_ms,
-                language,
-                stream_index,
-                packet_seq,
-                work_dir,
-                ocr_format,
-                video_dimensions,
-                ocr_engine,
+                &cue_params,
                 engine,
                 &mut quality_baseline,
             )?;
@@ -189,17 +207,20 @@ pub(super) fn ocr_single_stream(
         let Some(subtitle) = decode_context.decode_subtitle(None)? else {
             break;
         };
+        let cue_params = CueBuildParams {
+            language: request.language,
+            stream_index: request.stream_index,
+            packet_seq,
+            work_dir: request.work_dir,
+            ocr_format: request.ocr_format,
+            video_dimensions: request.video_dimensions,
+            ocr_engine: request.ocr_engine,
+        };
         let mut new_cues = subtitle_to_cues(
             subtitle.as_ptr(),
             0,
             0,
-            language,
-            stream_index,
-            packet_seq,
-            work_dir,
-            ocr_format,
-            video_dimensions,
-            ocr_engine,
+            &cue_params,
             engine,
             &mut quality_baseline,
         )?;
@@ -207,23 +228,16 @@ pub(super) fn ocr_single_stream(
         packet_seq += 1;
     }
 
-    sanitize_cues(&mut cues, ocr_format);
+    sanitize_cues(&mut cues, request.ocr_format);
 
     Ok(cues)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn subtitle_to_cues(
+fn subtitle_to_cues(
     subtitle: *const ffi::AVSubtitle,
     fallback_start_ms: i64,
     fallback_duration_ms: i64,
-    language: &str,
-    stream_index: i32,
-    packet_seq: usize,
-    work_dir: &Path,
-    ocr_format: OcrFormat,
-    video_dimensions: Option<(u32, u32)>,
-    ocr_engine: OcrEngine,
+    params: &CueBuildParams<'_>,
     engine: &mut dyn SubtitleConverter,
     quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<Vec<SubtitleCue>> {
@@ -250,26 +264,17 @@ pub(super) fn subtitle_to_cues(
         end_ms = start_ms.saturating_add(dur);
     }
 
-    let (lines, had_imagery) = extract_subtitle_lines(
-        sub,
-        language,
-        start_ms,
-        stream_index,
-        packet_seq,
-        work_dir,
-        ocr_engine,
-        engine,
-        quality_baseline,
-    )?;
+    let (lines, had_imagery) =
+        extract_subtitle_lines(sub, params, start_ms, engine, quality_baseline)?;
     if had_imagery && lines.is_empty() {
         warn!(
             "OCR produced empty text for subtitle stream {} at {} ms",
-            stream_index, start_ms
+            params.stream_index, start_ms
         );
     }
 
     let mut cues = Vec::new();
-    match ocr_format {
+    match params.ocr_format {
         OcrFormat::Srt => {
             let merged = lines
                 .iter()
@@ -293,7 +298,7 @@ pub(super) fn subtitle_to_cues(
                     continue;
                 }
                 if let Some(bbox) = line.bbox {
-                    let (pos_x, pos_y) = ass_position_from_bbox(&bbox, video_dimensions);
+                    let (pos_x, pos_y) = ass_position_from_bbox(&bbox, params.video_dimensions);
                     let ass_text = format_ass_text_with_style(
                         &line.text,
                         Some((pos_x, pos_y)),
@@ -324,20 +329,16 @@ pub(super) fn subtitle_to_cues(
     Ok(cues)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn extract_subtitle_lines(
+fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
-    language: &str,
+    params: &CueBuildParams<'_>,
     subtitle_start_ms: i64,
-    stream_index: i32,
-    packet_seq: usize,
-    work_dir: &Path,
-    ocr_engine: OcrEngine,
     engine: &mut dyn SubtitleConverter,
     quality_baseline: &mut OcrQualityBaseline,
 ) -> Result<(Vec<OcrLine>, bool)> {
     let mut lines = Vec::new();
     let mut had_imagery = false;
+    let ocr_engine = params.ocr_engine;
 
     if subtitle.num_rects == 0 || subtitle.rects.is_null() {
         return Ok((Vec::new(), false));
@@ -397,41 +398,45 @@ pub(super) fn extract_subtitle_lines(
         }
 
         let rect_color = dominant_color_from_rect(rect);
-        let pgm_path = work_dir.join(format!("ocr-s{}-p{}-r{}.pgm", stream_index, packet_seq, i));
+        let pgm_path = params.work_dir.join(format!(
+            "ocr-s{}-p{}-r{}.pgm",
+            params.stream_index, params.packet_seq, i
+        ));
         fs::write(&pgm_path, pgm)
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
-        let mut output = engine.extract_lines(&pgm_path, language)?;
-        let discarded = prune_impossible_geometry(&mut output.lines, language);
+        let mut output = engine.extract_lines(&pgm_path, params.language)?;
+        let discarded = prune_impossible_geometry(&mut output.lines, params.language);
         if discarded > 0 {
             debug!(
                 "{} geometry pruning: discarded {} impossible OCR boxes for subtitle stream {} packet {} rect {}",
                 ppocr_engine_label(ocr_engine),
                 discarded,
-                stream_index,
-                packet_seq,
+                params.stream_index,
+                params.packet_seq,
                 i
             );
         }
         let ppocr_text = lines_text_for_quality(&output.lines);
-        let ppocr_quality = ocr_text_quality_score(&ppocr_text, language);
+        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
         quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
         let thresholds = quality_fallback_thresholds(quality_baseline);
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
-            && !is_english_language(language)
-            && language_uses_spaces(language);
-        let quality_fallback_requested = ppocr_needs_quality_fallback(&output.lines, language);
+            && !is_english_language(params.language)
+            && language_uses_spaces(params.language);
+        let quality_fallback_requested =
+            ppocr_needs_quality_fallback(&output.lines, params.language);
         let should_try_quality_fallback = quality_fallback_requested
             && thresholds.is_some_and(|thresholds| {
                 ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
             });
-        if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
-            && language_uses_spaces(language)
+        if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+            && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
             && (force_tesseract_non_english || should_try_quality_fallback)
         {
-            if let Some(fallback_language) = resolve_tesseract_fallback_language(language) {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
                 match run_tesseract_best_effort(&pgm_path, &fallback_language) {
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // For non-English streams, prefer language-specific Tesseract
@@ -472,8 +477,8 @@ pub(super) fn extract_subtitle_lines(
                                     ppocr_engine_label(ocr_engine),
                                     fallback_language,
                                     candidate.psm,
-                                    stream_index,
-                                    packet_seq,
+                                    params.stream_index,
+                                    params.packet_seq,
                                     i,
                                     candidate.quality,
                                     ppocr_quality,
@@ -485,8 +490,8 @@ pub(super) fn extract_subtitle_lines(
                                     ppocr_engine_label(ocr_engine),
                                     fallback_language,
                                     candidate.psm,
-                                    stream_index,
-                                    packet_seq,
+                                    params.stream_index,
+                                    params.packet_seq,
                                     i,
                                     candidate.quality,
                                     ppocr_quality,
@@ -497,8 +502,8 @@ pub(super) fn extract_subtitle_lines(
                             debug!(
                                 "{} quality fallback skipped (insufficient gain): keeping model output for subtitle stream {} packet {} rect {} (tess_score={:.2}, ppocr_score={:.2}, ppocr_conf={:.2})",
                                 ppocr_engine_label(ocr_engine),
-                                stream_index,
-                                packet_seq,
+                                params.stream_index,
+                                params.packet_seq,
                                 i,
                                 candidate.quality,
                                 ppocr_quality,
@@ -511,8 +516,8 @@ pub(super) fn extract_subtitle_lines(
                         warn!(
                             "{} quality fallback failed for subtitle stream {} packet {} rect {} (lang={}): {}",
                             ppocr_engine_label(ocr_engine),
-                            stream_index,
-                            packet_seq,
+                            params.stream_index,
+                            params.packet_seq,
                             i,
                             fallback_language,
                             err
@@ -523,8 +528,8 @@ pub(super) fn extract_subtitle_lines(
                 warn!(
                     "{} quality fallback skipped (no Tesseract languages available) for subtitle stream {} packet {} rect {}",
                     ppocr_engine_label(ocr_engine),
-                    stream_index,
-                    packet_seq,
+                    params.stream_index,
+                    params.packet_seq,
                     i
                 );
             }
@@ -534,7 +539,7 @@ pub(super) fn extract_subtitle_lines(
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
             }
-            line.text = postprocess_ocr_text(&line.text, language);
+            line.text = postprocess_ocr_text(&line.text, params.language);
             if line.color.is_none() {
                 line.color = rect_color;
             }

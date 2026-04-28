@@ -1,16 +1,88 @@
 //! High-level conversion orchestration from parsed arguments through planning, probing, and execution.
 
-use crate::transcoder::prelude::*;
+use std::fs;
+
+use anyhow::{anyhow, bail, Context, Result};
+use clap::ArgMatches;
+use log::{debug, info, warn};
+use rsmpeg::ffi;
+
+use crate::config;
+use crate::config_merge::apply_config_overrides;
+use crate::devices::{self, ContainerFormat, StreamingDevice};
+use crate::ffmpeg_utils::{cstr_to_path_buf, path_to_cstring, Args, StreamingDeviceSelection};
+use crate::gpu::{gather_probe_json, print_probe, print_probe_codecs};
+use crate::logging::log_relevant_env;
+use crate::main_probe::{gather_streams_info_json, print_streams_info};
+use crate::main_retry::{
+    cleanup_partial_output, handle_hw_encoder_init_error, handle_hw_profile_mismatch,
+    retry_with_software_encoder,
+};
+use crate::main_sidecar::{post_process_ocr_subtitles, OcrSidecarRequest};
+use crate::plex;
+use crate::servarr;
+use crate::servarr::{ArgsView as ServeArrArgsView, IntegrationPreparation, ReplacePlan};
+use crate::subtitle_ocr;
+use crate::throttle::acquire_slot;
+use crate::transcoder::app::app_convert::ConversionParams;
+use crate::transcoder::convert_video_file;
+use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMismatch};
+use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
+use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayConstraints};
+use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
+use crate::transcoder::verification::validate_output_file;
+use crate::transcoder::ConversionOutcome;
+use crate::types::{OcrFormat, OutputFormat};
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
+    let plex_refresher = prepare_runtime_configuration(&mut args, &matches_snapshot)?;
+    if maybe_handle_probe_modes(&args)? {
+        return Ok(());
+    }
+
+    let servarr_preparation = prepare_servarr(&args)?;
+    if let IntegrationPreparation::Skip { reason } = &servarr_preparation {
+        info!("{}", reason);
+        return Ok(());
+    }
+    log_servarr_context(&servarr_preparation);
+
+    let base_args = args.clone();
+    run_batch(base_args, servarr_preparation, plex_refresher)
+}
+
+/// Loads optional file config, applies precedence merge, and creates Plex side-effect policy.
+fn prepare_runtime_configuration(
+    args: &mut Args,
+    matches_snapshot: &ArgMatches,
+) -> Result<Option<plex::PlexRefresher>> {
     let loaded_config = config::load(args.config_file.as_deref())?;
+    log_config_source(&loaded_config);
+    if let Some((cfg, _)) = &loaded_config {
+        // Apply config only when the user did not set the same option explicitly.
+        apply_config_overrides(args, cfg, matches_snapshot);
+    }
+    let config_plex = loaded_config
+        .as_ref()
+        .and_then(|(cfg, _)| cfg.plex.as_ref());
+    plex::PlexRefresher::from_sources(
+        config_plex,
+        args.plex_refresh,
+        args.plex_url.as_deref(),
+        args.plex_token.as_deref(),
+    )
+}
+
+/// Emits user-visible information about where runtime configuration was loaded from.
+fn log_config_source(loaded_config: &Option<(config::Config, config::ConfigSource)>) {
     if loaded_config.is_none() {
         warn!(
             "No direct-play-nice configuration found. Falling back to CLI defaults; set {} or place config.toml under ~/.config/direct-play-nice/ to override.",
             config::CONFIG_ENV_VAR
         );
+        return;
     }
-    if let Some((_, source)) = &loaded_config {
+    if let Some((_, source)) = loaded_config {
         match source {
             config::ConfigSource::Cli(path) => {
                 info!("Loaded configuration from '{}'.", path.display());
@@ -27,35 +99,100 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
             }
         }
     }
-    if let Some((cfg, _)) = &loaded_config {
-        // Apply config only when the user did not set the same option explicitly.
-        apply_config_overrides(&mut args, cfg, &matches_snapshot);
+}
+
+/// Handles all probe-only command branches. Returns true when execution should stop early.
+fn maybe_handle_probe_modes(args: &Args) -> Result<bool> {
+    if args.probe_streams {
+        handle_probe_streams(args)?;
+        return Ok(true);
     }
-    let config_plex = loaded_config
+    if args.probe_ocr_fixtures.is_some() {
+        handle_probe_ocr_fixtures(args)?;
+        return Ok(true);
+    }
+    if args.probe_hw || args.probe_codecs {
+        handle_probe_hw_codecs(args)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Prints stream-level introspection data in user-selected output format.
+fn handle_probe_streams(args: &Args) -> Result<()> {
+    let input = args
+        .input_file
         .as_ref()
-        .and_then(|(cfg, _)| cfg.plex.as_ref());
+        .context("<INPUT_FILE> required for --probe-streams")?;
+    match args.output {
+        OutputFormat::Json => {
+            let j = gather_streams_info_json(input.as_c_str(), args.streams_filter)?;
+            println!("{}", serde_json::to_string_pretty(&j)?);
+        }
+        OutputFormat::Text => {
+            print_streams_info(input.as_c_str(), args.streams_filter)?;
+        }
+    }
+    Ok(())
+}
 
-    let plex_refresher = plex::PlexRefresher::from_sources(
-        config_plex,
-        args.plex_refresh,
-        args.plex_url.as_deref(),
-        args.plex_token.as_deref(),
-    )?;
+/// Runs OCR fixture evaluation and prints a report in text/JSON form.
+fn handle_probe_ocr_fixtures(args: &Args) -> Result<()> {
+    let fixture_dir = args
+        .probe_ocr_fixtures
+        .as_deref()
+        .context("--probe-ocr-fixtures requires a directory path")?;
+    let report = crate::subtitle_ocr::evaluate_ocr_fixture_accuracy(fixture_dir, args.ocr_engine)?;
+    match args.output {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        OutputFormat::Text => {
+            println!(
+                "{}",
+                crate::subtitle_ocr::render_ocr_fixture_report_markdown(&report)
+            );
+        }
+    }
+    Ok(())
+}
 
+/// Prints hardware and codec inventory probes, optionally in JSON form.
+fn handle_probe_hw_codecs(args: &Args) -> Result<()> {
+    let want_json = args.probe_json || matches!(args.output, OutputFormat::Json);
+    if want_json {
+        let summary = gather_probe_json(
+            args.only_video,
+            args.only_hw,
+            args.probe_hw,
+            args.probe_codecs,
+        );
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        if args.probe_hw {
+            print_probe();
+        }
+        if args.probe_codecs {
+            print_probe_codecs(args.only_video, args.only_hw);
+        }
+    }
+    Ok(())
+}
+
+/// Computes Servarr integration strategy based on CLI and process environment.
+fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
         desired_suffix: &args.servarr_output_suffix,
     };
+    servarr::prepare_from_env(servarr_view)
+}
 
-    let servarr_preparation = servarr::prepare_from_env(servarr_view)?;
-    if let IntegrationPreparation::Skip { reason } = &servarr_preparation {
-        info!("{}", reason);
-        return Ok(());
-    }
-
-    match &servarr_preparation {
+/// Logs Servarr-related environment context for replacement/batch runs.
+fn log_servarr_context(servarr_preparation: &IntegrationPreparation) {
+    match servarr_preparation {
         IntegrationPreparation::Replace(plan) => {
             log_relevant_env(plan.kind);
         }
@@ -66,80 +203,28 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
         }
         _ => {}
     }
+}
 
-    // Probe modes are inspection-only and never enter conversion planning.
-    if args.probe_streams {
-        match args.output {
-            OutputFormat::Json => {
-                let input = args
-                    .input_file
-                    .as_ref()
-                    .context("<INPUT_FILE> required for --probe-streams")?;
-                let j = gather_streams_info_json(input.as_c_str(), args.streams_filter)?;
-                println!("{}", serde_json::to_string_pretty(&j)?);
-            }
-            OutputFormat::Text => {
-                let input = args
-                    .input_file
-                    .as_ref()
-                    .context("<INPUT_FILE> required for --probe-streams")?;
-                print_streams_info(input.as_c_str(), args.streams_filter)?;
-            }
-        }
-        return Ok(());
-    }
-
-    if let Some(fixture_dir) = args.probe_ocr_fixtures.as_deref() {
-        let report =
-            crate::subtitle_ocr::evaluate_ocr_fixture_accuracy(fixture_dir, args.ocr_engine)?;
-        match args.output {
-            OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            }
-            OutputFormat::Text => {
-                println!(
-                    "{}",
-                    crate::subtitle_ocr::render_ocr_fixture_report_markdown(&report)
-                );
-            }
-        }
-        return Ok(());
-    }
-
-    // Additional probe early exits (supports combined --probe-hw --probe-codecs).
-    if args.probe_hw || args.probe_codecs {
-        let want_json = args.probe_json || matches!(args.output, OutputFormat::Json);
-        if want_json {
-            let summary = gather_probe_json(
-                args.only_video,
-                args.only_hw,
-                args.probe_hw,
-                args.probe_codecs,
-            );
-            println!("{}", serde_json::to_string_pretty(&summary)?);
-        } else {
-            if args.probe_hw {
-                print_probe();
-            }
-            if args.probe_codecs {
-                print_probe_codecs(args.only_video, args.only_hw);
-            }
-        }
-        return Ok(());
-    }
-    let base_args = args.clone();
-    // Batch mode runs conversion once per Servarr-resolved input path.
-    let run_queue: Vec<Option<ReplacePlan>> = match servarr_preparation {
+/// Converts a Servarr preparation strategy into per-file conversion jobs.
+fn prepare_run_queue(servarr_preparation: IntegrationPreparation) -> Vec<Option<ReplacePlan>> {
+    match servarr_preparation {
         IntegrationPreparation::None => vec![None],
         IntegrationPreparation::Replace(plan) => vec![Some(plan)],
         IntegrationPreparation::Batch(plans) => plans.into_iter().map(Some).collect(),
         IntegrationPreparation::Skip { .. } => unreachable!(),
-    };
+    }
+}
 
+/// Runs conversion for every queued file replacement plan.
+fn run_batch(
+    base_args: Args,
+    servarr_preparation: IntegrationPreparation,
+    plex_refresher: Option<plex::PlexRefresher>,
+) -> Result<()> {
+    let run_queue = prepare_run_queue(servarr_preparation);
     for plan in run_queue {
         run_conversion(&base_args, plan, &plex_refresher)?;
     }
-
     Ok(())
 }
 
@@ -320,7 +405,7 @@ fn run_conversion(
         .output_file
         .as_deref()
         .context("OUTPUT_FILE is required unless using --probe-* flags")?;
-    let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
+    let output_path = cstr_to_path_buf(output_file);
     let output_extension = output_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -406,7 +491,7 @@ fn run_conversion(
             .and_then(|s| s.to_str())
             .unwrap_or("output");
         let tmp_path = output_path.with_file_name(format!("{stem}.conv.mp4"));
-        Some(CString::new(tmp_path.to_string_lossy().to_string())?)
+        Some(path_to_cstring(&tmp_path)?)
     } else {
         None
     };
@@ -425,6 +510,7 @@ fn run_conversion(
         requested_video_quality: args.video_quality,
         requested_audio_quality: args.audio_quality,
         skip_codec_check: args.skip_codec_check,
+        subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,
     };
 
@@ -517,8 +603,15 @@ fn run_conversion(
         subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
     }
 
+    if conversion_result.is_ok() && args.validate_output {
+        if let Err(err) = validate_output_file(output_file, target_video_codec, common_audio_codec)
+        {
+            conversion_result = Err(err);
+        }
+    }
+
     if let Some(tmp_cstr) = temp_output_cstring.as_ref() {
-        let tmp_path = PathBuf::from(tmp_cstr.to_string_lossy().into_owned());
+        let tmp_path = cstr_to_path_buf(tmp_cstr);
         if tmp_path != output_path {
             let _ = fs::remove_file(&tmp_path);
         }
@@ -557,8 +650,8 @@ fn run_conversion(
                 } else if let (Some(input_cstr), Some(output_cstr)) =
                     (args.input_file.as_ref(), args.output_file.as_ref())
                 {
-                    let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
-                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    let input_path = cstr_to_path_buf(input_cstr);
+                    let output_path = cstr_to_path_buf(output_cstr);
                     if input_path != output_path {
                         match fs::remove_file(&input_path) {
                             Ok(_) => info!(
@@ -580,7 +673,7 @@ fn run_conversion(
             }
             if let Some(ref refresher) = plex_refresher {
                 if let Some(output_cstr) = args.output_file.as_ref() {
-                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    let output_path = cstr_to_path_buf(output_cstr);
                     if let Err(err) = refresher.refresh_path(&output_path) {
                         warn!(
                             "Plex refresh failed for '{}': {}",
@@ -605,4 +698,62 @@ fn ocr_multi_gpu_requested() -> bool {
         .filter_map(|part| part.trim().parse::<i32>().ok())
         .collect::<Vec<_>>();
     ids.len() > 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::servarr::IntegrationKind;
+    use std::ffi::CString;
+    use std::path::PathBuf;
+
+    fn make_plan(tag: &str) -> ReplacePlan {
+        let input_path = PathBuf::from(format!("/tmp/{tag}.mkv"));
+        let temp_output_path = PathBuf::from(format!("/tmp/{tag}.tmp.mp4"));
+        let final_output_path = PathBuf::from(format!("/tmp/{tag}.mp4"));
+        let backup_path = PathBuf::from(format!("/tmp/{tag}.bak"));
+        ReplacePlan {
+            kind: IntegrationKind::Sonarr,
+            event_type: "Download".to_string(),
+            display_name: Some(tag.to_string()),
+            is_upgrade: Some(false),
+            input_cstring: CString::new(input_path.to_string_lossy().as_ref()).unwrap(),
+            temp_output_cstring: CString::new(temp_output_path.to_string_lossy().as_ref()).unwrap(),
+            input_path,
+            final_output_path,
+            temp_output_path,
+            backup_path,
+        }
+    }
+
+    #[test]
+    fn run_queue_none_yields_single_direct_job() {
+        let queue = prepare_run_queue(IntegrationPreparation::None);
+        assert_eq!(queue.len(), 1);
+        assert!(queue[0].is_none());
+    }
+
+    #[test]
+    fn run_queue_replace_keeps_single_plan() {
+        let queue = prepare_run_queue(IntegrationPreparation::Replace(make_plan("single")));
+        assert_eq!(queue.len(), 1);
+        let Some(plan) = queue[0].as_ref() else {
+            panic!("expected replace plan");
+        };
+        assert_eq!(plan.display_name.as_deref(), Some("single"));
+    }
+
+    #[test]
+    fn run_queue_batch_preserves_plan_order() {
+        let queue = prepare_run_queue(IntegrationPreparation::Batch(vec![
+            make_plan("first"),
+            make_plan("second"),
+        ]));
+        assert_eq!(queue.len(), 2);
+        let names = queue
+            .iter()
+            .map(|entry| entry.as_ref().and_then(|plan| plan.display_name.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![Some("first"), Some("second")]);
+    }
 }
