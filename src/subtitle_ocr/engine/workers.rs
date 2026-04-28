@@ -431,6 +431,14 @@ pub(in crate::subtitle_ocr) fn finalize_ocr_outputs(
 ) -> Result<Vec<OcrSubtitleTrack>> {
     let mut tracks = Vec::with_capacity(outputs.len());
     for output in outputs {
+        if output.cues.is_empty() {
+            info!(
+                "Skipping OCR subtitle stream {} because OCR produced no cues.",
+                output.stream_index
+            );
+            continue;
+        }
+
         match ocr_format {
             OcrFormat::Srt => write_srt(&output.subtitle_path, &output.cues)?,
             OcrFormat::Ass => write_ass(&output.subtitle_path, &output.cues, video_dimensions)?,

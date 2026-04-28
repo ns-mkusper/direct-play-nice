@@ -48,11 +48,10 @@ pub(crate) fn validate_output_file(
                     saw_expected_video = true;
                 }
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
-                if codecpar.codec_id == expected_audio_codec {
-                    saw_expected_audio = true;
-                }
+            ffi::AVMEDIA_TYPE_AUDIO if codecpar.codec_id == expected_audio_codec => {
+                saw_expected_audio = true;
             }
+            ffi::AVMEDIA_TYPE_AUDIO => {}
             ffi::AVMEDIA_TYPE_ATTACHMENT | ffi::AVMEDIA_TYPE_DATA => {
                 bail!(
                     "Output validation failed: unsupported auxiliary stream {} remains in '{}'",

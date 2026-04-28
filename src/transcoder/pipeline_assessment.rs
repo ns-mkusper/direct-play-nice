@@ -298,6 +298,14 @@ fn container_from_demuxer_name(name: &str) -> Option<ContainerFormat> {
     })
 }
 
+pub(crate) fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
+    if rational.num <= 0 || rational.den <= 0 {
+        None
+    } else {
+        Some(rational.num as f64 / rational.den as f64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,13 +330,5 @@ mod tests {
     fn demuxer_container_mapping_rejects_unknown_formats() {
         assert_eq!(container_from_detected_input("mpegts", ""), None);
         assert_eq!(container_from_detected_input("", ""), None);
-    }
-}
-
-pub(crate) fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
-    if rational.num <= 0 || rational.den <= 0 {
-        None
-    } else {
-        Some(rational.num as f64 / rational.den as f64)
     }
 }
