@@ -26,7 +26,8 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--primary-video-stream-index <primary_video_stream_index>`
 - `--primary-video-criteria <primary_video_criteria>` `resolution|bitrate|fps`
 - `--skip-codec-check`
-- `--validate-output` reopen the completed output and fail if expected A/V codecs or stream hygiene checks do not pass
+- `--validate-output` reopen the completed output and fail if expected A/V
+  codecs or stream hygiene checks do not pass
 
 ## Hardware controls
 
@@ -61,12 +62,20 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 ## Failure policy
 
-- Extra video streams follow `--unsupported-video-policy`: `ignore` drops them, `fail` aborts, and `convert` attempts to include them when the output container supports it.
-- Attachments, data streams, and attached pictures are treated as metadata and skipped for direct-play outputs.
-- Bitmap subtitles are handled by the OCR side pass unless `--sub-mode=skip`; text subtitles are converted to MP4-compatible timed text when included.
-- Subtitle decode/encode timestamp failures follow `--subtitle-failure-policy`: `skip-stream` warns and disables only that subtitle stream, while `fail` aborts conversion.
-- Audio conversion setup is fail-fast: if FFmpeg cannot initialize the required resampler, conversion aborts rather than writing suspect audio.
-- Hardware encoder/profile failures may retry with a safer software encoder path; decoder bitstream failures remain hard failures.
+- Extra video streams follow `--unsupported-video-policy`: `ignore` drops them,
+  `fail` aborts, and `convert` attempts to include them when the output
+  container supports it.
+- Attachments, data streams, and attached pictures are treated as metadata and
+  skipped for direct-play outputs.
+- Bitmap subtitles are handled by the OCR side pass unless `--sub-mode=skip`;
+  text subtitles are converted to MP4-compatible timed text when included.
+- Subtitle decode/encode timestamp failures follow
+  `--subtitle-failure-policy`: `skip-stream` warns and disables only that
+  subtitle stream, while `fail` aborts conversion.
+- Audio conversion setup is fail-fast: if FFmpeg cannot initialize the required
+  resampler, conversion aborts rather than writing suspect audio.
+- Hardware encoder/profile failures may retry with a safer software encoder
+  path; decoder bitstream failures remain hard failures.
 
 ## Plex options
 
