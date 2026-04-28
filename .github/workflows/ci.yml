@@ -49,6 +49,7 @@ jobs:
       - name: Set up sccache
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
+        continue-on-error: true
 
       - name: Install dependencies
         run: |
@@ -301,6 +302,7 @@ jobs:
       - name: Set up sccache
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
+        continue-on-error: true
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
@@ -533,6 +535,7 @@ jobs:
       - name: Set up sccache
         id: sccache-setup
         uses: mozilla-actions/sccache-action@v0.0.5
+        continue-on-error: true
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
