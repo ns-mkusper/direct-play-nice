@@ -42,6 +42,12 @@ env:
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish, for example v0.1.0"
+        required: true
+        type: string
   pull_request:
   push:
     tags:
@@ -53,15 +59,35 @@ jobs:
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
-      tag: ${{ !github.event.pull_request && github.ref_name || '' }}
-      tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
-      publishing: ${{ !github.event.pull_request }}
+      tag: ${{ steps.release-context.outputs.tag }}
+      tag-flag: ${{ steps.release-context.outputs.tag-flag }}
+      publishing: ${{ steps.release-context.outputs.publishing }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - id: release-context
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            {
+              echo "tag="
+              echo "tag-flag="
+              echo "publishing=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "tag-flag=--tag=$RELEASE_TAG"
+            echo "publishing=true"
+          } >> "$GITHUB_OUTPUT"
       - name: Install cargo-dist
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
@@ -78,8 +104,15 @@ jobs:
       # (PRs run on the *source* but secrets are usually on the *target* -- that's *good*
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ steps.release-context.outputs.tag }}
         run: |
-          cargo dist ${{ (!github.event.pull_request && format('host --steps=create --tag={0}', github.ref_name)) || 'plan' }} --allow-dirty --output-format=json > plan-dist-manifest.json
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            cargo dist plan --allow-dirty --output-format=json > plan-dist-manifest.json
+          else
+            cargo dist host --steps=create --tag="$RELEASE_TAG" --allow-dirty --output-format=json > plan-dist-manifest.json
+          fi
           echo "cargo dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
