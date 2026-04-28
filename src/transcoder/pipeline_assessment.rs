@@ -71,30 +71,32 @@ pub(crate) fn assess_direct_play_compatibility(
     // Collect every incompatibility so users can see the full decision context.
     let mut reasons = Vec::new();
     let video_par = video_stream.codecpar();
+    let detected_format = input_format_name(&ictx);
     let input_path = PathBuf::from(input_file.to_string_lossy().into_owned());
     let input_ext = input_path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
-    let input_container = ContainerFormat::from_extension(&input_ext);
+    let input_container = container_from_detected_input(&detected_format, &input_ext);
     match input_container {
         Some(container) => {
             if !supported_containers.contains(&container) {
                 reasons.push(format!(
-                    "input container '{}' is not supported by all selected devices",
-                    container.as_str()
+                    "input container '{}' (detected as '{}') is not supported by all selected devices",
+                    container.as_str(),
+                    detected_format
                 ));
             }
         }
         None => reasons.push(format!(
-            "input container '{}' is unknown; cannot confirm compatibility",
-            input_ext
+            "input container is unknown (detected as '{}', extension '{}'); cannot confirm compatibility",
+            detected_format, input_ext
         )),
     }
 
     for stream in &streams {
-        let disposition_flags = unsafe { (*stream.as_ptr()).disposition };
+        let disposition_flags = stream_disposition(stream);
         if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
             reasons.push("input contains an attached picture stream".to_string());
             break;
@@ -138,7 +140,7 @@ pub(crate) fn assess_direct_play_compatibility(
         let mut video_bit_rate = video_par.bit_rate;
         if video_bit_rate <= 0 {
             // Some demuxers expose bitrate only through the raw codecpar pointer.
-            video_bit_rate = unsafe { (*(*video_stream.as_ptr()).codecpar).bit_rate };
+            video_bit_rate = stream_raw_bit_rate(video_stream);
         }
         if video_bit_rate <= 0 {
             reasons.push(
@@ -199,7 +201,7 @@ pub(crate) fn assess_direct_play_compatibility(
             let mut audio_bit_rate = codecpar.bit_rate;
             if audio_bit_rate <= 0 {
                 // Mirror video-path fallback for containers with sparse stream metadata.
-                audio_bit_rate = unsafe { (*(*stream.as_ptr()).codecpar).bit_rate };
+                audio_bit_rate = stream_raw_bit_rate(stream);
             }
 
             if audio_bit_rate <= 0 {
@@ -265,6 +267,61 @@ fn estimate_stream_fps(stream: &AVStreamRef) -> Option<f64> {
     } else {
         let avg = unsafe { (*stream.as_ptr()).avg_frame_rate };
         rational_to_f64(avg)
+    }
+}
+
+/// Maps FFmpeg demuxer names plus the path extension to the container model
+/// used for device compatibility.
+///
+/// Demuxer names are more reliable than arbitrary extensions, but FFmpeg's MOV
+/// demuxer reports a comma-separated family (`mov,mp4,m4a,...`) for multiple
+/// user-visible containers. For that family the extension disambiguates the
+/// device-facing container; for unambiguous demuxers like Matroska, the demuxer
+/// takes precedence.
+fn container_from_detected_input(demuxer_name: &str, extension: &str) -> Option<ContainerFormat> {
+    if demuxer_name
+        .split(',')
+        .any(|part| matches!(part.trim(), "mov" | "mp4" | "m4v"))
+    {
+        return ContainerFormat::from_extension(extension).or(Some(ContainerFormat::Mp4));
+    }
+
+    container_from_demuxer_name(demuxer_name).or_else(|| ContainerFormat::from_extension(extension))
+}
+
+/// Maps unambiguous FFmpeg demuxer names to the container model used for device
+/// compatibility.
+fn container_from_demuxer_name(name: &str) -> Option<ContainerFormat> {
+    name.split(',').find_map(|part| match part.trim() {
+        "matroska" | "webm" => Some(ContainerFormat::Mkv),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detected_container_mapping_handles_ffmpeg_alias_lists() {
+        assert_eq!(
+            container_from_detected_input("mov,mp4,m4a,3gp,3g2,mj2", "mp4"),
+            Some(ContainerFormat::Mp4)
+        );
+        assert_eq!(
+            container_from_detected_input("mov,mp4,m4a,3gp,3g2,mj2", "mov"),
+            Some(ContainerFormat::Mov)
+        );
+        assert_eq!(
+            container_from_detected_input("matroska,webm", "not-real"),
+            Some(ContainerFormat::Mkv)
+        );
+    }
+
+    #[test]
+    fn demuxer_container_mapping_rejects_unknown_formats() {
+        assert_eq!(container_from_detected_input("mpegts", ""), None);
+        assert_eq!(container_from_detected_input("", ""), None);
     }
 }
 

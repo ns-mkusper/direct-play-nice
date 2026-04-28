@@ -1,6 +1,28 @@
 //! Stream-processing routines that execute per-stream decode/encode flows for video, audio, and subtitle data.
 
-use crate::transcoder::prelude::*;
+use anyhow::{anyhow, bail, Context, Result};
+use libc::EINVAL;
+use log::{debug, error, trace, warn};
+use rsmpeg::avcodec::{AVCodecContext, AVPacket};
+use rsmpeg::avformat::{AVFormatContextOutput, AVStreamRef};
+use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
+use rsmpeg::error::RsmpegError;
+use rsmpeg::ffi;
+use rsmpeg::swscale::SwsContext;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use crate::ffmpeg_utils::{
+    add_samples_to_fifo, encode_and_write_frame, init_output_audio_frame, is_eagain_error,
+    ProgressTracker, StreamProcessingContext,
+};
+use crate::transcoder::ffmpeg_diagnostics::{av_error_to_string, pix_fmt_name};
+use crate::transcoder::ffmpeg_ext::copy_payload_into_packet;
+use crate::transcoder::h264::DecoderError;
+use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
+use crate::transcoder::timestamp::{
+    best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
+};
+use crate::types::SubtitleFailurePolicy;
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
@@ -90,7 +112,7 @@ pub(crate) fn process_video_stream(
             );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
-                stream_processing_context.input_stream_index,
+                stream_processing_context.input_stream_index.as_i32(),
                 e.to_string(),
             )));
         }
@@ -131,7 +153,7 @@ pub(crate) fn process_video_stream(
                 );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
-                    stream_processing_context.input_stream_index,
+                    stream_processing_context.input_stream_index.as_i32(),
                     format!("receive_frame failed: {}", e),
                 )));
             }
@@ -170,20 +192,11 @@ pub(crate) fn process_video_stream(
         .context("Failed to create a swscale context.")?;
 
         // Ensure the encoder sees timestamps in its own time base to avoid inflated durations.
-        let mut rescaled_pts = if frame.best_effort_timestamp != ffi::AV_NOPTS_VALUE {
-            frame.best_effort_timestamp
-        } else {
-            frame.pts
-        };
-        if rescaled_pts != ffi::AV_NOPTS_VALUE {
-            rescaled_pts = unsafe {
-                ffi::av_rescale_q(
-                    rescaled_pts,
-                    stream_processing_context.decode_context.time_base,
-                    stream_processing_context.encode_context.time_base,
-                )
-            };
-        }
+        let rescaled_pts = rescale_timestamp(
+            best_effort_frame_pts(&frame),
+            stream_processing_context.decode_context.time_base,
+            stream_processing_context.encode_context.time_base,
+        );
 
         new_frame.set_time_base(stream_processing_context.encode_context.time_base);
         if rescaled_pts != ffi::AV_NOPTS_VALUE {
@@ -197,7 +210,7 @@ pub(crate) fn process_video_stream(
         encode_and_write_frame(
             &mut stream_processing_context.encode_context,
             output_format_context,
-            stream_processing_context.output_stream_index as usize,
+            stream_processing_context.output_stream_index.as_usize(),
             Some(new_frame),
         )?;
     }
@@ -243,7 +256,7 @@ pub(crate) fn process_audio_stream(
             );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
-                stream_processing_context.input_stream_index,
+                stream_processing_context.input_stream_index.as_i32(),
                 e.to_string(),
             )));
         }
@@ -284,7 +297,7 @@ pub(crate) fn process_audio_stream(
                 );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
-                    stream_processing_context.input_stream_index,
+                    stream_processing_context.input_stream_index.as_i32(),
                     format!("receive_frame failed: {}", e),
                 )));
             }
@@ -331,7 +344,7 @@ pub(crate) fn process_audio_stream(
                 fifo,
                 output_format_context,
                 &mut stream_processing_context.encode_context,
-                stream_processing_context.output_stream_index,
+                stream_processing_context.output_stream_index.as_i32(),
                 &mut stream_processing_context.pts,
             )?;
         }
@@ -372,85 +385,63 @@ pub(crate) fn process_subtitle_stream(
                     packet.dts,
                     packet.duration
                 );
-                // Conservative fixed buffer to avoid per-packet allocations in the hot path.
-                // If we see larger subtitle payloads in the future, raise this value or switch
-                // to a growth strategy.
-                const MAX_SUBTITLE_PACKET_SIZE: usize = 32 * 1024; // 32KB
-                let mut subtitle_buffer = vec![0u8; MAX_SUBTITLE_PACKET_SIZE];
-                stream_processing_context
-                    .encode_context
-                    .encode_subtitle(&subtitle, &mut subtitle_buffer)?;
-
-                let encoded_size = subtitle_buffer
-                    .iter()
-                    .rposition(|&x| x != 0)
-                    .map(|pos| pos + 1)
-                    .unwrap_or(0);
-
-                if encoded_size == 0 {
+                let Some(encoded_subtitle) = (match encode_subtitle_to_vec(
+                    &mut stream_processing_context.encode_context,
+                    &subtitle,
+                    stream_processing_context.input_stream_index.as_i32(),
+                ) {
+                    Ok(encoded) => encoded,
+                    Err(err) => {
+                        return handle_subtitle_stream_failure(
+                            stream_processing_context,
+                            format!("failed to encode ({err})"),
+                        );
+                    }
+                }) else {
                     return Ok(());
-                }
+                };
 
                 // Create a new packet for the encoded subtitle
                 let mut encoded_packet = AVPacket::new();
-                unsafe {
-                    ffi::av_new_packet(encoded_packet.as_mut_ptr(), encoded_size as i32);
-                    std::ptr::copy_nonoverlapping(
-                        subtitle_buffer.as_ptr(),
-                        (*encoded_packet.as_mut_ptr()).data,
-                        encoded_size,
-                    );
-                }
+                copy_payload_into_packet(&mut encoded_packet, &encoded_subtitle).with_context(
+                    || {
+                        format!(
+                            "Could not allocate subtitle packet for stream {}",
+                            stream_processing_context.input_stream_index
+                        )
+                    },
+                )?;
 
-                let mut pts = if subtitle.pts != ffi::AV_NOPTS_VALUE {
-                    subtitle.pts
-                } else {
-                    packet.pts
-                };
-                let mut dts = if packet.dts != ffi::AV_NOPTS_VALUE {
-                    packet.dts
-                } else {
-                    pts
-                };
+                let pts = subtitle_pts(
+                    subtitle.pts,
+                    packet.pts,
+                    stream_processing_context.last_written_dts,
+                );
+                let dts = subtitle_dts(packet.dts, pts);
 
-                if pts == ffi::AV_NOPTS_VALUE {
-                    pts = stream_processing_context
-                        .last_written_dts
-                        .map(|prev| prev + 1)
-                        .unwrap_or(0);
-                }
-
-                if dts == ffi::AV_NOPTS_VALUE {
-                    dts = pts;
-                }
-
-                encoded_packet.set_stream_index(stream_processing_context.output_stream_index);
+                encoded_packet
+                    .set_stream_index(stream_processing_context.output_stream_index.as_i32());
                 encoded_packet.set_pts(pts);
                 encoded_packet.set_dts(dts);
                 encoded_packet.set_duration(packet.duration);
                 encoded_packet.set_flags(packet.flags);
 
                 let output_time_base = output_format_context.streams()
-                    [stream_processing_context.output_stream_index as usize]
-                    .time_base;
+                    [stream_processing_context.output_stream_index.as_usize()]
+                .time_base;
                 encoded_packet.rescale_ts(
                     stream_processing_context.decode_context.time_base,
                     output_time_base,
                 );
 
-                let packet_dts = encoded_packet.dts;
-                if let Some(prev_dts) = stream_processing_context.last_written_dts {
-                    if packet_dts <= prev_dts {
-                        let adjusted = prev_dts + 1;
-                        encoded_packet.set_dts(adjusted);
-                        if encoded_packet.pts < adjusted {
-                            encoded_packet.set_pts(adjusted);
-                        }
-                        debug!(
-                            "Subtitle stream {} adjusted DTS from {} to {}",
-                            stream_processing_context.input_stream_index, packet_dts, adjusted
-                        );
-                    }
+                if let Some((packet_dts, adjusted)) = enforce_monotonic_dts(
+                    &mut encoded_packet,
+                    stream_processing_context.last_written_dts,
+                ) {
+                    debug!(
+                        "Subtitle stream {} adjusted DTS from {} to {}",
+                        stream_processing_context.input_stream_index, packet_dts, adjusted
+                    );
                 }
 
                 stream_processing_context.last_written_dts = Some(encoded_packet.dts);
@@ -467,11 +458,10 @@ pub(crate) fn process_subtitle_stream(
                 match output_format_context.interleaved_write_frame(&mut encoded_packet) {
                     Ok(()) => {}
                     Err(rsmpeg::error::RsmpegError::AVError(code)) if code == -EINVAL => {
-                        warn!(
-                            "Subtitle stream {} produced invalid timestamps; skipping rest of stream.",
-                            stream_processing_context.input_stream_index
+                        return handle_subtitle_stream_failure(
+                            stream_processing_context,
+                            "produced invalid timestamps".to_string(),
                         );
-                        stream_processing_context.skip_stream = true;
                     }
                     Err(e) => {
                         return Err(e).context("Could not write subtitle packet");
@@ -480,19 +470,109 @@ pub(crate) fn process_subtitle_stream(
             }
         }
         Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
-            error!("Error: The decoder has been fully drained, no more subtitles to decode. Continuing...");
+            return handle_subtitle_stream_failure(
+                stream_processing_context,
+                "decoder is drained".to_string(),
+            );
         }
         Err(rsmpeg::error::RsmpegError::DecoderFlushedError) => {
-            error!(
-                "Error: The decoder has been flushed, no more subtitles to decode. Continuing..."
+            return handle_subtitle_stream_failure(
+                stream_processing_context,
+                "decoder is flushed".to_string(),
             );
         }
         Err(e) => {
-            error!("Error decoding subtitle: {}", e);
+            return handle_subtitle_stream_failure(
+                stream_processing_context,
+                format!("failed to decode ({e})"),
+            );
         }
     }
 
     Ok(())
+}
+
+/// Applies the configured subtitle failure policy.
+///
+/// The default keeps selected subtitle stream failures isolated because many
+/// media libraries prefer a playable A/V output over aborting for one malformed
+/// subtitle stream. `Fail` exists for workflows that require strict subtitle
+/// preservation.
+fn handle_subtitle_stream_failure(
+    stream_processing_context: &mut StreamProcessingContext,
+    reason: String,
+) -> Result<()> {
+    match stream_processing_context.subtitle_failure_policy {
+        SubtitleFailurePolicy::SkipStream => {
+            warn!(
+                "Subtitle stream {} {}; skipping the rest of this subtitle stream.",
+                stream_processing_context.input_stream_index, reason
+            );
+            stream_processing_context.skip_stream = true;
+            Ok(())
+        }
+        SubtitleFailurePolicy::Fail => {
+            bail!(
+                "Subtitle stream {} {}; failing due to --subtitle-failure-policy=fail",
+                stream_processing_context.input_stream_index,
+                reason
+            )
+        }
+    }
+}
+
+/// Encodes a decoded subtitle into a right-sized byte buffer.
+///
+/// rsmpeg's convenience wrapper discards FFmpeg's returned byte count, which
+/// makes callers guess the encoded packet length. This helper calls FFmpeg
+/// directly so subtitle packets can preserve legitimate trailing zero bytes and
+/// oversized text events can retry with a larger buffer before the stream is
+/// skipped by policy.
+fn encode_subtitle_to_vec(
+    encode_context: &mut AVCodecContext,
+    subtitle: &rsmpeg::avcodec::AVSubtitle,
+    input_stream_index: i32,
+) -> Result<Option<Vec<u8>>> {
+    const INITIAL_SUBTITLE_PACKET_SIZE: usize = 32 * 1024;
+    const MAX_SUBTITLE_PACKET_SIZE: usize = 1024 * 1024;
+
+    let mut capacity = INITIAL_SUBTITLE_PACKET_SIZE;
+    loop {
+        let mut buffer = vec![0u8; capacity];
+        let encoded_size = unsafe {
+            ffi::avcodec_encode_subtitle(
+                encode_context.as_mut_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len() as i32,
+                subtitle.as_ptr(),
+            )
+        };
+
+        if encoded_size < 0 {
+            bail!(
+                "FFmpeg subtitle encoder returned {}",
+                av_error_to_string(encoded_size)
+            );
+        }
+
+        if encoded_size == 0 {
+            return Ok(None);
+        }
+
+        let encoded_size = encoded_size as usize;
+        if encoded_size < buffer.len() || capacity >= MAX_SUBTITLE_PACKET_SIZE {
+            buffer.truncate(encoded_size.min(buffer.len()));
+            return Ok(Some(buffer));
+        }
+
+        capacity = (capacity * 2).min(MAX_SUBTITLE_PACKET_SIZE);
+        debug!(
+            "Subtitle stream {} filled a {} byte encode buffer; retrying with {} bytes",
+            input_stream_index,
+            buffer.len(),
+            capacity
+        );
+    }
 }
 
 pub(crate) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {

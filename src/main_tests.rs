@@ -265,7 +265,9 @@ mod direct_play_tests {
 
 #[cfg(test)]
 mod ocr_sidecar_tests {
-    use crate::*;
+    use crate::main_sidecar::{sidecar_path_for_track, write_ocr_srt_sidecars};
+    use crate::{subtitle_ocr, OcrFormat};
+    use std::{ffi::CString, fs, path::PathBuf};
     use tempfile::tempdir;
 
     #[test]

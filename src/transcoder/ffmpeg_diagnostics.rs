@@ -1,6 +1,7 @@
 //! FFmpeg diagnostics helpers that bridge native logging and format actionable runtime diagnostics.
 
 use crate::transcoder::prelude::*;
+use std::{env, ffi::c_char};
 
 pub(crate) fn av_error_to_string(err: i32) -> String {
     let mut buf = [0i8; ffi::AV_ERROR_MAX_STRING_SIZE as usize];

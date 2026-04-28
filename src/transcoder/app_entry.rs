@@ -1,8 +1,6 @@
 //! High-level conversion orchestration from parsed arguments through planning, probing, and execution.
 
-use std::ffi::CString;
 use std::fs;
-use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ArgMatches;
@@ -12,7 +10,7 @@ use rsmpeg::ffi;
 use crate::config;
 use crate::config_merge::apply_config_overrides;
 use crate::devices::{self, ContainerFormat, StreamingDevice};
-use crate::ffmpeg_utils::{Args, StreamingDeviceSelection};
+use crate::ffmpeg_utils::{cstr_to_path_buf, path_to_cstring, Args, StreamingDeviceSelection};
 use crate::gpu::{gather_probe_json, print_probe, print_probe_codecs};
 use crate::logging::log_relevant_env;
 use crate::main_probe::{gather_streams_info_json, print_streams_info};
@@ -32,6 +30,7 @@ use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMi
 use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
 use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayConstraints};
 use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
+use crate::transcoder::verification::validate_output_file;
 use crate::transcoder::ConversionOutcome;
 use crate::types::{OcrFormat, OutputFormat};
 
@@ -406,7 +405,7 @@ fn run_conversion(
         .output_file
         .as_deref()
         .context("OUTPUT_FILE is required unless using --probe-* flags")?;
-    let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
+    let output_path = cstr_to_path_buf(output_file);
     let output_extension = output_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -492,7 +491,7 @@ fn run_conversion(
             .and_then(|s| s.to_str())
             .unwrap_or("output");
         let tmp_path = output_path.with_file_name(format!("{stem}.conv.mp4"));
-        Some(CString::new(tmp_path.to_string_lossy().to_string())?)
+        Some(path_to_cstring(&tmp_path)?)
     } else {
         None
     };
@@ -511,6 +510,7 @@ fn run_conversion(
         requested_video_quality: args.video_quality,
         requested_audio_quality: args.audio_quality,
         skip_codec_check: args.skip_codec_check,
+        subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,
     };
 
@@ -603,8 +603,15 @@ fn run_conversion(
         subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
     }
 
+    if conversion_result.is_ok() && args.validate_output {
+        if let Err(err) = validate_output_file(output_file, target_video_codec, common_audio_codec)
+        {
+            conversion_result = Err(err);
+        }
+    }
+
     if let Some(tmp_cstr) = temp_output_cstring.as_ref() {
-        let tmp_path = PathBuf::from(tmp_cstr.to_string_lossy().into_owned());
+        let tmp_path = cstr_to_path_buf(tmp_cstr);
         if tmp_path != output_path {
             let _ = fs::remove_file(&tmp_path);
         }
@@ -643,8 +650,8 @@ fn run_conversion(
                 } else if let (Some(input_cstr), Some(output_cstr)) =
                     (args.input_file.as_ref(), args.output_file.as_ref())
                 {
-                    let input_path = PathBuf::from(input_cstr.to_string_lossy().into_owned());
-                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    let input_path = cstr_to_path_buf(input_cstr);
+                    let output_path = cstr_to_path_buf(output_cstr);
                     if input_path != output_path {
                         match fs::remove_file(&input_path) {
                             Ok(_) => info!(
@@ -666,7 +673,7 @@ fn run_conversion(
             }
             if let Some(ref refresher) = plex_refresher {
                 if let Some(output_cstr) = args.output_file.as_ref() {
-                    let output_path = PathBuf::from(output_cstr.to_string_lossy().into_owned());
+                    let output_path = cstr_to_path_buf(output_cstr);
                     if let Err(err) = refresher.refresh_path(&output_path) {
                         warn!(
                             "Plex refresh failed for '{}': {}",
@@ -697,6 +704,7 @@ fn ocr_multi_gpu_requested() -> bool {
 mod tests {
     use super::*;
     use crate::servarr::IntegrationKind;
+    use std::ffi::CString;
     use std::path::PathBuf;
 
     fn make_plan(tag: &str) -> ReplacePlan {

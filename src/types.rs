@@ -22,6 +22,16 @@ pub(crate) enum SubMode {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Policy for subtitle decode/encode failures after a subtitle stream was selected.
+pub(crate) enum SubtitleFailurePolicy {
+    /// Warn, disable only the failing subtitle stream, and keep A/V conversion running.
+    SkipStream,
+    /// Abort conversion when any selected subtitle stream fails.
+    Fail,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 /// OCR backend selector for bitmap-subtitle conversion.
 pub(crate) enum OcrEngine {

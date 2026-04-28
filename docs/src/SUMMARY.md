@@ -4,6 +4,7 @@
 - [Installation](./installation.md)
 - [Getting Started](./getting-started.md)
 - [Command Reference](./command-reference.md)
+- [Architecture](./architecture.md)
 - [Quality Controls](./quality-controls.md)
 - [Subtitle OCR](./subtitle-ocr.md)
 - [Hardware Acceleration](./hardware-acceleration.md)

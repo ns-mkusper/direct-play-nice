@@ -133,6 +133,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "subtitle_failure_policy") {
+        if let Some(policy) = cfg.subtitle_failure_policy {
+            args.subtitle_failure_policy = policy;
+        }
+    }
+
     if !cli_value_provided(matches, "ocr_default_language") {
         if let Some(default_language) = cfg.ocr_default_language.as_ref() {
             args.ocr_default_language = Some(default_language.clone());
@@ -180,6 +186,7 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 mod tests {
     use super::*;
     use crate::transcoder::quality::VideoQuality;
+    use crate::SubtitleFailurePolicy;
     use clap::{CommandFactory, FromArgMatches};
 
     fn parse_args(argv: &[&str]) -> (Args, ArgMatches) {
@@ -209,5 +216,34 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.video_quality, VideoQuality::P1080);
+    }
+
+    #[test]
+    fn applies_subtitle_failure_policy_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            subtitle_failure_policy: Some(SubtitleFailurePolicy::Fail),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.subtitle_failure_policy, SubtitleFailurePolicy::Fail);
+    }
+
+    #[test]
+    fn cli_subtitle_failure_policy_takes_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--subtitle-failure-policy",
+            "skip-stream",
+        ]);
+        let cfg = config::Config {
+            subtitle_failure_policy: Some(SubtitleFailurePolicy::Fail),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(
+            args.subtitle_failure_policy,
+            SubtitleFailurePolicy::SkipStream
+        );
     }
 }
