@@ -308,6 +308,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           $fingerprint = py -3 scripts/ci/vcpkg_fingerprint.py --repo-root . --cargo-toml Cargo.toml --target x86_64-pc-windows-msvc
           Add-Content -Path $env:GITHUB_OUTPUT -Value "cache_key=$fingerprint"
@@ -316,6 +317,10 @@ jobs:
           $runtimeReason = "compile-only"
           $runtimeMode = "compile-only"
           $prText = "$env:PR_TITLE`n$env:PR_BODY"
+          $runtimeTriggerFiles = @(
+            ".github/workflows/ci.yml",
+            "scripts/ci/vcpkg_fingerprint.py"
+          )
 
           if ($prText -match '\[windows-full-ci\]') {
             $runtimeRequired = $true
@@ -330,6 +335,25 @@ jobs:
             } elseif ($fingerprint -ne $baseFingerprint) {
               $runtimeRequired = $true
               $runtimeReason = "vcpkg fingerprint changed"
+            }
+          }
+
+          if (-not $runtimeRequired -and $env:PR_BASE_SHA -and $env:PR_HEAD_SHA) {
+            $changedFiles = git diff --name-only "$env:PR_BASE_SHA...$env:PR_HEAD_SHA"
+            if ($LASTEXITCODE -ne 0) {
+              $runtimeRequired = $true
+              $runtimeReason = "changed-file scope unavailable"
+            } elseif ($changedFiles) {
+              # These files directly control native dependency caching/scope.
+              # When they change, validate the full Windows runtime path instead
+              # of trusting compile-only coverage.
+              foreach ($changedFile in $changedFiles) {
+                if ($runtimeTriggerFiles -contains $changedFile.Trim()) {
+                  $runtimeRequired = $true
+                  $runtimeReason = "windows vcpkg ci logic changed"
+                  break
+                }
+              }
             }
           }
 
