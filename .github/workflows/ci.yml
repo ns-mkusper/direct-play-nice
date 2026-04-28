@@ -34,6 +34,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Compute vcpkg fingerprint
+        id: vcpkg-fingerprint
+        run: |
+          echo "cache_key=$(python3 scripts/ci/vcpkg_fingerprint.py --repo-root . --cargo-toml Cargo.toml)" >> "$GITHUB_OUTPUT"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -99,9 +103,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v3-${{ steps.vcpkg-fingerprint.outputs.cache_key }}
           restore-keys: |
-            vcpkg-root-linux-v2-
+            vcpkg-root-linux-v3-
 
       - name: Validate vcpkg cache origin
         run: |
@@ -293,6 +297,49 @@ jobs:
       VCPKGRS_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Keep PR coverage on Windows, but only pay for the full FFmpeg runtime
+      # suite when native inputs changed or a PR opts in explicitly.
+      - name: Compute Windows vcpkg fingerprint and CI scope
+        id: vcpkg-scope-win
+        shell: pwsh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $fingerprint = py -3 scripts/ci/vcpkg_fingerprint.py --repo-root . --cargo-toml Cargo.toml --target x86_64-pc-windows-msvc
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "cache_key=$fingerprint"
+
+          $runtimeRequired = $false
+          $runtimeReason = "compile-only"
+          $runtimeMode = "compile-only"
+          $prText = "$env:PR_TITLE`n$env:PR_BODY"
+
+          if ($prText -match '\[windows-full-ci\]') {
+            $runtimeRequired = $true
+            $runtimeReason = "manual override token"
+          }
+
+          if (-not $runtimeRequired -and $env:PR_BASE_SHA) {
+            $baseFingerprint = py -3 scripts/ci/vcpkg_fingerprint.py --repo-root . --cargo-toml Cargo.toml --target x86_64-pc-windows-msvc --git-treeish $env:PR_BASE_SHA
+            if ($LASTEXITCODE -ne 0) {
+              $runtimeRequired = $true
+              $runtimeReason = "base fingerprint unavailable"
+            } elseif ($fingerprint -ne $baseFingerprint) {
+              $runtimeRequired = $true
+              $runtimeReason = "vcpkg fingerprint changed"
+            }
+          }
+
+          if ($runtimeRequired) {
+            $runtimeMode = "runtime"
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "runtime_required=$($runtimeRequired.ToString().ToLower())"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "runtime_reason=$runtimeReason"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "runtime_mode=$runtimeMode"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -354,9 +401,9 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v4-${{ steps.vcpkg-scope-win.outputs.cache_key }}
           restore-keys: |
-            vcpkg-root-windows-v3-
+            vcpkg-root-windows-v4-
 
       - name: Validate vcpkg cache origin
         shell: pwsh
@@ -461,7 +508,7 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v4-${{ steps.vcpkg-scope-win.outputs.cache_key }}
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
@@ -476,7 +523,7 @@ jobs:
             target/vcpkg/buildtrees/**/*.txt
           retention-days: 7
 
-      - name: Run tests
+      - name: Run Windows unit/bin test suite
         shell: pwsh
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
@@ -495,17 +542,45 @@ jobs:
           DPN_OCR_AI_E2E: "1"
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
         run: |
-          $start = Get-Date
           $threads = [Math]::Max(1, [int]$env:NUMBER_OF_PROCESSORS)
           cargo test -q --lib --bins --tests -- --test-threads $threads
-          cargo test --features ffmpeg-cli-tests -- --test-threads $threads
-          $elapsed = (Get-Date) - $start
+
+      - name: Compile Windows FFmpeg CLI suite
+        shell: pwsh
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_GOLDEN: "1"
+          DPN_OCR_AI_E2E: "1"
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
+        run: cargo test -q --features ffmpeg-cli-tests --no-run
+
+      - name: Run Windows FFmpeg CLI runtime suite
+        if: steps.vcpkg-scope-win.outputs.runtime_required == 'true'
+        shell: pwsh
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_GOLDEN: "1"
+          DPN_OCR_AI_E2E: "1"
+          DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
+        run: |
+          $threads = [Math]::Max(1, [int]$env:NUMBER_OF_PROCESSORS)
+          cargo test -q --features ffmpeg-cli-tests -- --test-threads $threads
+
+      - name: Summarize Windows CI
+        if: always()
+        shell: pwsh
+        run: |
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-win.outputs.cache-hit }}"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Test command: cargo test --lib --bins --tests"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Includes ffmpeg-cli-tests runtime execution: yes"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ("- Duration: {0}s" -f [int]$elapsed.TotalSeconds)
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Unit/bin suite: cargo test --lib --bins --tests"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- FFmpeg CLI compile check: cargo test --features ffmpeg-cli-tests --no-run"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- FFmpeg CLI mode: ${{ steps.vcpkg-scope-win.outputs.runtime_mode }} (${{ steps.vcpkg-scope-win.outputs.runtime_reason }})"
+          if ("${{ steps.vcpkg-scope-win.outputs.runtime_mode }}" -eq "runtime") {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- FFmpeg CLI runtime suite: cargo test --features ffmpeg-cli-tests"
+          }
 
       - name: sccache stats
         if: ${{ env.RUSTC_WRAPPER == 'sccache' }}
