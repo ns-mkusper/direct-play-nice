@@ -371,8 +371,10 @@ pub(crate) enum StreamExtras {
 
 /// Per-stream state carried across decode/encode/mux iterations.
 ///
-/// `skip_stream` lets setup code keep stream ordering aligned with FFmpeg stream
-/// indexes while disabling actual processing for selected streams.
+/// `input_stream_index` and `output_stream_index` are tracked separately because
+/// ignored input streams can shift output stream numbering. `skip_stream` lets
+/// setup code keep stream ordering aligned with FFmpeg stream indexes while
+/// disabling actual processing for selected streams.
 pub(crate) struct StreamProcessingContext {
     pub(crate) input_stream_index: i32,
     pub(crate) output_stream_index: i32,

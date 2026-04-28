@@ -54,6 +54,9 @@ impl SubtitleMuxer {
     }
 }
 
+// Remuxing writes to a temp path first so partial outputs never clobber the
+// destination. Windows cannot rename over an existing file, so remove it
+// explicitly there before moving the temp file into place.
 fn replace_output_file(tmp_out: &Path, output_path: &Path, context: &str) -> Result<()> {
     #[cfg(windows)]
     if output_path.exists() {
