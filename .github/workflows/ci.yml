@@ -515,12 +515,22 @@ jobs:
         run: sccache --show-stats; if ($LASTEXITCODE -ne 0) { exit 0 }
 
   macos-test:
-    name: Test (macOS Intel)
+    name: Test (macOS ${{ matrix.name }})
     if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]')) }}
-    runs-on: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Intel
+            runner: macos-15-intel
+            cache_suffix: macos-intel
+          - name: Apple Silicon
+            runner: macos-15
+            cache_suffix: macos-arm64
     env:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
@@ -554,7 +564,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/cargo-vcpkg
-          key: cargo-vcpkg-macos-v1
+          key: cargo-vcpkg-${{ matrix.cache_suffix }}-v1
 
       - name: Install cargo-vcpkg
         if: steps.cargo-vcpkg-cache-macos.outputs.cache-hit != 'true'
@@ -565,7 +575,7 @@ jobs:
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: macos-vcpkg-v1-ffmpeg8
+          prefix-key: ${{ matrix.cache_suffix }}-vcpkg-v1-ffmpeg8
 
       - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-macos
@@ -581,9 +591,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-macos-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
           restore-keys: |
-            vcpkg-root-macos-v1-
+            vcpkg-root-${{ matrix.cache_suffix }}-v1-
 
       - name: Validate vcpkg cache origin
         run: |
@@ -652,7 +662,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-macos-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
 
       - name: Force regenerate rusty_ffmpeg bindings
         run: cargo clean -p rusty_ffmpeg
@@ -661,7 +671,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
-          name: vcpkg-logs-macos
+          name: vcpkg-logs-${{ matrix.cache_suffix }}
           path: |
             target/vcpkg/buildtrees/**/*.log
             target/vcpkg/buildtrees/**/*.txt
@@ -679,7 +689,7 @@ jobs:
           end=$(date +%s)
           echo "### macOS test runtime" >> "$GITHUB_STEP_SUMMARY"
           echo "- Toolchain: stable" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Runner: macos-15-intel" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Runner: ${{ matrix.runner }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- vcpkg cache hit: ${{ steps.vcpkg-root-cache-macos.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Test command: cargo test --lib --bins --tests" >> "$GITHUB_STEP_SUMMARY"
           echo "- Integration compile check: cargo test --features ffmpeg-cli-tests --no-run" >> "$GITHUB_STEP_SUMMARY"
