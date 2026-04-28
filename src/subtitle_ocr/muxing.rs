@@ -54,6 +54,24 @@ impl SubtitleMuxer {
     }
 }
 
+fn replace_output_file(tmp_out: &Path, output_path: &Path, context: &str) -> Result<()> {
+    #[cfg(windows)]
+    if output_path.exists() {
+        fs::remove_file(output_path).with_context(|| {
+            format!(
+                "removing existing '{}' before {}",
+                output_path.display(),
+                context
+            )
+        })?;
+    }
+
+    fs::rename(tmp_out, output_path)
+        .with_context(|| format!("replacing '{}' after {}", output_path.display(), context))?;
+
+    Ok(())
+}
+
 pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
     let output_extension = output_path
@@ -117,12 +135,7 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
 
     output_ctx.write_trailer()?;
 
-    fs::rename(&tmp_out, &output_path).with_context(|| {
-        format!(
-            "replacing '{}' after container remux",
-            output_path.display()
-        )
-    })?;
+    replace_output_file(&tmp_out, &output_path, "container remux")?;
 
     Ok(())
 }
@@ -242,8 +255,7 @@ pub fn mux_text_tracks_from(
 
     output_ctx.write_trailer()?;
 
-    fs::rename(&tmp_out, &output_path)
-        .with_context(|| format!("replacing '{}' after subtitle remux", output_path.display()))?;
+    replace_output_file(&tmp_out, &output_path, "subtitle remux")?;
 
     Ok(())
 }
@@ -457,4 +469,28 @@ pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
         return 0;
     };
     unsafe { ffi::av_rescale_q(ts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_output_file;
+    use std::fs;
+
+    #[test]
+    fn replace_output_file_overwrites_existing_destination() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let tmp_out = tmp.path().join("out.tmp");
+        let output = tmp.path().join("out.mp4");
+
+        fs::write(&output, b"old").expect("write existing output");
+        fs::write(&tmp_out, b"new").expect("write temp output");
+
+        replace_output_file(&tmp_out, &output, "unit test").expect("replace output");
+
+        assert_eq!(fs::read(&output).expect("read replaced output"), b"new");
+        assert!(
+            !tmp_out.exists(),
+            "temporary output should be moved into place"
+        );
+    }
 }

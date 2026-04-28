@@ -675,9 +675,10 @@ pub(crate) fn convert_video_file(
         output_stream.set_codecpar(encode_context.extract_codecpar());
 
         let stream_process_context = StreamProcessingContext {
+            input_stream_index: stream.index,
+            output_stream_index: output_stream.index,
             decode_context,
             encode_context,
-            stream_index: output_stream.index,
             media_type,
             frame_buffer,
             resample_context,
@@ -712,7 +713,7 @@ pub(crate) fn convert_video_file(
 
         let Some(stream_processing_context) = stream_contexts
             .iter_mut()
-            .find(|context| context.stream_index == packet.stream_index)
+            .find(|context| context.input_stream_index == packet.stream_index)
         else {
             debug!(
                 "Skipping packet for stream {} with no processing context (likely attachment).",
@@ -766,7 +767,7 @@ pub(crate) fn convert_video_file(
                 encode_and_write_frame(
                     &mut context.encode_context,
                     &mut output_format_context,
-                    context.stream_index as usize,
+                    context.output_stream_index as usize,
                     None,
                 )
                 .context("Failed to flush video encoder.")?;
@@ -783,7 +784,7 @@ pub(crate) fn convert_video_file(
                             fifo,
                             &mut output_format_context,
                             &mut context.encode_context,
-                            context.stream_index,
+                            context.output_stream_index,
                             &mut context.pts,
                         )
                         .context("Failed to drain buffered audio samples.")?;
@@ -792,7 +793,7 @@ pub(crate) fn convert_video_file(
                 encode_and_write_frame(
                     &mut context.encode_context,
                     &mut output_format_context,
-                    context.stream_index as usize,
+                    context.output_stream_index as usize,
                     None,
                 )
                 .context("Failed to flush audio encoder.")?;
@@ -829,7 +830,7 @@ pub(crate) fn convert_video_file(
                 if target_video_codec == ffi::AV_CODEC_ID_H264 {
                     info!(
                         "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
-                        context.stream_index,
+                        context.output_stream_index,
                         context.encode_context.width,
                         context.encode_context.height,
                         describe_codec(target_video_codec),
@@ -841,7 +842,7 @@ pub(crate) fn convert_video_file(
                 } else {
                     info!(
                         "Output video stream {} summary: {}x{} {}{}, bitrate {} bps",
-                        context.stream_index,
+                        context.output_stream_index,
                         context.encode_context.width,
                         context.encode_context.height,
                         describe_codec(target_video_codec),
@@ -861,7 +862,7 @@ pub(crate) fn convert_video_file(
                 };
                 info!(
                     "Output audio stream {} summary: {} ch @ {} Hz {}{}, bitrate {} bps",
-                    context.stream_index,
+                    context.output_stream_index,
                     context.encode_context.ch_layout.nb_channels,
                     context.encode_context.sample_rate,
                     describe_codec(target_audio_codec),
@@ -872,7 +873,7 @@ pub(crate) fn convert_video_file(
             ffi::AVMEDIA_TYPE_SUBTITLE => {
                 info!(
                     "Output subtitle stream {} summary: {}",
-                    context.stream_index,
+                    context.output_stream_index,
                     describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
                 );
             }
