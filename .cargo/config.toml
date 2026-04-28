@@ -23,6 +23,62 @@ rustflags = [
   "link-arg=User32.lib",
 ]
 
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=AudioToolbox",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreFoundation",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreMedia",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreVideo",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=Security",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=VideoToolbox",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=AudioToolbox",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreFoundation",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreMedia",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=CoreVideo",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=Security",
+  "-C",
+  "link-arg=-framework",
+  "-C",
+  "link-arg=VideoToolbox",
+]
+
 [env]
 RUST_LOG = "info"
 
