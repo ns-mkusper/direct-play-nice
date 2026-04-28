@@ -135,6 +135,47 @@ pub fn gen_odd_width_input(tmp: &TempDir) -> (PathBuf, u64) {
     (input, dur_ms)
 }
 
+pub fn gen_multi_video_input(tmp: &TempDir) -> (PathBuf, u64) {
+    let dir = tmp.path();
+    let input = dir.join("multi_video.mkv");
+
+    let status_mux = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=640x360:rate=25:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=25:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=44100:duration=2",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:v:0",
+            "-map",
+            "2:a:0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "mpeg4",
+            "-c:a",
+            "mp2",
+            input.to_str().expect("path utf8"),
+        ])
+        .status()
+        .expect("run ffmpeg multi-video mux");
+    assert!(status_mux.success(), "ffmpeg multi-video mux failed");
+
+    let dur_ms = probe_duration_ms(&input);
+    (input, dur_ms)
+}
+
 pub fn probe_duration_ms(path: &Path) -> u64 {
     let input_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();

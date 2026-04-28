@@ -371,12 +371,15 @@ pub(crate) enum StreamExtras {
 
 /// Per-stream state carried across decode/encode/mux iterations.
 ///
-/// `skip_stream` lets setup code keep stream ordering aligned with FFmpeg stream
-/// indexes while disabling actual processing for selected streams.
+/// `input_stream_index` and `output_stream_index` are tracked separately because
+/// ignored input streams can shift output stream numbering. `skip_stream` lets
+/// setup code keep stream ordering aligned with FFmpeg stream indexes while
+/// disabling actual processing for selected streams.
 pub(crate) struct StreamProcessingContext {
+    pub(crate) input_stream_index: i32,
+    pub(crate) output_stream_index: i32,
     pub(crate) decode_context: AVCodecContext,
     pub(crate) encode_context: AVCodecContext,
-    pub(crate) stream_index: i32,
     pub(crate) media_type: ffi::AVMediaType,
     pub(crate) frame_buffer: Option<AVAudioFifo>, // TODO: Support video stream buffers too?
     pub(crate) resample_context: Option<SwrContext>,
@@ -391,7 +394,8 @@ pub(crate) struct StreamProcessingContext {
 impl std::fmt::Debug for StreamProcessingContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamProcessingContext")
-            .field("stream_index", &self.stream_index)
+            .field("input_stream_index", &self.input_stream_index)
+            .field("output_stream_index", &self.output_stream_index)
             .field("media_type", &self.media_type)
             .field("pts", &self.pts)
             .field("last_written_dts", &self.last_written_dts)

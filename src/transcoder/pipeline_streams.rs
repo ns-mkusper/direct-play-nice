@@ -79,7 +79,7 @@ pub(crate) fn process_video_stream(
         Err(e) => {
             error!(
                 "Video decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
-                stream_processing_context.stream_index,
+                stream_processing_context.input_stream_index,
                 stream_processing_context.decoder_name,
                 packet.pts,
                 packet.dts,
@@ -90,7 +90,7 @@ pub(crate) fn process_video_stream(
             );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
-                stream_processing_context.stream_index,
+                stream_processing_context.input_stream_index,
                 e.to_string(),
             )));
         }
@@ -105,7 +105,7 @@ pub(crate) fn process_video_stream(
                 if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Video decoder drained/flushed for stream {}",
-                        stream_processing_context.stream_index
+                        stream_processing_context.input_stream_index
                     );
                 }
                 break;
@@ -113,14 +113,14 @@ pub(crate) fn process_video_stream(
             Err(e) if is_eagain_error(&e) => {
                 debug!(
                     "Video decoder returned EAGAIN for stream {}",
-                    stream_processing_context.stream_index
+                    stream_processing_context.input_stream_index
                 );
                 break;
             }
             Err(e) => {
                 error!(
                     "Video decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
-                    stream_processing_context.stream_index,
+                    stream_processing_context.input_stream_index,
                     stream_processing_context.decoder_name,
                     packet.pts,
                     packet.dts,
@@ -131,7 +131,7 @@ pub(crate) fn process_video_stream(
                 );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
-                    stream_processing_context.stream_index,
+                    stream_processing_context.input_stream_index,
                     format!("receive_frame failed: {}", e),
                 )));
             }
@@ -197,7 +197,7 @@ pub(crate) fn process_video_stream(
         encode_and_write_frame(
             &mut stream_processing_context.encode_context,
             output_format_context,
-            packet.stream_index as usize,
+            stream_processing_context.output_stream_index as usize,
             Some(new_frame),
         )?;
     }
@@ -219,7 +219,7 @@ pub(crate) fn process_audio_stream(
     let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
         bail!(
             "Missing audio FIFO buffer for stream {}",
-            stream_processing_context.stream_index
+            stream_processing_context.input_stream_index
         );
     };
 
@@ -232,7 +232,7 @@ pub(crate) fn process_audio_stream(
         Err(e) => {
             error!(
                 "Audio decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
-                stream_processing_context.stream_index,
+                stream_processing_context.input_stream_index,
                 stream_processing_context.decoder_name,
                 packet.pts,
                 packet.dts,
@@ -243,7 +243,7 @@ pub(crate) fn process_audio_stream(
             );
             return Err(anyhow!(DecoderError::new(
                 stream_processing_context.decoder_name.clone(),
-                stream_processing_context.stream_index,
+                stream_processing_context.input_stream_index,
                 e.to_string(),
             )));
         }
@@ -258,7 +258,7 @@ pub(crate) fn process_audio_stream(
                 if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Audio decoder drained/flushed for stream {}",
-                        stream_processing_context.stream_index
+                        stream_processing_context.input_stream_index
                     );
                 }
                 break;
@@ -266,14 +266,14 @@ pub(crate) fn process_audio_stream(
             Err(e) if is_eagain_error(&e) => {
                 debug!(
                     "Audio decoder returned EAGAIN for stream {}",
-                    stream_processing_context.stream_index
+                    stream_processing_context.input_stream_index
                 );
                 break;
             }
             Err(e) => {
                 error!(
                     "Audio decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
-                    stream_processing_context.stream_index,
+                    stream_processing_context.input_stream_index,
                     stream_processing_context.decoder_name,
                     packet.pts,
                     packet.dts,
@@ -284,7 +284,7 @@ pub(crate) fn process_audio_stream(
                 );
                 return Err(anyhow!(DecoderError::new(
                     stream_processing_context.decoder_name.clone(),
-                    stream_processing_context.stream_index,
+                    stream_processing_context.input_stream_index,
                     format!("receive_frame failed: {}", e),
                 )));
             }
@@ -324,14 +324,14 @@ pub(crate) fn process_audio_stream(
         debug!("FIFO SIZE: {}", fifo.size());
         debug!(
             "AUDIO STREAM INDEX: {}",
-            stream_processing_context.stream_index
+            stream_processing_context.output_stream_index
         );
         while fifo.size() >= output_frame_size {
             load_encode_and_write(
                 fifo,
                 output_format_context,
                 &mut stream_processing_context.encode_context,
-                stream_processing_context.stream_index,
+                stream_processing_context.output_stream_index,
                 &mut stream_processing_context.pts,
             )?;
         }
@@ -349,7 +349,7 @@ pub(crate) fn process_subtitle_stream(
     if stream_processing_context.skip_stream {
         trace!(
             "Subtitle stream {} already skipped; dropping packet.",
-            stream_processing_context.stream_index
+            stream_processing_context.input_stream_index
         );
         return Ok(());
     }
@@ -367,7 +367,10 @@ pub(crate) fn process_subtitle_stream(
             if let Some(subtitle) = sub {
                 debug!(
                     "Subtitle stream {} raw packet pts={} dts={} duration={}",
-                    stream_processing_context.stream_index, packet.pts, packet.dts, packet.duration
+                    stream_processing_context.input_stream_index,
+                    packet.pts,
+                    packet.dts,
+                    packet.duration
                 );
                 // Conservative fixed buffer to avoid per-packet allocations in the hot path.
                 // If we see larger subtitle payloads in the future, raise this value or switch
@@ -421,14 +424,14 @@ pub(crate) fn process_subtitle_stream(
                     dts = pts;
                 }
 
-                encoded_packet.set_stream_index(stream_processing_context.stream_index);
+                encoded_packet.set_stream_index(stream_processing_context.output_stream_index);
                 encoded_packet.set_pts(pts);
                 encoded_packet.set_dts(dts);
                 encoded_packet.set_duration(packet.duration);
                 encoded_packet.set_flags(packet.flags);
 
                 let output_time_base = output_format_context.streams()
-                    [stream_processing_context.stream_index as usize]
+                    [stream_processing_context.output_stream_index as usize]
                     .time_base;
                 encoded_packet.rescale_ts(
                     stream_processing_context.decode_context.time_base,
@@ -445,7 +448,7 @@ pub(crate) fn process_subtitle_stream(
                         }
                         debug!(
                             "Subtitle stream {} adjusted DTS from {} to {}",
-                            stream_processing_context.stream_index, packet_dts, adjusted
+                            stream_processing_context.input_stream_index, packet_dts, adjusted
                         );
                     }
                 }
@@ -453,7 +456,7 @@ pub(crate) fn process_subtitle_stream(
                 stream_processing_context.last_written_dts = Some(encoded_packet.dts);
                 debug!(
                     "Subtitle stream {} final pts={} dts={} duration={} (tb={}/{})",
-                    stream_processing_context.stream_index,
+                    stream_processing_context.input_stream_index,
                     encoded_packet.pts,
                     encoded_packet.dts,
                     encoded_packet.duration,
@@ -466,7 +469,7 @@ pub(crate) fn process_subtitle_stream(
                     Err(rsmpeg::error::RsmpegError::AVError(code)) if code == -EINVAL => {
                         warn!(
                             "Subtitle stream {} produced invalid timestamps; skipping rest of stream.",
-                            stream_processing_context.stream_index
+                            stream_processing_context.input_stream_index
                         );
                         stream_processing_context.skip_stream = true;
                     }
