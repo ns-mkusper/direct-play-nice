@@ -118,5 +118,6 @@ dependencies = [
 ]
 
 [patch.crates-io]
-ort = { path = "vendor/ort" }
-paddle-ocr-rs = { path = "vendor/paddle-ocr-rs" }
+# Keep the Rust-side ort 2.0.0-rc.10 API required by paddle-ocr-rs while
+# allowing deployments to load the older ONNX Runtime 1.16 shared library.
+ort = { git = "https://github.com/ns-mkusper/ort.git", rev = "16452198ebbbe0e7bd7a4bb2f6d488b4623f20b1" }
