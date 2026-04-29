@@ -97,6 +97,10 @@ github-build-setup = "../templates/build-setup.yml"
 
 [workspace.metadata.dist.github-custom-runners]
 global = "ubuntu-22.04"
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
+x86_64-pc-windows-msvc = "windows-2022"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
 
 [package.metadata.vcpkg]
 dependencies = [
@@ -111,7 +115,7 @@ git = "https://github.com/microsoft/vcpkg.git"
 rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
-triplet = "x64-windows-static-md"
+triplet = "x64-windows-static"
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
