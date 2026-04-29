@@ -5,7 +5,7 @@ license = "GPL-3.0-only"
 documentation = "https://github.com/ns-mkusper/direct-play-nice"
 homepage = "https://github.com/ns-mkusper/direct-play-nice"
 repository = "https://github.com/ns-mkusper/direct-play-nice"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2021"
 
 
@@ -114,6 +114,20 @@ rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
 triplet = "x64-windows-static-md"
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
+  "x264[asm,core]",
+]
+
+[package.metadata.vcpkg.target.x86_64-apple-darwin]
+triplet = "x64-osx"
+dependencies = [
+  "ffmpeg[x264,vpx,freetype,fontconfig,dav1d]",
+  "x264[asm,core]",
+]
+
+[package.metadata.vcpkg.target.aarch64-apple-darwin]
+triplet = "arm64-osx"
+dependencies = [
+  "ffmpeg[x264,vpx,freetype,fontconfig,dav1d]",
   "x264[asm,core]",
 ]
 

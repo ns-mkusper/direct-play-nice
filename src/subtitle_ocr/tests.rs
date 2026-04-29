@@ -805,6 +805,7 @@ fn is_skippable_ort_runtime_error(msg: &str) -> bool {
     // CI runners often have an unexpected ORT runtime on PATH/LD path.
     // Skip these environment-specific failures so OCR logic tests remain stable.
     (lower.contains("libonnxruntime.so") && lower.contains("cannot open shared object file"))
+        || (lower.contains("libonnxruntime.dylib") && lower.contains("no such file"))
         || (lower.contains("onnxruntime.dll")
             && lower.contains("is not compatible with the onnx runtime binary found"))
         || lower.contains("expected getversionstring")

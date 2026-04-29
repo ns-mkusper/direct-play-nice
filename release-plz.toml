@@ -11,8 +11,8 @@ dependencies_update = true
 # create tags for the releases
 git_tag_enable = true
 
-# enable GitHub releases
-git_release_enable = true
+# cargo-dist owns GitHub releases so it can attach binary archives/checksums.
+git_release_enable = false
 
 # labels for the release PR
 pr_labels = ["release"]
