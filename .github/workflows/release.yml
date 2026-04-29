@@ -232,6 +232,7 @@ jobs:
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             export VCPKGRS_TRIPLET="x64-windows-static"
             export VCPKG_DEFAULT_TRIPLET="x64-windows-static"
+            export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=Mfplat.lib -C link-arg=Strmiids.lib -C link-arg=Mfuuid.lib -C link-arg=Bcrypt.lib -C link-arg=Ncrypt.lib -C link-arg=Crypt32.lib -C link-arg=Secur32.lib -C link-arg=Ole32.lib -C link-arg=User32.lib"
           fi
           # Actually do builds and make zips and whatnot
           cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
