@@ -624,17 +624,56 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+      - id: release-notes
+        name: Resolve GitHub Release notes
+        env:
+          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          if bash scripts/extract_changelog_release_notes.sh "$RELEASE_TAG" "$notes_file"; then
+            echo "Using CHANGELOG.md notes for $RELEASE_TAG."
+          else
+            echo "::warning title=Using cargo-dist release notes::No concrete CHANGELOG.md section found for $RELEASE_TAG."
+            printf '%s\n' "$ANNOUNCEMENT_BODY" > "$notes_file"
+          fi
+          echo "notes-file=$notes_file" >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
-          ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
           RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
+          RELEASE_NOTES_FILE: "${{ steps.release-notes.outputs.notes-file }}"
         run: |
-          # Write and read notes from a file to avoid quoting breaking things
-          echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          git fetch --force --tags origin
+          release_commit="$(git rev-list -n1 "$RELEASE_TAG" 2>/dev/null || true)"
+          if [[ -z "$release_commit" ]]; then
+            release_commit="$RELEASE_COMMIT"
+          fi
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          release_args=()
+          if [[ -n "$PRERELEASE_FLAG" ]]; then
+            release_args+=("$PRERELEASE_FLAG")
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" artifacts/* --clobber
+            gh release edit "$RELEASE_TAG" \
+              --target "$release_commit" \
+              "${release_args[@]}" \
+              --title "$ANNOUNCEMENT_TITLE" \
+              --notes-file "$RELEASE_NOTES_FILE"
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$release_commit" \
+              "${release_args[@]}" \
+              --title "$ANNOUNCEMENT_TITLE" \
+              --notes-file "$RELEASE_NOTES_FILE" \
+              artifacts/*
+          fi
 
   announce:
     needs:
