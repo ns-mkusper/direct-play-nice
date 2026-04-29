@@ -292,6 +292,17 @@ jobs:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
       VCPKGRS_TRIPLET: x64-windows-static
+      RUSTFLAGS: >-
+        -C target-feature=+crt-static
+        -C link-arg=Mfplat.lib
+        -C link-arg=Strmiids.lib
+        -C link-arg=Mfuuid.lib
+        -C link-arg=Bcrypt.lib
+        -C link-arg=Ncrypt.lib
+        -C link-arg=Crypt32.lib
+        -C link-arg=Secur32.lib
+        -C link-arg=Ole32.lib
+        -C link-arg=User32.lib
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -483,7 +494,9 @@ jobs:
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          RUSTFLAGS: ${{ env.RUSTFLAGS }}
           RUSTDOCFLAGS: >-
+            -C target-feature=+crt-static
             -C link-arg=Mfplat.lib
             -C link-arg=Strmiids.lib
             -C link-arg=Mfuuid.lib
