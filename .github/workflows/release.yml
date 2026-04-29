@@ -187,6 +187,10 @@ jobs:
             target/vcpkg/vcpkg
           "restore-keys": |
             vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-
+      - name: "Reset partial vcpkg workspace cache"
+        if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
+        shell: bash
+        run: rm -rf target/vcpkg
       - name: "Build vcpkg dependencies"
         if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
         shell: bash
