@@ -8,6 +8,37 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [0.1.0-beta.2] - 2026-04-29
+
+### 📌 Beta 2 Highlights
+
+- Published cargo-dist release binaries for Apple Silicon macOS, Intel macOS,
+  Linux, and Windows.
+- Added workflow-dispatch release reruns by tag so binary publishing can be
+  recovered without creating a new source release.
+- Added PR CI coverage for macOS Intel, macOS Apple Silicon, and Windows MSVC.
+
+### ⚙️ Release Pipeline
+
+- Pinned cargo-dist target runner labels to the current GitHub-hosted runner
+  fleet, including `macos-15`, `macos-15-intel`, `windows-2022`, and
+  `ubuntu-22.04`.
+- Split release vcpkg caches by target and reset partial restored caches before
+  building to avoid stale or malformed vcpkg workspaces.
+- Skipped release-workflow benchmarks only for manual binary reruns while
+  keeping the post-merge benchmark workflow as the release gate.
+- Made the release benchmark path explicitly build and validate the expected
+  release binary before running benchmark jobs.
+
+### 🧱 Platform Linkage
+
+- Added macOS framework link flags required by FFmpeg and VideoToolbox release
+  builds.
+- Aligned Windows CI and release builds on the `x64-windows-static` vcpkg
+  triplet and static MSVC CRT.
+- Passed Windows system library link flags through release workflow `RUSTFLAGS`
+  so static FFmpeg Schannel and Media Foundation objects link under cargo-dist.
+
 ## [0.1.0-beta.1] - 2026-04-26
 
 ### 📌 Beta 1 Highlights
