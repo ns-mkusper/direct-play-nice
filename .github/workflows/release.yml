@@ -166,7 +166,7 @@ jobs:
         id: "cargo-vcpkg-cache"
         uses: "actions/cache@v4"
         with:
-          "key": "cargo-vcpkg-${{ runner.os }}-v1"
+          "key": "cargo-vcpkg-${{ runner.os }}-${{ runner.arch }}-v1"
           "path": "~/.cargo/bin/cargo-vcpkg"
       - name: "Install vcpkg"
         if: "steps.cargo-vcpkg-cache.outputs.cache-hit != 'true'"
@@ -175,7 +175,7 @@ jobs:
         id: "vcpkg-cache"
         uses: "actions/cache@v4"
         with:
-          "key": "vcpkg-root-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}"
+          "key": "vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-${{ hashFiles('Cargo.toml') }}"
           "path": |
             target/vcpkg/.vcpkg-root
             target/vcpkg/downloads
@@ -186,7 +186,7 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
           "restore-keys": |
-            vcpkg-root-${{ runner.os }}-
+            vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-
       - name: "Build vcpkg dependencies"
         if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
         shell: bash
