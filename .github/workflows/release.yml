@@ -153,8 +153,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: "Install vcpkg build dependencies"
-        run: "sudo apt-get --assume-yes install nasm"
+      - name: "Install vcpkg build dependencies (Linux)"
+        if: runner.os == 'Linux'
+        run: "sudo apt-get update -y && sudo apt-get --assume-yes install nasm autoconf autoconf-archive automake libtool"
+      - name: "Install vcpkg build dependencies (macOS)"
+        if: runner.os == 'macOS'
+        run: "brew install nasm autoconf autoconf-archive automake libtool pkg-config"
+      - name: "Install vcpkg build dependencies (Windows)"
+        if: runner.os == 'Windows'
+        run: "choco install nasm strawberryperl -y"
       - name: "Cache cargo-vcpkg binary"
         id: "cargo-vcpkg-cache"
         uses: "actions/cache@v4"
@@ -182,7 +189,18 @@ jobs:
             vcpkg-root-${{ runner.os }}-
       - name: "Build vcpkg dependencies"
         if: "steps.vcpkg-cache.outputs.cache-hit != 'true'"
-        run: "cargo vcpkg --verbose build"
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if cargo vcpkg --verbose build; then
+              exit 0
+            fi
+            if [[ "$attempt" == "3" ]]; then
+              exit 1
+            fi
+            sleep $((attempt * 30))
+          done
         env:
           "CMAKE_BUILD_PARALLEL_LEVEL": 2
           "VCPKG_BINARY_SOURCES": "clear;x-gha,readwrite"
@@ -276,7 +294,7 @@ jobs:
   benchmark-runner-check:
     needs:
       - plan
-    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    if: ${{ needs.plan.outputs.publishing == 'true' && github.event_name != 'workflow_dispatch' }}
     runs-on: "ubuntu-22.04"
     permissions:
       contents: read
@@ -422,7 +440,22 @@ jobs:
           prefix-key: release-bench-v1
 
       - name: Build release binary
-        run: cargo build --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin direct_play_nice
+          bin_path="$(find target -path '*/release/direct_play_nice' -type f | head -n1)"
+          if [[ -z "$bin_path" ]]; then
+            echo "::error title=Missing benchmark binary::cargo build did not produce direct_play_nice."
+            find target -maxdepth 4 -type f -name 'direct_play_nice*' -print || true
+            exit 1
+          fi
+          mkdir -p target/release
+          if [[ "$bin_path" != "target/release/direct_play_nice" ]]; then
+            cp "$bin_path" target/release/direct_play_nice
+          fi
+          chmod +x target/release/direct_play_nice
+          ls -l target/release/direct_play_nice
 
       - name: Validate benchmark source path
         run: |
