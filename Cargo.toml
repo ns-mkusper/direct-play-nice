@@ -115,7 +115,7 @@ git = "https://github.com/microsoft/vcpkg.git"
 rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
-triplet = "x64-windows-static-md"
+triplet = "x64-windows-static"
 dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,qsv,amf]",
   "x264[asm,core]",
