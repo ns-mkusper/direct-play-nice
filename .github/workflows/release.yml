@@ -220,7 +220,11 @@ jobs:
         run: |
           ${{ matrix.packages_install }}
       - name: Build artifacts
+        shell: bash
         run: |
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-framework -C link-arg=Foundation -C link-arg=-framework -C link-arg=CoreAudio -C link-arg=-framework -C link-arg=AVFoundation -C link-arg=-framework -C link-arg=CoreGraphics -C link-arg=-framework -C link-arg=OpenGL -C link-arg=-framework -C link-arg=CoreImage -C link-arg=-framework -C link-arg=AppKit -C link-arg=-framework -C link-arg=AudioToolbox -C link-arg=-framework -C link-arg=CoreFoundation -C link-arg=-framework -C link-arg=CoreMedia -C link-arg=-framework -C link-arg=CoreVideo -C link-arg=-framework -C link-arg=CoreServices -C link-arg=-framework -C link-arg=Security -C link-arg=-framework -C link-arg=VideoToolbox"
+          fi
           # Actually do builds and make zips and whatnot
           cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "cargo dist ran successfully"
