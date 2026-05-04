@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.1.0-beta.3] - 2026-05-04
 
-### ⚙️ Release Pipeline
+### ⚙️ Release Validation
 
 - Added a release-readiness check that requires concrete `CHANGELOG.md` notes
   for the exact `Cargo.toml` version before release-impacting PRs can merge.
