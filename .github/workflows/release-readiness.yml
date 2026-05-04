@@ -58,6 +58,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Validate matching changelog release notes
+        if: steps.changes.outputs.enforce == 'true'
+        shell: bash
+        run: bash scripts/validate_release_changelog.sh
+
       - name: Decide if merge will release
         if: steps.changes.outputs.enforce == 'true'
         shell: bash

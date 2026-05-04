@@ -33,7 +33,8 @@ Use this process when cutting a new source and binary release.
 4. Open a PR with the version bump and changelog entry.
 
    The release-readiness workflow checks whether release metadata will be
-   updated on merge.
+   updated on merge and verifies that `CHANGELOG.md` already contains concrete
+   notes for the exact `Cargo.toml` version.
 
 ## Merge and Verify
 
