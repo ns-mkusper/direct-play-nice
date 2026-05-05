@@ -307,7 +307,11 @@ jobs:
   benchmark-runner-check:
     needs:
       - plan
-    if: ${{ needs.plan.outputs.publishing == 'true' && github.event_name != 'workflow_dispatch' }}
+    # Binary publishing should not rerun benchmarks. The dedicated
+    # Benchmarks (Post-Merge) workflow is the release gate, and rerunning the
+    # same workload here can block tag-triggered artifact publication after
+    # that gate has already passed.
+    if: ${{ false }}
     runs-on: "ubuntu-22.04"
     permissions:
       contents: read
@@ -360,7 +364,10 @@ jobs:
     needs:
       - plan
       - benchmark-runner-check
-    if: ${{ needs.plan.outputs.publishing == 'true' && needs.benchmark-runner-check.outputs.run-benchmarks == 'true' }}
+    # Keep this job skipped for tag-triggered and manually-dispatched release
+    # publishing. It remains in the graph so host can continue to require that
+    # benchmarks are either skipped or successful.
+    if: ${{ false }}
     runs-on:
       - self-hosted
       - Linux
