@@ -137,6 +137,7 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     }
 
     output_ctx.write_trailer()?;
+    drop(output_ctx);
 
     replace_output_file(&tmp_out, &output_path, "container remux")?;
 
@@ -257,6 +258,7 @@ pub fn mux_text_tracks_from(
     }
 
     output_ctx.write_trailer()?;
+    drop(output_ctx);
 
     replace_output_file(&tmp_out, &output_path, "subtitle remux")?;
 
@@ -477,7 +479,77 @@ pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::replace_output_file;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use super::{mux_text_tracks_from, remux_copy_streams};
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use crate::subtitle_ocr::OcrSubtitleTrack;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use crate::OcrFormat;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use rsmpeg::{avformat::AVFormatContextInput, ffi};
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use std::ffi::CString;
     use std::fs;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use std::io::Write;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use std::path::Path;
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    use std::process::Command;
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    fn ensure_ffmpeg_present() {
+        let out = Command::new("ffmpeg").arg("-version").output();
+        match out {
+            Ok(o) if o.status.success() => {}
+            _ => panic!("ffmpeg CLI not found. Install ffmpeg and ensure it is on PATH."),
+        }
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    fn write_test_video(path: &Path) {
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=96x64:rate=10:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "mp2",
+                "-shortest",
+                path.to_str().expect("path utf8"),
+            ])
+            .status()
+            .expect("run ffmpeg test video generation");
+        assert!(status.success(), "ffmpeg test video generation failed");
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    fn write_srt(path: &Path) {
+        let mut file = fs::File::create(path).expect("create srt");
+        writeln!(
+            file,
+            "1\n00:00:00,000 --> 00:00:00,800\nreplacement subtitle\n"
+        )
+        .expect("write srt");
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    fn cstring_path(path: &Path) -> CString {
+        CString::new(path.to_string_lossy().to_string()).expect("path cstring")
+    }
 
     #[test]
     fn replace_output_file_overwrites_existing_destination() {
@@ -494,6 +566,69 @@ mod tests {
         assert!(
             !tmp_out.exists(),
             "temporary output should be moved into place"
+        );
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    #[test]
+    fn remux_copy_streams_replaces_existing_destination() {
+        ensure_ffmpeg_present();
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let input = tmp.path().join("input.mkv");
+        let output = tmp.path().join("output.mkv");
+        write_test_video(&input);
+        fs::write(&output, b"stale output").expect("write stale output");
+
+        let input_cstr = cstring_path(&input);
+        let output_cstr = cstring_path(&output);
+        remux_copy_streams(input_cstr.as_c_str(), output_cstr.as_c_str())
+            .expect("remux should replace stale output");
+
+        assert_ne!(
+            fs::read(&output).expect("read output"),
+            b"stale output",
+            "remux output was not replaced"
+        );
+        let output_cstr = cstring_path(&output);
+        AVFormatContextInput::open(output_cstr.as_c_str()).expect("open replaced remux output");
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    #[test]
+    fn mux_text_tracks_from_replaces_existing_destination() {
+        ensure_ffmpeg_present();
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let input = tmp.path().join("input.mkv");
+        let subtitles = tmp.path().join("ocr.srt");
+        let output = tmp.path().join("output.mkv");
+        write_test_video(&input);
+        write_srt(&subtitles);
+        fs::write(&output, b"stale output").expect("write stale output");
+
+        let input_cstr = cstring_path(&input);
+        let output_cstr = cstring_path(&output);
+        let tracks = [OcrSubtitleTrack {
+            language: "eng".to_string(),
+            subtitle_path: subtitles,
+            format: OcrFormat::Srt,
+        }];
+        mux_text_tracks_from(input_cstr.as_c_str(), output_cstr.as_c_str(), &tracks)
+            .expect("subtitle mux should replace stale output");
+
+        assert_ne!(
+            fs::read(&output).expect("read output"),
+            b"stale output",
+            "subtitle mux output was not replaced"
+        );
+        let output_cstr = cstring_path(&output);
+        let output_ctx =
+            AVFormatContextInput::open(output_cstr.as_c_str()).expect("open replaced mux output");
+        assert!(
+            output_ctx
+                .streams()
+                .iter()
+                .any(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE),
+            "expected muxed output to include a subtitle stream"
         );
     }
 }
