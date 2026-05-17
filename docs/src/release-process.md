@@ -105,5 +105,6 @@ curl -sS https://crates.io/api/v1/crates/direct_play_nice/0.1.0-beta.3
   assets with the same names.
 - The workflow resolves the GitHub release target from the requested tag, not
   from the branch used to dispatch the workflow.
-- Release-workflow benchmarks are skipped for manual binary reruns. The
-  post-merge benchmark pipeline remains the release gate.
+- Release-workflow binary publishing does not rerun benchmarks. It waits for
+  the matching `Benchmarks (Post-Merge)` run on `main` to pass before publishing
+  or repairing binaries.
