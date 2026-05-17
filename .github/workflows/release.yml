@@ -304,275 +304,77 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
-  benchmark-runner-check:
-    needs:
-      - plan
-    # Binary publishing should not rerun benchmarks. The dedicated
-    # Benchmarks (Post-Merge) workflow is the release gate, and rerunning the
-    # same workload here can block tag-triggered artifact publication after
-    # that gate has already passed.
-    if: ${{ false }}
-    runs-on: "ubuntu-22.04"
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      run-benchmarks: ${{ steps.check.outputs.run-benchmarks }}
-    env:
-      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
-      HOME: /tmp/direct-play-nice-gha-home
-      CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
-      RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
-      FALLBACK_GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN != '' && secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Generate runner app token
-        id: runner-app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.RUNNER_APP_ID }}
-          private-key: ${{ secrets.RUNNER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
-      - id: check
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.runner-app-token.outputs.token != '' && steps.runner-app-token.outputs.token || env.FALLBACK_GH_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${BENCHMARK_SOURCE_PATH:-}" ]]; then
-            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping benchmarks: BENCHMARK_SOURCE_PATH secret is not set."
-            exit 0
-          fi
-
-          if ! has_runner="$(gh api repos/${{ github.repository }}/actions/runners --paginate \
-            --jq '[.runners[] | select(.status=="online" and ([.labels[].name] | index("plex-bench")))] | length > 0')"; then
-            echo "::warning::Unable to query self-hosted runner inventory via API; skipping benchmarks."
-            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "$has_runner" == "true" ]]; then
-            echo "run-benchmarks=true" >> "$GITHUB_OUTPUT"
-            echo "Benchmark runner is online."
-          else
-            echo "run-benchmarks=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping benchmarks: no online self-hosted runner with label 'plex-bench'."
-          fi
-
   benchmarks:
     needs:
       - plan
-      - benchmark-runner-check
-    # Keep this job skipped for tag-triggered and manually-dispatched release
-    # publishing. It remains in the graph so host can continue to require that
-    # benchmarks are either skipped or successful.
-    if: ${{ false }}
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - plex-bench
-    timeout-minutes: 180
+    name: Verify Post-Merge Benchmarks
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    timeout-minutes: 190
     permissions:
       contents: read
       actions: read
-    env:
-      BENCHMARK_SOURCE_PATH: ${{ secrets.BENCHMARK_SOURCE_PATH }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Ensure benchmark dependencies
+          fetch-depth: 0
+      - name: Wait for post-merge benchmark gate
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake; do
-            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          git fetch --tags --force origin
+          if ! release_commit="$(git rev-list -n 1 "$RELEASE_TAG")"; then
+            echo "::error title=Release tag not found::Unable to resolve ${RELEASE_TAG} to a commit."
+            exit 1
+          fi
+
+          echo "Waiting for Benchmarks (Post-Merge) to pass for ${release_commit}."
+          deadline=$((SECONDS + 180 * 60))
+          latest_url=""
+
+          while (( SECONDS < deadline )); do
+            runs="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "benchmarks-manual.yml" \
+              --branch main \
+              --commit "$release_commit" \
+              --json databaseId,status,conclusion,url,createdAt,updatedAt \
+              --limit 10)"
+
+            latest_url="$(jq -r 'sort_by(.createdAt) | reverse | .[0].url // ""' <<<"$runs")"
+            success_url="$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")] | sort_by(.createdAt) | reverse | .[0].url // ""' <<<"$runs")"
+            if [[ -n "$success_url" ]]; then
+              echo "Post-merge benchmark gate passed: ${success_url}"
+              exit 0
+            fi
+
+            active_count="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
+            failed_url="$(jq -r '[.[] | select(.status == "completed" and .conclusion != "success")] | sort_by(.createdAt) | reverse | .[0].url // ""' <<<"$runs")"
+            failed_conclusion="$(jq -r '[.[] | select(.status == "completed" and .conclusion != "success")] | sort_by(.createdAt) | reverse | .[0].conclusion // ""' <<<"$runs")"
+            if [[ "$active_count" == "0" && -n "$failed_url" ]]; then
+              echo "::error title=Post-merge benchmark gate failed::Latest benchmark run concluded ${failed_conclusion}: ${failed_url}"
+              exit 1
+            fi
+
+            if [[ -n "$latest_url" ]]; then
+              latest_status="$(jq -r 'sort_by(.createdAt) | reverse | .[0] | "\(.status) / \(.conclusion // "pending")"' <<<"$runs")"
+              echo "Benchmark gate is not complete yet (${latest_status}): ${latest_url}"
+            else
+              echo "No Benchmarks (Post-Merge) run found yet for ${release_commit}."
+            fi
+            sleep 60
           done
 
-          if [[ "${#missing[@]}" -eq 0 ]]; then
-            echo "Benchmark dependencies already present."
-            exit 0
+          if [[ -n "$latest_url" ]]; then
+            echo "::error title=Post-merge benchmark gate timed out::Benchmarks did not pass before timeout. Latest run: ${latest_url}"
+          else
+            echo "::error title=Post-merge benchmark gate missing::No Benchmarks (Post-Merge) run found for ${release_commit}."
           fi
-
-          echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}. Preinstall them in the self-hosted runner image."
           exit 1
-
-      - name: Prepare Rust home directories
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-vcpkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v cargo-vcpkg >/dev/null 2>&1 || cargo install cargo-vcpkg --locked
-
-      - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            target/vcpkg/installed
-            target/vcpkg/packages
-            target/vcpkg/downloads
-            target/vcpkg/buildtrees
-          key: vcpkg-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
-          restore-keys: |
-            vcpkg-release-${{ runner.os }}-
-
-      - name: Build vcpkg dependencies
-        env:
-          VCPKG_FEATURE_FLAGS: manifests,binarycaching
-          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
-          VCPKG_CMAKE_CONFIGURE_OPTIONS: -Wno-dev -DCMAKE_POLICY_DEFAULT_CMP0174=NEW
-          VCPKG_MAX_CONCURRENCY: 2
-          CMAKE_BUILD_PARALLEL_LEVEL: 2
-        run: cargo vcpkg --verbose build
-
-      - name: Export VCPKG_ROOT
-        run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
-
-      - name: Export LIBCLANG_PATH
-        shell: bash
-        run: |
-          set -euo pipefail
-          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
-          if [[ -z "$libclang_path" ]]; then
-            echo "::error title=Missing libclang::Runner image must include libclang shared library."
-            exit 1
-          fi
-          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
-
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
-
-      - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: release-bench-v1
-
-      - name: Build release binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release --bin direct_play_nice
-          bin_path="$(find target -path '*/release/direct_play_nice' -type f | head -n1)"
-          if [[ -z "$bin_path" ]]; then
-            echo "::error title=Missing benchmark binary::cargo build did not produce direct_play_nice."
-            find target -maxdepth 4 -type f -name 'direct_play_nice*' -print || true
-            exit 1
-          fi
-          mkdir -p target/release
-          if [[ "$bin_path" != "target/release/direct_play_nice" ]]; then
-            cp "$bin_path" target/release/direct_play_nice
-          fi
-          chmod +x target/release/direct_play_nice
-          ls -l target/release/direct_play_nice
-
-      - name: Validate benchmark source path
-        run: |
-          test -n "$BENCHMARK_SOURCE_PATH"
-          test -f "$BENCHMARK_SOURCE_PATH"
-          mkdir -p benchmark_artifacts
-
-      - name: Ensure free disk headroom
-        shell: bash
-        run: |
-          set -euo pipefail
-          avail_kb="$(df --output=avail -k / | tail -n1 | tr -d ' ')"
-          min_kb="$((10 * 1024 * 1024))"
-          if (( avail_kb < min_kb )); then
-            echo "::error title=Insufficient disk space::Need at least 10GiB free on /. Available: ${avail_kb} KiB."
-            exit 1
-          fi
-
-      - name: Validate GPU acceleration path
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v nvidia-smi >/dev/null 2>&1
-          nvidia-smi -L
-          ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
-
-      - name: Validate OCR runtime path
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f /opt/direct-play-nice/ort122-runtime/lib/libonnxruntime.so
-          test -f /opt/direct-play-nice/ort116-runtime/lib/libcublasLt.so.12
-          test -f /opt/direct-play-nice/cudnn9-runtime/lib/libcudnn.so.9
-          test -f /opt/direct-play-nice/nvrtc12-runtime/lib/libnvrtc.so.12
-          test -f /opt/direct-play-nice/cudnn8-runtime/usr/lib/libcudnn.so.8
-
-      - name: Run OCR benchmark
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
-            --bin target/release/direct_play_nice \
-            --source "$BENCHMARK_SOURCE_PATH" \
-            --run-dir benchmark_artifacts/ocr \
-            --output-name ocr.mp4 \
-            --ocr-engine pp-ocr-v3 \
-            --sub-mode force \
-            --max-source-seconds 240 \
-            --sample-ms 200 \
-            --ocr-max-jobs 1 \
-            --jobs-per-gpu 1 \
-            --cuda-devices 0 \
-            --ort-lib /opt/direct-play-nice/ort122-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
-            --env "DPN_OCR_SKIP_CLS=1"
-
-      - name: Run transcoding benchmark
-        run: |
-          bash scripts/transcode-tools/run_transcode_benchmark.sh \
-            --bin target/release/direct_play_nice \
-            --source "$BENCHMARK_SOURCE_PATH" \
-            --run-dir benchmark_artifacts/transcode \
-            --hw-accel nvenc \
-            --video-quality 1080p \
-            --sub-mode skip \
-            --max-source-seconds 300 \
-            --sample-ms 200
-
-      - name: Collect benchmark artifacts
-        if: always()
-        run: |
-          [[ -f benchmark_artifacts/transcode/benchmark_summary.md ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md || true
-          [[ -f benchmark_artifacts/transcode/benchmark_summary.json ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json || true
-          [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
-          [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
-          [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
-          [[ -f benchmark_artifacts/ocr/gpu_smi.csv ]] && cp -f benchmark_artifacts/ocr/gpu_smi.csv benchmark_artifacts/OCR_BENCHMARK_GPU.csv || true
-
-      - name: Upload benchmark artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-benchmarks
-          path: |
-            benchmark_artifacts/TRANSCODE_BENCHMARK.md
-            benchmark_artifacts/TRANSCODE_BENCHMARK.json
-            benchmark_artifacts/OCR_BENCHMARK.md
-            benchmark_artifacts/OCR_BENCHMARK.json
-            benchmark_artifacts/OCR_BENCHMARK.log
-            benchmark_artifacts/OCR_BENCHMARK_GPU.csv
-
-      - name: Cleanup local benchmark outputs
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf benchmark_artifacts
   # Determines if we should publish/announce
   host:
     needs:
@@ -580,8 +382,8 @@ jobs:
       - build-local-artifacts
       - build-global-artifacts
       - benchmarks
-    # Only run if we're "publishing", and only if local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.benchmarks.result == 'skipped' || needs.benchmarks.result == 'success') }}
+    # Only run if we're publishing, artifacts built cleanly, and the post-merge benchmark gate passed.
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && needs.benchmarks.result == 'success' }}
     permissions:
       contents: write
       actions: read
