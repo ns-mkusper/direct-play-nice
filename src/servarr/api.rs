@@ -3,6 +3,7 @@
 use super::env_helpers::get_env_ignore_case;
 use super::language::{normalize_language_tag, LanguageRequirements};
 use super::IntegrationKind;
+use crate::ServarrLanguageCandidatePolicy;
 use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
@@ -14,9 +15,25 @@ pub struct ApiSettings {
     pub api_key: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedownloadOptions {
+    pub dry_run: bool,
+    pub candidate_policy: ServarrLanguageCandidatePolicy,
+}
+
+impl Default for RedownloadOptions {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedownloadOutcome {
     Grabbed { title: String },
+    DryRun { summary: String },
     NoVerifiedRelease { reason: String },
 }
 
@@ -24,15 +41,18 @@ pub fn trigger_verified_redownload(
     kind: IntegrationKind,
     settings: &ApiSettings,
     requirements: &LanguageRequirements,
+    options: RedownloadOptions,
 ) -> Result<RedownloadOutcome> {
     let client = ApiClient::from_settings(kind, settings)?;
     let target = Target::from_env(kind)?;
     let releases = client.search_releases(&target)?;
-    let Some(release) = select_verified_release(&releases, requirements) else {
+    let Some(release) = select_verified_release(&releases, requirements, options.candidate_policy)
+    else {
         return Ok(RedownloadOutcome::NoVerifiedRelease {
             reason: format!(
-                "{} manual search returned no approved release with verified required audio{} languages",
+                "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
                 kind.label(),
+                options.candidate_policy,
                 if requirements.subtitles.is_empty() {
                     ""
                 } else {
@@ -42,6 +62,17 @@ pub fn trigger_verified_redownload(
         });
     };
 
+    let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
+    let evidence = release_match_evidence(release, requirements, options.candidate_policy);
+    if options.dry_run {
+        return Ok(RedownloadOutcome::DryRun {
+            summary: format!(
+                "would grab '{}' using {:?} policy ({}) and then blocklist the current history item if identifiable",
+                title, options.candidate_policy, evidence
+            ),
+        });
+    }
+
     let Some(history_id) = client.find_current_history_id(kind)? else {
         bail!(
             "{} found a verified replacement but could not identify the current download history record to blacklist; refusing to grab replacement.",
@@ -49,7 +80,6 @@ pub fn trigger_verified_redownload(
         );
     };
 
-    let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
     client.grab_release(release)?;
     client.mark_history_failed(history_id)?;
     info!(
@@ -233,11 +263,12 @@ impl Target {
 fn select_verified_release<'a>(
     releases: &'a [Value],
     requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
 ) -> Option<&'a Value> {
     releases
         .iter()
         .filter(|release| release_is_grabbable(release))
-        .filter(|release| release_satisfies_languages(release, requirements))
+        .filter(|release| release_satisfies_languages(release, requirements, policy))
         .max_by_key(|release| release_score(release))
 }
 
@@ -251,26 +282,71 @@ fn release_is_grabbable(release: &Value) -> bool {
     true
 }
 
-fn release_satisfies_languages(release: &Value, requirements: &LanguageRequirements) -> bool {
-    let langs = release_languages(release);
-    let missing_audio = requirements.audio.iter().any(|lang| !langs.contains(lang));
-    if missing_audio {
-        return false;
-    }
+fn release_satisfies_languages(
+    release: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    let audio_ok = release_audio_satisfies(release, requirements, policy);
+    let subtitles_ok = release_subtitles_satisfy(release, requirements, policy);
+    audio_ok && subtitles_ok
+}
 
+fn release_audio_satisfies(
+    release: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    if requirements.audio.is_empty() {
+        return true;
+    }
+    let langs = release_languages(release);
+    if requirements.audio.iter().all(|lang| langs.contains(lang)) {
+        return true;
+    }
+    match policy {
+        ServarrLanguageCandidatePolicy::Strict => false,
+        ServarrLanguageCandidatePolicy::CustomFormat => {
+            custom_formats_indicate_audio(release, &requirements.audio)
+        }
+        ServarrLanguageCandidatePolicy::CustomFormatOrTitle => {
+            custom_formats_indicate_audio(release, &requirements.audio)
+                || title_indicates_audio(release, &requirements.audio, false)
+        }
+        ServarrLanguageCandidatePolicy::TitleGuess => {
+            custom_formats_indicate_audio(release, &requirements.audio)
+                || title_indicates_audio(release, &requirements.audio, true)
+        }
+    }
+}
+
+fn release_subtitles_satisfy(
+    release: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
     if requirements.subtitles.is_empty() {
         return true;
     }
-
-    // Sonarr/Radarr release resources do not reliably expose subtitle-track
-    // language availability. Only accept a candidate if a future API/provider
-    // includes explicit subtitle language fields we can normalize.
     let subtitle_langs = release_subtitle_languages(release);
-    !subtitle_langs.is_empty()
+    if !subtitle_langs.is_empty()
         && requirements
             .subtitles
             .iter()
             .all(|lang| subtitle_langs.contains(lang))
+    {
+        return true;
+    }
+    match policy {
+        ServarrLanguageCandidatePolicy::Strict => false,
+        ServarrLanguageCandidatePolicy::CustomFormat => custom_formats_indicate_subtitles(release),
+        ServarrLanguageCandidatePolicy::CustomFormatOrTitle => {
+            custom_formats_indicate_subtitles(release) || title_indicates_subtitles(release, false)
+        }
+        ServarrLanguageCandidatePolicy::TitleGuess => {
+            custom_formats_indicate_subtitles(release) || title_indicates_subtitles(release, true)
+        }
+    }
 }
 
 fn release_languages(release: &Value) -> BTreeSet<String> {
@@ -286,6 +362,135 @@ fn release_subtitle_languages(release: &Value) -> BTreeSet<String> {
         collect_language_values(release.get(key), &mut out);
     }
     out
+}
+
+fn custom_formats(release: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(items) = release.get("customFormats").and_then(Value::as_array) {
+        for item in items {
+            if let Some(name) = item.get("name").and_then(Value::as_str) {
+                out.push(name.to_ascii_lowercase());
+            } else if let Some(name) = item.as_str() {
+                out.push(name.to_ascii_lowercase());
+            }
+        }
+    }
+    out
+}
+
+fn release_title_lower(release: &Value) -> String {
+    release_title(release)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .replace(['.', '_', '-'], " ")
+}
+
+fn custom_formats_indicate_audio(release: &Value, required_audio: &[String]) -> bool {
+    let formats = custom_formats(release);
+    if formats
+        .iter()
+        .any(|f| f.contains("multi") && (f.contains("audio") || f.contains("dub")))
+    {
+        return true;
+    }
+    if required_audio.iter().any(|l| l == "eng")
+        && formats
+            .iter()
+            .any(|f| f.contains("dub") || f.contains("eng"))
+    {
+        return true;
+    }
+    false
+}
+
+fn custom_formats_indicate_subtitles(release: &Value) -> bool {
+    custom_formats(release)
+        .iter()
+        .any(|f| f.contains("sub") || f.contains("msub"))
+}
+
+fn title_indicates_audio(release: &Value, required_audio: &[String], loose: bool) -> bool {
+    let title = release_title_lower(release);
+    if title.contains("dual audio") || title.contains("multi audio") || title.contains("multi dub")
+    {
+        return true;
+    }
+    if required_audio.iter().any(|l| l == "eng")
+        && (title.contains("english dub") || title.contains("eng dub"))
+    {
+        return true;
+    }
+    if loose {
+        return required_audio.iter().any(|lang| match lang.as_str() {
+            "eng" => title.contains("eng") || title.contains("dub"),
+            "jpn" => title.contains("jpn") || title.contains("jap") || title.contains("japanese"),
+            "spa" => title.contains("spa") || title.contains("spanish"),
+            "fra" => title.contains("fre") || title.contains("fra") || title.contains("french"),
+            _ => title.contains(lang),
+        });
+    }
+    false
+}
+
+fn title_indicates_subtitles(release: &Value, loose: bool) -> bool {
+    let title = release_title_lower(release);
+    title.contains("multi subs")
+        || title.contains("multi sub")
+        || title.contains("msubs")
+        || title.contains("multi subtitles")
+        || (loose && (title.contains("sub") || title.contains("subs")))
+}
+
+fn release_match_evidence(
+    release: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> String {
+    let mut parts = Vec::new();
+    let langs = release_languages(release);
+    if !langs.is_empty() {
+        parts.push(format!(
+            "release languages [{}]",
+            langs.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let subtitle_langs = release_subtitle_languages(release);
+    if !subtitle_langs.is_empty() {
+        parts.push(format!(
+            "subtitle languages [{}]",
+            subtitle_langs.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let formats = custom_formats(release);
+    if !formats.is_empty() {
+        parts.push(format!("custom formats [{}]", formats.join(", ")));
+    }
+    if policy != ServarrLanguageCandidatePolicy::Strict {
+        if custom_formats_indicate_audio(release, &requirements.audio) {
+            parts.push("custom-format audio hint".to_string());
+        }
+        if custom_formats_indicate_subtitles(release) {
+            parts.push("custom-format subtitle hint".to_string());
+        }
+        if title_indicates_audio(
+            release,
+            &requirements.audio,
+            policy == ServarrLanguageCandidatePolicy::TitleGuess,
+        ) {
+            parts.push("title audio hint".to_string());
+        }
+        if title_indicates_subtitles(
+            release,
+            policy == ServarrLanguageCandidatePolicy::TitleGuess,
+        ) {
+            parts.push("title subtitle hint".to_string());
+        }
+    }
+    if parts.is_empty() {
+        "no language evidence".to_string()
+    } else {
+        parts.join("; ")
+    }
 }
 
 fn collect_language_values(value: Option<&Value>, out: &mut BTreeSet<String>) {
@@ -494,6 +699,7 @@ mod tests {
                 audio: vec!["eng".to_string()],
                 subtitles: Vec::new(),
             },
+            RedownloadOptions::default(),
         )
         .unwrap();
 
@@ -543,6 +749,7 @@ mod tests {
                 audio: vec!["eng".to_string()],
                 subtitles: Vec::new(),
             },
+            RedownloadOptions::default(),
         )
         .unwrap();
 
@@ -589,6 +796,7 @@ mod tests {
                 audio: vec!["eng".to_string()],
                 subtitles: Vec::new(),
             },
+            RedownloadOptions::default(),
         )
         .unwrap_err();
 
@@ -598,6 +806,94 @@ mod tests {
         search.assert();
 
         env::remove_var("sonarr_episode_id");
+    }
+
+    #[test]
+    fn dry_run_does_not_grab_or_blocklist() {
+        let _guard = env_lock();
+        env::set_var("sonarr_episode_id", "77");
+        env::set_var("DIRECT_PLAY_NICE_SONARR_HISTORY_ID", "1234");
+
+        let mut server = mockito::Server::new();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "title":"dry run candidate",
+                    "rejected": false,
+                    "languages":[{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+
+        let outcome = trigger_verified_redownload(
+            IntegrationKind::Sonarr,
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string()],
+                subtitles: Vec::new(),
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, RedownloadOutcome::DryRun { .. }));
+        search.assert();
+
+        env::remove_var("sonarr_episode_id");
+        env::remove_var("DIRECT_PLAY_NICE_SONARR_HISTORY_ID");
+    }
+
+    #[test]
+    fn custom_format_policy_accepts_multi_audio_and_multi_sub_hints() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string(), "jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        };
+        let releases = vec![json!({
+            "title":"candidate",
+            "rejected": false,
+            "customFormats":[{"name":"Anime-multi-audio"}, {"name":"anime-multi-sub"}],
+            "customFormatScore": 600
+        })];
+
+        assert!(select_verified_release(
+            &releases,
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormat
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn title_policy_accepts_dual_audio_multi_sub_tokens() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string(), "jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        };
+        let releases = vec![json!({
+            "title":"Show S01E01 1080p Dual-Audio Multi-Subs",
+            "rejected": false
+        })];
+
+        assert!(select_verified_release(
+            &releases,
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+        )
+        .is_some());
     }
 
     #[test]
@@ -613,7 +909,9 @@ mod tests {
             json!({"title":"good", "rejected": false, "languages":[{"name":"English"}], "customFormatScore": 10}),
         ];
 
-        let selected = select_verified_release(&releases, &req).unwrap();
+        let selected =
+            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
+                .unwrap();
         assert_eq!(release_title(selected).as_deref(), Some("good"));
     }
 
@@ -625,7 +923,10 @@ mod tests {
             subtitles: vec!["spa".to_string()],
         };
         let releases = vec![json!({"title":"ambiguous", "languages":[{"name":"English"}]})];
-        assert!(select_verified_release(&releases, &req).is_none());
+        assert!(
+            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
+                .is_none()
+        );
     }
 
     #[test]
@@ -640,6 +941,9 @@ mod tests {
             "languages":[{"name":"English"}],
             "subtitleLanguages":[{"name":"Spanish"}]
         })];
-        assert!(select_verified_release(&releases, &req).is_some());
+        assert!(
+            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
+                .is_some()
+        );
     }
 }

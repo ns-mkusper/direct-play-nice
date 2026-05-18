@@ -54,8 +54,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--servarr-language-check` enable pre-conversion language checks for Arr downloads
 - `--required-audio-languages <LANGS>` comma-separated ISO-639 tags such as `eng,jpn`
 - `--required-subtitle-languages <LANGS>` comma-separated ISO-639 tags such as `eng,spa`
-- `--servarr-api-url <URL>` Sonarr/Radarr base URL for mismatch redownload searches
-- `--servarr-api-key <KEY>` Sonarr/Radarr API key for mismatch redownload searches
+- `--servarr-api-url <URL>` Sonarr/Radarr base URL for mismatch replacement checks
+- `--servarr-api-key <KEY>` Sonarr/Radarr API key for mismatch replacement checks
+- `--servarr-language-dry-run` evaluate candidates without grabbing or blocklisting
+- `--servarr-language-candidate-policy <POLICY>` `strict|custom-format|custom-format-or-title|title-guess`
 - `--delete-source [<BOOL>]`
 
 ## Subtitle OCR options

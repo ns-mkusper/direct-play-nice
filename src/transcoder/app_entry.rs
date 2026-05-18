@@ -195,6 +195,10 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
             url: args.servarr_api_url.clone(),
             api_key: args.servarr_api_key.clone(),
         },
+        redownload_options: servarr::RedownloadOptions {
+            dry_run: args.servarr_language_dry_run,
+            candidate_policy: args.servarr_language_candidate_policy,
+        },
     };
     servarr::prepare_from_env(servarr_view)
 }
