@@ -208,6 +208,8 @@ mod tests {
             has_output: false,
             desired_extension: "mp4",
             desired_suffix: "",
+            language_requirements: LanguageRequirements::default(),
+            api_settings: ApiSettings::default(),
         };
 
         let prep = prepare_from_env(view).unwrap();
@@ -240,6 +242,8 @@ mod tests {
             has_output: false,
             desired_extension: "mp4",
             desired_suffix: "",
+            language_requirements: LanguageRequirements::default(),
+            api_settings: ApiSettings::default(),
         };
 
         let prep = prepare_from_env(view).unwrap();

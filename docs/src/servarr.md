@@ -29,6 +29,29 @@ Example command in Sonarr custom script:
 /path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
 ```
 
+## Optional language mismatch redownload search
+
+Language checks are off by default. When enabled on a Sonarr/Radarr `Download`
+event, `direct-play-nice` inspects the imported file before conversion. If any
+configured audio or subtitle language is missing, conversion is skipped and a
+monitored search command is sent back to Sonarr/Radarr. The Arr service still
+applies its own quality/profile/indexer rules, so a replacement is only grabbed
+when an acceptable release is available.
+
+Example config:
+
+```toml
+servarr_language_check = true
+required_audio_languages = "eng,jpn"
+required_subtitle_languages = "eng"
+servarr_api_url = "http://127.0.0.1:8989"
+servarr_api_key = "..."
+```
+
+`servarr_api_url` and `servarr_api_key` can also be supplied with CLI flags or
+environment variables. Supported env names include `SONARR_URL`,
+`SONARR_API_KEY`, `RADARR_URL`, and `RADARR_API_KEY`.
+
 ## Practical wrapper pattern
 
 For GPU OCR environments, keep a stable wrapper script as the command Sonarr

@@ -6,9 +6,14 @@ use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
+mod api;
 mod env_helpers;
+mod language;
 mod media_paths;
 mod path_policy;
+
+pub use api::ApiSettings;
+pub use language::{parse_language_list, LanguageRequirements};
 
 #[cfg(test)]
 mod servarr_tests;
@@ -204,13 +209,15 @@ impl ReplacePlan {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 /// Borrowed view of CLI path-related arguments used by Servarr planning.
 pub struct ArgsView<'a> {
     pub has_input: bool,
     pub has_output: bool,
     pub desired_extension: &'a str,
     pub desired_suffix: &'a str,
+    pub language_requirements: LanguageRequirements,
+    pub api_settings: ApiSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +317,47 @@ fn prepare_download(
 
     let display_name = get_env_ignore_case(kind.title_var());
     let is_upgrade = get_env_ignore_case(kind.is_upgrade_var()).and_then(parse_boolish);
+
+    if view.language_requirements.enabled
+        && view.language_requirements.audio.is_empty()
+        && view.language_requirements.subtitles.is_empty()
+    {
+        warn!(
+            "{} language check is enabled but no required audio/subtitle languages were configured; continuing conversion.",
+            kind.label()
+        );
+    }
+
+    let mut language_mismatches = Vec::new();
+    if view.language_requirements.is_effective() {
+        for input_path in &input_paths {
+            let report = language::check_file(input_path, &view.language_requirements)
+                .with_context(|| format!("checking languages for '{}'", input_path.display()))?;
+            if !report.satisfied() {
+                language_mismatches.push((input_path.clone(), report));
+            }
+        }
+    }
+
+    if !language_mismatches.is_empty() {
+        for (path, report) in &language_mismatches {
+            warn!(
+                "{} language requirements not met for '{}': missing {} (present audio [{}], subtitles [{}]).",
+                kind.label(),
+                path.display(),
+                report.describe_missing(),
+                report.present_audio.join(", "),
+                report.present_subtitles.join(", ")
+            );
+        }
+        api::trigger_redownload_search(kind, &view.api_settings)?;
+        return Ok(IntegrationPreparation::Skip {
+            reason: format!(
+                "{} language requirements were not met; requested a monitored redownload search and skipped conversion.",
+                kind.label()
+            ),
+        });
+    }
 
     let mut plans = Vec::new();
 
