@@ -40,7 +40,44 @@ languages and the release is not rejected by Arr. If no verified candidate is
 available, DPN leaves the current file untouched and does not request a blind
 redownload.
 
-Example config:
+### CLI examples
+
+Dry-run first while tuning your matching rules. This inspects the imported file,
+queries Arr for replacement candidates when requirements are missing, and reports
+what would happen without grabbing or blocklisting anything:
+
+```bash
+/path/to/direct_play_nice \
+  --servarr-language-check \
+  --servarr-language-dry-run \
+  --servarr-language-candidate-policy custom-format-or-title \
+  --required-audio-languages eng,jpn \
+  --required-subtitle-languages eng \
+  --servarr-api-url http://127.0.0.1:8989 \
+  --servarr-api-key "$SONARR_API_KEY"
+```
+
+After dry-run output looks correct, remove `--servarr-language-dry-run` to allow
+DPN to grab the selected replacement and blocklist the old history item:
+
+```bash
+/path/to/direct_play_nice \
+  --servarr-language-check \
+  --servarr-language-candidate-policy custom-format-or-title \
+  --required-audio-languages eng,jpn \
+  --required-subtitle-languages eng \
+  --servarr-api-url http://127.0.0.1:8989 \
+  --servarr-api-key "$SONARR_API_KEY"
+```
+
+### Config-file example
+
+In a Sonarr/Radarr custom script, prefer keeping the command short and putting
+policy in the DPN config file:
+
+```bash
+/path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
+```
 
 ```toml
 servarr_language_check = true
@@ -56,6 +93,13 @@ servarr_language_dry_run = true
 # strict only trusts explicit Arr language/subtitle metadata. custom-format-or-title
 # also trusts matching custom formats and strong tokens like Dual-Audio/Multi-Subs.
 servarr_language_candidate_policy = "custom-format-or-title"
+```
+
+For Radarr, use the Radarr URL/key instead:
+
+```toml
+servarr_api_url = "http://127.0.0.1:7878"
+servarr_api_key = "..."
 ```
 
 `servarr_api_url` and `servarr_api_key` can also be supplied with CLI flags or
