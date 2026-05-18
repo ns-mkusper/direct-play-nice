@@ -606,5 +606,7 @@ pub(crate) fn encode_and_write_frame(
 
 pub(crate) fn is_eagain_error(err: &RsmpegError) -> bool {
     let raw = err.raw_error().unwrap_or_default();
-    raw == ffi::AVERROR(ffi::EAGAIN) || raw == -(ffi::EAGAIN as i32)
+    raw == ffi::AVERROR(ffi::EAGAIN)
+        || raw == -(ffi::EAGAIN as i32)
+        || err.to_string().contains("(-11)")
 }
