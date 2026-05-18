@@ -7,6 +7,7 @@ work_dir="${DPN_UPSCALE_BENCH_WORK:-$(mktemp -d)}"
 duration="${DPN_UPSCALE_BENCH_DURATION:-6}"
 rate="${DPN_UPSCALE_BENCH_RATE:-24}"
 config_file="${DPN_UPSCALE_BENCH_CONFIG:-$work_dir/empty-config.toml}"
+seek="${DPN_UPSCALE_BENCH_SS:-}"
 
 mkdir -p "$work_dir"
 touch "$config_file"
@@ -31,7 +32,12 @@ baseline="$work_dir/upscale_fast_bilinear.mp4"
 report="$work_dir/upscale_report.csv"
 
 if [ -n "${DPN_UPSCALE_REF_VIDEO:-}" ]; then
-  ffmpeg -hide_banner -y -i "$DPN_UPSCALE_REF_VIDEO" \
+  seek_args=()
+  if [ -n "$seek" ]; then
+    seek_args=(-ss "$seek")
+  fi
+
+  ffmpeg -hide_banner -y "${seek_args[@]}" -i "$DPN_UPSCALE_REF_VIDEO" \
     -vf "scale=1280:720:flags=lanczos,fps=$rate,format=yuv420p" \
     -t "$duration" -an -c:v libx264 -preset veryfast -crf 16 "$ref"
 else
@@ -74,12 +80,42 @@ run_candidate() {
 metric_summary() {
   local candidate="$1"
   local metric_log="$work_dir/metrics_$(basename "$candidate").log"
+  local vmaf_json="$work_dir/vmaf_$(basename "$candidate").json"
   local vmaf psnr ssim
 
   if ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
-    -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=log_fmt=json:log_path=$work_dir/vmaf_$(basename "$candidate").json" \
+    -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=log_fmt=json:log_path=$vmaf_json" \
     -f null - >/dev/null 2>"$metric_log"; then
-    vmaf="$(grep -o '"mean":[0-9.]*' "$work_dir/vmaf_$(basename "$candidate").json" | head -n1 | cut -d: -f2)"
+    vmaf="$(
+      awk -F: '
+        /"pooled_metrics"[[:space:]]*:/ { in_pooled = 1; next }
+        in_pooled && /"aggregate_metrics"[[:space:]]*:/ { in_pooled = 0 }
+        in_pooled && /"vmaf"[[:space:]]*:/ { in_vmaf = 1; next }
+        in_vmaf && /"mean"[[:space:]]*:/ {
+          value = $2
+          gsub(/[,[:space:]]/, "", value)
+          print value
+          exit
+        }
+      ' "$vmaf_json"
+    )"
+    if [ -z "$vmaf" ]; then
+      vmaf="$(
+        awk -F: '
+          /"vmaf"[[:space:]]*:[[:space:]]*[0-9.]+/ {
+            value = $2
+            gsub(/[,[:space:]]/, "", value)
+            sum += value
+            count += 1
+          }
+          END {
+            if (count > 0) {
+              printf "%.6f", sum / count
+            }
+          }
+        ' "$vmaf_json"
+      )"
+    fi
   else
     vmaf="na"
   fi

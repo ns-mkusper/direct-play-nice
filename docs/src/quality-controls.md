@@ -75,3 +75,6 @@ scripts/upscale-tools/run_upscale_benchmark.sh
 
 The benchmark writes a CSV report with elapsed time, FPS, realtime factor,
 output size, and available quality metrics such as VMAF, PSNR, and SSIM.
+Set `DPN_UPSCALE_REF_VIDEO=/path/to/reference.mkv` to use a real source clip,
+`DPN_UPSCALE_BENCH_SS=00:01:30` to start from a representative section, and
+`DPN_UPSCALE_HW_ACCEL=nvenc` to exercise hardware encoding during the run.
