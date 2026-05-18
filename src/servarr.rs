@@ -350,13 +350,28 @@ fn prepare_download(
                 report.present_subtitles.join(", ")
             );
         }
-        api::trigger_redownload_search(kind, &view.api_settings)?;
-        return Ok(IntegrationPreparation::Skip {
-            reason: format!(
-                "{} language requirements were not met; requested a monitored redownload search and skipped conversion.",
-                kind.label()
-            ),
-        });
+        match api::trigger_verified_redownload(
+            kind,
+            &view.api_settings,
+            &view.language_requirements,
+        )? {
+            api::RedownloadOutcome::Grabbed { title } => {
+                return Ok(IntegrationPreparation::Skip {
+                    reason: format!(
+                        "{} language requirements were not met; blacklisted the current download and grabbed verified replacement '{}'.",
+                        kind.label(), title
+                    ),
+                });
+            }
+            api::RedownloadOutcome::NoVerifiedRelease { reason } => {
+                return Ok(IntegrationPreparation::Skip {
+                    reason: format!(
+                        "{} language requirements were not met, but no replacement was grabbed: {}. Leaving current file untouched.",
+                        kind.label(), reason
+                    ),
+                });
+            }
+        }
     }
 
     let mut plans = Vec::new();

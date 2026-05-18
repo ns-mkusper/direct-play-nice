@@ -1,9 +1,9 @@
 //! Language requirement checks for Sonarr/Radarr-triggered runs.
 //!
-//! This module intentionally only inspects the already-imported media file. When
-//! requirements are not met, the API layer can ask Servarr to perform a monitored
-//! search; Sonarr/Radarr decide whether a replacement release is actually
-//! available and acceptable for the configured profiles.
+//! This module intentionally only inspects the already-imported media file.
+//! When requirements are not met, the API layer may ask Servarr for manual-search
+//! results and only grab a specific replacement when the release metadata proves
+//! the desired languages are available.
 
 use anyhow::Result;
 use rsmpeg::avformat::AVFormatContextInput;
@@ -144,7 +144,7 @@ fn extract_language_tag_from_metadata(dict: &AVDictionary) -> Option<String> {
     None
 }
 
-fn normalize_language_tag(input: &str) -> Option<String> {
+pub(super) fn normalize_language_tag(input: &str) -> Option<String> {
     let primary = input
         .trim()
         .to_ascii_lowercase()
@@ -157,16 +157,16 @@ fn normalize_language_tag(input: &str) -> Option<String> {
     }
 
     let normalized = match primary.as_str() {
-        "en" => "eng",
-        "fr" | "fre" => "fra",
-        "es" => "spa",
-        "de" | "ger" => "deu",
-        "it" => "ita",
-        "pt" => "por",
-        "ja" => "jpn",
-        "ko" => "kor",
-        "zh" => "zho",
-        "ru" => "rus",
+        "en" | "eng" | "english" => "eng",
+        "fr" | "fre" | "fra" | "french" => "fra",
+        "es" | "spa" | "spanish" => "spa",
+        "de" | "ger" | "deu" | "german" => "deu",
+        "it" | "ita" | "italian" => "ita",
+        "pt" | "por" | "portuguese" => "por",
+        "ja" | "jpn" | "japanese" => "jpn",
+        "ko" | "kor" | "korean" => "kor",
+        "zh" | "zho" | "chi" | "chinese" => "zho",
+        "ru" | "rus" | "russian" => "rus",
         "nl" => "nld",
         "pl" => "pol",
         "sv" => "swe",

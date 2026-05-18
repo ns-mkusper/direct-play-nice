@@ -33,10 +33,12 @@ Example command in Sonarr custom script:
 
 Language checks are off by default. When enabled on a Sonarr/Radarr `Download`
 event, `direct-play-nice` inspects the imported file before conversion. If any
-configured audio or subtitle language is missing, conversion is skipped and a
-monitored search command is sent back to Sonarr/Radarr. The Arr service still
-applies its own quality/profile/indexer rules, so a replacement is only grabbed
-when an acceptable release is available.
+configured audio or subtitle language is missing, conversion is skipped and DPN
+asks Sonarr/Radarr for manual-search release results. It only grabs a specific
+replacement release when the returned release metadata verifies the required
+languages and the release is not rejected by Arr. If no verified candidate is
+available, DPN leaves the current file untouched and does not request a blind
+redownload.
 
 Example config:
 
@@ -51,6 +53,15 @@ servarr_api_key = "..."
 `servarr_api_url` and `servarr_api_key` can also be supplied with CLI flags or
 environment variables. Supported env names include `SONARR_URL`,
 `SONARR_API_KEY`, `RADARR_URL`, and `RADARR_API_KEY`.
+
+Before grabbing a verified replacement, DPN marks the current Arr history item as
+failed so the old release is blocklisted. It resolves that history item from the
+Arr download id when available, or from `DIRECT_PLAY_NICE_SONARR_HISTORY_ID` /
+`DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if your wrapper provides it.
+
+Subtitle availability is intentionally conservative: DPN will not infer subtitle
+tracks from release titles. Subtitle requirements only trigger a specific grab
+when the release-search response contains explicit subtitle language metadata.
 
 ## Practical wrapper pattern
 
