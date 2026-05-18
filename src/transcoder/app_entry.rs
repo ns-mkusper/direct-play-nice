@@ -32,7 +32,7 @@ use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayCo
 use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
 use crate::transcoder::verification::validate_output_file;
 use crate::transcoder::ConversionOutcome;
-use crate::types::{OcrFormat, OutputFormat};
+use crate::types::{OcrFormat, OutputFormat, UpscaleMode};
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let plex_refresher = prepare_runtime_configuration(&mut args, &matches_snapshot)?;
@@ -373,6 +373,10 @@ fn run_conversion(
         describe_bitrate(quality_limits.max_video_bitrate)
     );
     info!(
+        "Upscale mode: {:?}; scaler quality: {:?}",
+        args.upscale_mode, args.scaler_quality
+    );
+    info!(
         "Audio quality preset: {} (bitrate {})",
         args.audio_quality,
         describe_bitrate(quality_limits.max_audio_bitrate)
@@ -460,16 +464,19 @@ fn run_conversion(
     ) {
         Ok(assessment) => {
             if assessment.compatible {
-                if !should_ocr {
+                if args.upscale_mode != UpscaleMode::Off {
+                    info!("Transcoding required because video upscaling was requested.");
+                } else if !should_ocr {
                     info!(
                         "Input is already direct-play compatible for the requested devices; skipping conversion."
                     );
                     return Ok(());
+                } else {
+                    info!(
+                        "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
+                    );
+                    needs_conversion = false;
                 }
-                info!(
-                    "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
-                );
-                needs_conversion = false;
             } else {
                 info!("Transcoding required to satisfy requested device constraints.");
                 for reason in assessment.reasons {
@@ -509,6 +516,8 @@ fn run_conversion(
         primary_criteria: args.primary_video_criteria,
         requested_video_quality: args.video_quality,
         requested_audio_quality: args.audio_quality,
+        upscale_mode: args.upscale_mode,
+        scaler_quality: args.scaler_quality,
         skip_codec_check: args.skip_codec_check,
         subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,

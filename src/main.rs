@@ -28,8 +28,8 @@ pub(crate) use transcoder::{
     configure_ffmpeg_logging, AudioQuality, VideoCodecPreference, VideoQuality,
 };
 pub(crate) use types::{
-    OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, SubtitleFailurePolicy,
-    UnsupportedVideoPolicy,
+    OcrEngine, OcrFormat, PrimaryVideoCriteria, ScalerQuality, SubMode, SubtitleFailurePolicy,
+    UnsupportedVideoPolicy, UpscaleMode,
 };
 
 #[cfg(test)]

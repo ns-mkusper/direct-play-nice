@@ -39,3 +39,39 @@ Use these for explicit control:
 - `--max-audio-bitrate <RATE>`
 
 When overrides are provided, they constrain the selected quality profile.
+
+## Upscaling
+
+Upscaling is disabled by default. This preserves the source resolution unless
+the source exceeds a selected device or quality cap.
+
+Use `--upscale-mode fit-quality` to enlarge low-resolution sources toward an
+explicit `--video-quality` target while still respecting the selected device
+ceiling:
+
+```bash
+direct_play_nice --video-quality 1080p --upscale-mode fit-quality --scaler-quality lanczos input.mkv output.mp4
+```
+
+Use `--upscale-mode force` only when you want the output to grow toward the
+quality target, or the selected device ceiling when no quality target is set.
+
+`--scaler-quality` supports:
+
+- `fast-bilinear` (default, fastest)
+- `bilinear`
+- `bicubic`
+- `lanczos`
+- `spline`
+
+Higher-quality scalers generally cost more CPU time. They remain deterministic
+FFmpeg software scalers and do not add AI model dependencies.
+
+The upscale benchmark harness can compare speed and full-reference quality:
+
+```bash
+scripts/upscale-tools/run_upscale_benchmark.sh
+```
+
+The benchmark writes a CSV report with elapsed time, FPS, realtime factor,
+output size, and available quality metrics such as VMAF, PSNR, and SSIM.

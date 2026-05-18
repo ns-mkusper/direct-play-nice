@@ -59,6 +59,53 @@ pub(crate) enum PrimaryVideoCriteria {
     Fps,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Policy for opt-in video upscaling.
+pub(crate) enum UpscaleMode {
+    /// Preserve current behavior: never enlarge source dimensions.
+    Off,
+    /// Enlarge only toward an explicit `--video-quality` resolution target.
+    FitQuality,
+    /// Enlarge toward the selected quality target, or device ceiling when no quality target exists.
+    Force,
+}
+
+impl std::fmt::Display for UpscaleMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            UpscaleMode::Off => "off",
+            UpscaleMode::FitQuality => "fit-quality",
+            UpscaleMode::Force => "force",
+        };
+        write!(f, "{}", label)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Resampling kernel used when video frames are scaled.
+pub(crate) enum ScalerQuality {
+    FastBilinear,
+    Bilinear,
+    Bicubic,
+    Lanczos,
+    Spline,
+}
+
+impl std::fmt::Display for ScalerQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ScalerQuality::FastBilinear => "fast-bilinear",
+            ScalerQuality::Bilinear => "bilinear",
+            ScalerQuality::Bicubic => "bicubic",
+            ScalerQuality::Lanczos => "lanczos",
+            ScalerQuality::Spline => "spline",
+        };
+        write!(f, "{}", label)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
 /// Output rendering format for probe/report commands.
 pub(crate) enum OutputFormat {
@@ -113,6 +160,52 @@ pub(crate) fn clamp_dimensions(
         return (source_width, source_height);
     }
 
+    scaled_dimensions(source_width, source_height, max_width, max_height, false)
+}
+
+pub(crate) fn planned_video_dimensions(
+    source_width: i32,
+    source_height: i32,
+    device_cap: (u32, u32),
+    quality_cap: Option<(u32, u32)>,
+    upscale_mode: UpscaleMode,
+) -> (i32, i32) {
+    if source_width <= 0 || source_height <= 0 {
+        return (source_width.max(1), source_height.max(1));
+    }
+
+    let mut max_width = device_cap.0.max(2);
+    let mut max_height = device_cap.1.max(2);
+    if let Some((quality_width, quality_height)) = quality_cap {
+        max_width = max_width.min(quality_width.max(2));
+        max_height = max_height.min(quality_height.max(2));
+    }
+
+    let source_fits = (source_width as u32) <= max_width && (source_height as u32) <= max_height;
+    let allow_upscale = match upscale_mode {
+        UpscaleMode::Off => false,
+        UpscaleMode::FitQuality => quality_cap.is_some(),
+        UpscaleMode::Force => true,
+    };
+
+    if !source_fits || !allow_upscale {
+        return clamp_dimensions(source_width, source_height, device_cap, quality_cap);
+    }
+
+    if (source_width as u32) == max_width && (source_height as u32) == max_height {
+        return (source_width, source_height);
+    }
+
+    scaled_dimensions(source_width, source_height, max_width, max_height, true)
+}
+
+fn scaled_dimensions(
+    source_width: i32,
+    source_height: i32,
+    max_width: u32,
+    max_height: u32,
+    allow_upscale: bool,
+) -> (i32, i32) {
     let width_ratio = max_width as f64 / source_width as f64;
     let height_ratio = max_height as f64 / source_height as f64;
     let scale = width_ratio.min(height_ratio);
@@ -127,16 +220,18 @@ pub(crate) fn clamp_dimensions(
         target_height = 2;
     }
 
-    if source_width >= 2 {
-        target_width = target_width.min(source_width);
-    } else {
-        target_width = source_width;
-    }
+    if !allow_upscale {
+        if source_width >= 2 {
+            target_width = target_width.min(source_width);
+        } else {
+            target_width = source_width;
+        }
 
-    if source_height >= 2 {
-        target_height = target_height.min(source_height);
-    } else {
-        target_height = source_height;
+        if source_height >= 2 {
+            target_height = target_height.min(source_height);
+        } else {
+            target_height = source_height;
+        }
     }
 
     if target_width % 2 != 0 {
@@ -148,8 +243,6 @@ pub(crate) fn clamp_dimensions(
 
     const WIDTH_ALIGNMENT: i32 = 16;
     if target_width >= WIDTH_ALIGNMENT && target_width % WIDTH_ALIGNMENT != 0 {
-        // Prefer width alignment to 16 when possible. Many encoders are faster
-        // and more reliable on 16-aligned widths, especially for hardware paths.
         let aspect_ratio = source_width as f64 / source_height as f64;
         let max_width_i32 = max_width as i32;
         let max_height_i32 = max_height as i32;
@@ -232,4 +325,61 @@ pub(crate) fn nearest_audio_preset(bitrate: i64) -> &'static str {
         }
     }
     best.1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planned_dimensions_do_not_upscale_by_default() {
+        assert_eq!(
+            planned_video_dimensions(640, 360, (1920, 1080), Some((1920, 1080)), UpscaleMode::Off),
+            (640, 360)
+        );
+    }
+
+    #[test]
+    fn fit_quality_upscales_to_explicit_quality_cap() {
+        assert_eq!(
+            planned_video_dimensions(
+                640,
+                360,
+                (3840, 2160),
+                Some((1920, 1080)),
+                UpscaleMode::FitQuality
+            ),
+            (1920, 1080)
+        );
+    }
+
+    #[test]
+    fn fit_quality_does_not_upscale_without_quality_cap() {
+        assert_eq!(
+            planned_video_dimensions(640, 360, (1920, 1080), None, UpscaleMode::FitQuality),
+            (640, 360)
+        );
+    }
+
+    #[test]
+    fn force_upscales_to_device_cap_when_quality_cap_absent() {
+        assert_eq!(
+            planned_video_dimensions(640, 360, (1920, 1080), None, UpscaleMode::Force),
+            (1920, 1080)
+        );
+    }
+
+    #[test]
+    fn upscale_respects_strictest_cap_and_alignment() {
+        assert_eq!(
+            planned_video_dimensions(
+                640,
+                480,
+                (1280, 720),
+                Some((1920, 1080)),
+                UpscaleMode::FitQuality
+            ),
+            (960, 720)
+        );
+    }
 }

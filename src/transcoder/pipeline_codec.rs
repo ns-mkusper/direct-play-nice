@@ -103,6 +103,7 @@ pub(crate) struct H264VideoCodecParams<'a> {
     pub(crate) source_bit_rate_hint: i64,
     pub(crate) encoder_name: &'a str,
     pub(crate) is_constant_quality_mode: bool,
+    pub(crate) upscale_mode: UpscaleMode,
 }
 
 pub(crate) fn set_h264_video_codec_par(
@@ -120,14 +121,16 @@ pub(crate) fn set_h264_video_codec_par(
         source_bit_rate_hint,
         encoder_name,
         is_constant_quality_mode,
+        upscale_mode,
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let (target_width, target_height) = clamp_dimensions(
+    let (target_width, target_height) = planned_video_dimensions(
         decode_context.width,
         decode_context.height,
         device_cap,
         quality_limits.max_video_dimensions,
+        upscale_mode,
     );
 
     if target_width != decode_context.width || target_height != decode_context.height {
@@ -215,6 +218,7 @@ pub(crate) struct HevcVideoCodecParams<'a> {
     pub(crate) source_bit_rate_hint: i64,
     pub(crate) encoder_name: &'a str,
     pub(crate) is_constant_quality_mode: bool,
+    pub(crate) upscale_mode: UpscaleMode,
 }
 
 pub(crate) fn set_hevc_video_codec_par(
@@ -230,14 +234,16 @@ pub(crate) fn set_hevc_video_codec_par(
         source_bit_rate_hint,
         encoder_name,
         is_constant_quality_mode,
+        upscale_mode,
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let (target_width, target_height) = clamp_dimensions(
+    let (target_width, target_height) = planned_video_dimensions(
         decode_context.width,
         decode_context.height,
         device_cap,
         quality_limits.max_video_dimensions,
+        upscale_mode,
     );
 
     if target_width != decode_context.width || target_height != decode_context.height {

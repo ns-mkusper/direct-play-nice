@@ -91,6 +91,18 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "upscale_mode") {
+        if let Some(upscale_mode) = cfg.upscale_mode {
+            args.upscale_mode = upscale_mode;
+        }
+    }
+
+    if !cli_value_provided(matches, "scaler_quality") {
+        if let Some(scaler_quality) = cfg.scaler_quality {
+            args.scaler_quality = scaler_quality;
+        }
+    }
+
     if !cli_value_provided(matches, "hw_accel") {
         if let Some(hw_accel) = cfg.hw_accel {
             args.hw_accel = hw_accel;
@@ -186,7 +198,7 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 mod tests {
     use super::*;
     use crate::transcoder::quality::VideoQuality;
-    use crate::SubtitleFailurePolicy;
+    use crate::{ScalerQuality, SubtitleFailurePolicy, UpscaleMode};
     use clap::{CommandFactory, FromArgMatches};
 
     fn parse_args(argv: &[&str]) -> (Args, ArgMatches) {
@@ -245,5 +257,37 @@ mod tests {
             args.subtitle_failure_policy,
             SubtitleFailurePolicy::SkipStream
         );
+    }
+
+    #[test]
+    fn applies_upscale_settings_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            upscale_mode: Some(UpscaleMode::FitQuality),
+            scaler_quality: Some(ScalerQuality::Lanczos),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.upscale_mode, UpscaleMode::FitQuality);
+        assert_eq!(args.scaler_quality, ScalerQuality::Lanczos);
+    }
+
+    #[test]
+    fn cli_upscale_settings_take_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--upscale-mode",
+            "force",
+            "--scaler-quality",
+            "spline",
+        ]);
+        let cfg = config::Config {
+            upscale_mode: Some(UpscaleMode::FitQuality),
+            scaler_quality: Some(ScalerQuality::Lanczos),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.upscale_mode, UpscaleMode::Force);
+        assert_eq!(args.scaler_quality, ScalerQuality::Spline);
     }
 }

@@ -22,7 +22,18 @@ use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
 };
-use crate::types::SubtitleFailurePolicy;
+use crate::types::{ScalerQuality, SubtitleFailurePolicy};
+
+fn sws_flags_for_quality(quality: ScalerQuality) -> u32 {
+    let kernel = match quality {
+        ScalerQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
+        ScalerQuality::Bilinear => ffi::SWS_BILINEAR,
+        ScalerQuality::Bicubic => ffi::SWS_BICUBIC,
+        ScalerQuality::Lanczos => ffi::SWS_LANCZOS,
+        ScalerQuality::Spline => ffi::SWS_SPLINE,
+    };
+    kernel | ffi::SWS_ACCURATE_RND
+}
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
@@ -184,7 +195,7 @@ pub(crate) fn process_video_stream(
             stream_processing_context.encode_context.width,
             stream_processing_context.encode_context.height,
             stream_processing_context.encode_context.pix_fmt,
-            ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND,
+            sws_flags_for_quality(stream_processing_context.scaler_quality),
             None,
             None,
             None,

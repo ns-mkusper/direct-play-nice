@@ -16,8 +16,8 @@ use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
-    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, StreamsFilter, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ScalerQuality, StreamsFilter,
+    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy, UpscaleMode,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -88,6 +88,24 @@ pub(crate) struct Args {
     /// Maximum audio bitrate (e.g. 320k, 0.2M)
     #[arg(long, value_parser = Args::parse_bitrate, id = "max_audio_bitrate")]
     pub(crate) max_audio_bitrate: Option<i64>,
+
+    /// Opt-in video upscaling policy: off|fit-quality|force
+    #[arg(
+        long = "upscale-mode",
+        value_enum,
+        default_value_t = UpscaleMode::Off,
+        id = "upscale_mode"
+    )]
+    pub(crate) upscale_mode: UpscaleMode,
+
+    /// Scaler quality used when resizing video frames.
+    #[arg(
+        long = "scaler-quality",
+        value_enum,
+        default_value_t = ScalerQuality::FastBilinear,
+        id = "scaler_quality"
+    )]
+    pub(crate) scaler_quality: ScalerQuality,
 
     /// Video file to convert (required unless probing)
     #[arg(value_parser = Args::parse_cstring)]
@@ -478,6 +496,7 @@ pub(crate) struct StreamProcessingContext {
     #[allow(dead_code)]
     pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
     pub(crate) decoder_name: String,
+    pub(crate) scaler_quality: ScalerQuality,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -490,6 +509,7 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("last_written_dts", &self.last_written_dts)
             .field("skip_stream", &self.skip_stream)
             .field("decoder_name", &self.decoder_name)
+            .field("scaler_quality", &self.scaler_quality)
             .finish()
     }
 }
