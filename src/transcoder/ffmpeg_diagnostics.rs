@@ -6,7 +6,7 @@ use std::{env, ffi::c_char};
 pub(crate) fn av_error_to_string(err: i32) -> String {
     let mut buf = [0 as c_char; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
     unsafe {
-        if ffi::av_strerror(err, buf.as_mut_ptr(), buf.len()) == 0 {
+        if ffi::av_strerror(err, buf.as_mut_ptr().cast(), buf.len()) == 0 {
             CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
         } else {
             format!("ffmpeg error {}", err)
