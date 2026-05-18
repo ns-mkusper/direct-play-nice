@@ -429,6 +429,7 @@ fn url_encode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Matcher;
     use serde_json::json;
     use std::env;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -447,6 +448,156 @@ mod tests {
             vec![10, 11, 12, 13, 14]
         );
         env::remove_var("sonarr_episodefile_episodeids");
+    }
+
+    #[test]
+    fn sonarr_verified_redownload_grabs_specific_release_then_blocklists_old_history() {
+        let _guard = env_lock();
+        env::set_var("sonarr_episode_id", "77");
+        env::set_var("DIRECT_PLAY_NICE_SONARR_HISTORY_ID", "1234");
+
+        let mut server = mockito::Server::new();
+        let release = json!({
+            "title": "verified replacement",
+            "guid": "abc",
+            "indexerId": 1,
+            "rejected": false,
+            "languages": [{"name": "English"}]
+        });
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(json!([release]).to_string())
+            .create();
+        let grab = server
+            .mock("POST", "/api/v3/release")
+            .match_header("x-api-key", "test-key")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let blocklist = server
+            .mock("POST", "/api/v3/history/failed/1234")
+            .match_header("x-api-key", "test-key")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let outcome = trigger_verified_redownload(
+            IntegrationKind::Sonarr,
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string()],
+                subtitles: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            RedownloadOutcome::Grabbed {
+                title: "verified replacement".to_string()
+            }
+        );
+        search.assert();
+        grab.assert();
+        blocklist.assert();
+
+        env::remove_var("sonarr_episode_id");
+        env::remove_var("DIRECT_PLAY_NICE_SONARR_HISTORY_ID");
+    }
+
+    #[test]
+    fn does_not_grab_or_blocklist_when_no_verified_release_exists() {
+        let _guard = env_lock();
+        env::set_var("radarr_movie_id", "88");
+        env::set_var("DIRECT_PLAY_NICE_RADARR_HISTORY_ID", "4321");
+
+        let mut server = mockito::Server::new();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "88".into()))
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "title": "wrong language",
+                    "rejected": false,
+                    "languages": [{"name": "French"}]
+                }])
+                .to_string(),
+            )
+            .create();
+
+        let outcome = trigger_verified_redownload(
+            IntegrationKind::Radarr,
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string()],
+                subtitles: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            RedownloadOutcome::NoVerifiedRelease { .. }
+        ));
+        search.assert();
+
+        env::remove_var("radarr_movie_id");
+        env::remove_var("DIRECT_PLAY_NICE_RADARR_HISTORY_ID");
+    }
+
+    #[test]
+    fn refuses_to_grab_when_old_history_cannot_be_identified() {
+        let _guard = env_lock();
+        env::set_var("sonarr_episode_id", "77");
+        env::remove_var("DIRECT_PLAY_NICE_SONARR_HISTORY_ID");
+        env::remove_var("sonarr_download_id");
+
+        let mut server = mockito::Server::new();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "title": "verified replacement",
+                    "rejected": false,
+                    "languages": [{"name": "English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+
+        let err = trigger_verified_redownload(
+            IntegrationKind::Sonarr,
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string()],
+                subtitles: Vec::new(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("could not identify the current download history record"));
+        search.assert();
+
+        env::remove_var("sonarr_episode_id");
     }
 
     #[test]
