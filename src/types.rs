@@ -106,6 +106,33 @@ impl std::fmt::Display for ResizeBackend {
     }
 }
 
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+/// Scope of Servarr items inspected during periodic language audits.
+pub(crate) enum ServarrLanguageAuditScope {
+    /// Inspect recent import history only. This is efficient for delayed dub/sub follow-up.
+    #[default]
+    History,
+    /// Inspect the current library inventory instead of only recently imported items.
+    Inventory,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+/// Confidence policy for choosing Servarr replacement releases when language requirements are missing.
+pub(crate) enum ServarrLanguageCandidatePolicy {
+    /// Only trust explicit language/subtitle fields in Arr release metadata.
+    #[default]
+    Strict,
+    /// Trust matching Arr custom format names in addition to explicit metadata.
+    CustomFormat,
+    /// Trust custom format names and strong release-title tokens such as dual-audio or multi-subs.
+    CustomFormatOrTitle,
+    /// Use looser release-title inference. Intended for dry-run/manual review.
+    TitleGuess,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
 /// Output rendering format for probe/report commands.
 pub(crate) enum OutputFormat {

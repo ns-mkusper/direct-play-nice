@@ -48,6 +48,14 @@ required_audio_languages = "eng,jpn"
 required_subtitle_languages = "eng"
 servarr_api_url = "http://127.0.0.1:8989"
 servarr_api_key = "..."
+
+# Recommended while tuning rules. Logs the selected candidate but does not grab
+# or blocklist anything.
+servarr_language_dry_run = true
+
+# strict only trusts explicit Arr language/subtitle metadata. custom-format-or-title
+# also trusts matching custom formats and strong tokens like Dual-Audio/Multi-Subs.
+servarr_language_candidate_policy = "custom-format-or-title"
 ```
 
 `servarr_api_url` and `servarr_api_key` can also be supplied with CLI flags or
@@ -59,9 +67,21 @@ failed so the old release is blocklisted. It resolves that history item from the
 Arr download id when available, or from `DIRECT_PLAY_NICE_SONARR_HISTORY_ID` /
 `DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if your wrapper provides it.
 
-Subtitle availability is intentionally conservative: DPN will not infer subtitle
-tracks from release titles. Subtitle requirements only trigger a specific grab
-when the release-search response contains explicit subtitle language metadata.
+Candidate policies control how much DPN infers before a replacement is grabbed:
+
+- `strict`: only explicit Arr language/subtitle metadata.
+- `custom-format`: explicit metadata plus matching Arr custom format names such
+  as `Anime-multi-audio` or `anime-multi-sub`.
+- `custom-format-or-title`: custom formats plus strong title tokens such as
+  `Dual-Audio`, `Multi-Audio`, `Multi-Subs`, or `MSubs`.
+- `title-guess`: looser title matching. Use dry-run first.
+
+DPN always treats the already-imported file differently from candidate releases:
+actual file compliance is based on FFmpeg stream metadata, then cached by DPN.
+The best-effort cache defaults to
+`$XDG_CACHE_HOME/direct-play-nice/servarr-language-cache.json` or
+`~/.cache/direct-play-nice/servarr-language-cache.json`; override it with
+`DIRECT_PLAY_NICE_LANGUAGE_CACHE`.
 
 ## Practical wrapper pattern
 

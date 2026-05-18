@@ -169,6 +169,18 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_dry_run") {
+        if let Some(dry_run) = cfg.servarr_language_dry_run {
+            args.servarr_language_dry_run = dry_run;
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_language_candidate_policy") {
+        if let Some(policy) = cfg.servarr_language_candidate_policy {
+            args.servarr_language_candidate_policy = policy;
+        }
+    }
+
     if !cli_value_provided(matches, "sub_mode") {
         if let Some(sub_mode) = cfg.sub_mode {
             args.sub_mode = sub_mode;
@@ -269,6 +281,10 @@ mod tests {
             required_subtitle_languages: Some("eng".to_string()),
             servarr_api_url: Some("http://localhost:8989".to_string()),
             servarr_api_key: Some("secret".to_string()),
+            servarr_language_dry_run: Some(true),
+            servarr_language_candidate_policy: Some(
+                crate::ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            ),
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
@@ -280,6 +296,11 @@ mod tests {
             Some("http://localhost:8989")
         );
         assert_eq!(args.servarr_api_key.as_deref(), Some("secret"));
+        assert!(args.servarr_language_dry_run);
+        assert_eq!(
+            args.servarr_language_candidate_policy,
+            crate::ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+        );
     }
 
     #[test]

@@ -7,12 +7,13 @@ use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
 mod api;
+mod cache;
 mod env_helpers;
 mod language;
 mod media_paths;
 mod path_policy;
 
-pub use api::ApiSettings;
+pub use api::{ApiSettings, RedownloadOptions};
 pub use language::{parse_language_list, LanguageRequirements};
 
 #[cfg(test)]
@@ -218,6 +219,7 @@ pub struct ArgsView<'a> {
     pub desired_suffix: &'a str,
     pub language_requirements: LanguageRequirements,
     pub api_settings: ApiSettings,
+    pub redownload_options: RedownloadOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -333,6 +335,15 @@ fn prepare_download(
         for input_path in &input_paths {
             let report = language::check_file(input_path, &view.language_requirements)
                 .with_context(|| format!("checking languages for '{}'", input_path.display()))?;
+            if let Err(err) =
+                cache::record_assessment(kind, input_path, &view.language_requirements, &report)
+            {
+                warn!(
+                    "Failed to update DPN language assessment cache for '{}': {}",
+                    input_path.display(),
+                    err
+                );
+            }
             if !report.satisfied() {
                 language_mismatches.push((input_path.clone(), report));
             }
@@ -354,6 +365,7 @@ fn prepare_download(
             kind,
             &view.api_settings,
             &view.language_requirements,
+            view.redownload_options,
         )? {
             api::RedownloadOutcome::Grabbed { title } => {
                 return Ok(IntegrationPreparation::Skip {
@@ -368,6 +380,14 @@ fn prepare_download(
                     reason: format!(
                         "{} language requirements were not met, but no replacement was grabbed: {}. Leaving current file untouched.",
                         kind.label(), reason
+                    ),
+                });
+            }
+            api::RedownloadOutcome::DryRun { summary } => {
+                return Ok(IntegrationPreparation::Skip {
+                    reason: format!(
+                        "{} language requirements were not met; dry-run only: {}. Leaving current file untouched.",
+                        kind.label(), summary
                     ),
                 });
             }

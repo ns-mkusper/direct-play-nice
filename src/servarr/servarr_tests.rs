@@ -210,6 +210,7 @@ mod tests {
             desired_suffix: "",
             language_requirements: LanguageRequirements::default(),
             api_settings: ApiSettings::default(),
+            redownload_options: RedownloadOptions::default(),
         };
 
         let prep = prepare_from_env(view).unwrap();
@@ -244,6 +245,7 @@ mod tests {
             desired_suffix: "",
             language_requirements: LanguageRequirements::default(),
             api_settings: ApiSettings::default(),
+            redownload_options: RedownloadOptions::default(),
         };
 
         let prep = prepare_from_env(view).unwrap();

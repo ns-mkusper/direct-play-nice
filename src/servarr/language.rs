@@ -9,10 +9,11 @@ use anyhow::Result;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::avutil::AVDictionary;
 use rsmpeg::ffi;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LanguageRequirements {
     pub enabled: bool,
     pub audio: Vec<String>,
@@ -25,7 +26,7 @@ impl LanguageRequirements {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LanguageCheckReport {
     pub present_audio: Vec<String>,
     pub present_subtitles: Vec<String>,

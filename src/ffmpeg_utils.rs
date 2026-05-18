@@ -17,7 +17,8 @@ use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
     OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    StreamsFilter, SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter, SubMode,
+    SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -198,6 +199,47 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_output_suffix: String,
 
+    /// Run a periodic Sonarr language audit instead of handling a single Arr download event.
+    #[arg(
+        long = "servarr-language-audit",
+        default_value_t = false,
+        id = "servarr_language_audit"
+    )]
+    pub(crate) servarr_language_audit: bool,
+
+    /// Servarr audit source: recent import history or current library inventory.
+    #[arg(
+        long = "servarr-language-audit-scope",
+        value_enum,
+        default_value_t = ServarrLanguageAuditScope::History,
+        id = "servarr_language_audit_scope"
+    )]
+    pub(crate) servarr_language_audit_scope: ServarrLanguageAuditScope,
+
+    /// Number of recent days to inspect in history-scoped --servarr-language-audit mode.
+    #[arg(
+        long = "servarr-language-audit-lookback-days",
+        default_value_t = 30,
+        id = "servarr_language_audit_lookback_days"
+    )]
+    pub(crate) servarr_language_audit_lookback_days: u32,
+
+    /// Maximum number of missing-language items to release-search per audit run.
+    #[arg(
+        long = "servarr-language-audit-max-searches",
+        default_value_t = 20,
+        id = "servarr_language_audit_max_searches"
+    )]
+    pub(crate) servarr_language_audit_max_searches: usize,
+
+    /// Optional comma-separated Sonarr episode IDs to audit instead of the full scope.
+    #[arg(
+        long = "servarr-language-audit-episode-ids",
+        value_name = "IDS",
+        id = "servarr_language_audit_episode_ids"
+    )]
+    pub(crate) servarr_language_audit_episode_ids: Option<String>,
+
     /// Enable Sonarr/Radarr media language checks before conversion. Off by default.
     #[arg(
         long = "servarr-language-check",
@@ -222,13 +264,46 @@ pub(crate) struct Args {
     )]
     pub(crate) required_subtitle_languages: Option<String>,
 
-    /// Sonarr/Radarr base URL used to request a monitored redownload search after a language mismatch.
+    /// Sonarr/Radarr base URL used to inspect and grab specific replacement releases after a language mismatch.
     #[arg(long = "servarr-api-url", value_name = "URL", id = "servarr_api_url")]
     pub(crate) servarr_api_url: Option<String>,
 
-    /// Sonarr/Radarr API key used with --servarr-language-check redownload searches.
+    /// Sonarr/Radarr API key used with --servarr-language-check replacement handling.
     #[arg(long = "servarr-api-key", value_name = "KEY", id = "servarr_api_key")]
     pub(crate) servarr_api_key: Option<String>,
+
+    /// Evaluate Servarr language mismatches and replacement candidates without grabbing or blocklisting anything.
+    #[arg(
+        long = "servarr-language-dry-run",
+        default_value_t = false,
+        id = "servarr_language_dry_run"
+    )]
+    pub(crate) servarr_language_dry_run: bool,
+
+    /// Opt-in language tag to apply to untagged audio streams before redownload decisions (e.g. eng).
+    #[arg(
+        long = "servarr-untagged-audio-language",
+        value_name = "LANG",
+        id = "servarr_untagged_audio_language"
+    )]
+    pub(crate) servarr_untagged_audio_language: Option<String>,
+
+    /// Opt-in language tag to apply to untagged subtitle streams before redownload decisions (e.g. eng).
+    #[arg(
+        long = "servarr-untagged-subtitle-language",
+        value_name = "LANG",
+        id = "servarr_untagged_subtitle_language"
+    )]
+    pub(crate) servarr_untagged_subtitle_language: Option<String>,
+
+    /// Candidate confidence policy for language replacement searches.
+    #[arg(
+        long = "servarr-language-candidate-policy",
+        value_enum,
+        default_value_t = ServarrLanguageCandidatePolicy::Strict,
+        id = "servarr_language_candidate_policy"
+    )]
+    pub(crate) servarr_language_candidate_policy: ServarrLanguageCandidatePolicy,
 
     /// Subtitle handling mode: auto converts bitmap subs via OCR, force processes all subtitle streams as text, skip disables subtitle processing.
     #[arg(
