@@ -139,6 +139,36 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_check") {
+        if let Some(enabled) = cfg.servarr_language_check {
+            args.servarr_language_check = enabled;
+        }
+    }
+
+    if !cli_value_provided(matches, "required_audio_languages") {
+        if let Some(languages) = cfg.required_audio_languages.as_ref() {
+            args.required_audio_languages = Some(languages.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "required_subtitle_languages") {
+        if let Some(languages) = cfg.required_subtitle_languages.as_ref() {
+            args.required_subtitle_languages = Some(languages.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_api_url") {
+        if let Some(url) = cfg.servarr_api_url.as_ref() {
+            args.servarr_api_url = Some(url.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_api_key") {
+        if let Some(api_key) = cfg.servarr_api_key.as_ref() {
+            args.servarr_api_key = Some(api_key.clone());
+        }
+    }
+
     if !cli_value_provided(matches, "sub_mode") {
         if let Some(sub_mode) = cfg.sub_mode {
             args.sub_mode = sub_mode;
@@ -228,6 +258,46 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.video_quality, VideoQuality::P1080);
+    }
+
+    #[test]
+    fn applies_servarr_language_settings_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            servarr_language_check: Some(true),
+            required_audio_languages: Some("eng,jpn".to_string()),
+            required_subtitle_languages: Some("eng".to_string()),
+            servarr_api_url: Some("http://localhost:8989".to_string()),
+            servarr_api_key: Some("secret".to_string()),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_language_check);
+        assert_eq!(args.required_audio_languages.as_deref(), Some("eng,jpn"));
+        assert_eq!(args.required_subtitle_languages.as_deref(), Some("eng"));
+        assert_eq!(
+            args.servarr_api_url.as_deref(),
+            Some("http://localhost:8989")
+        );
+        assert_eq!(args.servarr_api_key.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn cli_servarr_language_settings_take_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--servarr-language-check",
+            "--required-audio-languages",
+            "eng",
+        ]);
+        let cfg = config::Config {
+            servarr_language_check: Some(false),
+            required_audio_languages: Some("jpn".to_string()),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_language_check);
+        assert_eq!(args.required_audio_languages.as_deref(), Some("eng"));
     }
 
     #[test]

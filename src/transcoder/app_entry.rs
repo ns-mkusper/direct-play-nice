@@ -186,6 +186,15 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
         desired_suffix: &args.servarr_output_suffix,
+        language_requirements: servarr::LanguageRequirements {
+            enabled: args.servarr_language_check,
+            audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
+            subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
+        },
+        api_settings: servarr::ApiSettings {
+            url: args.servarr_api_url.clone(),
+            api_key: args.servarr_api_key.clone(),
+        },
     };
     servarr::prepare_from_env(servarr_view)
 }

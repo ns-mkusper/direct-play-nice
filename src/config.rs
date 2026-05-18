@@ -32,6 +32,11 @@ pub struct Config {
     pub primary_video_criteria: Option<PrimaryVideoCriteria>,
     pub servarr_output_extension: Option<String>,
     pub servarr_output_suffix: Option<String>,
+    pub servarr_language_check: Option<bool>,
+    pub required_audio_languages: Option<String>,
+    pub required_subtitle_languages: Option<String>,
+    pub servarr_api_url: Option<String>,
+    pub servarr_api_key: Option<String>,
     pub sub_mode: Option<SubMode>,
     pub subtitle_failure_policy: Option<SubtitleFailurePolicy>,
     pub ocr_default_language: Option<String>,
@@ -208,6 +213,32 @@ mod tests {
             Some(val) => env::set_var("HOME", val),
             None => env::remove_var("HOME"),
         }
+    }
+
+    #[test]
+    fn parses_servarr_language_check_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            servarr_language_check = true
+            required_audio_languages = "eng,jpn"
+            required_subtitle_languages = "eng,spa"
+            servarr_api_url = "http://localhost:8989"
+            servarr_api_key = "secret"
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_language_check, Some(true));
+        assert_eq!(cfg.required_audio_languages.as_deref(), Some("eng,jpn"));
+        assert_eq!(cfg.required_subtitle_languages.as_deref(), Some("eng,spa"));
+        assert_eq!(
+            cfg.servarr_api_url.as_deref(),
+            Some("http://localhost:8989")
+        );
+        assert_eq!(cfg.servarr_api_key.as_deref(), Some("secret"));
     }
 
     #[test]

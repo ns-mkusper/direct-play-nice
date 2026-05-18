@@ -198,6 +198,38 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_output_suffix: String,
 
+    /// Enable Sonarr/Radarr media language checks before conversion. Off by default.
+    #[arg(
+        long = "servarr-language-check",
+        default_value_t = false,
+        id = "servarr_language_check"
+    )]
+    pub(crate) servarr_language_check: bool,
+
+    /// Required audio languages for --servarr-language-check, comma-separated ISO-639 tags (e.g. eng,jpn).
+    #[arg(
+        long = "required-audio-languages",
+        value_name = "LANGS",
+        id = "required_audio_languages"
+    )]
+    pub(crate) required_audio_languages: Option<String>,
+
+    /// Required subtitle languages for --servarr-language-check, comma-separated ISO-639 tags (e.g. eng,spa).
+    #[arg(
+        long = "required-subtitle-languages",
+        value_name = "LANGS",
+        id = "required_subtitle_languages"
+    )]
+    pub(crate) required_subtitle_languages: Option<String>,
+
+    /// Sonarr/Radarr base URL used to request a monitored redownload search after a language mismatch.
+    #[arg(long = "servarr-api-url", value_name = "URL", id = "servarr_api_url")]
+    pub(crate) servarr_api_url: Option<String>,
+
+    /// Sonarr/Radarr API key used with --servarr-language-check redownload searches.
+    #[arg(long = "servarr-api-key", value_name = "KEY", id = "servarr_api_key")]
+    pub(crate) servarr_api_key: Option<String>,
+
     /// Subtitle handling mode: auto converts bitmap subs via OCR, force processes all subtitle streams as text, skip disables subtitle processing.
     #[arg(
         long = "sub-mode",
