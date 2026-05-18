@@ -6,8 +6,10 @@ bin="${DPN_UPSCALE_BENCH_BIN:-$root_dir/target/release/direct_play_nice}"
 work_dir="${DPN_UPSCALE_BENCH_WORK:-$(mktemp -d)}"
 duration="${DPN_UPSCALE_BENCH_DURATION:-6}"
 rate="${DPN_UPSCALE_BENCH_RATE:-24}"
+config_file="${DPN_UPSCALE_BENCH_CONFIG:-$work_dir/empty-config.toml}"
 
 mkdir -p "$work_dir"
+touch "$config_file"
 
 if [ ! -x "$bin" ]; then
   cargo build --release --manifest-path "$root_dir/Cargo.toml"
@@ -51,6 +53,7 @@ run_candidate() {
 
   started="$(date +%s.%N)"
   "$bin" \
+    --config-file "$config_file" \
     --device chromecast \
     --hw-accel "${DPN_UPSCALE_HW_ACCEL:-none}" \
     --video-quality 720p \
