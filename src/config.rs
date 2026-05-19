@@ -33,6 +33,20 @@ pub struct Config {
     pub primary_video_criteria: Option<PrimaryVideoCriteria>,
     pub servarr_output_extension: Option<String>,
     pub servarr_output_suffix: Option<String>,
+    pub servarr_language_audit: Option<bool>,
+    pub servarr_language_audit_scope: Option<ServarrLanguageAuditScope>,
+    pub servarr_language_audit_lookback_days: Option<u32>,
+    pub servarr_language_audit_max_searches: Option<usize>,
+    pub servarr_language_audit_episode_ids: Option<String>,
+    pub servarr_language_check: Option<bool>,
+    pub required_audio_languages: Option<String>,
+    pub required_subtitle_languages: Option<String>,
+    pub servarr_api_url: Option<String>,
+    pub servarr_api_key: Option<String>,
+    pub servarr_language_dry_run: Option<bool>,
+    pub servarr_untagged_audio_language: Option<String>,
+    pub servarr_untagged_subtitle_language: Option<String>,
+    pub servarr_language_candidate_policy: Option<ServarrLanguageCandidatePolicy>,
     pub sub_mode: Option<SubMode>,
     pub subtitle_failure_policy: Option<SubtitleFailurePolicy>,
     pub ocr_default_language: Option<String>,
@@ -212,6 +226,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_subtitle_ocr_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            sub_mode = "force"
+            ocr_default_language = "spa"
+            ocr_engine = "external"
+            ocr_format = "ass"
+            ocr_external_command = "python3 /opt/ocr/run.py"
+            ocr_write_srt_sidecar = true
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.sub_mode, Some(SubMode::Force));
+        assert_eq!(cfg.ocr_default_language.as_deref(), Some("spa"));
+        assert_eq!(cfg.ocr_engine, Some(OcrEngine::External));
+        assert_eq!(cfg.ocr_format, Some(OcrFormat::Ass));
+        assert_eq!(
+            cfg.ocr_external_command.as_deref(),
+            Some("python3 /opt/ocr/run.py")
+        );
+        assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
+    }
+
+    #[test]
     fn parses_servarr_language_check_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
@@ -265,34 +307,6 @@ mod tests {
             cfg.servarr_language_candidate_policy,
             Some(ServarrLanguageCandidatePolicy::CustomFormatOrTitle)
         );
-    }
-
-    #[test]
-    fn parses_subtitle_ocr_settings() {
-        let mut tmp = NamedTempFile::new().unwrap();
-        write!(
-            tmp,
-            r#"
-            sub_mode = "force"
-            ocr_default_language = "spa"
-            ocr_engine = "external"
-            ocr_format = "ass"
-            ocr_external_command = "python3 /opt/ocr/run.py"
-            ocr_write_srt_sidecar = true
-            "#
-        )
-        .unwrap();
-
-        let cfg = read_from_path(tmp.path()).unwrap();
-        assert_eq!(cfg.sub_mode, Some(SubMode::Force));
-        assert_eq!(cfg.ocr_default_language.as_deref(), Some("spa"));
-        assert_eq!(cfg.ocr_engine, Some(OcrEngine::External));
-        assert_eq!(cfg.ocr_format, Some(OcrFormat::Ass));
-        assert_eq!(
-            cfg.ocr_external_command.as_deref(),
-            Some("python3 /opt/ocr/run.py")
-        );
-        assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
     }
 
     #[test]

@@ -39,6 +39,9 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     if maybe_handle_probe_modes(&args)? {
         return Ok(());
     }
+    if args.servarr_language_audit {
+        return run_servarr_language_audit(&args);
+    }
 
     let servarr_preparation = prepare_servarr(&args)?;
     if let IntegrationPreparation::Skip { reason } = &servarr_preparation {
@@ -176,6 +179,34 @@ fn handle_probe_hw_codecs(args: &Args) -> Result<()> {
             print_probe_codecs(args.only_video, args.only_hw);
         }
     }
+    Ok(())
+}
+
+fn run_servarr_language_audit(args: &Args) -> Result<()> {
+    let requirements = servarr::LanguageRequirements {
+        enabled: true,
+        audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
+        subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
+    };
+    if !requirements.is_effective() {
+        bail!("--servarr-language-audit requires --required-audio-languages and/or --required-subtitle-languages");
+    }
+    let summary = servarr::run_sonarr_language_audit(
+        &servarr::ApiSettings {
+            url: args.servarr_api_url.clone(),
+            api_key: args.servarr_api_key.clone(),
+        },
+        &requirements,
+        servarr::RedownloadOptions {
+            dry_run: args.servarr_language_dry_run,
+            candidate_policy: args.servarr_language_candidate_policy,
+        },
+        servarr::AuditOptions {
+            lookback_days: args.servarr_language_audit_lookback_days,
+            max_searches: args.servarr_language_audit_max_searches,
+        },
+    )?;
+    info!("Servarr language audit summary: {:?}", summary);
     Ok(())
 }
 

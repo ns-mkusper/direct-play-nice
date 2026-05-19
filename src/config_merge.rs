@@ -139,6 +139,24 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_audit") {
+        if let Some(enabled) = cfg.servarr_language_audit {
+            args.servarr_language_audit = enabled;
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_language_audit_lookback_days") {
+        if let Some(days) = cfg.servarr_language_audit_lookback_days {
+            args.servarr_language_audit_lookback_days = days;
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_language_audit_max_searches") {
+        if let Some(max_searches) = cfg.servarr_language_audit_max_searches {
+            args.servarr_language_audit_max_searches = max_searches;
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_check") {
         if let Some(enabled) = cfg.servarr_language_check {
             args.servarr_language_check = enabled;
@@ -276,6 +294,9 @@ mod tests {
     fn applies_servarr_language_settings_from_config_when_not_set_in_cli() {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
+            servarr_language_audit: Some(true),
+            servarr_language_audit_lookback_days: Some(30),
+            servarr_language_audit_max_searches: Some(20),
             servarr_language_check: Some(true),
             required_audio_languages: Some("eng,jpn".to_string()),
             required_subtitle_languages: Some("eng".to_string()),
@@ -288,6 +309,9 @@ mod tests {
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_language_audit);
+        assert_eq!(args.servarr_language_audit_lookback_days, 30);
+        assert_eq!(args.servarr_language_audit_max_searches, 20);
         assert!(args.servarr_language_check);
         assert_eq!(args.required_audio_languages.as_deref(), Some("eng,jpn"));
         assert_eq!(args.required_subtitle_languages.as_deref(), Some("eng"));

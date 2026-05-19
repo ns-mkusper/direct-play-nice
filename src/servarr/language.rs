@@ -52,14 +52,25 @@ impl LanguageCheckReport {
 }
 
 pub fn parse_language_list(raw: Option<&str>) -> Vec<String> {
-    raw.unwrap_or("")
-        .split(',')
+    parse_language_tokens(raw.unwrap_or(""))
+}
+
+pub fn parse_language_tokens(raw: &str) -> Vec<String> {
+    raw.split([',', '/', ';', '|', ' '])
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
         .filter_map(normalize_language_tag)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+pub fn report_from_present(
+    present_audio: Vec<String>,
+    present_subtitles: Vec<String>,
+    requirements: &LanguageRequirements,
+) -> LanguageCheckReport {
+    check_sets(present_audio, present_subtitles, requirements)
 }
 
 pub fn check_file(path: &Path, requirements: &LanguageRequirements) -> Result<LanguageCheckReport> {
