@@ -1,13 +1,18 @@
 //! Minimal Sonarr/Radarr API helpers used by optional language mismatch handling.
 
+use super::cache;
 use super::env_helpers::get_env_ignore_case;
-use super::language::{normalize_language_tag, LanguageRequirements};
+use super::language::{
+    normalize_language_tag, parse_language_tokens, report_from_present, LanguageCheckReport,
+    LanguageRequirements,
+};
 use super::IntegrationKind;
 use crate::ServarrLanguageCandidatePolicy;
 use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::Duration;
 use ureq::{Agent, AgentBuilder};
 
@@ -32,11 +37,155 @@ impl Default for RedownloadOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuditOptions {
+    pub lookback_days: u32,
+    pub max_searches: usize,
+}
+
+impl Default for AuditOptions {
+    fn default() -> Self {
+        Self {
+            lookback_days: 30,
+            max_searches: 20,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AuditSummary {
+    pub checked: usize,
+    pub missing: usize,
+    pub searched: usize,
+    pub grabbed: usize,
+    pub dry_run: usize,
+    pub no_candidate: usize,
+    pub errors: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedownloadOutcome {
     Grabbed { title: String },
     DryRun { summary: String },
     NoVerifiedRelease { reason: String },
+}
+
+pub fn run_sonarr_language_audit(
+    settings: &ApiSettings,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+) -> Result<AuditSummary> {
+    let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
+    let records = client.sonarr_recent_import_history(audit_options.lookback_days)?;
+    let mut summary = AuditSummary::default();
+    let mut searched = 0usize;
+
+    for record in records {
+        let Some(episode_id) = history_episode_id(&record) else {
+            continue;
+        };
+        let Some(history_id) = record.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        let episode = match client.sonarr_episode(episode_id) {
+            Ok(episode) => episode,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit could not fetch episode {}: {}",
+                    episode_id, err
+                );
+                continue;
+            }
+        };
+        let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
+            continue;
+        };
+        let episode_file = match client.sonarr_episode_file(file_id) {
+            Ok(file) => file,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit could not fetch episode file {}: {}",
+                    file_id, err
+                );
+                continue;
+            }
+        };
+        summary.checked += 1;
+        let report = language_report_from_episode_file(&episode_file, requirements);
+        let path = episode_file
+            .get("path")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("sonarr:episodefile:{file_id}")));
+        if let Err(err) =
+            cache::record_assessment(IntegrationKind::Sonarr, &path, requirements, &report)
+        {
+            warn!(
+                "Sonarr language audit failed to update DPN cache for '{}': {}",
+                path.display(),
+                err
+            );
+        }
+        if report.satisfied() {
+            continue;
+        }
+        summary.missing += 1;
+        if searched >= audit_options.max_searches {
+            continue;
+        }
+        searched += 1;
+        summary.searched += 1;
+        match client.redownload_for_target(
+            Target::SonarrEpisode { episode_id },
+            history_id,
+            requirements,
+            redownload_options,
+        ) {
+            Ok(RedownloadOutcome::Grabbed { title }) => {
+                summary.grabbed += 1;
+                info!(
+                    "Sonarr language audit grabbed replacement for episode {}: {}",
+                    episode_id, title
+                );
+            }
+            Ok(RedownloadOutcome::DryRun { summary: details }) => {
+                summary.dry_run += 1;
+                info!(
+                    "Sonarr language audit dry-run for episode {}: {}",
+                    episode_id, details
+                );
+            }
+            Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
+                summary.no_candidate += 1;
+                info!(
+                    "Sonarr language audit found no replacement for episode {}: {}",
+                    episode_id, reason
+                );
+            }
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit replacement check failed for episode {}: {}",
+                    episode_id, err
+                );
+            }
+        }
+    }
+
+    info!(
+        "Sonarr language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
+        summary.checked,
+        summary.missing,
+        summary.searched,
+        summary.dry_run,
+        summary.grabbed,
+        summary.no_candidate,
+        summary.errors
+    );
+    Ok(summary)
 }
 
 pub fn trigger_verified_redownload(
@@ -162,6 +311,98 @@ impl ApiClient {
         })
     }
 
+    fn redownload_for_target(
+        &self,
+        target: Target,
+        history_id: i64,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+    ) -> Result<RedownloadOutcome> {
+        let releases = self.search_releases(&target)?;
+        let Some(release) =
+            select_verified_release(&releases, requirements, options.candidate_policy)
+        else {
+            return Ok(RedownloadOutcome::NoVerifiedRelease {
+                reason: format!(
+                    "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
+                    self.kind.label(),
+                    options.candidate_policy,
+                    if requirements.subtitles.is_empty() { "" } else { "/subtitle" }
+                ),
+            });
+        };
+        let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
+        let evidence = release_match_evidence(release, requirements, options.candidate_policy);
+        if options.dry_run {
+            return Ok(RedownloadOutcome::DryRun {
+                summary: format!(
+                    "would grab '{}' using {:?} policy ({}) and then blocklist history item {}{}",
+                    title,
+                    options.candidate_policy,
+                    evidence,
+                    history_id,
+                    if release_rejections_are_only_existing_file_cutoff(release) {
+                        "; accepting Arr's existing-file/cutoff rejection as a language-upgrade override"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
+        self.grab_release(release)?;
+        self.mark_history_failed(history_id)?;
+        Ok(RedownloadOutcome::Grabbed { title })
+    }
+
+    fn sonarr_recent_import_history(&self, lookback_days: u32) -> Result<Vec<Value>> {
+        let mut out = Vec::new();
+        let min_day = current_day_number().saturating_sub(lookback_days as i64);
+        for page in 1..=10 {
+            let endpoint = format!(
+                "{}/api/v3/history?page={page}&pageSize=100&sortKey=date&sortDirection=descending&includeSeries=true&includeEpisode=true",
+                self.base_url
+            );
+            let response = self.get(&endpoint)?;
+            let records = response
+                .get("records")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if records.is_empty() {
+                break;
+            }
+            let mut saw_old = false;
+            for record in records {
+                if let Some(day) = record
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .and_then(iso_day_number)
+                {
+                    if day < min_day {
+                        saw_old = true;
+                        continue;
+                    }
+                }
+                if record.get("eventType").and_then(Value::as_str) == Some("downloadFolderImported")
+                {
+                    out.push(record);
+                }
+            }
+            if saw_old {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    fn sonarr_episode(&self, episode_id: i64) -> Result<Value> {
+        self.get(&format!("{}/api/v3/episode/{}", self.base_url, episode_id))
+    }
+
+    fn sonarr_episode_file(&self, file_id: i64) -> Result<Value> {
+        self.get(&format!("{}/api/v3/episodefile/{}", self.base_url, file_id))
+    }
+
     fn grab_release(&self, release: &Value) -> Result<()> {
         let endpoint = format!("{}/api/v3/release", self.base_url);
         self.post_json(&endpoint, release)
@@ -241,6 +482,64 @@ fn read_json_response(response: ureq::Response) -> Result<Value> {
         return Ok(Value::Null);
     }
     serde_json::from_str(&text).context("parsing JSON response")
+}
+
+fn history_episode_id(record: &Value) -> Option<i64> {
+    record
+        .get("episode")
+        .and_then(|episode| episode.get("id"))
+        .and_then(Value::as_i64)
+        .or_else(|| record.get("episodeId").and_then(Value::as_i64))
+}
+
+fn language_report_from_episode_file(
+    episode_file: &Value,
+    requirements: &LanguageRequirements,
+) -> LanguageCheckReport {
+    let media = episode_file.get("mediaInfo").unwrap_or(&Value::Null);
+    let audio = media
+        .get("audioLanguages")
+        .and_then(Value::as_str)
+        .map(parse_language_tokens)
+        .unwrap_or_else(|| {
+            let mut out = BTreeSet::new();
+            collect_language_values(episode_file.get("languages"), &mut out);
+            out.into_iter().collect()
+        });
+    let subtitles = media
+        .get("subtitles")
+        .and_then(Value::as_str)
+        .map(parse_language_tokens)
+        .unwrap_or_default();
+    report_from_present(audio, subtitles, requirements)
+}
+
+fn current_day_number() -> i64 {
+    let unix_days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        / 86_400;
+    unix_days + days_from_civil(1970, 1, 1)
+}
+
+fn iso_day_number(value: &str) -> Option<i64> {
+    let date = value.get(0..10)?;
+    let mut parts = date.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    Some(days_from_civil(year, month, day))
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe
 }
 
 #[derive(Debug, Clone, Copy)]

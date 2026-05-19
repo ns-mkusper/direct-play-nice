@@ -127,6 +127,27 @@ The best-effort cache defaults to
 `~/.cache/direct-play-nice/servarr-language-cache.json`; override it with
 `DIRECT_PLAY_NICE_LANGUAGE_CACHE`.
 
+## Periodic language audit
+
+The Download-event hook only runs when Arr imports a file. To catch delayed dubs
+or subtitles that appear days later, run an audit from cron/systemd/launchd with
+no Arr custom-script environment variables:
+
+```bash
+/path/to/direct_play_nice \
+  --config-file /path/to/direct-play-nice-sonarr.toml \
+  --servarr-language-audit \
+  --servarr-language-audit-lookback-days 30 \
+  --servarr-language-audit-max-searches 20 \
+  --servarr-language-dry-run
+```
+
+Audit mode queries recent Sonarr imports, inspects the actual imported file
+language metadata, updates DPN's cache, and release-searches only missing-language
+items up to `--servarr-language-audit-max-searches`. Keep dry-run enabled while
+reviewing reports; remove `--servarr-language-dry-run` only when you want DPN to
+grab selected language-upgrade candidates and blocklist the old history item.
+
 ## Practical wrapper pattern
 
 For GPU OCR environments, keep a stable wrapper script as the command Sonarr
