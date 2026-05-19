@@ -70,6 +70,23 @@ pub enum RedownloadOutcome {
     NoVerifiedRelease { reason: String },
 }
 
+pub fn run_language_audit(
+    kind: IntegrationKind,
+    settings: &ApiSettings,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+) -> Result<AuditSummary> {
+    match kind {
+        IntegrationKind::Sonarr => {
+            run_sonarr_language_audit(settings, requirements, redownload_options, audit_options)
+        }
+        IntegrationKind::Radarr => {
+            run_radarr_language_audit(settings, requirements, redownload_options, audit_options)
+        }
+    }
+}
+
 pub fn run_sonarr_language_audit(
     settings: &ApiSettings,
     requirements: &LanguageRequirements,
@@ -177,6 +194,124 @@ pub fn run_sonarr_language_audit(
 
     info!(
         "Sonarr language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
+        summary.checked,
+        summary.missing,
+        summary.searched,
+        summary.dry_run,
+        summary.grabbed,
+        summary.no_candidate,
+        summary.errors
+    );
+    Ok(summary)
+}
+
+pub fn run_radarr_language_audit(
+    settings: &ApiSettings,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+) -> Result<AuditSummary> {
+    let client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
+    let records = client.radarr_recent_import_history(audit_options.lookback_days)?;
+    let mut summary = AuditSummary::default();
+    let mut searched = 0usize;
+
+    for record in records {
+        let Some(movie_id) = record.get("movieId").and_then(Value::as_i64) else {
+            continue;
+        };
+        let Some(history_id) = record.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        let movie = match client.radarr_movie(movie_id) {
+            Ok(movie) => movie,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr language audit could not fetch movie {}: {}",
+                    movie_id, err
+                );
+                continue;
+            }
+        };
+        let Some(file_id) = movie.get("movieFileId").and_then(Value::as_i64) else {
+            continue;
+        };
+        let movie_file = match client.radarr_movie_file(file_id) {
+            Ok(file) => file,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr language audit could not fetch movie file {}: {}",
+                    file_id, err
+                );
+                continue;
+            }
+        };
+        summary.checked += 1;
+        let report = language_report_from_episode_file(&movie_file, requirements);
+        let path = movie_file
+            .get("path")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(format!("radarr:moviefile:{file_id}")));
+        if let Err(err) =
+            cache::record_assessment(IntegrationKind::Radarr, &path, requirements, &report)
+        {
+            warn!(
+                "Radarr language audit failed to update DPN cache for '{}': {}",
+                path.display(),
+                err
+            );
+        }
+        if report.satisfied() {
+            continue;
+        }
+        summary.missing += 1;
+        if searched >= audit_options.max_searches {
+            continue;
+        }
+        searched += 1;
+        summary.searched += 1;
+        match client.redownload_for_target(
+            Target::RadarrMovie { movie_id },
+            history_id,
+            requirements,
+            redownload_options,
+        ) {
+            Ok(RedownloadOutcome::Grabbed { title }) => {
+                summary.grabbed += 1;
+                info!(
+                    "Radarr language audit grabbed replacement for movie {}: {}",
+                    movie_id, title
+                );
+            }
+            Ok(RedownloadOutcome::DryRun { summary: details }) => {
+                summary.dry_run += 1;
+                info!(
+                    "Radarr language audit dry-run for movie {}: {}",
+                    movie_id, details
+                );
+            }
+            Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
+                summary.no_candidate += 1;
+                info!(
+                    "Radarr language audit found no replacement for movie {}: {}",
+                    movie_id, reason
+                );
+            }
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr language audit replacement check failed for movie {}: {}",
+                    movie_id, err
+                );
+            }
+        }
+    }
+
+    info!(
+        "Radarr language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
         summary.checked,
         summary.missing,
         summary.searched,
@@ -401,6 +536,55 @@ impl ApiClient {
 
     fn sonarr_episode_file(&self, file_id: i64) -> Result<Value> {
         self.get(&format!("{}/api/v3/episodefile/{}", self.base_url, file_id))
+    }
+
+    fn radarr_recent_import_history(&self, lookback_days: u32) -> Result<Vec<Value>> {
+        let mut out = Vec::new();
+        let min_day = current_day_number().saturating_sub(lookback_days as i64);
+        for page in 1..=10 {
+            let endpoint = format!(
+                "{}/api/v3/history?page={page}&pageSize=100&sortKey=date&sortDirection=descending&includeMovie=true",
+                self.base_url
+            );
+            let response = self.get(&endpoint)?;
+            let records = response
+                .get("records")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if records.is_empty() {
+                break;
+            }
+            let mut saw_old = false;
+            for record in records {
+                if let Some(day) = record
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .and_then(iso_day_number)
+                {
+                    if day < min_day {
+                        saw_old = true;
+                        continue;
+                    }
+                }
+                if record.get("eventType").and_then(Value::as_str) == Some("downloadFolderImported")
+                {
+                    out.push(record);
+                }
+            }
+            if saw_old {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    fn radarr_movie(&self, movie_id: i64) -> Result<Value> {
+        self.get(&format!("{}/api/v3/movie/{}", self.base_url, movie_id))
+    }
+
+    fn radarr_movie_file(&self, file_id: i64) -> Result<Value> {
+        self.get(&format!("{}/api/v3/moviefile/{}", self.base_url, file_id))
     }
 
     fn grab_release(&self, release: &Value) -> Result<()> {
