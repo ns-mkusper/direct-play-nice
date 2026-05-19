@@ -13,7 +13,7 @@ mod language;
 mod media_paths;
 mod path_policy;
 
-pub use api::{run_sonarr_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
+pub use api::{run_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
 pub use language::{parse_language_list, LanguageRequirements};
 
 #[cfg(test)]

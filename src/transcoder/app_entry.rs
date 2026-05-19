@@ -191,7 +191,15 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
     if !requirements.is_effective() {
         bail!("--servarr-language-audit requires --required-audio-languages and/or --required-subtitle-languages");
     }
-    let summary = servarr::run_sonarr_language_audit(
+    let audit_kind = if args.servarr_api_url.as_deref().is_some_and(|url| {
+        url.to_ascii_lowercase().contains("7878") || url.to_ascii_lowercase().contains("radarr")
+    }) {
+        servarr::IntegrationKind::Radarr
+    } else {
+        servarr::IntegrationKind::Sonarr
+    };
+    let summary = servarr::run_language_audit(
+        audit_kind,
         &servarr::ApiSettings {
             url: args.servarr_api_url.clone(),
             api_key: args.servarr_api_key.clone(),
