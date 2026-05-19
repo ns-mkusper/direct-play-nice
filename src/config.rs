@@ -2,8 +2,8 @@
 
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ScalerQuality, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy, UpscaleMode, VideoCodecPreference, VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeQuality, SubMode,
+    SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -24,8 +24,7 @@ pub struct Config {
     pub audio_quality: Option<AudioQuality>,
     pub max_video_bitrate: Option<String>,
     pub max_audio_bitrate: Option<String>,
-    pub upscale_mode: Option<UpscaleMode>,
-    pub scaler_quality: Option<ScalerQuality>,
+    pub resize_quality: Option<ResizeQuality>,
     pub hw_accel: Option<HwAccel>,
     pub unsupported_video_policy: Option<UnsupportedVideoPolicy>,
     pub primary_video_stream_index: Option<usize>,
@@ -239,19 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_upscale_settings() {
+    fn parses_resize_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
             tmp,
             r#"
-            upscale_mode = "fit-quality"
-            scaler_quality = "lanczos"
+            resize_quality = "lanczos"
             "#
         )
         .unwrap();
 
         let cfg = read_from_path(tmp.path()).unwrap();
-        assert_eq!(cfg.upscale_mode, Some(UpscaleMode::FitQuality));
-        assert_eq!(cfg.scaler_quality, Some(ScalerQuality::Lanczos));
+        assert_eq!(cfg.resize_quality, Some(ResizeQuality::Lanczos));
     }
 }

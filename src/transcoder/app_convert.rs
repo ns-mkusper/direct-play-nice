@@ -21,8 +21,7 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) primary_criteria: PrimaryVideoCriteria,
     pub(crate) requested_video_quality: VideoQuality,
     pub(crate) requested_audio_quality: AudioQuality,
-    pub(crate) upscale_mode: UpscaleMode,
-    pub(crate) scaler_quality: ScalerQuality,
+    pub(crate) resize_quality: ResizeQuality,
     pub(crate) skip_codec_check: bool,
     pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
     pub(crate) hw_accel: HwAccel,
@@ -52,8 +51,7 @@ pub(crate) fn convert_video_file(
         primary_criteria,
         requested_video_quality,
         requested_audio_quality,
-        upscale_mode,
-        scaler_quality,
+        resize_quality,
         skip_codec_check,
         subtitle_failure_policy,
         hw_accel,
@@ -430,7 +428,6 @@ pub(crate) fn convert_video_file(
                             source_bit_rate_hint: input_stream_codecpar.bit_rate,
                             encoder_name: &encoder_name_owned,
                             is_constant_quality_mode,
-                            upscale_mode,
                         },
                     );
                 } else {
@@ -445,7 +442,6 @@ pub(crate) fn convert_video_file(
                             source_bit_rate_hint: input_stream_codecpar.bit_rate,
                             encoder_name: &encoder_name_owned,
                             is_constant_quality_mode,
-                            upscale_mode,
                         },
                     );
                 }
@@ -628,7 +624,7 @@ pub(crate) fn convert_video_file(
             subtitle_failure_policy,
             hw_device_ctx: hw_device_ctx_ptr,
             decoder_name: decoder.name().to_string_lossy().into_owned(),
-            scaler_quality,
+            resize_quality,
         };
 
         stream_contexts.push(stream_process_context);

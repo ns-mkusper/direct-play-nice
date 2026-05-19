@@ -2,12 +2,12 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-bin="${DPN_UPSCALE_BENCH_BIN:-$root_dir/target/release/direct_play_nice}"
-work_dir="${DPN_UPSCALE_BENCH_WORK:-$(mktemp -d)}"
-duration="${DPN_UPSCALE_BENCH_DURATION:-6}"
-rate="${DPN_UPSCALE_BENCH_RATE:-24}"
-config_file="${DPN_UPSCALE_BENCH_CONFIG:-$work_dir/empty-config.toml}"
-seek="${DPN_UPSCALE_BENCH_SS:-}"
+bin="${DPN_RESIZE_BENCH_BIN:-$root_dir/target/release/direct_play_nice}"
+work_dir="${DPN_RESIZE_BENCH_WORK:-$(mktemp -d)}"
+duration="${DPN_RESIZE_BENCH_DURATION:-6}"
+rate="${DPN_RESIZE_BENCH_RATE:-24}"
+config_file="${DPN_RESIZE_BENCH_CONFIG:-$work_dir/empty-config.toml}"
+seek="${DPN_RESIZE_BENCH_SS:-}"
 
 mkdir -p "$work_dir"
 touch "$config_file"
@@ -28,16 +28,16 @@ require_cmd ffprobe
 
 ref="$work_dir/ref_720p.mp4"
 low="$work_dir/low_360p.mkv"
-baseline="$work_dir/upscale_fast_bilinear.mp4"
-report="$work_dir/upscale_report.csv"
+baseline="$work_dir/resize_fast_bilinear.mp4"
+report="$work_dir/resize_report.csv"
 
-if [ -n "${DPN_UPSCALE_REF_VIDEO:-}" ]; then
+if [ -n "${DPN_RESIZE_REF_VIDEO:-}" ]; then
   seek_args=()
   if [ -n "$seek" ]; then
     seek_args=(-ss "$seek")
   fi
 
-  ffmpeg -hide_banner -y "${seek_args[@]}" -i "$DPN_UPSCALE_REF_VIDEO" \
+  ffmpeg -hide_banner -y "${seek_args[@]}" -i "$DPN_RESIZE_REF_VIDEO" \
     -vf "scale=1280:720:flags=lanczos,fps=$rate,format=yuv420p" \
     -t "$duration" -an -c:v libx264 -preset veryfast -crf 16 "$ref"
 else
@@ -53,7 +53,7 @@ ffmpeg -hide_banner -y -i "$ref" \
   -c:v mpeg2video -b:v 4M -an "$low"
 
 run_candidate() {
-  local scaler="$1"
+  local quality="$1"
   local output="$2"
   local started ended elapsed fps realtime size_bytes
 
@@ -61,10 +61,9 @@ run_candidate() {
   "$bin" \
     --config-file "$config_file" \
     --device chromecast \
-    --hw-accel "${DPN_UPSCALE_HW_ACCEL:-none}" \
+    --hw-accel "${DPN_RESIZE_HW_ACCEL:-none}" \
     --video-quality 720p \
-    --upscale-mode fit-quality \
-    --scaler-quality "$scaler" \
+    --resize-quality "$quality" \
     --skip-codec-check \
     "$low" "$output" >/dev/null
   ended="$(date +%s.%N)"
@@ -74,7 +73,7 @@ run_candidate() {
   realtime="$(awk -v d="$duration" -v t="$elapsed" 'BEGIN { printf "%.3f", d / t }')"
   size_bytes="$(wc -c < "$output" | tr -d ' ')"
 
-  printf "%s,%s,%s,%s,%s" "$scaler" "$elapsed" "$fps" "$realtime" "$size_bytes"
+  printf "%s,%s,%s,%s,%s" "$quality" "$elapsed" "$fps" "$realtime" "$size_bytes"
 }
 
 metric_summary() {
@@ -133,20 +132,20 @@ metric_summary() {
   printf ",%s,%s,%s\n" "${vmaf:-na}" "${psnr:-na}" "${ssim:-na}"
 }
 
-echo "scaler,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr,ssim" > "$report"
+echo "quality,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr,ssim" > "$report"
 
 {
   run_candidate "fast-bilinear" "$baseline"
   metric_summary "$baseline"
 } >> "$report"
 
-for scaler in bilinear bicubic lanczos spline; do
-  output="$work_dir/upscale_${scaler}.mp4"
+for quality in bilinear bicubic lanczos spline; do
+  output="$work_dir/resize_${quality}.mp4"
   {
-    run_candidate "$scaler" "$output"
+    run_candidate "$quality" "$output"
     metric_summary "$output"
   } >> "$report"
 done
 
-echo "Upscale benchmark report: $report"
+echo "Resize benchmark report: $report"
 cat "$report"

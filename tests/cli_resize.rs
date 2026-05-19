@@ -54,12 +54,12 @@ fn video_dimensions(path: &Path) -> (i32, i32) {
 }
 
 #[test]
-fn cli_upscales_when_explicitly_requested() {
+fn cli_preserves_low_res_source_even_with_quality_target() {
     common::ensure_ffmpeg_present();
 
     let tmp = TempDir::new().unwrap();
     let input = generate_low_res_input(tmp.path());
-    let output = tmp.path().join("upscaled.mp4");
+    let output = tmp.path().join("resized.mp4");
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.args([
@@ -69,9 +69,7 @@ fn cli_upscales_when_explicitly_requested() {
         "none",
         "--video-quality",
         "720p",
-        "--upscale-mode",
-        "fit-quality",
-        "--scaler-quality",
+        "--resize-quality",
         "lanczos",
         "--validate-output",
     ])
@@ -79,11 +77,11 @@ fn cli_upscales_when_explicitly_requested() {
     .arg(&output);
     common::assert_cli_success(cmd);
 
-    assert_eq!(video_dimensions(&output), (1280, 720));
+    assert_eq!(video_dimensions(&output), (640, 360));
 }
 
 #[test]
-fn cli_does_not_upscale_by_default() {
+fn cli_preserves_low_res_source_by_default() {
     common::ensure_ffmpeg_present();
 
     let tmp = TempDir::new().unwrap();

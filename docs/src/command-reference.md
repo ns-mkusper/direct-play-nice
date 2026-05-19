@@ -19,8 +19,7 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--audio-quality <audio_quality>` quality preset
 - `--max-video-bitrate <max_video_bitrate>` explicit video cap
 - `--max-audio-bitrate <max_audio_bitrate>` explicit audio cap
-- `--upscale-mode <upscale_mode>` `off|fit-quality|force`
-- `--scaler-quality <scaler_quality>` `fast-bilinear|bilinear|bicubic|lanczos|spline`
+- `--resize-quality <resize_quality>` `fast-bilinear|bilinear|bicubic|lanczos|spline`
 
 ## Stream and compatibility controls
 

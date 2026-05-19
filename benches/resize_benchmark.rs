@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 
 fn resolve_binary() -> Option<PathBuf> {
-    if let Ok(bin) = env::var("DPN_UPSCALE_BENCH_BIN") {
+    if let Ok(bin) = env::var("DPN_RESIZE_BENCH_BIN") {
         let path = PathBuf::from(bin);
         if path.is_file() {
             return Some(path);
@@ -37,7 +37,7 @@ fn command_available(cmd: &str, args: &[&str]) -> bool {
 }
 
 fn generate_low_res_clip(dir: &Path) -> Option<PathBuf> {
-    let input = dir.join("upscale_input.mkv");
+    let input = dir.join("resize_input.mkv");
     let status = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -71,7 +71,7 @@ fn generate_low_res_clip(dir: &Path) -> Option<PathBuf> {
     status.success().then_some(input)
 }
 
-fn run_upscale(bin: &Path, input: &Path, output: &Path, scaler: &str) -> bool {
+fn run_resize(bin: &Path, input: &Path, output: &Path, quality: &str) -> bool {
     Command::new(bin)
         .args([
             "--device",
@@ -80,10 +80,8 @@ fn run_upscale(bin: &Path, input: &Path, output: &Path, scaler: &str) -> bool {
             "none",
             "--video-quality",
             "720p",
-            "--upscale-mode",
-            "fit-quality",
-            "--scaler-quality",
-            scaler,
+            "--resize-quality",
+            quality,
             "--skip-codec-check",
         ])
         .arg(input.as_os_str())
@@ -95,32 +93,32 @@ fn run_upscale(bin: &Path, input: &Path, output: &Path, scaler: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn bench_upscale_pipeline(c: &mut Criterion) {
+fn bench_resize_pipeline(c: &mut Criterion) {
     let Some(bin) = resolve_binary() else {
-        eprintln!("Skipping upscale benchmark: direct_play_nice binary not found.");
+        eprintln!("Skipping resize benchmark: direct_play_nice binary not found.");
         return;
     };
     if !command_available("ffmpeg", &["-version"]) {
-        eprintln!("Skipping upscale benchmark: ffmpeg not found.");
+        eprintln!("Skipping resize benchmark: ffmpeg not found.");
         return;
     }
 
     let temp = TempDir::new().expect("create benchmark temp dir");
     let Some(input) = generate_low_res_clip(temp.path()) else {
-        eprintln!("Skipping upscale benchmark: failed to generate input clip.");
+        eprintln!("Skipping resize benchmark: failed to generate input clip.");
         return;
     };
 
     let run_idx = AtomicUsize::new(0);
-    let mut group = c.benchmark_group("Upscale Conversion Speed");
+    let mut group = c.benchmark_group("Resize Conversion Speed");
     group.sample_size(10);
-    for scaler in ["fast-bilinear", "lanczos", "spline"] {
-        group.bench_function(format!("cpu_upscale_720p_{scaler}"), |b| {
+    for quality in ["fast-bilinear", "lanczos", "spline"] {
+        group.bench_function(format!("cpu_resize_720p_{quality}"), |b| {
             b.iter(|| {
                 let idx = run_idx.fetch_add(1, Ordering::Relaxed);
-                let output = temp.path().join(format!("upscaled_{scaler}_{idx}.mp4"));
-                let ok = run_upscale(&bin, &input, &output, scaler);
-                assert!(ok, "upscale benchmark iteration failed");
+                let output = temp.path().join(format!("resized_{quality}_{idx}.mp4"));
+                let ok = run_resize(&bin, &input, &output, quality);
+                assert!(ok, "resize benchmark iteration failed");
                 let _ = black_box(output);
             })
         });
@@ -128,5 +126,5 @@ fn bench_upscale_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_upscale_pipeline);
+criterion_group!(benches, bench_resize_pipeline);
 criterion_main!(benches);

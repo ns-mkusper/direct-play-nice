@@ -73,7 +73,7 @@ name = "transcode_benchmark"
 harness = false
 
 [[bench]]
-name = "upscale_benchmark"
+name = "resize_benchmark"
 harness = false
 
 # The profile that 'cargo dist' will build with

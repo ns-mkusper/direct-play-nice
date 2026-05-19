@@ -22,28 +22,28 @@ use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
 };
-use crate::types::{ScalerQuality, SubtitleFailurePolicy};
+use crate::types::{ResizeQuality, SubtitleFailurePolicy};
 
 #[cfg(windows)]
-fn sws_flags_for_quality(quality: ScalerQuality) -> i32 {
+fn sws_flags_for_resize_quality(quality: ResizeQuality) -> i32 {
     let kernel = match quality {
-        ScalerQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
-        ScalerQuality::Bilinear => ffi::SWS_BILINEAR,
-        ScalerQuality::Bicubic => ffi::SWS_BICUBIC,
-        ScalerQuality::Lanczos => ffi::SWS_LANCZOS,
-        ScalerQuality::Spline => ffi::SWS_SPLINE,
+        ResizeQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
+        ResizeQuality::Bilinear => ffi::SWS_BILINEAR,
+        ResizeQuality::Bicubic => ffi::SWS_BICUBIC,
+        ResizeQuality::Lanczos => ffi::SWS_LANCZOS,
+        ResizeQuality::Spline => ffi::SWS_SPLINE,
     };
     kernel | ffi::SWS_ACCURATE_RND
 }
 
 #[cfg(not(windows))]
-fn sws_flags_for_quality(quality: ScalerQuality) -> u32 {
+fn sws_flags_for_resize_quality(quality: ResizeQuality) -> u32 {
     let kernel = match quality {
-        ScalerQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
-        ScalerQuality::Bilinear => ffi::SWS_BILINEAR,
-        ScalerQuality::Bicubic => ffi::SWS_BICUBIC,
-        ScalerQuality::Lanczos => ffi::SWS_LANCZOS,
-        ScalerQuality::Spline => ffi::SWS_SPLINE,
+        ResizeQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
+        ResizeQuality::Bilinear => ffi::SWS_BILINEAR,
+        ResizeQuality::Bicubic => ffi::SWS_BICUBIC,
+        ResizeQuality::Lanczos => ffi::SWS_LANCZOS,
+        ResizeQuality::Spline => ffi::SWS_SPLINE,
     };
     kernel | ffi::SWS_ACCURATE_RND
 }
@@ -208,7 +208,7 @@ pub(crate) fn process_video_stream(
             stream_processing_context.encode_context.width,
             stream_processing_context.encode_context.height,
             stream_processing_context.encode_context.pix_fmt,
-            sws_flags_for_quality(stream_processing_context.scaler_quality),
+            sws_flags_for_resize_quality(stream_processing_context.resize_quality),
             None,
             None,
             None,
