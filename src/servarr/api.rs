@@ -8,6 +8,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::time::Duration;
+use ureq::{Agent, AgentBuilder};
 
 #[derive(Debug, Clone, Default)]
 pub struct ApiSettings {
@@ -95,6 +97,7 @@ struct ApiClient {
     kind: IntegrationKind,
     base_url: String,
     api_key: String,
+    agent: Agent,
 }
 
 impl ApiClient {
@@ -124,6 +127,11 @@ impl ApiClient {
             kind,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
+            agent: AgentBuilder::new()
+                .timeout_read(Duration::from_secs(30 * 60))
+                .timeout_write(Duration::from_secs(5 * 60))
+                .timeout_connect(Duration::from_secs(60))
+                .build(),
         })
     }
 
@@ -192,7 +200,9 @@ impl ApiClient {
     }
 
     fn get(&self, endpoint: &str) -> Result<Value> {
-        let response = ureq::get(endpoint)
+        let response = self
+            .agent
+            .get(endpoint)
             .set("X-Api-Key", &self.api_key)
             .call()
             .with_context(|| format!("GET {}", endpoint))?;
@@ -200,7 +210,9 @@ impl ApiClient {
     }
 
     fn post_json(&self, endpoint: &str, body: &Value) -> Result<Value> {
-        let request = ureq::post(endpoint)
+        let request = self
+            .agent
+            .post(endpoint)
             .set("X-Api-Key", &self.api_key)
             .set("Content-Type", "application/json");
         let response = if body.is_null() {
