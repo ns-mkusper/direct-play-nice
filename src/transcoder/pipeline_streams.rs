@@ -24,20 +24,7 @@ use crate::transcoder::timestamp::{
 };
 use crate::types::{ResizeQuality, SubtitleFailurePolicy};
 
-#[cfg(windows)]
-fn sws_flags_for_resize_quality(quality: ResizeQuality) -> i32 {
-    let kernel = match quality {
-        ResizeQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
-        ResizeQuality::Bilinear => ffi::SWS_BILINEAR,
-        ResizeQuality::Bicubic => ffi::SWS_BICUBIC,
-        ResizeQuality::Lanczos => ffi::SWS_LANCZOS,
-        ResizeQuality::Spline => ffi::SWS_SPLINE,
-    };
-    kernel | ffi::SWS_ACCURATE_RND
-}
-
-#[cfg(not(windows))]
-fn sws_flags_for_resize_quality(quality: ResizeQuality) -> u32 {
+fn sws_flags_for_resize_quality(quality: ResizeQuality) -> ffi::SwsFlags {
     let kernel = match quality {
         ResizeQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
         ResizeQuality::Bilinear => ffi::SWS_BILINEAR,

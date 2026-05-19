@@ -8,6 +8,7 @@ duration="${DPN_RESIZE_BENCH_DURATION:-6}"
 rate="${DPN_RESIZE_BENCH_RATE:-24}"
 config_file="${DPN_RESIZE_BENCH_CONFIG:-$work_dir/empty-config.toml}"
 seek="${DPN_RESIZE_BENCH_SS:-}"
+source_video="${DPN_RESIZE_REF_VIDEO:-${BENCHMARK_SOURCE_PATH:-}}"
 
 mkdir -p "$work_dir"
 touch "$config_file"
@@ -26,31 +27,36 @@ require_cmd() {
 require_cmd ffmpeg
 require_cmd ffprobe
 
-ref="$work_dir/ref_720p.mp4"
-low="$work_dir/low_360p.mkv"
+source_high="$work_dir/source_720p.mkv"
+ref="$work_dir/ref_360p.mp4"
 baseline="$work_dir/resize_fast_bilinear.mp4"
 report="$work_dir/resize_report.csv"
 
-if [ -n "${DPN_RESIZE_REF_VIDEO:-}" ]; then
+if [ -n "$source_video" ]; then
+  if [ ! -r "$source_video" ]; then
+    echo "resize benchmark source is not readable: $source_video" >&2
+    exit 1
+  fi
+
   seek_args=()
   if [ -n "$seek" ]; then
     seek_args=(-ss "$seek")
   fi
 
-  ffmpeg -hide_banner -y "${seek_args[@]}" -i "$DPN_RESIZE_REF_VIDEO" \
+  ffmpeg -hide_banner -y "${seek_args[@]}" -i "$source_video" \
     -vf "scale=1280:720:flags=lanczos,fps=$rate,format=yuv420p" \
-    -t "$duration" -an -c:v libx264 -preset veryfast -crf 16 "$ref"
+    -t "$duration" -an -c:v mpeg2video -b:v 12M "$source_high"
 else
   ffmpeg -hide_banner -y \
     -f lavfi -i "testsrc2=size=1280x720:rate=$rate:duration=$duration" \
     -f lavfi -i "testsrc=size=1280x720:rate=$rate:duration=$duration" \
     -filter_complex "[0:v][1:v]blend=all_mode=overlay:all_opacity=0.25,format=yuv420p" \
-    -an -c:v libx264 -preset veryfast -crf 16 "$ref"
+    -an -c:v mpeg2video -b:v 12M "$source_high"
 fi
 
-ffmpeg -hide_banner -y -i "$ref" \
+ffmpeg -hide_banner -y -i "$source_high" \
   -vf "scale=640:360:flags=lanczos,format=yuv420p" \
-  -c:v mpeg2video -b:v 4M -an "$low"
+  -c:v libx264 -preset veryfast -crf 16 -an "$ref"
 
 run_candidate() {
   local quality="$1"
@@ -62,10 +68,10 @@ run_candidate() {
     --config-file "$config_file" \
     --device chromecast \
     --hw-accel "${DPN_RESIZE_HW_ACCEL:-none}" \
-    --video-quality 720p \
+    --video-quality 360p \
     --resize-quality "$quality" \
     --skip-codec-check \
-    "$low" "$output" >/dev/null
+    "$source_high" "$output" >/dev/null
   ended="$(date +%s.%N)"
 
   elapsed="$(awk -v s="$started" -v e="$ended" 'BEGIN { printf "%.3f", e - s }')"

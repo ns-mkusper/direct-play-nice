@@ -36,8 +36,8 @@ fn command_available(cmd: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn generate_low_res_clip(dir: &Path) -> Option<PathBuf> {
-    let input = dir.join("resize_input.mkv");
+fn generate_resize_input_clip(dir: &Path) -> Option<PathBuf> {
+    let input = dir.join("resize_input_720p.mkv");
     let status = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -45,7 +45,7 @@ fn generate_low_res_clip(dir: &Path) -> Option<PathBuf> {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=640x360:rate=30000/1001:duration=2",
+            "testsrc2=size=1280x720:rate=30000/1001:duration=2",
             "-f",
             "lavfi",
             "-i",
@@ -55,7 +55,7 @@ fn generate_low_res_clip(dir: &Path) -> Option<PathBuf> {
             "-pix_fmt",
             "yuv420p",
             "-b:v",
-            "4M",
+            "12M",
             "-c:a",
             "mp2",
             "-b:a",
@@ -79,7 +79,7 @@ fn run_resize(bin: &Path, input: &Path, output: &Path, quality: &str) -> bool {
             "--hw-accel",
             "none",
             "--video-quality",
-            "720p",
+            "360p",
             "--resize-quality",
             quality,
             "--skip-codec-check",
@@ -104,7 +104,7 @@ fn bench_resize_pipeline(c: &mut Criterion) {
     }
 
     let temp = TempDir::new().expect("create benchmark temp dir");
-    let Some(input) = generate_low_res_clip(temp.path()) else {
+    let Some(input) = generate_resize_input_clip(temp.path()) else {
         eprintln!("Skipping resize benchmark: failed to generate input clip.");
         return;
     };
@@ -113,7 +113,7 @@ fn bench_resize_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("Resize Conversion Speed");
     group.sample_size(10);
     for quality in ["fast-bilinear", "lanczos", "spline"] {
-        group.bench_function(format!("cpu_resize_720p_{quality}"), |b| {
+        group.bench_function(format!("cpu_downscale_360p_{quality}"), |b| {
             b.iter(|| {
                 let idx = run_idx.fetch_add(1, Ordering::Relaxed);
                 let output = temp.path().join(format!("resized_{quality}_{idx}.mp4"));

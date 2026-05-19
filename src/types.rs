@@ -134,10 +134,24 @@ pub(crate) fn clamp_dimensions(
     }
 
     if (source_width as u32) <= max_width && (source_height as u32) <= max_height {
-        return (source_width, source_height);
+        return encoder_safe_dimensions(source_width, source_height);
     }
 
     scaled_dimensions(source_width, source_height, max_width, max_height)
+}
+
+fn encoder_safe_dimensions(width: i32, height: i32) -> (i32, i32) {
+    let mut safe_width = width;
+    let mut safe_height = height;
+
+    if safe_width > 2 && safe_width % 2 != 0 {
+        safe_width -= 1;
+    }
+    if safe_height > 2 && safe_height % 2 != 0 {
+        safe_height -= 1;
+    }
+
+    (safe_width.max(1), safe_height.max(1))
 }
 
 fn scaled_dimensions(
@@ -280,6 +294,12 @@ mod tests {
     #[test]
     fn clamp_dimensions_never_enlarges_without_quality_cap() {
         assert_eq!(clamp_dimensions(640, 360, (1920, 1080), None), (640, 360));
+    }
+
+    #[test]
+    fn clamp_dimensions_normalizes_odd_dimensions_down_without_enlarging() {
+        assert_eq!(clamp_dimensions(641, 361, (1920, 1080), None), (640, 360));
+        assert_eq!(clamp_dimensions(3, 3, (1920, 1080), None), (2, 2));
     }
 
     #[test]

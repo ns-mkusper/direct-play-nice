@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-fn generate_low_res_input(dir: &Path) -> PathBuf {
-    let input = dir.join("low_res.mkv");
+fn generate_input(dir: &Path, name: &str, size: &str) -> PathBuf {
+    let input = dir.join(name);
+    let video_filter = format!("testsrc2=size={size}:rate=24:duration=2");
     let status = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -19,7 +20,7 @@ fn generate_low_res_input(dir: &Path) -> PathBuf {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=640x360:rate=24:duration=2",
+            video_filter.as_str(),
             "-f",
             "lavfi",
             "-i",
@@ -36,8 +37,8 @@ fn generate_low_res_input(dir: &Path) -> PathBuf {
         ])
         .arg(input.as_os_str())
         .status()
-        .expect("run ffmpeg low-res generator");
-    assert!(status.success(), "ffmpeg low-res generation failed");
+        .expect("run ffmpeg test generator");
+    assert!(status.success(), "ffmpeg test generation failed");
     input
 }
 
@@ -58,7 +59,7 @@ fn cli_preserves_low_res_source_even_with_quality_target() {
     common::ensure_ffmpeg_present();
 
     let tmp = TempDir::new().unwrap();
-    let input = generate_low_res_input(tmp.path());
+    let input = generate_input(tmp.path(), "low_res.mkv", "640x360");
     let output = tmp.path().join("resized.mp4");
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
@@ -85,7 +86,7 @@ fn cli_preserves_low_res_source_by_default() {
     common::ensure_ffmpeg_present();
 
     let tmp = TempDir::new().unwrap();
-    let input = generate_low_res_input(tmp.path());
+    let input = generate_input(tmp.path(), "low_res.mkv", "640x360");
     let output = tmp.path().join("preserved.mp4");
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
@@ -103,4 +104,39 @@ fn cli_preserves_low_res_source_by_default() {
     common::assert_cli_success(cmd);
 
     assert_eq!(video_dimensions(&output), (640, 360));
+}
+
+#[test]
+fn cli_downscales_source_that_exceeds_quality_target() {
+    common::ensure_ffmpeg_present();
+
+    let tmp = TempDir::new().unwrap();
+    let input = generate_input(tmp.path(), "high_res.mkv", "1280x720");
+    let output = tmp.path().join("downscaled.mp4");
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.args([
+        "--device",
+        "chromecast",
+        "--hw-accel",
+        "none",
+        "--video-quality",
+        "360p",
+        "--resize-quality",
+        "lanczos",
+        "--validate-output",
+    ])
+    .arg(&input)
+    .arg(&output);
+    common::assert_cli_success(cmd);
+
+    let (width, height) = video_dimensions(&output);
+    assert!(width <= 640, "width {width} exceeds 360p cap");
+    assert!(height <= 360, "height {height} exceeds 360p cap");
+    assert!(width <= 1280, "width {width} exceeds source width");
+    assert!(height <= 720, "height {height} exceeds source height");
+    assert!(
+        width < 1280 || height < 720,
+        "expected resize below source dimensions, got {width}x{height}"
+    );
 }

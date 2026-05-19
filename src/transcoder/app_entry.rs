@@ -372,7 +372,7 @@ fn run_conversion(
         describe_resolution(quality_limits.max_video_dimensions),
         describe_bitrate(quality_limits.max_video_bitrate)
     );
-    info!("Resize quality: {:?}", args.resize_quality);
+    info!("Resize quality: {}", args.resize_quality);
     info!(
         "Audio quality preset: {} (bitrate {})",
         args.audio_quality,
