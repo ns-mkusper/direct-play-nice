@@ -86,7 +86,7 @@ metric_summary() {
   local candidate="$1"
   local metric_log="$work_dir/metrics_$(basename "$candidate").log"
   local vmaf_json="$work_dir/vmaf_$(basename "$candidate").json"
-  local vmaf psnr ssim
+  local vmaf psnr_y psnr_u psnr_v psnr_avg psnr_min psnr_max ssim_y ssim_u ssim_v ssim_all ssim_db
 
   if ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
     -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=log_fmt=json:log_path=$vmaf_json" \
@@ -128,17 +128,29 @@ metric_summary() {
   ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
     -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]psnr=stats_file=-" \
     -f null - >/dev/null 2>"$metric_log" || true
-  psnr="$(grep -o 'average:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
+  psnr_y="$(grep -o 'PSNR .*' "$metric_log" | tail -n1 | grep -o 'y:[0-9.]*' | cut -d: -f2)"
+  psnr_u="$(grep -o 'PSNR .*' "$metric_log" | tail -n1 | grep -o 'u:[0-9.]*' | cut -d: -f2)"
+  psnr_v="$(grep -o 'PSNR .*' "$metric_log" | tail -n1 | grep -o 'v:[0-9.]*' | cut -d: -f2)"
+  psnr_avg="$(grep -o 'average:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
+  psnr_min="$(grep -o 'min:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
+  psnr_max="$(grep -o 'max:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
 
   ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
     -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]ssim=stats_file=-" \
     -f null - >/dev/null 2>"$metric_log" || true
-  ssim="$(grep -o 'All:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
+  ssim_y="$(grep -o 'SSIM .*' "$metric_log" | tail -n1 | grep -o 'Y:[0-9.]*' | cut -d: -f2)"
+  ssim_u="$(grep -o 'SSIM .*' "$metric_log" | tail -n1 | grep -o 'U:[0-9.]*' | cut -d: -f2)"
+  ssim_v="$(grep -o 'SSIM .*' "$metric_log" | tail -n1 | grep -o 'V:[0-9.]*' | cut -d: -f2)"
+  ssim_all="$(grep -o 'All:[0-9.]*' "$metric_log" | tail -n1 | cut -d: -f2)"
+  ssim_db="$(grep -o 'All:[0-9.]* ([0-9.]*)' "$metric_log" | tail -n1 | sed -E 's/.*\(([0-9.]+)\).*/\1/')"
 
-  printf ",%s,%s,%s\n" "${vmaf:-na}" "${psnr:-na}" "${ssim:-na}"
+  printf ",%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    "${vmaf:-na}" \
+    "${psnr_y:-na}" "${psnr_u:-na}" "${psnr_v:-na}" "${psnr_avg:-na}" "${psnr_min:-na}" "${psnr_max:-na}" \
+    "${ssim_y:-na}" "${ssim_u:-na}" "${ssim_v:-na}" "${ssim_all:-na}" "${ssim_db:-na}"
 }
 
-echo "quality,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr,ssim" > "$report"
+echo "quality,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db" > "$report"
 
 {
   run_candidate "fast-bilinear" "$baseline"

@@ -66,7 +66,9 @@ scripts/resize-tools/run_resize_benchmark.sh
 ```
 
 The benchmark writes a CSV report with elapsed time, FPS, realtime factor,
-output size, and available quality metrics such as VMAF, PSNR, and SSIM.
+output size, and full-reference quality metrics. It reports VMAF when FFmpeg has
+`libvmaf`, PSNR component/average/min/max scores in dB, and SSIM
+component/aggregate scores including the SSIM dB transform.
 Set `DPN_RESIZE_REF_VIDEO=/path/to/reference.mkv` to use a real source clip.
 If `DPN_RESIZE_REF_VIDEO` is unset, the harness also honors the benchmark-runner
 `BENCHMARK_SOURCE_PATH` environment variable. Set `DPN_RESIZE_BENCH_SS=00:01:30`
