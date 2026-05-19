@@ -212,8 +212,9 @@ pub fn run_radarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
+    let mut summary =
+        client.radarr_force_import_pending_language_upgrades(requirements, redownload_options)?;
     let records = client.radarr_recent_import_history(audit_options.lookback_days)?;
-    let mut summary = AuditSummary::default();
     let mut searched = 0usize;
 
     for record in records {
@@ -587,6 +588,144 @@ impl ApiClient {
         self.get(&format!("{}/api/v3/moviefile/{}", self.base_url, file_id))
     }
 
+    fn radarr_force_import_pending_language_upgrades(
+        &self,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+    ) -> Result<AuditSummary> {
+        let mut summary = AuditSummary::default();
+        let response = self.get(&format!(
+            "{}/api/v3/queue?page=1&pageSize=100&includeMovie=true",
+            self.base_url
+        ))?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for queue_item in records {
+            let state = queue_item
+                .get("trackedDownloadState")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let status = queue_item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if state != "importPending" || status != "completed" {
+                continue;
+            }
+            let Some(movie_id) = queue_item
+                .get("movieId")
+                .and_then(Value::as_i64)
+                .or_else(|| {
+                    queue_item
+                        .get("movie")
+                        .and_then(|m| m.get("id"))
+                        .and_then(Value::as_i64)
+                })
+            else {
+                continue;
+            };
+            let Some(download_id) = queue_item.get("downloadId").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(current_file_id) = queue_item
+                .get("movie")
+                .and_then(|m| m.get("movieFileId"))
+                .and_then(Value::as_i64)
+            else {
+                continue;
+            };
+            let Some(current_file) = queue_item.get("movie").and_then(|m| m.get("movieFile"))
+            else {
+                continue;
+            };
+            let current_report = language_report_from_episode_file(current_file, requirements);
+            if current_report.satisfied() {
+                continue;
+            }
+            let manual_items = self.radarr_manual_import_items(download_id, movie_id)?;
+            let Some(item) = manual_items.into_iter().find(|item| {
+                manual_import_item_satisfies(
+                    item,
+                    &queue_item,
+                    requirements,
+                    options.candidate_policy,
+                )
+            }) else {
+                continue;
+            };
+            summary.missing += 1;
+            summary.searched += 1;
+            let title = queue_item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("<pending import>");
+            if options.dry_run {
+                summary.dry_run += 1;
+                info!(
+                    "Radarr language audit dry-run: would force-import pending movie {} from '{}'.",
+                    movie_id, title
+                );
+                continue;
+            }
+            self.radarr_delete_movie_file(current_file_id)?;
+            self.radarr_post_manual_import(item, movie_id)?;
+            if let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) {
+                if let Err(err) = self.radarr_delete_queue_item(queue_id) {
+                    warn!(
+                        "Radarr language audit force-imported movie {} but could not remove completed queue item {}: {}",
+                        movie_id, queue_id, err
+                    );
+                }
+            }
+            summary.grabbed += 1;
+            info!(
+                "Radarr language audit force-imported pending language upgrade for movie {} from '{}'.",
+                movie_id, title
+            );
+        }
+        Ok(summary)
+    }
+
+    fn radarr_manual_import_items(&self, download_id: &str, movie_id: i64) -> Result<Vec<Value>> {
+        let endpoint = format!(
+            "{}/api/v3/manualimport?downloadId={}&movieId={}&filterExistingFiles=false",
+            self.base_url,
+            url_encode(download_id),
+            movie_id
+        );
+        self.get(&endpoint)?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Radarr manual import did not return an array"))
+    }
+
+    fn radarr_post_manual_import(&self, mut item: Value, movie_id: i64) -> Result<()> {
+        if let Value::Object(ref mut map) = item {
+            map.insert("movieId".to_string(), Value::from(movie_id));
+        }
+        let endpoint = format!("{}/api/v3/manualimport", self.base_url);
+        self.post_json(&endpoint, &Value::Array(vec![item]))?;
+        Ok(())
+    }
+
+    fn radarr_delete_movie_file(&self, file_id: i64) -> Result<()> {
+        let endpoint = format!("{}/api/v3/moviefile/{}", self.base_url, file_id);
+        self.delete(&endpoint)?;
+        Ok(())
+    }
+
+    fn radarr_delete_queue_item(&self, queue_id: i64) -> Result<()> {
+        let endpoint = format!(
+            "{}/api/v3/queue/{}?removeFromClient=false&blocklist=false",
+            self.base_url, queue_id
+        );
+        self.delete(&endpoint)?;
+        Ok(())
+    }
+
     fn grab_release(&self, release: &Value) -> Result<()> {
         let endpoint = format!("{}/api/v3/release", self.base_url);
         self.post_json(&endpoint, release)
@@ -655,6 +794,16 @@ impl ApiClient {
         .with_context(|| format!("POST {}", endpoint))?;
         read_json_response(response)
     }
+
+    fn delete(&self, endpoint: &str) -> Result<Value> {
+        let response = self
+            .agent
+            .delete(endpoint)
+            .set("X-Api-Key", &self.api_key)
+            .call()
+            .with_context(|| format!("DELETE {}", endpoint))?;
+        read_json_response(response)
+    }
 }
 
 fn read_json_response(response: ureq::Response) -> Result<Value> {
@@ -674,6 +823,23 @@ fn history_episode_id(record: &Value) -> Option<i64> {
         .and_then(|episode| episode.get("id"))
         .and_then(Value::as_i64)
         .or_else(|| record.get("episodeId").and_then(Value::as_i64))
+}
+
+fn manual_import_item_satisfies(
+    item: &Value,
+    queue_item: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    let title = queue_item
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut candidate = item.clone();
+    if let Value::Object(ref mut map) = candidate {
+        map.insert("title".to_string(), Value::from(title));
+    }
+    release_satisfies_languages(&candidate, requirements, policy)
 }
 
 fn language_report_from_episode_file(
