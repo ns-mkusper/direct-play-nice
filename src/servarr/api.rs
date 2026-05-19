@@ -69,8 +69,15 @@ pub fn trigger_verified_redownload(
     if options.dry_run {
         return Ok(RedownloadOutcome::DryRun {
             summary: format!(
-                "would grab '{}' using {:?} policy ({}) and then blocklist the current history item if identifiable",
-                title, options.candidate_policy, evidence
+                "would grab '{}' using {:?} policy ({}) and then blocklist the current history item if identifiable{}",
+                title,
+                options.candidate_policy,
+                evidence,
+                if release_rejections_are_only_existing_file_cutoff(release) {
+                    "; accepting Arr's existing-file/cutoff rejection as a language-upgrade override"
+                } else {
+                    ""
+                }
             ),
         });
     }
@@ -279,19 +286,32 @@ fn select_verified_release<'a>(
 ) -> Option<&'a Value> {
     releases
         .iter()
-        .filter(|release| release_is_grabbable(release))
+        .filter(|release| release_can_be_language_upgrade_candidate(release))
         .filter(|release| release_satisfies_languages(release, requirements, policy))
         .max_by_key(|release| release_score(release))
 }
 
-fn release_is_grabbable(release: &Value) -> bool {
-    if release.get("rejected").and_then(Value::as_bool) == Some(true) {
-        return false;
-    }
+fn release_can_be_language_upgrade_candidate(release: &Value) -> bool {
     if release.get("downloadAllowed").and_then(Value::as_bool) == Some(false) {
         return false;
     }
-    true
+    if release.get("rejected").and_then(Value::as_bool) != Some(true) {
+        return true;
+    }
+    release_rejections_are_only_existing_file_cutoff(release)
+}
+
+fn release_rejections_are_only_existing_file_cutoff(release: &Value) -> bool {
+    let Some(rejections) = release.get("rejections").and_then(Value::as_array) else {
+        return false;
+    };
+    !rejections.is_empty()
+        && rejections.iter().all(|reason| {
+            let reason = reason.as_str().unwrap_or_default().to_ascii_lowercase();
+            reason.contains("existing file")
+                || reason.contains("meets cutoff")
+                || reason.contains("quality profile does not allow upgrades")
+        })
 }
 
 fn release_satisfies_languages(
@@ -818,6 +838,55 @@ mod tests {
         search.assert();
 
         env::remove_var("sonarr_episode_id");
+    }
+
+    #[test]
+    fn accepts_existing_file_cutoff_rejection_for_language_upgrade_candidate() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string(), "jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        };
+        let releases = vec![json!({
+            "title":"Rent-a-Girlfriend S05E04 1080p Dual-Audio Multi-Subs",
+            "rejected": true,
+            "downloadAllowed": true,
+            "rejections":[
+                "Existing file and the Quality profile does not allow upgrades",
+                "Existing file meets cutoff: Unknown"
+            ],
+            "customFormatScore": 875
+        })];
+
+        assert!(select_verified_release(
+            &releases,
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn still_rejects_unrelated_arr_rejections() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string(), "jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        };
+        let releases = vec![json!({
+            "title":"Rent-a-Girlfriend S05E04 1080p Dual-Audio Multi-Subs",
+            "rejected": true,
+            "downloadAllowed": true,
+            "rejections":["Not enough seeders: 0. Minimum seeders: 1"],
+            "customFormatScore": 875
+        })];
+
+        assert!(select_verified_release(
+            &releases,
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+        )
+        .is_none());
     }
 
     #[test]
