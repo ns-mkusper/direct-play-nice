@@ -48,6 +48,31 @@ fn sws_flags_for_frame_transform(
     sws_flags_for_resize_quality(quality)
 }
 
+#[cfg(test)]
+mod resize_quality_tests {
+    use super::*;
+
+    #[test]
+    fn same_size_transform_keeps_legacy_fast_scaler_path() {
+        assert_eq!(
+            sws_flags_for_frame_transform(ResizeQuality::Lanczos, 640, 360, 640, 360),
+            ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND
+        );
+    }
+
+    #[test]
+    fn resize_transform_uses_selected_kernel() {
+        assert_eq!(
+            sws_flags_for_frame_transform(ResizeQuality::Lanczos, 1280, 720, 640, 360),
+            ffi::SWS_LANCZOS | ffi::SWS_ACCURATE_RND
+        );
+        assert_eq!(
+            sws_flags_for_frame_transform(ResizeQuality::Spline, 1280, 720, 640, 360),
+            ffi::SWS_SPLINE | ffi::SWS_ACCURATE_RND
+        );
+    }
+}
+
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
         let transfer_format = unsafe {

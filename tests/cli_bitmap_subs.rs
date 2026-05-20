@@ -2,9 +2,8 @@
 
 //! Integration test: converts an input with bitmap subtitles
 //! and verifies the output is Chromecast direct‑play compatible with
-//! text subs (MOV_TEXT) and intact timing. We prefer PGS, but fall back
-//! to other bitmap subtitle codecs if the encoder isn't available in the
-//! local ffmpeg build.
+//! text subs (MOV_TEXT) and intact timing. We prefer PGS, but try other
+//! bitmap subtitle codecs when the local ffmpeg build lacks a PGS encoder.
 
 use assert_cmd::prelude::*;
 use predicates::str;
@@ -88,12 +87,7 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> Option<(PathBuf, u64)> {
         .expect("run ffmpeg audio");
     assert!(status_a.success(), "ffmpeg audio generation failed");
 
-    // Mux subtitles by encoding SRT -> bitmap codec if available; otherwise
-    // fall back to a text codec (ASS) to keep the test portable. The CLI
-    // still exercises subtitle transcoding to MOV_TEXT either way.
-    let candidates = ["hdmv_pgs_subtitle", "dvdsub", "dvb_subtitle"];
-    let mut ok = false;
-    for codec in candidates {
+    for codec in ["hdmv_pgs_subtitle", "dvdsub", "dvb_subtitle"] {
         let status_mux = Command::new("ffmpeg")
             .args([
                 "-y",
@@ -119,19 +113,17 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> Option<(PathBuf, u64)> {
             ])
             .status()
             .expect("run ffmpeg mux bitmap subs");
-        if status_mux.success() {
-            ok = true;
-            break;
+        if !status_mux.success() {
+            continue;
         }
-    }
-    if !ok {
-        return None;
+
+        let input_cstr = CString::new(input.to_string_lossy().to_string()).unwrap();
+        let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
+        let dur_ms = (ictx.duration / 1000).max(0) as u64;
+        return Some((input, dur_ms));
     }
 
-    let input_cstr = CString::new(input.to_string_lossy().to_string()).unwrap();
-    let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
-    let dur_ms = (ictx.duration / 1000).max(0) as u64;
-    Some((input, dur_ms))
+    None
 }
 
 fn gen_multi_stream_bitmap_input(tmp: &TempDir) -> Option<PathBuf> {

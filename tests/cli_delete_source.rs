@@ -5,26 +5,12 @@ mod common;
 use assert_cmd::prelude::*;
 use common::{ensure_ffmpeg_present, gen_problem_input};
 use predicates::str;
-use std::env;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
-
-fn skip_on_nightly() -> bool {
-    env::var("RUSTUP_TOOLCHAIN")
-        .map(|toolchain| toolchain.contains("nightly"))
-        .unwrap_or(false)
-        || Command::new("rustc")
-            .arg("--version")
-            .output()
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|version| version.contains("nightly"))
-            .unwrap_or(false)
-}
 
 fn cli_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -38,17 +24,19 @@ fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     Ok(source)
 }
 
+fn skip_subtitles_and_use_reasonable_audio(cmd: &mut Command) {
+    cmd.arg("--sub-mode")
+        .arg("skip")
+        .arg("--audio-quality")
+        .arg("192k");
+}
+
 fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<dyn Error>> {
     let _guard = cli_lock();
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
-    cmd.arg("-s")
-        .arg("chromecast_1st_gen")
-        .arg("--sub-mode")
-        .arg("skip")
-        .arg("--audio-quality")
-        .arg("192k")
-        .arg(input)
-        .arg(output);
+    cmd.arg("-s").arg("chromecast_1st_gen");
+    skip_subtitles_and_use_reasonable_audio(&mut cmd);
+    cmd.arg(input).arg(output);
     for arg in extra_args {
         cmd.arg(arg);
     }
@@ -59,10 +47,6 @@ fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<d
 #[test]
 fn delete_source_defaults_to_false() -> Result<(), Box<dyn Error>> {
     ensure_ffmpeg_present();
-    if skip_on_nightly() {
-        eprintln!("Skipping delete-source CLI test on nightly toolchain.");
-        return Ok(());
-    }
     let tmp = TempDir::new()?;
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
@@ -76,10 +60,6 @@ fn delete_source_defaults_to_false() -> Result<(), Box<dyn Error>> {
 #[test]
 fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Error>> {
     ensure_ffmpeg_present();
-    if skip_on_nightly() {
-        eprintln!("Skipping delete-source CLI test on nightly toolchain.");
-        return Ok(());
-    }
     let tmp = TempDir::new()?;
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "delete_source = true\n")?;
@@ -92,14 +72,9 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
     cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")
-        .arg("chromecast_1st_gen")
-        .arg("--sub-mode")
-        .arg("skip")
-        .arg("--audio-quality")
-        .arg("192k")
-        .arg(&input)
-        .arg(&output)
-        .arg("--delete-source=false");
+        .arg("chromecast_1st_gen");
+    skip_subtitles_and_use_reasonable_audio(&mut cmd);
+    cmd.arg(&input).arg(&output).arg("--delete-source=false");
     cmd.assert().success().stdout(str::is_empty());
 
     assert!(
@@ -112,10 +87,6 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
 #[test]
 fn delete_source_flag_deletes_input() -> Result<(), Box<dyn Error>> {
     ensure_ffmpeg_present();
-    if skip_on_nightly() {
-        eprintln!("Skipping delete-source CLI test on nightly toolchain.");
-        return Ok(());
-    }
     let tmp = TempDir::new()?;
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
@@ -129,10 +100,6 @@ fn delete_source_flag_deletes_input() -> Result<(), Box<dyn Error>> {
 #[test]
 fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<dyn Error>> {
     ensure_ffmpeg_present();
-    if skip_on_nightly() {
-        eprintln!("Skipping delete-source CLI test on nightly toolchain.");
-        return Ok(());
-    }
     let tmp = TempDir::new()?;
     let config_path = tmp.path().join("config.toml");
     fs::write(&config_path, "delete_source = true\n")?;
@@ -145,13 +112,9 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
     cmd.arg("--config-file")
         .arg(&config_path)
         .arg("-s")
-        .arg("chromecast_1st_gen")
-        .arg("--sub-mode")
-        .arg("skip")
-        .arg("--audio-quality")
-        .arg("192k")
-        .arg(&input)
-        .arg(&output);
+        .arg("chromecast_1st_gen");
+    skip_subtitles_and_use_reasonable_audio(&mut cmd);
+    cmd.arg(&input).arg(&output);
     cmd.assert().success().stdout(str::is_empty());
 
     assert!(
