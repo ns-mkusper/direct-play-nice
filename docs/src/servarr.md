@@ -29,7 +29,7 @@ Example command in Sonarr custom script:
 /path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
 ```
 
-## Optional language mismatch redownload search
+## Optional language mismatch replacement
 
 Language checks are off by default. When enabled on a Sonarr/Radarr `Download`
 event, `direct-play-nice` inspects the imported file before conversion. If any
@@ -82,6 +82,9 @@ policy in the DPN config file:
 
 ```toml
 servarr_language_check = true
+servarr_language_audit = true
+servarr_language_audit_lookback_days = 30
+servarr_language_audit_max_searches = 20
 required_audio_languages = "eng,jpn"
 required_subtitle_languages = "eng"
 servarr_api_url = "http://127.0.0.1:8989"
