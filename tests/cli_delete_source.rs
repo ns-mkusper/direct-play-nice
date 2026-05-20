@@ -31,6 +31,8 @@ fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<d
         .arg("chromecast_1st_gen")
         .arg("--sub-mode")
         .arg("skip")
+        .arg("--audio-quality")
+        .arg("192k")
         .arg(input)
         .arg(output);
     for arg in extra_args {
@@ -71,6 +73,8 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
         .arg("chromecast_1st_gen")
         .arg("--sub-mode")
         .arg("skip")
+        .arg("--audio-quality")
+        .arg("192k")
         .arg(&input)
         .arg(&output)
         .arg("--delete-source=false");
@@ -114,6 +118,8 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
         .arg("chromecast_1st_gen")
         .arg("--sub-mode")
         .arg("skip")
+        .arg("--audio-quality")
+        .arg("192k")
         .arg(&input)
         .arg(&output);
     cmd.assert().success().stdout(str::is_empty());
