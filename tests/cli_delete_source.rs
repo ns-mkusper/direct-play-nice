@@ -17,6 +17,13 @@ fn skip_on_nightly() -> bool {
     env::var("RUSTUP_TOOLCHAIN")
         .map(|toolchain| toolchain.contains("nightly"))
         .unwrap_or(false)
+        || Command::new("rustc")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|version| version.contains("nightly"))
+            .unwrap_or(false)
 }
 
 fn cli_lock() -> std::sync::MutexGuard<'static, ()> {
