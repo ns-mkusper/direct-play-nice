@@ -14,7 +14,9 @@ use tempfile::TempDir;
 
 fn cli_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
@@ -27,6 +29,8 @@ fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<d
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen")
+        .arg("--sub-mode")
+        .arg("skip")
         .arg(input)
         .arg(output);
     for arg in extra_args {
@@ -65,6 +69,8 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
         .arg(&config_path)
         .arg("-s")
         .arg("chromecast_1st_gen")
+        .arg("--sub-mode")
+        .arg("skip")
         .arg(&input)
         .arg(&output)
         .arg("--delete-source=false");
@@ -106,6 +112,8 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
         .arg(&config_path)
         .arg("-s")
         .arg("chromecast_1st_gen")
+        .arg("--sub-mode")
+        .arg("skip")
         .arg(&input)
         .arg(&output);
     cmd.assert().success().stdout(str::is_empty());
