@@ -46,13 +46,12 @@ fn mk_subs_file_with_text(path: &Path, first: &str, second: &str) {
     .unwrap();
 }
 
-fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64, bool) {
+fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> Option<(PathBuf, u64)> {
     let dir = tmp.path();
     let video = dir.join("v.mkv");
     let audio = dir.join("a.mp2");
     let subs = dir.join("subs.srt");
     let input = dir.join("input_bitmap.mkv");
-    let mut used_text_subs = false;
 
     mk_subs_file(&subs);
 
@@ -126,45 +125,13 @@ fn gen_problem_input_with_bitmap_subs(tmp: &TempDir) -> (PathBuf, u64, bool) {
         }
     }
     if !ok {
-        // Final fallback: encode as text subs using ASS inside MKV.
-        // This keeps the test runnable on platforms where text->bitmap is unsupported
-        // or bitmap encoders are unavailable.
-        let status_text = Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-i",
-                &video.to_string_lossy(),
-                "-i",
-                &audio.to_string_lossy(),
-                "-i",
-                &subs.to_string_lossy(),
-                "-c:v",
-                "copy",
-                "-c:a",
-                "copy",
-                "-c:s",
-                "ass",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-map",
-                "2:0",
-                &input.to_string_lossy(),
-            ])
-            .status()
-            .expect("run ffmpeg mux text subs");
-        assert!(
-            status_text.success(),
-            "ffmpeg mux with bitmap and text subtitle encoders failed"
-        );
-        used_text_subs = true;
+        return None;
     }
 
     let input_cstr = CString::new(input.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(input_cstr.as_c_str()).unwrap();
     let dur_ms = (ictx.duration / 1000).max(0) as u64;
-    (input, dur_ms, used_text_subs)
+    Some((input, dur_ms))
 }
 
 fn gen_multi_stream_bitmap_input(tmp: &TempDir) -> Option<PathBuf> {
@@ -301,14 +268,16 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     ensure_ffmpeg_present();
 
     let tmp = TempDir::new()?;
-    let (input, in_dur_ms, used_text_subs) = gen_problem_input_with_bitmap_subs(&tmp);
+    let Some((input, in_dur_ms)) = gen_problem_input_with_bitmap_subs(&tmp) else {
+        eprintln!("No bitmap subtitle encoder available; skipping bitmap direct-play test.");
+        return Ok(());
+    };
     let output = tmp.path().join("out_bitmap.mp4");
 
     // Run the CLI for all Chromecast models
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
-        .env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path().join("locks"))
         .arg(&input)
         .arg(&output);
     cmd.assert().success().stdout(str::is_empty());
@@ -377,24 +346,12 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
 
     let out_dur_ms = probe_duration_ms(&output);
     let diff = out_dur_ms.abs_diff(in_dur_ms);
-    if !used_text_subs {
-        assert!(
-            diff <= 200,
-            "duration drift too large: in={}ms out={}ms",
-            in_dur_ms,
-            out_dur_ms
-        );
-    } else {
-        // When we fall back to ASS (text) in the source file, some FFmpeg builds
-        // report container duration with significant jitter. We still require the
-        // output to be within a reasonable multiple of the input length.
-        assert!(
-            out_dur_ms <= in_dur_ms.saturating_add(120_000),
-            "duration drift too large (text fallback): in={}ms out={}ms",
-            in_dur_ms,
-            out_dur_ms
-        );
-    }
+    assert!(
+        diff <= 200,
+        "duration drift too large: in={}ms out={}ms",
+        in_dur_ms,
+        out_dur_ms
+    );
 
     Ok(())
 }
