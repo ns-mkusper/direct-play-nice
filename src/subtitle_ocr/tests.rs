@@ -5,8 +5,16 @@ use mockito::Server;
 use std::fs::File;
 use std::io::Write;
 use std::ptr;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use strsim::jaro_winkler;
 use tempfile::TempDir;
+
+fn env_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn normalize_text_for_word_similarity(input: &str) -> String {
     input
@@ -719,6 +727,8 @@ fn test_optional_rec_model_auto_provision_failure_returns_none() {
 
 #[test]
 fn test_optional_multilingual_rec_model_prefers_local_file() {
+    let _guard = env_lock();
+    std::env::remove_var("DPN_OCR_REC_MULTILINGUAL_MODEL");
     let tmp = TempDir::new().unwrap();
     let local = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
     let mut f = File::create(&local).unwrap();
@@ -732,6 +742,7 @@ fn test_optional_multilingual_rec_model_prefers_local_file() {
 
 #[test]
 fn test_optional_multilingual_rec_model_env_override_wins() {
+    let _guard = env_lock();
     let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
     let tmp = TempDir::new().unwrap();
     let manual = tmp.path().join("manual_multi.onnx");
@@ -749,6 +760,7 @@ fn test_optional_multilingual_rec_model_env_override_wins() {
 
 #[test]
 fn test_optional_multilingual_rec_model_env_override_missing_path_errors() {
+    let _guard = env_lock();
     let env_key = "DPN_OCR_REC_MULTILINGUAL_MODEL";
     let tmp = TempDir::new().unwrap();
     std::env::set_var(env_key, tmp.path().join("does-not-exist.onnx"));
@@ -762,6 +774,8 @@ fn test_optional_multilingual_rec_model_env_override_missing_path_errors() {
 
 #[test]
 fn test_optional_multilingual_rec_model_prefers_variant_specific_candidate() {
+    let _guard = env_lock();
+    std::env::remove_var("DPN_OCR_REC_MULTILINGUAL_MODEL");
     let tmp = TempDir::new().unwrap();
     let v3 = tmp.path().join("multilingual_PP-OCRv3_rec_infer.onnx");
     let v4 = tmp.path().join("multilingual_PP-OCRv4_rec_infer.onnx");
@@ -781,6 +795,8 @@ fn test_optional_multilingual_rec_model_prefers_variant_specific_candidate() {
 
 #[test]
 fn test_optional_multilingual_rec_model_ignores_non_rec_or_non_onnx_files() {
+    let _guard = env_lock();
+    std::env::remove_var("DPN_OCR_REC_MULTILINGUAL_MODEL");
     let tmp = TempDir::new().unwrap();
     File::create(tmp.path().join("multilingual_PP-OCRv4_det_infer.onnx")).unwrap();
     File::create(tmp.path().join("multilingual_PP-OCRv4_rec_infer.txt")).unwrap();
@@ -791,6 +807,8 @@ fn test_optional_multilingual_rec_model_ignores_non_rec_or_non_onnx_files() {
 
 #[test]
 fn test_optional_multilingual_rec_model_accepts_non_latin_dedicated_rec_fallback() {
+    let _guard = env_lock();
+    std::env::remove_var("DPN_OCR_REC_MULTILINGUAL_MODEL");
     let tmp = TempDir::new().unwrap();
     let greek = tmp.path().join("greek_PP-OCRv4_rec_infer.onnx");
     File::create(&greek).unwrap();
