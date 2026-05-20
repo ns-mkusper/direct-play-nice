@@ -105,47 +105,19 @@ pub fn run_sonarr_language_audit(
         let Some(history_id) = record.get("id").and_then(Value::as_i64) else {
             continue;
         };
-        let episode = match client.sonarr_episode(episode_id) {
-            Ok(episode) => episode,
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Sonarr language audit could not fetch episode {}: {}",
-                    episode_id, err
-                );
-                continue;
-            }
-        };
-        let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
+        let Some(episode_file) = client.sonarr_current_episode_file(episode_id, &mut summary)
+        else {
             continue;
-        };
-        let episode_file = match client.sonarr_episode_file(file_id) {
-            Ok(file) => file,
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Sonarr language audit could not fetch episode file {}: {}",
-                    file_id, err
-                );
-                continue;
-            }
         };
         summary.checked += 1;
         let report = language_report_from_episode_file(&episode_file, requirements);
-        let path = episode_file
-            .get("path")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("sonarr:episodefile:{file_id}")));
-        if let Err(err) =
-            cache::record_assessment(IntegrationKind::Sonarr, &path, requirements, &report)
-        {
-            warn!(
-                "Sonarr language audit failed to update DPN cache for '{}': {}",
-                path.display(),
-                err
-            );
-        }
+        record_language_audit_assessment(
+            IntegrationKind::Sonarr,
+            "sonarr:episodefile",
+            &episode_file,
+            requirements,
+            &report,
+        );
         if report.satisfied() {
             continue;
         }
@@ -155,53 +127,16 @@ pub fn run_sonarr_language_audit(
         }
         searched += 1;
         summary.searched += 1;
-        match client.redownload_for_target(
+        client.apply_audit_redownload_outcome(
             Target::SonarrEpisode { episode_id },
             history_id,
             requirements,
             redownload_options,
-        ) {
-            Ok(RedownloadOutcome::Grabbed { title }) => {
-                summary.grabbed += 1;
-                info!(
-                    "Sonarr language audit grabbed replacement for episode {}: {}",
-                    episode_id, title
-                );
-            }
-            Ok(RedownloadOutcome::DryRun { summary: details }) => {
-                summary.dry_run += 1;
-                info!(
-                    "Sonarr language audit dry-run for episode {}: {}",
-                    episode_id, details
-                );
-            }
-            Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
-                summary.no_candidate += 1;
-                info!(
-                    "Sonarr language audit found no replacement for episode {}: {}",
-                    episode_id, reason
-                );
-            }
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Sonarr language audit replacement check failed for episode {}: {}",
-                    episode_id, err
-                );
-            }
-        }
+            &mut summary,
+        );
     }
 
-    info!(
-        "Sonarr language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
-        summary.checked,
-        summary.missing,
-        summary.searched,
-        summary.dry_run,
-        summary.grabbed,
-        summary.no_candidate,
-        summary.errors
-    );
+    log_audit_summary("Sonarr", &summary);
     Ok(summary)
 }
 
@@ -224,47 +159,18 @@ pub fn run_radarr_language_audit(
         let Some(history_id) = record.get("id").and_then(Value::as_i64) else {
             continue;
         };
-        let movie = match client.radarr_movie(movie_id) {
-            Ok(movie) => movie,
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Radarr language audit could not fetch movie {}: {}",
-                    movie_id, err
-                );
-                continue;
-            }
-        };
-        let Some(file_id) = movie.get("movieFileId").and_then(Value::as_i64) else {
+        let Some(movie_file) = client.radarr_current_movie_file(movie_id, &mut summary) else {
             continue;
-        };
-        let movie_file = match client.radarr_movie_file(file_id) {
-            Ok(file) => file,
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Radarr language audit could not fetch movie file {}: {}",
-                    file_id, err
-                );
-                continue;
-            }
         };
         summary.checked += 1;
         let report = language_report_from_episode_file(&movie_file, requirements);
-        let path = movie_file
-            .get("path")
-            .and_then(Value::as_str)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("radarr:moviefile:{file_id}")));
-        if let Err(err) =
-            cache::record_assessment(IntegrationKind::Radarr, &path, requirements, &report)
-        {
-            warn!(
-                "Radarr language audit failed to update DPN cache for '{}': {}",
-                path.display(),
-                err
-            );
-        }
+        record_language_audit_assessment(
+            IntegrationKind::Radarr,
+            "radarr:moviefile",
+            &movie_file,
+            requirements,
+            &report,
+        );
         if report.satisfied() {
             continue;
         }
@@ -274,53 +180,16 @@ pub fn run_radarr_language_audit(
         }
         searched += 1;
         summary.searched += 1;
-        match client.redownload_for_target(
+        client.apply_audit_redownload_outcome(
             Target::RadarrMovie { movie_id },
             history_id,
             requirements,
             redownload_options,
-        ) {
-            Ok(RedownloadOutcome::Grabbed { title }) => {
-                summary.grabbed += 1;
-                info!(
-                    "Radarr language audit grabbed replacement for movie {}: {}",
-                    movie_id, title
-                );
-            }
-            Ok(RedownloadOutcome::DryRun { summary: details }) => {
-                summary.dry_run += 1;
-                info!(
-                    "Radarr language audit dry-run for movie {}: {}",
-                    movie_id, details
-                );
-            }
-            Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
-                summary.no_candidate += 1;
-                info!(
-                    "Radarr language audit found no replacement for movie {}: {}",
-                    movie_id, reason
-                );
-            }
-            Err(err) => {
-                summary.errors += 1;
-                warn!(
-                    "Radarr language audit replacement check failed for movie {}: {}",
-                    movie_id, err
-                );
-            }
-        }
+            &mut summary,
+        );
     }
 
-    info!(
-        "Radarr language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
-        summary.checked,
-        summary.missing,
-        summary.searched,
-        summary.dry_run,
-        summary.grabbed,
-        summary.no_candidate,
-        summary.errors
-    );
+    log_audit_summary("Radarr", &summary);
     Ok(summary)
 }
 
@@ -529,6 +398,66 @@ impl ApiClient {
             }
         }
         Ok(out)
+    }
+
+    fn sonarr_current_episode_file(
+        &self,
+        episode_id: i64,
+        summary: &mut AuditSummary,
+    ) -> Option<Value> {
+        let episode = match self.sonarr_episode(episode_id) {
+            Ok(episode) => episode,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit could not fetch episode {}: {}",
+                    episode_id, err
+                );
+                return None;
+            }
+        };
+        let file_id = episode.get("episodeFileId").and_then(Value::as_i64)?;
+        match self.sonarr_episode_file(file_id) {
+            Ok(file) => Some(file),
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit could not fetch episode file {}: {}",
+                    file_id, err
+                );
+                None
+            }
+        }
+    }
+
+    fn radarr_current_movie_file(
+        &self,
+        movie_id: i64,
+        summary: &mut AuditSummary,
+    ) -> Option<Value> {
+        let movie = match self.radarr_movie(movie_id) {
+            Ok(movie) => movie,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr language audit could not fetch movie {}: {}",
+                    movie_id, err
+                );
+                return None;
+            }
+        };
+        let file_id = movie.get("movieFileId").and_then(Value::as_i64)?;
+        match self.radarr_movie_file(file_id) {
+            Ok(file) => Some(file),
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr language audit could not fetch movie file {}: {}",
+                    file_id, err
+                );
+                None
+            }
+        }
     }
 
     fn sonarr_episode(&self, episode_id: i64) -> Result<Value> {
@@ -740,6 +669,60 @@ impl ApiClient {
         Ok(())
     }
 
+    fn apply_audit_redownload_outcome(
+        &self,
+        target: Target,
+        history_id: i64,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+        summary: &mut AuditSummary,
+    ) {
+        let label = self.kind.label();
+        let target_id = target.id();
+        match self.redownload_for_target(target, history_id, requirements, options) {
+            Ok(RedownloadOutcome::Grabbed { title }) => {
+                summary.grabbed += 1;
+                info!(
+                    "{} language audit grabbed replacement for {} {}: {}",
+                    label,
+                    target.noun(),
+                    target_id,
+                    title
+                );
+            }
+            Ok(RedownloadOutcome::DryRun { summary: details }) => {
+                summary.dry_run += 1;
+                info!(
+                    "{} language audit dry-run for {} {}: {}",
+                    label,
+                    target.noun(),
+                    target_id,
+                    details
+                );
+            }
+            Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
+                summary.no_candidate += 1;
+                info!(
+                    "{} language audit found no replacement for {} {}: {}",
+                    label,
+                    target.noun(),
+                    target_id,
+                    reason
+                );
+            }
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "{} language audit replacement check failed for {} {}: {}",
+                    label,
+                    target.noun(),
+                    target_id,
+                    err
+                );
+            }
+        }
+    }
+
     fn find_current_history_id(&self, kind: IntegrationKind) -> Result<Option<i64>> {
         if let Some(id) = explicit_history_id(kind) {
             return Ok(Some(id));
@@ -864,6 +847,49 @@ fn language_report_from_episode_file(
     report_from_present(audio, subtitles, requirements)
 }
 
+fn record_language_audit_assessment(
+    kind: IntegrationKind,
+    fallback_prefix: &str,
+    media_file: &Value,
+    requirements: &LanguageRequirements,
+    report: &LanguageCheckReport,
+) {
+    let path = media_file
+        .get("path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let id = media_file
+                .get("id")
+                .and_then(Value::as_i64)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            PathBuf::from(format!("{fallback_prefix}:{id}"))
+        });
+    if let Err(err) = cache::record_assessment(kind, &path, requirements, report) {
+        warn!(
+            "{} language audit failed to update DPN cache for '{}': {}",
+            kind.label(),
+            path.display(),
+            err
+        );
+    }
+}
+
+fn log_audit_summary(label: &str, summary: &AuditSummary) {
+    info!(
+        "{} language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
+        label,
+        summary.checked,
+        summary.missing,
+        summary.searched,
+        summary.dry_run,
+        summary.grabbed,
+        summary.no_candidate,
+        summary.errors
+    );
+}
+
 fn current_day_number() -> i64 {
     let unix_days = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -899,6 +925,20 @@ enum Target {
 }
 
 impl Target {
+    fn id(self) -> i64 {
+        match self {
+            Target::SonarrEpisode { episode_id } => episode_id,
+            Target::RadarrMovie { movie_id } => movie_id,
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Target::SonarrEpisode { .. } => "episode",
+            Target::RadarrMovie { .. } => "movie",
+        }
+    }
+
     fn from_env(kind: IntegrationKind) -> Result<Self> {
         match kind {
             IntegrationKind::Sonarr => env_int_list(&[
@@ -960,6 +1000,8 @@ fn release_rejections_are_only_existing_file_cutoff(release: &Value) -> bool {
             reason.contains("existing file")
                 || reason.contains("meets cutoff")
                 || reason.contains("quality profile does not allow upgrades")
+                || reason.contains("equal or higher custom format score")
+                || reason.contains("equal or higher preference")
         })
 }
 
@@ -1497,12 +1539,14 @@ mod tests {
             subtitles: vec!["eng".to_string()],
         };
         let releases = vec![json!({
-            "title":"Rent-a-Girlfriend S05E04 1080p Dual-Audio Multi-Subs",
+            "title":"language upgrade candidate 1080p Dual-Audio Multi-Subs",
             "rejected": true,
             "downloadAllowed": true,
             "rejections":[
                 "Existing file and the Quality profile does not allow upgrades",
-                "Existing file meets cutoff: Unknown"
+                "Existing file meets cutoff: Unknown",
+                "Existing file on disk has a equal or higher Custom Format score: 0",
+                "Existing file on disk is of equal or higher preference: Remux-1080p"
             ],
             "customFormatScore": 875
         })];
@@ -1523,7 +1567,7 @@ mod tests {
             subtitles: vec!["eng".to_string()],
         };
         let releases = vec![json!({
-            "title":"Rent-a-Girlfriend S05E04 1080p Dual-Audio Multi-Subs",
+            "title":"language upgrade candidate 1080p Dual-Audio Multi-Subs",
             "rejected": true,
             "downloadAllowed": true,
             "rejections":["Not enough seeders: 0. Minimum seeders: 1"],
