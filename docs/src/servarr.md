@@ -35,10 +35,11 @@ Language checks are off by default. When enabled on a Sonarr/Radarr `Download`
 event, `direct-play-nice` inspects the imported file before conversion. If any
 configured audio or subtitle language is missing, conversion is skipped and DPN
 asks Sonarr/Radarr for manual-search release results. It only grabs a specific
-replacement release when the returned release metadata verifies the required
-languages and the release is not rejected by Arr. If no verified candidate is
-available, DPN leaves the current file untouched and does not request a blind
-redownload.
+replacement release when the returned release metadata or configured candidate
+policy indicates the required languages. Existing-file/cutoff rejections may be
+overridden for language upgrades, but unrelated rejection reasons are still
+honored. If no verified candidate is available, DPN leaves the current file
+untouched and does not request a blind redownload.
 
 ### CLI examples
 
@@ -111,6 +112,12 @@ failed so the old release is blocklisted. It resolves that history item from the
 Arr download id when available, or from `DIRECT_PLAY_NICE_SONARR_HISTORY_ID` /
 `DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if your wrapper provides it.
 
+For Radarr, a language-better file can be stuck as a completed queue item when
+Radarr considers it a quality downgrade. Audit mode checks those pending imports;
+when the pending file satisfies DPN's language policy, apply mode deletes the old
+movie-file entry, posts Radarr manual import, and removes the completed queue
+item without deleting the downloaded replacement.
+
 Candidate policies control how much DPN infers before a replacement is grabbed:
 
 - `strict`: only explicit Arr language/subtitle metadata.
@@ -142,11 +149,19 @@ no Arr custom-script environment variables:
   --servarr-language-dry-run
 ```
 
-Audit mode queries recent Sonarr imports, inspects the actual imported file
-language metadata, updates DPN's cache, and release-searches only missing-language
-items up to `--servarr-language-audit-max-searches`. Keep dry-run enabled while
-reviewing reports; remove `--servarr-language-dry-run` only when you want DPN to
-grab selected language-upgrade candidates and blocklist the old history item.
+Audit mode queries recent Sonarr/Radarr imports, inspects the actual imported
+file language metadata, updates DPN's cache, and release-searches only
+missing-language items up to `--servarr-language-audit-max-searches`. In Radarr
+mode it also checks completed pending imports that Radarr refused for quality
+hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
+`--servarr-language-dry-run` only when you want DPN to grab selected
+language-upgrade candidates, blocklist the old history item, and force-import
+eligible Radarr pending replacements.
+
+This feature assumes DPN is the authority for language upgrades. To avoid Arr
+and DPN fighting each other, keep ordinary Arr quality-only upgrades conservative
+or disabled for libraries where DPN should make language-first replacement
+decisions.
 
 ## Practical wrapper pattern
 
