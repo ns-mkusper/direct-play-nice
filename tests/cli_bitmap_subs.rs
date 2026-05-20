@@ -308,6 +308,7 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path().join("locks"))
         .arg(&input)
         .arg(&output);
     cmd.assert().success().stdout(str::is_empty());
