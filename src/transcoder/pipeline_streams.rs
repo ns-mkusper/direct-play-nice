@@ -35,6 +35,19 @@ fn sws_flags_for_resize_quality(quality: ResizeQuality) -> ffi::SwsFlags {
     kernel | ffi::SWS_ACCURATE_RND
 }
 
+fn sws_flags_for_frame_transform(
+    quality: ResizeQuality,
+    source_width: i32,
+    source_height: i32,
+    target_width: i32,
+    target_height: i32,
+) -> ffi::SwsFlags {
+    if source_width == target_width && source_height == target_height {
+        return ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND;
+    }
+    sws_flags_for_resize_quality(quality)
+}
+
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
     if frame.format == ffi::AV_PIX_FMT_CUDA {
         let transfer_format = unsafe {
@@ -195,7 +208,13 @@ pub(crate) fn process_video_stream(
             stream_processing_context.encode_context.width,
             stream_processing_context.encode_context.height,
             stream_processing_context.encode_context.pix_fmt,
-            sws_flags_for_resize_quality(stream_processing_context.resize_quality),
+            sws_flags_for_frame_transform(
+                stream_processing_context.resize_quality,
+                source_width,
+                source_height,
+                stream_processing_context.encode_context.width,
+                stream_processing_context.encode_context.height,
+            ),
             None,
             None,
             None,
