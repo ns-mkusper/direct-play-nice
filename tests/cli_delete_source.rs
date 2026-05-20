@@ -9,7 +9,13 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
+
+fn cli_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let (source, _) = gen_problem_input(tmp);
@@ -17,6 +23,7 @@ fn make_input(tmp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn run_cli(input: &Path, output: &Path, extra_args: &[&str]) -> Result<(), Box<dyn Error>> {
+    let _guard = cli_lock();
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("-s")
         .arg("chromecast_1st_gen")
@@ -52,6 +59,7 @@ fn delete_source_config_true_overridden_by_cli_false() -> Result<(), Box<dyn Err
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
 
+    let _guard = cli_lock();
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("--config-file")
         .arg(&config_path)
@@ -92,6 +100,7 @@ fn delete_source_config_true_respected_without_cli_override() -> Result<(), Box<
     let input = make_input(&tmp)?;
     let output = tmp.path().join("out.mp4");
 
+    let _guard = cli_lock();
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     cmd.arg("--config-file")
         .arg(&config_path)
