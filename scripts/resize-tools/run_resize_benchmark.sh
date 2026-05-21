@@ -45,13 +45,13 @@ if [ -n "$source_video" ]; then
 
   ffmpeg -hide_banner -y "${seek_args[@]}" -i "$source_video" \
     -vf "scale=1280:720:flags=lanczos,fps=$rate,format=yuv420p" \
-    -t "$duration" -an -c:v mpeg2video -b:v 12M "$source_high"
+    -t "$duration" -an -c:v libx264 -preset veryfast -crf 12 "$source_high"
 else
   ffmpeg -hide_banner -y \
     -f lavfi -i "testsrc2=size=1280x720:rate=$rate:duration=$duration" \
     -f lavfi -i "testsrc=size=1280x720:rate=$rate:duration=$duration" \
     -filter_complex "[0:v][1:v]blend=all_mode=overlay:all_opacity=0.25,format=yuv420p" \
-    -an -c:v mpeg2video -b:v 12M "$source_high"
+    -an -c:v libx264 -preset veryfast -crf 12 "$source_high"
 fi
 
 ffmpeg -hide_banner -y -i "$source_high" \

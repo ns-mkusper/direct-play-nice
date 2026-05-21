@@ -311,22 +311,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -x /usr/local/bin/direct_play_nice ]]; then
-            echo "missing=false" >> "$GITHUB_OUTPUT"
-            echo "bin_path=/usr/local/bin/direct_play_nice" >> "$GITHUB_OUTPUT"
-            echo "Using runner-installed /usr/local/bin/direct_play_nice"
-          elif command -v direct_play_nice >/dev/null 2>&1; then
-            echo "missing=false" >> "$GITHUB_OUTPUT"
-            echo "bin_path=$(command -v direct_play_nice)" >> "$GITHUB_OUTPUT"
-            echo "Using runner-installed direct_play_nice from PATH"
-          elif [[ -x target/release/direct_play_nice ]]; then
-            echo "missing=false" >> "$GITHUB_OUTPUT"
-            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
-            echo "Using cached target/release/direct_play_nice"
-          else
-            echo "missing=true" >> "$GITHUB_OUTPUT"
-            echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
-          fi
+          echo "missing=true" >> "$GITHUB_OUTPUT"
+          echo "bin_path=target/release/direct_play_nice" >> "$GITHUB_OUTPUT"
+          echo "Building current main checkout for post-merge benchmark validation"
 
       - name: Install cargo-vcpkg
         if: steps.cached-bin.outputs.missing == 'true'
