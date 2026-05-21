@@ -39,6 +39,9 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     if maybe_handle_probe_modes(&args)? {
         return Ok(());
     }
+    if args.servarr_language_audit {
+        return run_servarr_language_audit(&args);
+    }
 
     let servarr_preparation = prepare_servarr(&args)?;
     if let IntegrationPreparation::Skip { reason } = &servarr_preparation {
@@ -179,6 +182,77 @@ fn handle_probe_hw_codecs(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn servarr_untagged_retag_options(args: &Args) -> servarr::UntaggedRetagOptions {
+    servarr::UntaggedRetagOptions {
+        audio_language: servarr::parse_language_list(
+            args.servarr_untagged_audio_language.as_deref(),
+        )
+        .into_iter()
+        .next(),
+        subtitle_language: servarr::parse_language_list(
+            args.servarr_untagged_subtitle_language.as_deref(),
+        )
+        .into_iter()
+        .next(),
+        dry_run: args.servarr_language_dry_run,
+    }
+}
+
+fn parse_optional_i64_list(raw: Option<&str>) -> Result<Vec<i64>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split([',', ';', '|', ' '])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<i64>()
+                .with_context(|| format!("parsing Servarr audit episode id '{part}'"))
+        })
+        .collect()
+}
+
+fn run_servarr_language_audit(args: &Args) -> Result<()> {
+    let requirements = servarr::LanguageRequirements {
+        enabled: true,
+        audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
+        subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
+    };
+    if !requirements.is_effective() {
+        bail!("--servarr-language-audit requires --required-audio-languages and/or --required-subtitle-languages");
+    }
+    let audit_kind = if args.servarr_api_url.as_deref().is_some_and(|url| {
+        url.to_ascii_lowercase().contains("7878") || url.to_ascii_lowercase().contains("radarr")
+    }) {
+        servarr::IntegrationKind::Radarr
+    } else {
+        servarr::IntegrationKind::Sonarr
+    };
+    let summary = servarr::run_language_audit(
+        audit_kind,
+        &servarr::ApiSettings {
+            url: args.servarr_api_url.clone(),
+            api_key: args.servarr_api_key.clone(),
+        },
+        &requirements,
+        servarr::RedownloadOptions {
+            dry_run: args.servarr_language_dry_run,
+            candidate_policy: args.servarr_language_candidate_policy,
+        },
+        servarr::AuditOptions {
+            scope: args.servarr_language_audit_scope,
+            lookback_days: args.servarr_language_audit_lookback_days,
+            max_searches: args.servarr_language_audit_max_searches,
+            episode_ids: parse_optional_i64_list(
+                args.servarr_language_audit_episode_ids.as_deref(),
+            )?,
+            untagged_retag: servarr_untagged_retag_options(args),
+        },
+    )?;
+    info!("Servarr language audit summary: {:?}", summary);
+    Ok(())
+}
+
 /// Computes Servarr integration strategy based on CLI and process environment.
 fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
     let servarr_view = ServeArrArgsView {
@@ -186,6 +260,20 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
         desired_suffix: &args.servarr_output_suffix,
+        language_requirements: servarr::LanguageRequirements {
+            enabled: args.servarr_language_check,
+            audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
+            subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
+        },
+        untagged_retag: servarr_untagged_retag_options(args),
+        api_settings: servarr::ApiSettings {
+            url: args.servarr_api_url.clone(),
+            api_key: args.servarr_api_key.clone(),
+        },
+        redownload_options: servarr::RedownloadOptions {
+            dry_run: args.servarr_language_dry_run,
+            candidate_policy: args.servarr_language_candidate_policy,
+        },
     };
     servarr::prepare_from_env(servarr_view)
 }

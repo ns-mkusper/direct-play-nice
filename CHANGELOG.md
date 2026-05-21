@@ -8,6 +8,30 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [1.0.0-beta.1] - 2026-05-21
+
+### 📌 1.0 Beta 1 Highlights
+
+- Added opt-in Sonarr/Radarr language compliance checks that inspect imported
+  media for required audio languages before conversion or replacement.
+- Added safe, dry-run-first replacement workflows that grab verified language
+  candidates, blocklist superseded history items, and avoid blind redownloads.
+- Added periodic history and Sonarr inventory audits for delayed dubs and
+  current-library backlog cleanup, including focused episode-ID batches.
+- Added Radarr completed-pending force-import handling for language-better
+  replacements that Radarr would otherwise leave blocked by quality hierarchy.
+- Added opt-in stream-copy retagging for trusted untagged audio/subtitle streams
+  so English-native libraries with `und` metadata can be fixed without
+  redownloading.
+
+### 🧪 Language Validation
+
+- Added mocked Sonarr/Radarr API coverage for release selection, inventory
+  audits, targeted audits, dry-runs, no-candidate behavior, and Radarr
+  force-import side effects.
+- Added FFmpeg-backed retagging tests for unknown audio language metadata and
+  safeguards that explicit non-English language tags are not overwritten.
+
 ## [0.2.0-beta.1] - 2026-05-21
 
 ### 📌 Beta 4 Highlights

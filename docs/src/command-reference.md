@@ -51,6 +51,32 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 - `--servarr-output-extension <EXTENSION>` (`match-input` supported)
 - `--servarr-output-suffix <servarr_output_suffix>`
+- `--servarr-language-audit` run a periodic Sonarr/Radarr audit for
+  delayed language upgrades
+- `--servarr-language-audit-scope <SCOPE>` choose `history` or Sonarr-only
+  `inventory` audit source
+- `--servarr-language-audit-lookback-days <DAYS>` recent import window for
+  history audit mode
+- `--servarr-language-audit-max-searches <N>` cap release searches per audit run
+- `--servarr-language-audit-episode-ids <IDS>` comma-separated Sonarr episode
+  IDs to audit instead of the full scope
+- `--servarr-language-check` enable pre-conversion language checks for Arr
+  downloads
+- `--required-audio-languages <LANGS>` comma-separated ISO-639 tags such as
+  `eng,jpn`
+- `--required-subtitle-languages <LANGS>` comma-separated ISO-639 tags such as
+  `eng,spa`
+- `--servarr-api-url <URL>` Sonarr/Radarr base URL for mismatch replacement
+  checks
+- `--servarr-api-key <KEY>` Sonarr/Radarr API key for mismatch replacement checks
+- `--servarr-language-dry-run` evaluate candidates without grabbing or
+  blocklisting
+- `--servarr-untagged-audio-language <LANG>` opt-in language tag to apply to
+  untagged audio streams before redownload decisions
+- `--servarr-untagged-subtitle-language <LANG>` opt-in language tag to apply to
+  untagged subtitle streams before redownload decisions
+- `--servarr-language-candidate-policy <POLICY>`
+  `strict|custom-format|custom-format-or-title|title-guess`
 - `--delete-source [<BOOL>]`
 
 ## Subtitle OCR options
