@@ -393,7 +393,11 @@ jobs:
 
       - name: Build release binary
         if: steps.cached-bin.outputs.missing == 'true'
-        run: cargo build --release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin direct_play_nice
+          test -x target/release/direct_play_nice
 
       - name: Validate benchmark source file
         shell: bash
@@ -408,7 +412,12 @@ jobs:
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           if [[ ! -x "$bin" ]]; then
+            echo "Benchmark binary missing after initial build; rebuilding current checkout."
+            cargo build --release --bin direct_play_nice
+          fi
+          if [[ ! -x "$bin" ]]; then
             echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
+            find target -maxdepth 3 -type f -name 'direct_play_nice*' -ls || true
             exit 1
           fi
           "$bin" --version
