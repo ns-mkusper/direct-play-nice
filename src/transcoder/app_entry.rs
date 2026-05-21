@@ -210,6 +210,7 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
             candidate_policy: args.servarr_language_candidate_policy,
         },
         servarr::AuditOptions {
+            scope: args.servarr_language_audit_scope,
             lookback_days: args.servarr_language_audit_lookback_days,
             max_searches: args.servarr_language_audit_max_searches,
         },

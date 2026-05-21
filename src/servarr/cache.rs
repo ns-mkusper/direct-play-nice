@@ -3,6 +3,7 @@
 use super::language::{LanguageCheckReport, LanguageRequirements};
 use super::IntegrationKind;
 use anyhow::{Context, Result};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -48,15 +49,32 @@ pub fn record_assessment(
         report: report.clone(),
     });
     records.sort_by(|a, b| a.path.cmp(&b.path));
-    fs::write(&cache_path, serde_json::to_vec_pretty(&records)?)
-        .with_context(|| format!("writing language cache '{}'", cache_path.display()))?;
+    let tmp_path = cache_path.with_extension("json.tmp");
+    fs::write(&tmp_path, serde_json::to_vec_pretty(&records)?)
+        .with_context(|| format!("writing language cache '{}'", tmp_path.display()))?;
+    fs::rename(&tmp_path, &cache_path).with_context(|| {
+        format!(
+            "renaming language cache '{}' to '{}'",
+            tmp_path.display(),
+            cache_path.display()
+        )
+    })?;
     Ok(())
 }
 
 fn read_records(path: &Path) -> Result<Vec<CacheRecord>> {
     match fs::read_to_string(path) {
-        Ok(contents) => serde_json::from_str(&contents)
-            .with_context(|| format!("parsing language cache '{}'", path.display())),
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(records) => Ok(records),
+            Err(err) => {
+                warn!(
+                    "Ignoring corrupt language cache '{}': {}",
+                    path.display(),
+                    err
+                );
+                Ok(Vec::new())
+            }
+        },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(err) => {
             Err(err).with_context(|| format!("reading language cache '{}'", path.display()))
@@ -92,6 +110,40 @@ mod tests {
     fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn ignores_corrupt_cache_file() {
+        let _guard = env_lock();
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("cache.json");
+        fs::write(&cache_path, "not json").unwrap();
+        env::set_var(CACHE_ENV_VAR, &cache_path);
+
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        };
+        let report = LanguageCheckReport {
+            present_audio: vec!["jpn".to_string()],
+            present_subtitles: vec!["eng".to_string()],
+            missing_audio: Vec::new(),
+            missing_subtitles: Vec::new(),
+        };
+
+        record_assessment(
+            IntegrationKind::Sonarr,
+            Path::new("/media/show.mkv"),
+            &requirements,
+            &report,
+        )
+        .unwrap();
+        assert!(fs::read_to_string(&cache_path)
+            .unwrap()
+            .contains("/media/show.mkv"));
+
+        env::remove_var(CACHE_ENV_VAR);
     }
 
     #[test]

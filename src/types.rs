@@ -106,7 +106,6 @@ impl std::fmt::Display for ResizeBackend {
     }
 }
 
-
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 /// Scope of Servarr items inspected during periodic language audits.

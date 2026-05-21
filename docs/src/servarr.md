@@ -83,6 +83,7 @@ policy in the DPN config file:
 ```toml
 servarr_language_check = true
 servarr_language_audit = true
+servarr_language_audit_scope = "history"
 servarr_language_audit_lookback_days = 30
 servarr_language_audit_max_searches = 20
 required_audio_languages = "eng,jpn"
@@ -152,11 +153,17 @@ no Arr custom-script environment variables:
   --servarr-language-dry-run
 ```
 
-Audit mode queries recent Sonarr/Radarr imports, inspects the actual imported
-file language metadata, updates DPN's cache, and release-searches only
-missing-language items up to `--servarr-language-audit-max-searches`. In Radarr
-mode it also checks completed pending imports that Radarr refused for quality
-hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
+By default, audit mode uses `--servarr-language-audit-scope history`: it queries
+recent Sonarr/Radarr imports, inspects the actual imported file language
+metadata, updates DPN's cache, and release-searches only missing-language items
+up to `--servarr-language-audit-max-searches`. Use
+`--servarr-language-audit-scope inventory` with Sonarr to inspect the current
+library inventory instead of only recent import history. Inventory scope walks
+series episode files, checks current media metadata, then uses each missing
+item's latest import history entry before any apply-mode grab/blocklist action.
+
+In Radarr mode DPN also checks completed pending imports that Radarr refused for
+quality hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
 `--servarr-language-dry-run` only when you want DPN to grab selected
 language-upgrade candidates, blocklist the old history item, and force-import
 eligible Radarr pending replacements.

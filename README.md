@@ -100,7 +100,9 @@ required_subtitle_languages = "eng"
 ```
 
 To catch delayed dubs/subs that arrive after the first import, run the same
-binary periodically with `--servarr-language-audit`; see the
+binary periodically with `--servarr-language-audit`. Use
+`--servarr-language-audit-scope inventory` for a Sonarr current-library sweep;
+see the
 [Sonarr/Radarr Integration](https://ns-mkusper.github.io/direct-play-nice/servarr.html)
 manual page for CLI/config examples.
 
