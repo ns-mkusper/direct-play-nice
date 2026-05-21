@@ -569,6 +569,7 @@ jobs:
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
+          export DIRECT_PLAY_NICE_LOCK_DIR=benchmark_artifacts/transcode/locks
           bash scripts/transcode-tools/run_transcode_benchmark.sh \
             --bin "$bin" \
             --source "${{ steps.source.outputs.path }}" \
@@ -594,6 +595,7 @@ jobs:
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           export DPN_RESIZE_BENCH_BIN="$bin"
+          export DIRECT_PLAY_NICE_LOCK_DIR=benchmark_artifacts/resize/locks
           bash scripts/resize-tools/run_resize_benchmark.sh
 
       - name: Collect benchmark artifacts
