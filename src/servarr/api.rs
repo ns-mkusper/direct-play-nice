@@ -37,11 +37,12 @@ impl Default for RedownloadOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditOptions {
     pub scope: ServarrLanguageAuditScope,
     pub lookback_days: u32,
     pub max_searches: usize,
+    pub episode_ids: Vec<i64>,
 }
 
 impl Default for AuditOptions {
@@ -50,6 +51,7 @@ impl Default for AuditOptions {
             scope: ServarrLanguageAuditScope::History,
             lookback_days: 30,
             max_searches: 20,
+            episode_ids: Vec::new(),
         }
     }
 }
@@ -128,6 +130,10 @@ fn run_sonarr_history_language_audit(
         let Some(episode_id) = history_episode_id(&record) else {
             continue;
         };
+        if !audit_options.episode_ids.is_empty() && !audit_options.episode_ids.contains(&episode_id)
+        {
+            continue;
+        }
         let Some(history_id) = record.get("id").and_then(Value::as_i64) else {
             continue;
         };
@@ -157,7 +163,11 @@ fn run_sonarr_inventory_language_audit(
     redownload_options: RedownloadOptions,
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
-    let items = client.sonarr_inventory_episode_files()?;
+    let items = if audit_options.episode_ids.is_empty() {
+        client.sonarr_inventory_episode_files()?
+    } else {
+        client.sonarr_inventory_episode_files_for_ids(&audit_options.episode_ids)?
+    };
     let mut summary = AuditSummary::default();
     let mut searched = 0usize;
 
@@ -510,6 +520,22 @@ impl ApiClient {
             if saw_old {
                 break;
             }
+        }
+        Ok(out)
+    }
+
+    fn sonarr_inventory_episode_files_for_ids(
+        &self,
+        episode_ids: &[i64],
+    ) -> Result<Vec<(i64, Value)>> {
+        let mut out = Vec::new();
+        for &episode_id in episode_ids {
+            let episode = self.sonarr_episode(episode_id)?;
+            let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
+                continue;
+            };
+            let file = self.sonarr_episode_file(file_id)?;
+            out.push((episode_id, file));
         }
         Ok(out)
     }
@@ -1627,6 +1653,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                episode_ids: Vec::new(),
             },
         )
         .unwrap();

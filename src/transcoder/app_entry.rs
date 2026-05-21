@@ -182,6 +182,20 @@ fn handle_probe_hw_codecs(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn parse_optional_i64_list(raw: Option<&str>) -> Result<Vec<i64>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split([',', ';', '|', ' '])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<i64>()
+                .with_context(|| format!("parsing Servarr audit episode id '{part}'"))
+        })
+        .collect()
+}
+
 fn run_servarr_language_audit(args: &Args) -> Result<()> {
     let requirements = servarr::LanguageRequirements {
         enabled: true,
@@ -213,6 +227,9 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
             scope: args.servarr_language_audit_scope,
             lookback_days: args.servarr_language_audit_lookback_days,
             max_searches: args.servarr_language_audit_max_searches,
+            episode_ids: parse_optional_i64_list(
+                args.servarr_language_audit_episode_ids.as_deref(),
+            )?,
         },
     )?;
     info!("Servarr language audit summary: {:?}", summary);
