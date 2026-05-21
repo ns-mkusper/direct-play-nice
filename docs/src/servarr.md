@@ -89,6 +89,9 @@ servarr_language_audit_max_searches = 20
 required_audio_languages = "eng"
 # Leave empty unless subtitle completeness is a goal.
 required_subtitle_languages = ""
+# Optional: for trusted English-native libraries, retag untagged audio before
+# deciding the file is missing English audio.
+servarr_untagged_audio_language = "eng"
 servarr_api_url = "http://127.0.0.1:8989"
 servarr_api_key = "..."
 
@@ -129,6 +132,16 @@ allowed; a file with English plus Japanese audio still satisfies
 `eng,jpn` only for libraries where preserving the original language alongside the
 dub is required. Leave `required_subtitle_languages` empty if missing subtitles
 are acceptable.
+
+Untagged streams are handled conservatively. By default, `und`/empty language
+metadata does not satisfy a required language. If a library is known to be
+English-native, set `servarr_untagged_audio_language = "eng"` or pass
+`--servarr-untagged-audio-language eng` to remux unknown audio streams with an
+English tag before DPN searches for replacement releases. The remux uses stream
+copy, writes through a temporary file, and never overwrites an explicit
+non-unknown language tag. `servarr_language_dry_run = true` only reports the
+retag action. Use `servarr_untagged_subtitle_language` only for trusted subtitle
+streams; DPN does not run speech recognition or globally infer `und = eng`.
 
 Candidate policies control how much DPN infers before a replacement is grabbed:
 

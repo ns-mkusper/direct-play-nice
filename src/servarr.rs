@@ -14,7 +14,7 @@ mod media_paths;
 mod path_policy;
 
 pub use api::{run_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
-pub use language::{parse_language_list, LanguageRequirements};
+pub use language::{parse_language_list, LanguageRequirements, UntaggedRetagOptions};
 
 #[cfg(test)]
 mod servarr_tests;
@@ -218,6 +218,7 @@ pub struct ArgsView<'a> {
     pub desired_extension: &'a str,
     pub desired_suffix: &'a str,
     pub language_requirements: LanguageRequirements,
+    pub untagged_retag: language::UntaggedRetagOptions,
     pub api_settings: ApiSettings,
     pub redownload_options: RedownloadOptions,
 }
@@ -333,8 +334,39 @@ fn prepare_download(
     let mut language_mismatches = Vec::new();
     if view.language_requirements.is_effective() {
         for input_path in &input_paths {
-            let report = language::check_file(input_path, &view.language_requirements)
+            let mut report = language::check_file(input_path, &view.language_requirements)
                 .with_context(|| format!("checking languages for '{}'", input_path.display()))?;
+            if !report.satisfied() && view.untagged_retag.enabled() {
+                match language::retag_unknown_streams(
+                    input_path,
+                    &view.language_requirements,
+                    &view.untagged_retag,
+                ) {
+                    Ok(retag) if retag.changed() => {
+                        info!(
+                            "{} {}retagged unknown stream language metadata for '{}': audio={}, subtitles={}",
+                            kind.label(),
+                            if retag.dry_run { "would have " } else { "" },
+                            input_path.display(),
+                            retag.audio_streams,
+                            retag.subtitle_streams
+                        );
+                        if !retag.dry_run {
+                            report = language::check_file(input_path, &view.language_requirements)
+                                .with_context(|| {
+                                    format!("re-checking languages for '{}'", input_path.display())
+                                })?;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(
+                        "{} failed to retag unknown stream language metadata for '{}': {}",
+                        kind.label(),
+                        input_path.display(),
+                        err
+                    ),
+                }
+            }
             if let Err(err) =
                 cache::record_assessment(kind, input_path, &view.language_requirements, &report)
             {

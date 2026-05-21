@@ -98,6 +98,9 @@ servarr_language_candidate_policy = "custom-format-or-title"
 required_audio_languages = "eng"
 # Leave subtitle requirements empty unless subtitle completeness is a goal.
 required_subtitle_languages = ""
+# Optional: for trusted English-native libraries, retag untagged audio before
+# deciding the file is missing English audio.
+servarr_untagged_audio_language = "eng"
 ```
 
 To catch delayed dubs/subs that arrive after the first import, run the same

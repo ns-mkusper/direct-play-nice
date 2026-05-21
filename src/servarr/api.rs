@@ -4,7 +4,7 @@ use super::cache;
 use super::env_helpers::get_env_ignore_case;
 use super::language::{
     normalize_language_tag, parse_language_tokens, report_from_present, LanguageCheckReport,
-    LanguageRequirements,
+    LanguageRequirements, UntaggedRetagOptions,
 };
 use super::IntegrationKind;
 use crate::{ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy};
@@ -43,6 +43,7 @@ pub struct AuditOptions {
     pub lookback_days: u32,
     pub max_searches: usize,
     pub episode_ids: Vec<i64>,
+    pub untagged_retag: UntaggedRetagOptions,
 }
 
 impl Default for AuditOptions {
@@ -52,6 +53,7 @@ impl Default for AuditOptions {
             lookback_days: 30,
             max_searches: 20,
             episode_ids: Vec::new(),
+            untagged_retag: UntaggedRetagOptions::default(),
         }
     }
 }
@@ -149,6 +151,7 @@ fn run_sonarr_history_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
+            &audit_options.untagged_retag,
             &mut searched,
             &mut summary,
         );
@@ -183,6 +186,7 @@ fn run_sonarr_inventory_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
+            &audit_options.untagged_retag,
             &mut searched,
             &mut summary,
         );
@@ -200,11 +204,21 @@ fn process_sonarr_language_audit_item(
     requirements: &LanguageRequirements,
     redownload_options: RedownloadOptions,
     max_searches: usize,
+    untagged_retag: &UntaggedRetagOptions,
     searched: &mut usize,
     summary: &mut AuditSummary,
 ) {
     summary.checked += 1;
-    let report = language_report_from_episode_file(&episode_file, requirements);
+    let mut report = language_report_from_episode_file(&episode_file, requirements);
+    if !report.satisfied() && client.kind == IntegrationKind::Sonarr && untagged_retag.enabled() {
+        report = maybe_retag_audit_file(
+            IntegrationKind::Sonarr,
+            &episode_file,
+            requirements,
+            untagged_retag,
+            report,
+        );
+    }
     record_language_audit_assessment(
         IntegrationKind::Sonarr,
         "sonarr:episodefile",
@@ -1052,6 +1066,52 @@ fn language_report_from_episode_file(
     report_from_present(audio, subtitles, requirements)
 }
 
+fn maybe_retag_audit_file(
+    kind: IntegrationKind,
+    media_file: &Value,
+    requirements: &LanguageRequirements,
+    untagged_retag: &UntaggedRetagOptions,
+    current_report: LanguageCheckReport,
+) -> LanguageCheckReport {
+    let Some(path) = media_file
+        .get("path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+    else {
+        return current_report;
+    };
+    if !path.exists() {
+        return current_report;
+    }
+    match super::language::retag_unknown_streams(&path, requirements, untagged_retag) {
+        Ok(retag) if retag.changed() => {
+            info!(
+                "{} {}retagged unknown stream language metadata for '{}': audio={}, subtitles={}",
+                kind.label(),
+                if retag.dry_run { "would have " } else { "" },
+                path.display(),
+                retag.audio_streams,
+                retag.subtitle_streams
+            );
+            if retag.dry_run {
+                current_report
+            } else {
+                super::language::check_file(&path, requirements).unwrap_or(current_report)
+            }
+        }
+        Ok(_) => current_report,
+        Err(err) => {
+            warn!(
+                "{} inventory language audit failed to retag unknown stream metadata for '{}': {}",
+                kind.label(),
+                path.display(),
+                err
+            );
+            current_report
+        }
+    }
+}
+
 fn record_language_audit_assessment(
     kind: IntegrationKind,
     fallback_prefix: &str,
@@ -1654,6 +1714,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -1757,6 +1818,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -1846,6 +1908,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 1,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -1914,6 +1977,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: vec![77],
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -1974,6 +2038,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: vec![77],
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -2060,6 +2125,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -2134,6 +2200,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -2186,6 +2253,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
@@ -2235,6 +2303,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
             },
         )
         .unwrap();
