@@ -90,13 +90,14 @@ ocr_format = "srt"
 ocr_write_srt_sidecar = false
 skip_codec_check = false
 
-# Optional: require imported media to contain specific audio/subtitle languages.
+# Optional: require imported media to contain English audio.
 # Start with dry-run while tuning candidate policy and custom formats.
 servarr_language_check = true
 servarr_language_dry_run = true
 servarr_language_candidate_policy = "custom-format-or-title"
-required_audio_languages = "eng,jpn"
-required_subtitle_languages = "eng"
+required_audio_languages = "eng"
+# Leave subtitle requirements empty unless subtitle completeness is a goal.
+required_subtitle_languages = ""
 ```
 
 To catch delayed dubs/subs that arrive after the first import, run the same

@@ -52,8 +52,7 @@ what would happen without grabbing or blocklisting anything:
   --servarr-language-check \
   --servarr-language-dry-run \
   --servarr-language-candidate-policy custom-format-or-title \
-  --required-audio-languages eng,jpn \
-  --required-subtitle-languages eng \
+  --required-audio-languages eng \
   --servarr-api-url http://127.0.0.1:8989 \
   --servarr-api-key "$SONARR_API_KEY"
 ```
@@ -65,8 +64,7 @@ DPN to grab the selected replacement and blocklist the old history item:
 /path/to/direct_play_nice \
   --servarr-language-check \
   --servarr-language-candidate-policy custom-format-or-title \
-  --required-audio-languages eng,jpn \
-  --required-subtitle-languages eng \
+  --required-audio-languages eng \
   --servarr-api-url http://127.0.0.1:8989 \
   --servarr-api-key "$SONARR_API_KEY"
 ```
@@ -88,8 +86,9 @@ servarr_language_audit_lookback_days = 30
 servarr_language_audit_max_searches = 20
 # Optional: limit a Sonarr audit to specific episode IDs.
 # servarr_language_audit_episode_ids = "123,456"
-required_audio_languages = "eng,jpn"
-required_subtitle_languages = "eng"
+required_audio_languages = "eng"
+# Leave empty unless subtitle completeness is a goal.
+required_subtitle_languages = ""
 servarr_api_url = "http://127.0.0.1:8989"
 servarr_api_key = "..."
 
@@ -123,6 +122,13 @@ Radarr considers it a quality downgrade. Audit mode checks those pending imports
 when the pending file satisfies DPN's language policy, apply mode deletes the old
 movie-file entry, posts Radarr manual import, and removes the completed queue
 item without deleting the downloaded replacement.
+
+The default examples above require English audio only. Extra audio languages are
+allowed; a file with English plus Japanese audio still satisfies
+`required_audio_languages = "eng"`. Use stricter audio requirements such as
+`eng,jpn` only for libraries where preserving the original language alongside the
+dub is required. Leave `required_subtitle_languages` empty if missing subtitles
+are acceptable.
 
 Candidate policies control how much DPN infers before a replacement is grabbed:
 
@@ -211,7 +217,8 @@ observable batches. A safe operator workflow is:
    explicit Arr language metadata or strong custom-format/title evidence such as
    `Anime-multi-audio`, `anime-multi-sub`, `Dual-Audio`, `Multi-Audio`, or
    `Multi-Subs`. Treat unrelated rejections such as blocked indexers, unknown
-   series, or seed/availability failures as blockers.
+   series, or seed/availability failures as blockers. Do not add subtitle
+   requirements unless missing subtitles should trigger redownloads.
 
 4. **Apply only a focused batch.** Use Sonarr episode IDs from the dry-run logs
    to constrain the destructive run. Keep `--servarr-language-audit-max-searches`
