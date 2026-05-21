@@ -407,14 +407,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -x "${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}/bin/cargo" ]]; then
-            export CARGO_HOME="${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}"
-            export RUSTUP_HOME="${DPN_BENCH_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          runner_cargo_home="${DPN_BENCH_RUNNER_CARGO_HOME:-/home/mkusper/.cargo}"
+          runner_rustup_home="${DPN_BENCH_RUNNER_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          if [[ -x "$runner_cargo_home/bin/cargo" ]]; then
+            export RUSTUP_HOME="$runner_rustup_home"
+            export PATH="$runner_cargo_home/bin:$PATH"
           fi
-          export PATH="$CARGO_HOME/bin:$PATH"
-          cargo --version
-          rustc --version
-          cargo build --release --bin direct_play_nice --verbose
+          binding_path="$(find "$runner_cargo_home/registry/src" "$CARGO_HOME/registry/src" -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' -print -quit 2>/dev/null || true)"
+          if [[ -n "$binding_path" ]]; then
+            export FFMPEG_BINDING_PATH="$binding_path"
+          fi
+          cargo_toolchain=()
+          if cargo +stable --version >/dev/null 2>&1; then
+            cargo_toolchain=(+stable)
+          fi
+          cargo "${cargo_toolchain[@]}" --version
+          rustc "${cargo_toolchain[@]}" --version
+          cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
           test -x target/release/direct_play_nice
 
       - name: Validate benchmark source file
@@ -431,12 +440,21 @@ jobs:
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           if [[ ! -x "$bin" ]]; then
             echo "Benchmark binary missing after initial build; rebuilding current checkout."
-          if [[ -x "${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}/bin/cargo" ]]; then
-            export CARGO_HOME="${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}"
-            export RUSTUP_HOME="${DPN_BENCH_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          runner_cargo_home="${DPN_BENCH_RUNNER_CARGO_HOME:-/home/mkusper/.cargo}"
+          runner_rustup_home="${DPN_BENCH_RUNNER_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          if [[ -x "$runner_cargo_home/bin/cargo" ]]; then
+            export RUSTUP_HOME="$runner_rustup_home"
+            export PATH="$runner_cargo_home/bin:$PATH"
           fi
-          export PATH="$CARGO_HOME/bin:$PATH"
-            cargo build --release --bin direct_play_nice --verbose
+          binding_path="$(find "$runner_cargo_home/registry/src" "$CARGO_HOME/registry/src" -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' -print -quit 2>/dev/null || true)"
+          if [[ -n "$binding_path" ]]; then
+            export FFMPEG_BINDING_PATH="$binding_path"
+          fi
+          cargo_toolchain=()
+          if cargo +stable --version >/dev/null 2>&1; then
+            cargo_toolchain=(+stable)
+          fi
+            cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
           fi
           if [[ ! -x "$bin" ]]; then
             echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
