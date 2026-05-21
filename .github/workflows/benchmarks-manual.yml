@@ -396,7 +396,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --bin direct_play_nice
+          export PATH="$CARGO_HOME/bin:$PATH"
+          cargo --version
+          rustc --version
+          cargo build --release --bin direct_play_nice --verbose
           test -x target/release/direct_play_nice
 
       - name: Validate benchmark source file
@@ -413,7 +416,8 @@ jobs:
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           if [[ ! -x "$bin" ]]; then
             echo "Benchmark binary missing after initial build; rebuilding current checkout."
-            cargo build --release --bin direct_play_nice
+            export PATH="$CARGO_HOME/bin:$PATH"
+            cargo build --release --bin direct_play_nice --verbose
           fi
           if [[ ! -x "$bin" ]]; then
             echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
