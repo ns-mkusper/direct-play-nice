@@ -177,6 +177,71 @@ and DPN fighting each other, keep ordinary Arr quality-only upgrades conservativ
 or disabled for libraries where DPN should make language-first replacement
 decisions.
 
+## Safe language upgrade runbook
+
+Language replacement is intentionally opt-in and should be rolled out in small,
+observable batches. A safe operator workflow is:
+
+1. **Start with a dry-run history audit.** This catches delayed dubs/subs for
+   recent imports without scanning the whole library:
+
+   ```bash
+   /path/to/direct_play_nice \
+     --config-file /path/to/direct-play-nice-sonarr.toml \
+     --servarr-language-audit \
+     --servarr-language-audit-scope history \
+     --servarr-language-audit-lookback-days 30 \
+     --servarr-language-audit-max-searches 20 \
+     --servarr-language-dry-run
+   ```
+
+2. **Use inventory dry-run for backlog discovery.** This is Sonarr-only and can
+   be slow on large libraries, so keep the search cap low while tuning:
+
+   ```bash
+   /path/to/direct_play_nice \
+     --config-file /path/to/direct-play-nice-sonarr.toml \
+     --servarr-language-audit \
+     --servarr-language-audit-scope inventory \
+     --servarr-language-audit-max-searches 25 \
+     --servarr-language-dry-run
+   ```
+
+3. **Review candidate evidence before apply mode.** Prefer candidates with
+   explicit Arr language metadata or strong custom-format/title evidence such as
+   `Anime-multi-audio`, `anime-multi-sub`, `Dual-Audio`, `Multi-Audio`, or
+   `Multi-Subs`. Treat unrelated rejections such as blocked indexers, unknown
+   series, or seed/availability failures as blockers.
+
+4. **Apply only a focused batch.** Use Sonarr episode IDs from the dry-run logs
+   to constrain the destructive run. Keep `--servarr-language-audit-max-searches`
+   at or below the number of intended items:
+
+   ```bash
+   /path/to/direct_play_nice \
+     --config-file /path/to/direct-play-nice-sonarr.toml \
+     --servarr-language-audit \
+     --servarr-language-audit-scope inventory \
+     --servarr-language-audit-episode-ids "12345,12346,12347" \
+     --servarr-language-audit-max-searches 3
+   ```
+
+5. **Watch Arr's queue and history.** A successful Sonarr language replacement
+   usually goes `grabbed` → `downloadFolderImported`; the imported file should
+   then show the required audio/subtitle languages in Arr media info. Some
+   candidates may remain queued/downloading for a while, and failed alternates in
+   history do not necessarily mean the current queued candidate failed.
+
+6. **Verify and repeat.** Re-run the same command with
+   `--servarr-language-dry-run`. Completed items should no longer be searched;
+   remaining missing items should either show a queued candidate, no candidate,
+   or a rejection reason to fix before another apply batch.
+
+For Radarr, keep the same dry-run-first workflow. In apply mode, DPN may
+force-import completed pending replacements that satisfy the language policy by
+deleting the old Radarr movie-file entry, posting manual import, and removing the
+stale completed queue item.
+
 ## Practical wrapper pattern
 
 For GPU OCR environments, keep a stable wrapper script as the command Sonarr
