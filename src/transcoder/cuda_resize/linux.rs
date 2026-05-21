@@ -42,7 +42,7 @@ pub(crate) fn attach_cuda_encoder_frames_context(
         }
         let frames_ctx = (*frames_ref).data as *mut ffi::AVHWFramesContext;
         if frames_ctx.is_null() {
-            ffi::av_buffer_unref(&mut (frames_ref as *mut _));
+            unref_buffer(frames_ref);
             bail!("CUDA encoder hardware frames context has null data");
         }
         (*frames_ctx).format = ffi::AV_PIX_FMT_CUDA;
@@ -52,7 +52,7 @@ pub(crate) fn attach_cuda_encoder_frames_context(
         (*frames_ctx).initial_pool_size = 8;
         let init_ret = ffi::av_hwframe_ctx_init(frames_ref);
         if init_ret < 0 {
-            ffi::av_buffer_unref(&mut (frames_ref as *mut _));
+            unref_buffer(frames_ref);
             bail!(
                 "Failed to initialize CUDA encoder hardware frames context: {}",
                 av_error_to_string(init_ret)
@@ -306,4 +306,9 @@ fn check_av(ret: i32, action: &str) -> Result<()> {
         bail!("Failed while {}: {}", action, av_error_to_string(ret));
     }
     Ok(())
+}
+
+unsafe fn unref_buffer(buffer: *mut ffi::AVBufferRef) {
+    let mut buffer = buffer;
+    unsafe { ffi::av_buffer_unref(&mut buffer) };
 }

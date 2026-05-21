@@ -451,26 +451,14 @@ pub(crate) fn convert_video_file(
 
                 let dimensions_change = input_stream_codecpar.width != encode_context.width
                     || input_stream_codecpar.height != encode_context.height;
-                let can_use_cuda_resize = dimensions_change
-                    && hw_decoder_active
+                let can_use_cuda_resize = hw_decoder_active
                     && using_hw_encoder
                     && encoder_name_lower.contains("nvenc")
                     && maybe_hw_dev.is_some()
                     && cuda_resize_supported_for_quality(resize_quality)
                     && scale_cuda_filter_available();
-                active_resize_backend = match resize_backend {
-                    ResizeBackend::Software => ResizeBackend::Software,
-                    ResizeBackend::Cuda => {
-                        if !can_use_cuda_resize {
-                            bail!(
-                                "--resize-backend=cuda requires CUDA decode, NVENC encode, scale_cuda filter support, and a scale_cuda-compatible resize quality (bilinear, bicubic, lanczos)"
-                            );
-                        }
-                        ResizeBackend::Cuda
-                    }
-                    ResizeBackend::Auto if can_use_cuda_resize => ResizeBackend::Cuda,
-                    ResizeBackend::Auto => ResizeBackend::Software,
-                };
+                active_resize_backend =
+                    select_resize_backend(resize_backend, dimensions_change, can_use_cuda_resize)?;
                 if matches!(active_resize_backend, ResizeBackend::Cuda) {
                     info!(
                         "Resize backend selected: cuda (scale_cuda, quality {}, {}x{} -> {}x{})",
@@ -720,6 +708,26 @@ pub(crate) fn convert_video_file(
     Ok(ConversionOutcome { h264_verification })
 }
 
+fn select_resize_backend(
+    requested: ResizeBackend,
+    dimensions_change: bool,
+    cuda_available: bool,
+) -> Result<ResizeBackend> {
+    if !dimensions_change {
+        return Ok(ResizeBackend::Software);
+    }
+
+    match requested {
+        ResizeBackend::Software => Ok(ResizeBackend::Software),
+        ResizeBackend::Auto if cuda_available => Ok(ResizeBackend::Cuda),
+        ResizeBackend::Auto => Ok(ResizeBackend::Software),
+        ResizeBackend::Cuda if cuda_available => Ok(ResizeBackend::Cuda),
+        ResizeBackend::Cuda => bail!(
+            "--resize-backend=cuda requires CUDA decode, NVENC encode, scale_cuda filter support, and a scale_cuda-compatible resize quality (bilinear, bicubic, lanczos)"
+        ),
+    }
+}
+
 /// Writes the container header and improves the error when multi-video output is unsupported.
 fn write_output_header(
     output_format_context: &mut AVFormatContextOutput,
@@ -958,4 +966,39 @@ fn verify_h264_output(request: H264VerificationRequest<'_>) -> Result<Option<H26
         return Ok(Some(verification));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cuda_resize_backend_is_ignored_when_dimensions_do_not_change() {
+        assert_eq!(
+            select_resize_backend(ResizeBackend::Cuda, false, false).unwrap(),
+            ResizeBackend::Software
+        );
+    }
+
+    #[test]
+    fn auto_resize_backend_prefers_cuda_only_when_available() {
+        assert_eq!(
+            select_resize_backend(ResizeBackend::Auto, true, true).unwrap(),
+            ResizeBackend::Cuda
+        );
+        assert_eq!(
+            select_resize_backend(ResizeBackend::Auto, true, false).unwrap(),
+            ResizeBackend::Software
+        );
+    }
+
+    #[test]
+    fn required_cuda_resize_backend_fails_when_unavailable() {
+        let err = select_resize_backend(ResizeBackend::Cuda, true, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--resize-backend=cuda requires CUDA decode"),
+            "unexpected error: {err}"
+        );
+    }
 }

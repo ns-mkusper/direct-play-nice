@@ -62,3 +62,20 @@ mod non_linux {
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) use non_linux::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ResizeQuality;
+
+    #[test]
+    fn cuda_resize_supports_only_scale_cuda_kernels() {
+        assert!(cuda_resize_supported_for_quality(ResizeQuality::Bilinear));
+        assert!(cuda_resize_supported_for_quality(ResizeQuality::Bicubic));
+        assert!(cuda_resize_supported_for_quality(ResizeQuality::Lanczos));
+        assert!(!cuda_resize_supported_for_quality(
+            ResizeQuality::FastBilinear
+        ));
+        assert!(!cuda_resize_supported_for_quality(ResizeQuality::Spline));
+    }
+}
