@@ -39,3 +39,51 @@ Use these for explicit control:
 - `--max-audio-bitrate <RATE>`
 
 When overrides are provided, they constrain the selected quality profile.
+
+## Resizing
+
+When a source exceeds a selected device or quality cap, the video is resized down
+while preserving aspect ratio and keeping encoder-friendly dimensions. The tool
+does not enlarge source dimensions as part of this deterministic FFmpeg resizing
+path.
+
+`--resize-quality` supports:
+
+- `fast-bilinear` (fastest)
+- `bilinear`
+- `bicubic`
+- `lanczos` (default, highest-quality deterministic default)
+- `spline`
+
+Higher-quality resize kernels generally cost more CPU time. They remain
+deterministic FFmpeg scalers and do not add AI model dependencies.
+
+`--resize-backend` controls where resizing runs:
+
+- `auto` (default): use CUDA `scale_cuda` when CUDA decode, NVENC encode,
+  filter support, and selected quality make a zero-copy GPU resize path possible;
+  otherwise use software.
+- `software`: always use libswscale on CPU.
+- `cuda`: require CUDA `scale_cuda` and fail if the GPU resize path cannot be
+  used.
+
+The CUDA backend currently supports `bilinear`, `bicubic`, and `lanczos`
+interpolation. `fast-bilinear` and `spline` fall back to software in `auto` mode
+because `scale_cuda` does not expose matching kernels.
+
+The resize benchmark harness compares downscale speed and full-reference quality
+against a deterministic 360p reference:
+
+```bash
+scripts/resize-tools/run_resize_benchmark.sh
+```
+
+The benchmark writes a CSV report with elapsed time, FPS, realtime factor,
+output size, and full-reference quality metrics. It reports VMAF when FFmpeg has
+`libvmaf`, PSNR component/average/min/max scores in dB, and SSIM
+component/aggregate scores including the SSIM dB transform.
+Set `DPN_RESIZE_REF_VIDEO=/path/to/reference.mkv` to use a real source clip.
+If `DPN_RESIZE_REF_VIDEO` is unset, the harness also honors the benchmark-runner
+`BENCHMARK_SOURCE_PATH` environment variable. Set `DPN_RESIZE_BENCH_SS=00:01:30`
+to start from a representative section. Set `DPN_RESIZE_CUDA=1` to add a
+`lanczos,cuda,nvenc` candidate alongside the software scaler candidates.

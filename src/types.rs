@@ -59,6 +59,53 @@ pub(crate) enum PrimaryVideoCriteria {
     Fps,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Resampling kernel used when video frames are scaled.
+pub(crate) enum ResizeQuality {
+    FastBilinear,
+    Bilinear,
+    Bicubic,
+    Lanczos,
+    Spline,
+}
+
+impl std::fmt::Display for ResizeQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ResizeQuality::FastBilinear => "fast-bilinear",
+            ResizeQuality::Bilinear => "bilinear",
+            ResizeQuality::Bicubic => "bicubic",
+            ResizeQuality::Lanczos => "lanczos",
+            ResizeQuality::Spline => "spline",
+        };
+        write!(f, "{}", label)
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Backend used to resize video frames when dimensions change.
+pub(crate) enum ResizeBackend {
+    /// Prefer a GPU backend when the active decode/encode path can keep frames on device; otherwise use software.
+    Auto,
+    /// Always use libswscale software resizing.
+    Software,
+    /// Require CUDA `scale_cuda` resizing and fail if it cannot be used.
+    Cuda,
+}
+
+impl std::fmt::Display for ResizeBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ResizeBackend::Auto => "auto",
+            ResizeBackend::Software => "software",
+            ResizeBackend::Cuda => "cuda",
+        };
+        write!(f, "{}", label)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
 /// Output rendering format for probe/report commands.
 pub(crate) enum OutputFormat {
@@ -110,9 +157,32 @@ pub(crate) fn clamp_dimensions(
     }
 
     if (source_width as u32) <= max_width && (source_height as u32) <= max_height {
-        return (source_width, source_height);
+        return encoder_safe_dimensions(source_width, source_height);
     }
 
+    scaled_dimensions(source_width, source_height, max_width, max_height)
+}
+
+fn encoder_safe_dimensions(width: i32, height: i32) -> (i32, i32) {
+    let mut safe_width = width;
+    let mut safe_height = height;
+
+    if safe_width > 2 && safe_width % 2 != 0 {
+        safe_width -= 1;
+    }
+    if safe_height > 2 && safe_height % 2 != 0 {
+        safe_height -= 1;
+    }
+
+    (safe_width.max(1), safe_height.max(1))
+}
+
+fn scaled_dimensions(
+    source_width: i32,
+    source_height: i32,
+    max_width: u32,
+    max_height: u32,
+) -> (i32, i32) {
     let width_ratio = max_width as f64 / source_width as f64;
     let height_ratio = max_height as f64 / source_height as f64;
     let scale = width_ratio.min(height_ratio);
@@ -148,8 +218,6 @@ pub(crate) fn clamp_dimensions(
 
     const WIDTH_ALIGNMENT: i32 = 16;
     if target_width >= WIDTH_ALIGNMENT && target_width % WIDTH_ALIGNMENT != 0 {
-        // Prefer width alignment to 16 when possible. Many encoders are faster
-        // and more reliable on 16-aligned widths, especially for hardware paths.
         let aspect_ratio = source_width as f64 / source_height as f64;
         let max_width_i32 = max_width as i32;
         let max_height_i32 = max_height as i32;
@@ -232,4 +300,40 @@ pub(crate) fn nearest_audio_preset(bitrate: i64) -> &'static str {
         }
     }
     best.1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_dimensions_preserves_source_when_within_caps() {
+        assert_eq!(
+            clamp_dimensions(640, 360, (1920, 1080), Some((1920, 1080))),
+            (640, 360)
+        );
+    }
+
+    #[test]
+    fn clamp_dimensions_never_enlarges_without_quality_cap() {
+        assert_eq!(clamp_dimensions(640, 360, (1920, 1080), None), (640, 360));
+    }
+
+    #[test]
+    fn clamp_dimensions_normalizes_odd_dimensions_down_without_enlarging() {
+        assert_eq!(clamp_dimensions(641, 361, (1920, 1080), None), (640, 360));
+        assert_eq!(clamp_dimensions(3, 3, (1920, 1080), None), (2, 2));
+    }
+
+    #[test]
+    fn clamp_dimensions_downscales_to_strictest_cap_and_alignment() {
+        assert_eq!(
+            clamp_dimensions(1920, 1080, (1280, 720), Some((3840, 2160))),
+            (1280, 720)
+        );
+        assert_eq!(
+            clamp_dimensions(640, 480, (1280, 720), Some((960, 720))),
+            (640, 480)
+        );
+    }
 }

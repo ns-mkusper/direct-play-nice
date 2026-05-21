@@ -72,6 +72,10 @@ harness = false
 name = "transcode_benchmark"
 harness = false
 
+[[bench]]
+name = "resize_benchmark"
+harness = false
+
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"

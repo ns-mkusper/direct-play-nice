@@ -533,6 +533,23 @@ jobs:
             --max-source-seconds 300 \
             --sample-ms "200"
 
+      - name: Run resize benchmark
+        shell: bash
+        env:
+          BENCHMARK_SOURCE_PATH: ${{ steps.source.outputs.path }}
+          DPN_RESIZE_BENCH_WORK: benchmark_artifacts/resize
+          DPN_RESIZE_BENCH_DURATION: "120"
+          DPN_RESIZE_BENCH_RATE: "24"
+          DPN_RESIZE_BENCH_SS: "00:02:00"
+          DPN_RESIZE_HW_ACCEL: none
+          DPN_RESIZE_CUDA: "1"
+          DPN_RESIZE_CUDA_HW_ACCEL: nvenc
+        run: |
+          set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          export DPN_RESIZE_BENCH_BIN="$bin"
+          bash scripts/resize-tools/run_resize_benchmark.sh
+
       - name: Collect benchmark artifacts
         if: always()
         shell: bash
@@ -540,6 +557,7 @@ jobs:
           set -euo pipefail
           [[ -f benchmark_artifacts/transcode/benchmark_summary.md ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md || true
           [[ -f benchmark_artifacts/transcode/benchmark_summary.json ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/resize/resize_report.csv ]] && cp -f benchmark_artifacts/resize/resize_report.csv benchmark_artifacts/RESIZE_BENCHMARK.csv || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
           [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
@@ -566,6 +584,19 @@ jobs:
               echo "_No transcoding benchmark markdown produced._"
               echo
             fi
+            if [[ -f benchmark_artifacts/RESIZE_BENCHMARK.csv ]]; then
+              echo "## Resize Benchmark"
+              echo
+              echo '```csv'
+              cat benchmark_artifacts/RESIZE_BENCHMARK.csv
+              echo '```'
+              echo
+            else
+              echo "## Resize Benchmark"
+              echo
+              echo "_No resize benchmark CSV produced._"
+              echo
+            fi
             if [[ -f benchmark_artifacts/OCR_BENCHMARK.md ]]; then
               echo "## OCR Benchmark"
               echo
@@ -587,6 +618,7 @@ jobs:
           path: |
             benchmark_artifacts/TRANSCODE_BENCHMARK.md
             benchmark_artifacts/TRANSCODE_BENCHMARK.json
+            benchmark_artifacts/RESIZE_BENCHMARK.csv
             benchmark_artifacts/OCR_BENCHMARK.md
             benchmark_artifacts/OCR_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.log

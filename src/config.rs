@@ -2,8 +2,8 @@
 
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, SubMode, SubtitleFailurePolicy,
-    UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
+    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -24,6 +24,8 @@ pub struct Config {
     pub audio_quality: Option<AudioQuality>,
     pub max_video_bitrate: Option<String>,
     pub max_audio_bitrate: Option<String>,
+    pub resize_quality: Option<ResizeQuality>,
+    pub resize_backend: Option<ResizeBackend>,
     pub hw_accel: Option<HwAccel>,
     pub unsupported_video_policy: Option<UnsupportedVideoPolicy>,
     pub primary_video_stream_index: Option<usize>,
@@ -234,5 +236,22 @@ mod tests {
             Some("python3 /opt/ocr/run.py")
         );
         assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
+    }
+
+    #[test]
+    fn parses_resize_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            resize_quality = "lanczos"
+            resize_backend = "cuda"
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.resize_quality, Some(ResizeQuality::Lanczos));
+        assert_eq!(cfg.resize_backend, Some(ResizeBackend::Cuda));
     }
 }

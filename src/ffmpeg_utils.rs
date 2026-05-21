@@ -16,8 +16,8 @@ use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
-    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, StreamsFilter, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
+    StreamsFilter, SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -88,6 +88,24 @@ pub(crate) struct Args {
     /// Maximum audio bitrate (e.g. 320k, 0.2M)
     #[arg(long, value_parser = Args::parse_bitrate, id = "max_audio_bitrate")]
     pub(crate) max_audio_bitrate: Option<i64>,
+
+    /// Resize quality used when resizing video frames.
+    #[arg(
+        long = "resize-quality",
+        value_enum,
+        default_value_t = ResizeQuality::Lanczos,
+        id = "resize_quality"
+    )]
+    pub(crate) resize_quality: ResizeQuality,
+
+    /// Resize backend used when video dimensions change.
+    #[arg(
+        long = "resize-backend",
+        value_enum,
+        default_value_t = ResizeBackend::Auto,
+        id = "resize_backend"
+    )]
+    pub(crate) resize_backend: ResizeBackend,
 
     /// Video file to convert (required unless probing)
     #[arg(value_parser = Args::parse_cstring)]
@@ -478,6 +496,9 @@ pub(crate) struct StreamProcessingContext {
     #[allow(dead_code)]
     pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
     pub(crate) decoder_name: String,
+    pub(crate) resize_quality: ResizeQuality,
+    pub(crate) resize_backend: ResizeBackend,
+    pub(crate) cuda_resize_filter: Option<crate::transcoder::cuda_resize::CudaResizeFilter>,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -490,6 +511,8 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("last_written_dts", &self.last_written_dts)
             .field("skip_stream", &self.skip_stream)
             .field("decoder_name", &self.decoder_name)
+            .field("resize_quality", &self.resize_quality)
+            .field("resize_backend", &self.resize_backend)
             .finish()
     }
 }
@@ -586,5 +609,7 @@ pub(crate) fn encode_and_write_frame(
 
 pub(crate) fn is_eagain_error(err: &RsmpegError) -> bool {
     let raw = err.raw_error().unwrap_or_default();
-    raw == ffi::AVERROR(ffi::EAGAIN) || raw == -(ffi::EAGAIN as i32)
+    raw == ffi::AVERROR(ffi::EAGAIN)
+        || raw == -(ffi::EAGAIN as i32)
+        || err.to_string().contains("(-11)")
 }

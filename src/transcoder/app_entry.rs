@@ -372,6 +372,8 @@ fn run_conversion(
         describe_resolution(quality_limits.max_video_dimensions),
         describe_bitrate(quality_limits.max_video_bitrate)
     );
+    info!("Resize quality: {}", args.resize_quality);
+    info!("Resize backend: {}", args.resize_backend);
     info!(
         "Audio quality preset: {} (bitrate {})",
         args.audio_quality,
@@ -465,11 +467,12 @@ fn run_conversion(
                         "Input is already direct-play compatible for the requested devices; skipping conversion."
                     );
                     return Ok(());
+                } else {
+                    info!(
+                        "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
+                    );
+                    needs_conversion = false;
                 }
-                info!(
-                    "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
-                );
-                needs_conversion = false;
             } else {
                 info!("Transcoding required to satisfy requested device constraints.");
                 for reason in assessment.reasons {
@@ -509,6 +512,8 @@ fn run_conversion(
         primary_criteria: args.primary_video_criteria,
         requested_video_quality: args.video_quality,
         requested_audio_quality: args.audio_quality,
+        resize_quality: args.resize_quality,
+        resize_backend: args.resize_backend,
         skip_codec_check: args.skip_codec_check,
         subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,

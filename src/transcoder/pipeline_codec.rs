@@ -132,7 +132,7 @@ pub(crate) fn set_h264_video_codec_par(
 
     if target_width != decode_context.width || target_height != decode_context.height {
         debug!(
-            "Scaling video from {}x{} to {}x{}",
+            "Resizing video from {}x{} to {}x{}",
             decode_context.width, decode_context.height, target_width, target_height
         );
     }
@@ -242,7 +242,7 @@ pub(crate) fn set_hevc_video_codec_par(
 
     if target_width != decode_context.width || target_height != decode_context.height {
         debug!(
-            "Scaling video from {}x{} to {}x{}",
+            "Resizing video from {}x{} to {}x{}",
             decode_context.width, decode_context.height, target_width, target_height
         );
     }
