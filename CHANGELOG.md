@@ -8,6 +8,23 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [1.1.0-beta.1] - 2026-05-21
+
+### ⚙️ Benchmark Reliability
+
+- Restored Maxwell-compatible OCR GPU benchmark execution on the Plex benchmark
+  runner by using the conservative ORT 1.16 / cuDNN8 runtime profile.
+- Kept CUDA safety brakes enabled with heuristic convolution search so required
+  GPU OCR validation completes without falling back to CPU.
+- Added manual dispatch support for the post-merge benchmark workflow so release
+  candidates can be validated on `plex-bench` before merging.
+
+### 🧪 Validation
+
+- Validated the fixed post-merge benchmark path on `plex-bench` with GPU OCR
+  required, both CUDA devices active, CPU fallback skipped, and all bitmap
+  subtitle OCR streams emitted.
+
 ## [1.0.0-beta.1] - 2026-05-21
 
 ### 📌 1.0 Beta 1 Highlights
