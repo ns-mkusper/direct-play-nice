@@ -7,7 +7,7 @@ use super::language::{
     LanguageRequirements,
 };
 use super::IntegrationKind;
-use crate::ServarrLanguageCandidatePolicy;
+use crate::{ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy};
 use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
@@ -39,6 +39,7 @@ impl Default for RedownloadOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuditOptions {
+    pub scope: ServarrLanguageAuditScope,
     pub lookback_days: u32,
     pub max_searches: usize,
 }
@@ -46,6 +47,7 @@ pub struct AuditOptions {
 impl Default for AuditOptions {
     fn default() -> Self {
         Self {
+            scope: ServarrLanguageAuditScope::History,
             lookback_days: 30,
             max_searches: 20,
         }
@@ -94,6 +96,30 @@ pub fn run_sonarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
+    let summary = match audit_options.scope {
+        ServarrLanguageAuditScope::History => run_sonarr_history_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+        )?,
+        ServarrLanguageAuditScope::Inventory => run_sonarr_inventory_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+        )?,
+    };
+    log_audit_summary("Sonarr", &summary);
+    Ok(summary)
+}
+
+fn run_sonarr_history_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+) -> Result<AuditSummary> {
     let records = client.sonarr_recent_import_history(audit_options.lookback_days)?;
     let mut summary = AuditSummary::default();
     let mut searched = 0usize;
@@ -109,35 +135,123 @@ pub fn run_sonarr_language_audit(
         else {
             continue;
         };
-        summary.checked += 1;
-        let report = language_report_from_episode_file(&episode_file, requirements);
-        record_language_audit_assessment(
-            IntegrationKind::Sonarr,
-            "sonarr:episodefile",
-            &episode_file,
-            requirements,
-            &report,
-        );
-        if report.satisfied() {
-            continue;
-        }
-        summary.missing += 1;
-        if searched >= audit_options.max_searches {
-            continue;
-        }
-        searched += 1;
-        summary.searched += 1;
-        client.apply_audit_redownload_outcome(
-            Target::SonarrEpisode { episode_id },
-            history_id,
+        process_sonarr_language_audit_item(
+            client,
+            episode_id,
+            Some(history_id),
+            episode_file,
             requirements,
             redownload_options,
+            audit_options.max_searches,
+            &mut searched,
             &mut summary,
         );
     }
 
-    log_audit_summary("Sonarr", &summary);
     Ok(summary)
+}
+
+fn run_sonarr_inventory_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+) -> Result<AuditSummary> {
+    let items = client.sonarr_inventory_episode_files()?;
+    let mut summary = AuditSummary::default();
+    let mut searched = 0usize;
+
+    for (episode_id, episode_file) in items {
+        if searched >= audit_options.max_searches {
+            break;
+        }
+        process_sonarr_language_audit_item(
+            client,
+            episode_id,
+            None,
+            episode_file,
+            requirements,
+            redownload_options,
+            audit_options.max_searches,
+            &mut searched,
+            &mut summary,
+        );
+    }
+
+    Ok(summary)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_sonarr_language_audit_item(
+    client: &ApiClient,
+    episode_id: i64,
+    history_id: Option<i64>,
+    episode_file: Value,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    max_searches: usize,
+    searched: &mut usize,
+    summary: &mut AuditSummary,
+) {
+    summary.checked += 1;
+    let report = language_report_from_episode_file(&episode_file, requirements);
+    record_language_audit_assessment(
+        IntegrationKind::Sonarr,
+        "sonarr:episodefile",
+        &episode_file,
+        requirements,
+        &report,
+    );
+    if report.satisfied() {
+        return;
+    }
+    summary.missing += 1;
+    if *searched >= max_searches {
+        return;
+    }
+    *searched += 1;
+    summary.searched += 1;
+
+    let history_id = match history_id {
+        Some(id) => Some(id),
+        None => match client.sonarr_latest_import_history_id(episode_id) {
+            Ok(id) => id,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr inventory language audit could not fetch import history for episode {}: {}",
+                    episode_id, err
+                );
+                return;
+            }
+        },
+    };
+    let Some(history_id) = history_id else {
+        if redownload_options.dry_run {
+            client.apply_audit_redownload_outcome(
+                Target::SonarrEpisode { episode_id },
+                0,
+                requirements,
+                redownload_options,
+                summary,
+            );
+        } else {
+            summary.errors += 1;
+            warn!(
+                "Sonarr inventory language audit could not identify import history for episode {}; refusing to grab replacement.",
+                episode_id
+            );
+        }
+        return;
+    };
+
+    client.apply_audit_redownload_outcome(
+        Target::SonarrEpisode { episode_id },
+        history_id,
+        requirements,
+        redownload_options,
+        summary,
+    );
 }
 
 pub fn run_radarr_language_audit(
@@ -398,6 +512,71 @@ impl ApiClient {
             }
         }
         Ok(out)
+    }
+
+    fn sonarr_inventory_episode_files(&self) -> Result<Vec<(i64, Value)>> {
+        let series = self
+            .get(&format!("{}/api/v3/series", self.base_url))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Sonarr series endpoint did not return an array"))?;
+        let mut out = Vec::new();
+        for item in series {
+            let Some(series_id) = item.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let endpoint = format!(
+                "{}/api/v3/episode?seriesId={}&includeEpisodeFile=true",
+                self.base_url, series_id
+            );
+            let episodes = self
+                .get(&endpoint)?
+                .as_array()
+                .cloned()
+                .ok_or_else(|| anyhow!("Sonarr episode endpoint did not return an array"))?;
+            for episode in episodes {
+                if episode.get("hasFile").and_then(Value::as_bool) == Some(false) {
+                    continue;
+                }
+                let Some(episode_id) = episode.get("id").and_then(Value::as_i64) else {
+                    continue;
+                };
+                let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
+                    continue;
+                };
+                if let Some(file) = episode.get("episodeFile").filter(|file| file.is_object()) {
+                    out.push((episode_id, file.clone()));
+                    continue;
+                }
+                match self.sonarr_episode_file(file_id) {
+                    Ok(file) => out.push((episode_id, file)),
+                    Err(err) => warn!(
+                        "Sonarr inventory language audit could not fetch episode file {} for episode {}: {}",
+                        file_id, episode_id, err
+                    ),
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn sonarr_latest_import_history_id(&self, episode_id: i64) -> Result<Option<i64>> {
+        let endpoint = format!(
+            "{}/api/v3/history?page=1&pageSize=20&sortKey=date&sortDirection=descending&episodeId={}",
+            self.base_url, episode_id
+        );
+        let response = self.get(&endpoint)?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(records
+            .iter()
+            .find(|record| {
+                record.get("eventType").and_then(Value::as_str) == Some("downloadFolderImported")
+            })
+            .and_then(|record| record.get("id").and_then(Value::as_i64)))
     }
 
     fn sonarr_current_episode_file(
@@ -1376,6 +1555,91 @@ mod tests {
             vec![10, 11, 12, 13, 14]
         );
         env::remove_var("sonarr_episodefile_episodeids");
+    }
+
+    #[test]
+    fn sonarr_inventory_audit_dry_run_searches_current_episode_files() {
+        let mut server = mockito::Server::new();
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "id": 77,
+                    "seriesId": 1,
+                    "hasFile": true,
+                    "episodeFileId": 555,
+                    "episodeFile": {
+                        "id": 555,
+                        "path": "/media/example.mkv",
+                        "mediaInfo": {
+                            "audioLanguages": "jpn",
+                            "subtitles": "eng"
+                        }
+                    }
+                }])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "title":"example S01E01 1080p Dual-Audio Multi-Subs",
+                    "rejected": true,
+                    "downloadAllowed": true,
+                    "rejections":["Existing file meets cutoff: Unknown"],
+                    "customFormatScore": 875
+                }])
+                .to_string(),
+            )
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::Inventory,
+                lookback_days: 30,
+                max_searches: 10,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 1);
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.dry_run, 1);
+        assert_eq!(summary.errors, 0);
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
     }
 
     #[test]

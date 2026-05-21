@@ -53,8 +53,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--servarr-output-suffix <servarr_output_suffix>`
 - `--servarr-language-audit` run a periodic Sonarr/Radarr audit for
   delayed language upgrades
+- `--servarr-language-audit-scope <SCOPE>` choose `history` or Sonarr-only
+  `inventory` audit source
 - `--servarr-language-audit-lookback-days <DAYS>` recent import window for
-  audit mode
+  history audit mode
 - `--servarr-language-audit-max-searches <N>` cap release searches per audit run
 - `--servarr-language-check` enable pre-conversion language checks for Arr
   downloads

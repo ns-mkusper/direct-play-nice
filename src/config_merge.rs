@@ -145,6 +145,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_audit_scope") {
+        if let Some(scope) = cfg.servarr_language_audit_scope {
+            args.servarr_language_audit_scope = scope;
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_audit_lookback_days") {
         if let Some(days) = cfg.servarr_language_audit_lookback_days {
             args.servarr_language_audit_lookback_days = days;
@@ -295,6 +301,7 @@ mod tests {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
             servarr_language_audit: Some(true),
+            servarr_language_audit_scope: Some(crate::ServarrLanguageAuditScope::Inventory),
             servarr_language_audit_lookback_days: Some(30),
             servarr_language_audit_max_searches: Some(20),
             servarr_language_check: Some(true),
@@ -310,6 +317,10 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert!(args.servarr_language_audit);
+        assert_eq!(
+            args.servarr_language_audit_scope,
+            crate::ServarrLanguageAuditScope::Inventory
+        );
         assert_eq!(args.servarr_language_audit_lookback_days, 30);
         assert_eq!(args.servarr_language_audit_max_searches, 20);
         assert!(args.servarr_language_check);
