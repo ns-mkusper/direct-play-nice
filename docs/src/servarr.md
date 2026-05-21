@@ -86,6 +86,8 @@ servarr_language_audit = true
 servarr_language_audit_scope = "history"
 servarr_language_audit_lookback_days = 30
 servarr_language_audit_max_searches = 20
+# Optional: limit a Sonarr audit to specific episode IDs.
+# servarr_language_audit_episode_ids = "123,456"
 required_audio_languages = "eng,jpn"
 required_subtitle_languages = "eng"
 servarr_api_url = "http://127.0.0.1:8989"
@@ -161,6 +163,8 @@ up to `--servarr-language-audit-max-searches`. Use
 library inventory instead of only recent import history. Inventory scope walks
 series episode files, checks current media metadata, then uses each missing
 item's latest import history entry before any apply-mode grab/blocklist action.
+For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
+comma-separated episode ID list.
 
 In Radarr mode DPN also checks completed pending imports that Radarr refused for
 quality hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
