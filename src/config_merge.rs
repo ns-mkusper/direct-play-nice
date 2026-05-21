@@ -205,6 +205,18 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_untagged_audio_language") {
+        if let Some(language) = cfg.servarr_untagged_audio_language.as_ref() {
+            args.servarr_untagged_audio_language = Some(language.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "servarr_untagged_subtitle_language") {
+        if let Some(language) = cfg.servarr_untagged_subtitle_language.as_ref() {
+            args.servarr_untagged_subtitle_language = Some(language.clone());
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_candidate_policy") {
         if let Some(policy) = cfg.servarr_language_candidate_policy {
             args.servarr_language_candidate_policy = policy;
@@ -317,6 +329,8 @@ mod tests {
             servarr_api_url: Some("http://localhost:8989".to_string()),
             servarr_api_key: Some("secret".to_string()),
             servarr_language_dry_run: Some(true),
+            servarr_untagged_audio_language: Some("eng".to_string()),
+            servarr_untagged_subtitle_language: Some("eng".to_string()),
             servarr_language_candidate_policy: Some(
                 crate::ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
             ),
@@ -343,6 +357,11 @@ mod tests {
         );
         assert_eq!(args.servarr_api_key.as_deref(), Some("secret"));
         assert!(args.servarr_language_dry_run);
+        assert_eq!(args.servarr_untagged_audio_language.as_deref(), Some("eng"));
+        assert_eq!(
+            args.servarr_untagged_subtitle_language.as_deref(),
+            Some("eng")
+        );
         assert_eq!(
             args.servarr_language_candidate_policy,
             crate::ServarrLanguageCandidatePolicy::CustomFormatOrTitle

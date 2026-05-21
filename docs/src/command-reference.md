@@ -71,6 +71,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--servarr-api-key <KEY>` Sonarr/Radarr API key for mismatch replacement checks
 - `--servarr-language-dry-run` evaluate candidates without grabbing or
   blocklisting
+- `--servarr-untagged-audio-language <LANG>` opt-in language tag to apply to
+  untagged audio streams before redownload decisions
+- `--servarr-untagged-subtitle-language <LANG>` opt-in language tag to apply to
+  untagged subtitle streams before redownload decisions
 - `--servarr-language-candidate-policy <POLICY>`
   `strict|custom-format|custom-format-or-title|title-guess`
 - `--delete-source [<BOOL>]`

@@ -209,6 +209,7 @@ mod tests {
             desired_extension: "mp4",
             desired_suffix: "",
             language_requirements: LanguageRequirements::default(),
+            untagged_retag: UntaggedRetagOptions::default(),
             api_settings: ApiSettings::default(),
             redownload_options: RedownloadOptions::default(),
         };
@@ -244,6 +245,7 @@ mod tests {
             desired_extension: "mp4",
             desired_suffix: "",
             language_requirements: LanguageRequirements::default(),
+            untagged_retag: UntaggedRetagOptions::default(),
             api_settings: ApiSettings::default(),
             redownload_options: RedownloadOptions::default(),
         };
