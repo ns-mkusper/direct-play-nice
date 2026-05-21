@@ -60,16 +60,19 @@ ffmpeg -hide_banner -y -i "$source_high" \
 
 run_candidate() {
   local quality="$1"
-  local output="$2"
+  local backend="$2"
+  local hw_accel="$3"
+  local output="$4"
   local started ended elapsed fps realtime size_bytes
 
   started="$(date +%s.%N)"
   "$bin" \
     --config-file "$config_file" \
     --device chromecast \
-    --hw-accel "${DPN_RESIZE_HW_ACCEL:-none}" \
+    --hw-accel "$hw_accel" \
     --video-quality 360p \
     --resize-quality "$quality" \
+    --resize-backend "$backend" \
     --skip-codec-check \
     "$source_high" "$output" >/dev/null
   ended="$(date +%s.%N)"
@@ -79,7 +82,7 @@ run_candidate() {
   realtime="$(awk -v d="$duration" -v t="$elapsed" 'BEGIN { printf "%.3f", d / t }')"
   size_bytes="$(wc -c < "$output" | tr -d ' ')"
 
-  printf "%s,%s,%s,%s,%s" "$quality" "$elapsed" "$fps" "$realtime" "$size_bytes"
+  printf "%s,%s,%s,%s,%s,%s,%s" "$quality" "$backend" "$hw_accel" "$elapsed" "$fps" "$realtime" "$size_bytes"
 }
 
 metric_field() {
@@ -172,20 +175,28 @@ metric_summary() {
     "${ssim_y:-na}" "${ssim_u:-na}" "${ssim_v:-na}" "${ssim_all:-na}" "${ssim_db:-na}"
 }
 
-echo "quality,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db" > "$report"
+echo "quality,backend,hw_accel,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db" > "$report"
 
 {
-  run_candidate "fast-bilinear" "$baseline"
+  run_candidate "fast-bilinear" "software" "none" "$baseline"
   metric_summary "$baseline"
 } >> "$report"
 
 for quality in bilinear bicubic lanczos spline; do
   output="$work_dir/resize_${quality}.mp4"
   {
-    run_candidate "$quality" "$output"
+    run_candidate "$quality" "software" "none" "$output"
     metric_summary "$output"
   } >> "$report"
 done
+
+if [ "${DPN_RESIZE_CUDA:-0}" = "1" ]; then
+  output="$work_dir/resize_lanczos_cuda.mp4"
+  {
+    run_candidate "lanczos" "cuda" "${DPN_RESIZE_CUDA_HW_ACCEL:-nvenc}" "$output"
+    metric_summary "$output"
+  } >> "$report"
+fi
 
 echo "Resize benchmark report: $report"
 cat "$report"

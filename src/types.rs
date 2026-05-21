@@ -83,6 +83,29 @@ impl std::fmt::Display for ResizeQuality {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Backend used to resize video frames when dimensions change.
+pub(crate) enum ResizeBackend {
+    /// Prefer a GPU backend when the active decode/encode path can keep frames on device; otherwise use software.
+    Auto,
+    /// Always use libswscale software resizing.
+    Software,
+    /// Require CUDA `scale_cuda` resizing and fail if it cannot be used.
+    Cuda,
+}
+
+impl std::fmt::Display for ResizeBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ResizeBackend::Auto => "auto",
+            ResizeBackend::Software => "software",
+            ResizeBackend::Cuda => "cuda",
+        };
+        write!(f, "{}", label)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum)]
 /// Output rendering format for probe/report commands.
 pub(crate) enum OutputFormat {

@@ -1,6 +1,7 @@
 //! Transcoder module root defining subsystem boundaries, shared prelude imports, and public re-exports.
 
 pub mod app;
+pub mod cuda_resize;
 pub mod ffmpeg_diagnostics;
 pub mod ffmpeg_ext;
 pub mod h264;
@@ -50,6 +51,7 @@ pub(crate) mod prelude {
     pub(crate) use crate::subtitle_ocr;
     pub(crate) use crate::throttle::acquire_slot;
     pub(crate) use crate::transcoder::app::app_convert::{convert_video_file, ConversionParams};
+    pub(crate) use crate::transcoder::cuda_resize::*;
     pub(crate) use crate::transcoder::ffmpeg_diagnostics::*;
     pub(crate) use crate::transcoder::ffmpeg_ext::*;
     pub(crate) use crate::transcoder::h264::*;

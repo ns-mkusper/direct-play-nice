@@ -22,7 +22,7 @@ use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
 };
-use crate::types::{ResizeQuality, SubtitleFailurePolicy};
+use crate::types::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
 
 fn sws_flags_for_resize_quality(quality: ResizeQuality) -> ffi::SwsFlags {
     let kernel = match quality {
@@ -183,8 +183,6 @@ pub(crate) fn process_video_stream(
             }
         };
 
-        let frame = ensure_software_frame(frame)?;
-
         if let Some(progress) = progress.as_deref_mut() {
             progress.report(
                 frame.best_effort_timestamp,
@@ -192,50 +190,20 @@ pub(crate) fn process_video_stream(
             );
         }
 
-        let mut new_frame = AVFrame::new();
-        new_frame.set_width(stream_processing_context.encode_context.width);
-        new_frame.set_height(stream_processing_context.encode_context.height);
-        new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
-        new_frame.alloc_buffer().context("Error allocating ")?;
-
-        let source_width = frame.width;
-        let source_height = frame.height;
-        let source_pix_fmt = frame.format as ffi::AVPixelFormat;
-        let mut sws_context = SwsContext::get_context(
-            source_width,
-            source_height,
-            source_pix_fmt,
-            stream_processing_context.encode_context.width,
-            stream_processing_context.encode_context.height,
-            stream_processing_context.encode_context.pix_fmt,
-            sws_flags_for_frame_transform(
-                stream_processing_context.resize_quality,
-                source_width,
-                source_height,
-                stream_processing_context.encode_context.width,
-                stream_processing_context.encode_context.height,
-            ),
-            None,
-            None,
-            None,
-        )
-        .context("Failed to create a swscale context.")?;
-
-        // Ensure the encoder sees timestamps in its own time base to avoid inflated durations.
         let rescaled_pts = rescale_timestamp(
             best_effort_frame_pts(&frame),
             stream_processing_context.decode_context.time_base,
             stream_processing_context.encode_context.time_base,
         );
 
-        new_frame.set_time_base(stream_processing_context.encode_context.time_base);
-        if rescaled_pts != ffi::AV_NOPTS_VALUE {
-            new_frame.set_pts(rescaled_pts);
-        }
-
-        sws_context
-            .scale_frame(&frame, 0, source_height, &mut new_frame)
-            .context("Failed to scale frame.")?;
+        let new_frame = if matches!(
+            stream_processing_context.resize_backend,
+            ResizeBackend::Cuda
+        ) {
+            resize_cuda_frame(stream_processing_context, &frame, rescaled_pts)?
+        } else {
+            resize_software_frame(stream_processing_context, frame, rescaled_pts)?
+        };
 
         encode_and_write_frame(
             &mut stream_processing_context.encode_context,
@@ -246,6 +214,112 @@ pub(crate) fn process_video_stream(
     }
 
     Ok(())
+}
+
+fn resize_cuda_frame(
+    stream_processing_context: &mut StreamProcessingContext,
+    frame: &AVFrame,
+    rescaled_pts: i64,
+) -> Result<AVFrame> {
+    if frame.format != ffi::AV_PIX_FMT_CUDA {
+        bail!(
+            "CUDA resize backend selected but decoded frame is not CUDA (format {}). Use --resize-backend=software to force CPU resize.",
+            frame.format
+        );
+    }
+
+    let source_width = frame.width;
+    let source_height = frame.height;
+    let target_width = stream_processing_context.encode_context.width;
+    let target_height = stream_processing_context.encode_context.height;
+    let quality = stream_processing_context.resize_quality;
+
+    let needs_new_filter = stream_processing_context
+        .cuda_resize_filter
+        .as_ref()
+        .map(|filter| {
+            !filter.is_compatible(
+                source_width,
+                source_height,
+                target_width,
+                target_height,
+                quality,
+            )
+        })
+        .unwrap_or(true);
+
+    if needs_new_filter {
+        stream_processing_context.cuda_resize_filter = Some(
+            crate::transcoder::cuda_resize::CudaResizeFilter::new(
+                frame,
+                stream_processing_context.decode_context.time_base,
+                target_width,
+                target_height,
+                quality,
+            )
+            .context("Failed to initialize CUDA resize filter")?,
+        );
+    }
+
+    let filter = stream_processing_context
+        .cuda_resize_filter
+        .as_mut()
+        .context("CUDA resize filter was not initialized")?;
+    let mut new_frame = filter
+        .process_frame(frame)
+        .context("Failed to resize frame with CUDA filter graph")?;
+    new_frame.set_time_base(stream_processing_context.encode_context.time_base);
+    if rescaled_pts != ffi::AV_NOPTS_VALUE {
+        new_frame.set_pts(rescaled_pts);
+    }
+    Ok(new_frame)
+}
+
+fn resize_software_frame(
+    stream_processing_context: &mut StreamProcessingContext,
+    frame: AVFrame,
+    rescaled_pts: i64,
+) -> Result<AVFrame> {
+    let frame = ensure_software_frame(frame)?;
+
+    let mut new_frame = AVFrame::new();
+    new_frame.set_width(stream_processing_context.encode_context.width);
+    new_frame.set_height(stream_processing_context.encode_context.height);
+    new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
+    new_frame.alloc_buffer().context("Error allocating ")?;
+
+    let source_width = frame.width;
+    let source_height = frame.height;
+    let source_pix_fmt = frame.format as ffi::AVPixelFormat;
+    let mut sws_context = SwsContext::get_context(
+        source_width,
+        source_height,
+        source_pix_fmt,
+        stream_processing_context.encode_context.width,
+        stream_processing_context.encode_context.height,
+        stream_processing_context.encode_context.pix_fmt,
+        sws_flags_for_frame_transform(
+            stream_processing_context.resize_quality,
+            source_width,
+            source_height,
+            stream_processing_context.encode_context.width,
+            stream_processing_context.encode_context.height,
+        ),
+        None,
+        None,
+        None,
+    )
+    .context("Failed to create a swscale context.")?;
+
+    new_frame.set_time_base(stream_processing_context.encode_context.time_base);
+    if rescaled_pts != ffi::AV_NOPTS_VALUE {
+        new_frame.set_pts(rescaled_pts);
+    }
+
+    sws_context
+        .scale_frame(&frame, 0, source_height, &mut new_frame)
+        .context("Failed to scale frame.")?;
+    Ok(new_frame)
 }
 
 pub(crate) fn process_audio_stream(

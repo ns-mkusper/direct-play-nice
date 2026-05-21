@@ -20,6 +20,7 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--max-video-bitrate <max_video_bitrate>` explicit video cap
 - `--max-audio-bitrate <max_audio_bitrate>` explicit audio cap
 - `--resize-quality <resize_quality>` `fast-bilinear|bilinear|bicubic|lanczos|spline`
+- `--resize-backend <resize_backend>` `auto|software|cuda`
 
 ## Stream and compatibility controls
 

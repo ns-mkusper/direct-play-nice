@@ -542,6 +542,8 @@ jobs:
           DPN_RESIZE_BENCH_RATE: "24"
           DPN_RESIZE_BENCH_SS: "00:02:00"
           DPN_RESIZE_HW_ACCEL: none
+          DPN_RESIZE_CUDA: "1"
+          DPN_RESIZE_CUDA_HW_ACCEL: nvenc
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"

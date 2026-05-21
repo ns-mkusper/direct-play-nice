@@ -16,8 +16,8 @@ use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
-    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeQuality, StreamsFilter,
-    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
+    StreamsFilter, SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -97,6 +97,15 @@ pub(crate) struct Args {
         id = "resize_quality"
     )]
     pub(crate) resize_quality: ResizeQuality,
+
+    /// Resize backend used when video dimensions change.
+    #[arg(
+        long = "resize-backend",
+        value_enum,
+        default_value_t = ResizeBackend::Auto,
+        id = "resize_backend"
+    )]
+    pub(crate) resize_backend: ResizeBackend,
 
     /// Video file to convert (required unless probing)
     #[arg(value_parser = Args::parse_cstring)]
@@ -488,6 +497,8 @@ pub(crate) struct StreamProcessingContext {
     pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
     pub(crate) decoder_name: String,
     pub(crate) resize_quality: ResizeQuality,
+    pub(crate) resize_backend: ResizeBackend,
+    pub(crate) cuda_resize_filter: Option<crate::transcoder::cuda_resize::CudaResizeFilter>,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -501,6 +512,7 @@ impl std::fmt::Debug for StreamProcessingContext {
             .field("skip_stream", &self.skip_stream)
             .field("decoder_name", &self.decoder_name)
             .field("resize_quality", &self.resize_quality)
+            .field("resize_backend", &self.resize_backend)
             .finish()
     }
 }

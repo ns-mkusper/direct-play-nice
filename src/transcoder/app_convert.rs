@@ -22,6 +22,7 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) requested_video_quality: VideoQuality,
     pub(crate) requested_audio_quality: AudioQuality,
     pub(crate) resize_quality: ResizeQuality,
+    pub(crate) resize_backend: ResizeBackend,
     pub(crate) skip_codec_check: bool,
     pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
     pub(crate) hw_accel: HwAccel,
@@ -52,6 +53,7 @@ pub(crate) fn convert_video_file(
         requested_video_quality,
         requested_audio_quality,
         resize_quality,
+        resize_backend,
         skip_codec_check,
         subtitle_failure_policy,
         hw_accel,
@@ -323,6 +325,7 @@ pub(crate) fn convert_video_file(
 
         let mut encoder_is_hw = false;
         let mut current_encoder_name: Option<String> = None;
+        let mut active_resize_backend = ResizeBackend::Software;
 
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
@@ -445,6 +448,50 @@ pub(crate) fn convert_video_file(
                         },
                     );
                 }
+
+                let dimensions_change = input_stream_codecpar.width != encode_context.width
+                    || input_stream_codecpar.height != encode_context.height;
+                let can_use_cuda_resize = dimensions_change
+                    && hw_decoder_active
+                    && using_hw_encoder
+                    && encoder_name_lower.contains("nvenc")
+                    && maybe_hw_dev.is_some()
+                    && cuda_resize_supported_for_quality(resize_quality)
+                    && scale_cuda_filter_available();
+                active_resize_backend = match resize_backend {
+                    ResizeBackend::Software => ResizeBackend::Software,
+                    ResizeBackend::Cuda => {
+                        if !can_use_cuda_resize {
+                            bail!(
+                                "--resize-backend=cuda requires CUDA decode, NVENC encode, scale_cuda filter support, and a scale_cuda-compatible resize quality (bilinear, bicubic, lanczos)"
+                            );
+                        }
+                        ResizeBackend::Cuda
+                    }
+                    ResizeBackend::Auto if can_use_cuda_resize => ResizeBackend::Cuda,
+                    ResizeBackend::Auto => ResizeBackend::Software,
+                };
+                if matches!(active_resize_backend, ResizeBackend::Cuda) {
+                    info!(
+                        "Resize backend selected: cuda (scale_cuda, quality {}, {}x{} -> {}x{})",
+                        resize_quality,
+                        input_stream_codecpar.width,
+                        input_stream_codecpar.height,
+                        encode_context.width,
+                        encode_context.height
+                    );
+                    encode_context.set_pix_fmt(ffi::AV_PIX_FMT_CUDA);
+                    if let Some(device) = maybe_hw_dev {
+                        attach_cuda_encoder_frames_context(
+                            &mut encode_context,
+                            device,
+                            ffi::AV_PIX_FMT_YUV420P,
+                        )?;
+                    }
+                } else {
+                    info!("Resize backend selected: software (libswscale)");
+                }
+
                 let src_par = stream.codecpar();
                 info!(
                     "Video stream {}: {}x{} {} -> {}x{} {}{}",
@@ -625,6 +672,8 @@ pub(crate) fn convert_video_file(
             hw_device_ctx: hw_device_ctx_ptr,
             decoder_name: decoder.name().to_string_lossy().into_owned(),
             resize_quality,
+            resize_backend: active_resize_backend,
+            cuda_resize_filter: None,
         };
 
         stream_contexts.push(stream_process_context);

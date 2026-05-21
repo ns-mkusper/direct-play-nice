@@ -97,6 +97,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "resize_backend") {
+        if let Some(resize_backend) = cfg.resize_backend {
+            args.resize_backend = resize_backend;
+        }
+    }
+
     if !cli_value_provided(matches, "hw_accel") {
         if let Some(hw_accel) = cfg.hw_accel {
             args.hw_accel = hw_accel;
@@ -192,7 +198,7 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 mod tests {
     use super::*;
     use crate::transcoder::quality::VideoQuality;
-    use crate::{ResizeQuality, SubtitleFailurePolicy};
+    use crate::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
     use clap::{CommandFactory, FromArgMatches};
 
     fn parse_args(argv: &[&str]) -> (Args, ArgMatches) {
@@ -273,5 +279,27 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.resize_quality, ResizeQuality::Spline);
+    }
+
+    #[test]
+    fn applies_resize_backend_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            resize_backend: Some(ResizeBackend::Cuda),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.resize_backend, ResizeBackend::Cuda);
+    }
+
+    #[test]
+    fn cli_resize_backend_takes_precedence_over_config() {
+        let (mut args, matches) = parse_args(&["direct_play_nice", "--resize-backend", "software"]);
+        let cfg = config::Config {
+            resize_backend: Some(ResizeBackend::Cuda),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.resize_backend, ResizeBackend::Software);
     }
 }

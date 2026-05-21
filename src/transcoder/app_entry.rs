@@ -373,6 +373,7 @@ fn run_conversion(
         describe_bitrate(quality_limits.max_video_bitrate)
     );
     info!("Resize quality: {}", args.resize_quality);
+    info!("Resize backend: {}", args.resize_backend);
     info!(
         "Audio quality preset: {} (bitrate {})",
         args.audio_quality,
@@ -512,6 +513,7 @@ fn run_conversion(
         requested_video_quality: args.video_quality,
         requested_audio_quality: args.audio_quality,
         resize_quality: args.resize_quality,
+        resize_backend: args.resize_backend,
         skip_codec_check: args.skip_codec_check,
         subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,

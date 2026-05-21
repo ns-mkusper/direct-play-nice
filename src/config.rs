@@ -2,8 +2,8 @@
 
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeQuality, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
+    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -25,6 +25,7 @@ pub struct Config {
     pub max_video_bitrate: Option<String>,
     pub max_audio_bitrate: Option<String>,
     pub resize_quality: Option<ResizeQuality>,
+    pub resize_backend: Option<ResizeBackend>,
     pub hw_accel: Option<HwAccel>,
     pub unsupported_video_policy: Option<UnsupportedVideoPolicy>,
     pub primary_video_stream_index: Option<usize>,
@@ -244,11 +245,13 @@ mod tests {
             tmp,
             r#"
             resize_quality = "lanczos"
+            resize_backend = "cuda"
             "#
         )
         .unwrap();
 
         let cfg = read_from_path(tmp.path()).unwrap();
         assert_eq!(cfg.resize_quality, Some(ResizeQuality::Lanczos));
+        assert_eq!(cfg.resize_backend, Some(ResizeBackend::Cuda));
     }
 }
