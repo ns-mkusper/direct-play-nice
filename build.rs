@@ -2,9 +2,14 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple") {
         for framework in [
             "AudioToolbox",
+            "AppKit",
             "CoreFoundation",
+            "CoreGraphics",
+            "CoreImage",
             "CoreMedia",
             "CoreVideo",
+            "Foundation",
+            "OpenGL",
             "Security",
             "VideoToolbox",
         ] {
