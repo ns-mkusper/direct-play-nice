@@ -8,6 +8,35 @@ All notable changes to this project will be documented in this file.
 
 - No changes yet.
 
+## [0.2.0-beta.1] - 2026-05-21
+
+### 📌 Beta 4 Highlights
+
+- Added high-quality deterministic FFmpeg resizing for direct-play constraints,
+  with Lanczos as the default resize kernel and lower-cost kernels still
+  available for speed-focused workflows.
+- Added CUDA `scale_cuda` resizing for compatible Linux CUDA/NVENC paths, plus
+  `--resize-backend auto|software|cuda` to control backend selection.
+- Preserved direct-play safety by keeping output dimensions bounded by source,
+  device, and quality caps while normalizing encoder-safe dimensions.
+
+### 🧪 Benchmarks and Validation
+
+- Added full-reference resize benchmarking with elapsed time, FPS, realtime
+  factor, output size, VMAF when available, and PSNR/SSIM fallback metrics.
+- Integrated software and CUDA resize candidates into the post-merge benchmark
+  workflow for Plex benchmark validation.
+- Validated full-video 4K → 480p downscales: default Lanczos delivered about a
+  40% overall measured quality improvement versus the old fast-bilinear path,
+  with the expected software CPU runtime tradeoff.
+
+### 🧱 Reliability and Test Coverage
+
+- Added FFmpeg CLI integration coverage for downscale and no-upscale behavior.
+- Hardened resize, subtitle, and delete-source tests against CI/runtime
+  variability across Linux, macOS, Windows, and nightly Rust.
+- Documented resize quality/backend controls and external vcpkg build notes.
+
 ## [0.1.0-beta.3] - 2026-05-04
 
 ### ⚙️ Release Validation
