@@ -355,6 +355,7 @@ jobs:
       - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-win
         uses: actions/cache/restore@v4
+        continue-on-error: true
         with:
           path: |
             target/vcpkg/.vcpkg-root
