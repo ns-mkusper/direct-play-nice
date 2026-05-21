@@ -69,13 +69,26 @@ mod tests {
     use crate::ResizeQuality;
 
     #[test]
-    fn cuda_resize_supports_only_scale_cuda_kernels() {
-        assert!(cuda_resize_supported_for_quality(ResizeQuality::Bilinear));
-        assert!(cuda_resize_supported_for_quality(ResizeQuality::Bicubic));
-        assert!(cuda_resize_supported_for_quality(ResizeQuality::Lanczos));
-        assert!(!cuda_resize_supported_for_quality(
-            ResizeQuality::FastBilinear
-        ));
-        assert!(!cuda_resize_supported_for_quality(ResizeQuality::Spline));
+    fn cuda_resize_supports_only_scale_cuda_kernels_on_linux() {
+        let supported = [
+            ResizeQuality::Bilinear,
+            ResizeQuality::Bicubic,
+            ResizeQuality::Lanczos,
+        ];
+        let unsupported = [ResizeQuality::FastBilinear, ResizeQuality::Spline];
+
+        for quality in supported {
+            assert_eq!(
+                cuda_resize_supported_for_quality(quality),
+                cfg!(target_os = "linux"),
+                "unexpected CUDA resize support for {quality}"
+            );
+        }
+        for quality in unsupported {
+            assert!(
+                !cuda_resize_supported_for_quality(quality),
+                "unexpected CUDA resize support for {quality}"
+            );
+        }
     }
 }
