@@ -62,7 +62,7 @@ fn record_assessment_at_path(
     let tmp_path = cache_path.with_extension("json.tmp");
     fs::write(&tmp_path, serde_json::to_vec_pretty(&records)?)
         .with_context(|| format!("writing language cache '{}'", tmp_path.display()))?;
-    fs::rename(&tmp_path, &cache_path).with_context(|| {
+    fs::rename(&tmp_path, cache_path).with_context(|| {
         format!(
             "renaming language cache '{}' to '{}'",
             tmp_path.display(),
