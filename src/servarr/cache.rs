@@ -30,12 +30,22 @@ pub fn record_assessment(
     let Some(cache_path) = resolve_cache_path() else {
         return Ok(());
     };
+    record_assessment_at_path(&cache_path, kind, path, requirements, report)
+}
+
+fn record_assessment_at_path(
+    cache_path: &Path,
+    kind: IntegrationKind,
+    path: &Path,
+    requirements: &LanguageRequirements,
+    report: &LanguageCheckReport,
+) -> Result<()> {
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating language cache directory '{}'", parent.display()))?;
     }
 
-    let mut records = read_records(&cache_path)?;
+    let mut records = read_records(cache_path)?;
     let path_string = path.to_string_lossy().into_owned();
     records.retain(|record| record.path != path_string);
     records.push(CacheRecord {
@@ -104,21 +114,13 @@ fn resolve_cache_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
-
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
 
     #[test]
     fn ignores_corrupt_cache_file() {
-        let _guard = env_lock();
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("cache.json");
         fs::write(&cache_path, "not json").unwrap();
-        env::set_var(CACHE_ENV_VAR, &cache_path);
 
         let requirements = LanguageRequirements {
             enabled: true,
@@ -132,7 +134,8 @@ mod tests {
             missing_subtitles: Vec::new(),
         };
 
-        record_assessment(
+        record_assessment_at_path(
+            &cache_path,
             IntegrationKind::Sonarr,
             Path::new("/media/show.mkv"),
             &requirements,
@@ -142,16 +145,12 @@ mod tests {
         assert!(fs::read_to_string(&cache_path)
             .unwrap()
             .contains("/media/show.mkv"));
-
-        env::remove_var(CACHE_ENV_VAR);
     }
 
     #[test]
     fn records_assessment_to_configured_cache_path() {
-        let _guard = env_lock();
         let tmp = TempDir::new().unwrap();
         let cache_path = tmp.path().join("cache.json");
-        env::set_var(CACHE_ENV_VAR, &cache_path);
 
         let requirements = LanguageRequirements {
             enabled: true,
@@ -165,7 +164,8 @@ mod tests {
             missing_subtitles: Vec::new(),
         };
 
-        record_assessment(
+        record_assessment_at_path(
+            &cache_path,
             IntegrationKind::Sonarr,
             Path::new("/media/show.mkv"),
             &requirements,
@@ -177,7 +177,5 @@ mod tests {
         assert!(contents.contains("/media/show.mkv"));
         assert!(contents.contains("jpn"));
         assert!(contents.contains("eng"));
-
-        env::remove_var(CACHE_ENV_VAR);
     }
 }
