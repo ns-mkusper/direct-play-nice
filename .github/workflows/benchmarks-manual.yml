@@ -366,16 +366,25 @@ jobs:
           fi
           cargo vcpkg --verbose build
 
-      - name: Export VCPKG_ROOT
+      - name: Export VCPKG_ROOT and runtime library paths
         if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f /home/mkusper/vcpkg/.vcpkg-root && -d /home/mkusper/vcpkg/installed ]]; then
-            echo "VCPKG_ROOT=/home/mkusper/vcpkg" >> "$GITHUB_ENV"
+            vcpkg_root=/home/mkusper/vcpkg
           else
-            echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+            vcpkg_root=$(pwd)/target/vcpkg
           fi
+          echo "VCPKG_ROOT=$vcpkg_root" >> "$GITHUB_ENV"
+
+          lib_paths=()
+          while IFS= read -r -d '' lib_dir; do
+            lib_paths+=("$lib_dir")
+          done < <(find "$vcpkg_root/installed" -mindepth 2 -maxdepth 2 -type d -name lib -print0 2>/dev/null || true)
+          lib_paths+=(/usr/lib)
+          joined_paths="$(IFS=:; echo "${lib_paths[*]}")"
+          echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
       - name: Validate VCPKG root
         if: steps.cached-bin.outputs.missing == 'true'
@@ -440,20 +449,20 @@ jobs:
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           if [[ ! -x "$bin" ]]; then
             echo "Benchmark binary missing after initial build; rebuilding current checkout."
-          runner_cargo_home="${DPN_BENCH_RUNNER_CARGO_HOME:-/home/mkusper/.cargo}"
-          runner_rustup_home="${DPN_BENCH_RUNNER_RUSTUP_HOME:-/home/mkusper/.rustup}"
-          if [[ -x "$runner_cargo_home/bin/cargo" ]]; then
-            export RUSTUP_HOME="$runner_rustup_home"
-            export PATH="$runner_cargo_home/bin:$PATH"
-          fi
-          binding_path="$(find "$runner_cargo_home/registry/src" "$CARGO_HOME/registry/src" -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' -print -quit 2>/dev/null || true)"
-          if [[ -n "$binding_path" ]]; then
-            export FFMPEG_BINDING_PATH="$binding_path"
-          fi
-          cargo_toolchain=()
-          if cargo +stable --version >/dev/null 2>&1; then
-            cargo_toolchain=(+stable)
-          fi
+            runner_cargo_home="${DPN_BENCH_RUNNER_CARGO_HOME:-/home/mkusper/.cargo}"
+            runner_rustup_home="${DPN_BENCH_RUNNER_RUSTUP_HOME:-/home/mkusper/.rustup}"
+            if [[ -x "$runner_cargo_home/bin/cargo" ]]; then
+              export RUSTUP_HOME="$runner_rustup_home"
+              export PATH="$runner_cargo_home/bin:$PATH"
+            fi
+            binding_path="$(find "$runner_cargo_home/registry/src" "$CARGO_HOME/registry/src" -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' -print -quit 2>/dev/null || true)"
+            if [[ -n "$binding_path" ]]; then
+              export FFMPEG_BINDING_PATH="$binding_path"
+            fi
+            cargo_toolchain=()
+            if cargo +stable --version >/dev/null 2>&1; then
+              cargo_toolchain=(+stable)
+            fi
             cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
           fi
           if [[ ! -x "$bin" ]]; then
@@ -594,6 +603,9 @@ jobs:
           set -euo pipefail
           [[ -f benchmark_artifacts/transcode/benchmark_summary.md ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.md benchmark_artifacts/TRANSCODE_BENCHMARK.md || true
           [[ -f benchmark_artifacts/transcode/benchmark_summary.json ]] && cp -f benchmark_artifacts/transcode/benchmark_summary.json benchmark_artifacts/TRANSCODE_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/transcode/cpu.log ]] && cp -f benchmark_artifacts/transcode/cpu.log benchmark_artifacts/TRANSCODE_CPU.log || true
+          [[ -f benchmark_artifacts/transcode/hw.log ]] && cp -f benchmark_artifacts/transcode/hw.log benchmark_artifacts/TRANSCODE_HW.log || true
+          [[ -f benchmark_artifacts/transcode/meta.txt ]] && cp -f benchmark_artifacts/transcode/meta.txt benchmark_artifacts/TRANSCODE_META.txt || true
           [[ -f benchmark_artifacts/resize/resize_report.csv ]] && cp -f benchmark_artifacts/resize/resize_report.csv benchmark_artifacts/RESIZE_BENCHMARK.csv || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
@@ -655,6 +667,9 @@ jobs:
           path: |
             benchmark_artifacts/TRANSCODE_BENCHMARK.md
             benchmark_artifacts/TRANSCODE_BENCHMARK.json
+            benchmark_artifacts/TRANSCODE_CPU.log
+            benchmark_artifacts/TRANSCODE_HW.log
+            benchmark_artifacts/TRANSCODE_META.txt
             benchmark_artifacts/RESIZE_BENCHMARK.csv
             benchmark_artifacts/OCR_BENCHMARK.md
             benchmark_artifacts/OCR_BENCHMARK.json
