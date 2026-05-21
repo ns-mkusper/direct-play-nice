@@ -155,7 +155,7 @@ pub fn retag_unknown_streams(
     }
 
     let path_cstr = path_to_cstr(path)?;
-    let mut input_ctx = AVFormatContextInput::open(path_cstr.as_c_str())?;
+    let input_ctx = AVFormatContextInput::open(path_cstr.as_c_str())?;
     let mut report = UntaggedRetagReport {
         dry_run: options.dry_run,
         ..Default::default()
@@ -177,13 +177,8 @@ pub fn retag_unknown_streams(
         return Ok(report);
     }
 
-    remux_with_retagged_unknown_streams(
-        path,
-        &mut input_ctx,
-        options,
-        should_tag_audio,
-        should_tag_subtitles,
-    )?;
+    drop(input_ctx);
+    remux_with_retagged_unknown_streams(path, options, should_tag_audio, should_tag_subtitles)?;
     info!(
         "Retagged {} unknown audio stream(s) and {} unknown subtitle stream(s) in '{}'.",
         report.audio_streams,
@@ -195,11 +190,12 @@ pub fn retag_unknown_streams(
 
 fn remux_with_retagged_unknown_streams(
     path: &Path,
-    input_ctx: &mut AVFormatContextInput,
     options: &UntaggedRetagOptions,
     should_tag_audio: bool,
     should_tag_subtitles: bool,
 ) -> Result<()> {
+    let path_cstr = path_to_cstr(path)?;
+    let mut input_ctx = AVFormatContextInput::open(path_cstr.as_c_str())?;
     let tmp_path = retag_temp_path(path);
     let tmp_cstr = CString::new(tmp_path.to_string_lossy().to_string())
         .context("retag temp path has interior NUL")?;
