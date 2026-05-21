@@ -89,7 +89,26 @@ ocr_engine = "pp-ocr-v4"
 ocr_format = "srt"
 ocr_write_srt_sidecar = false
 skip_codec_check = false
+
+# Optional: require imported media to contain English audio.
+# Start with dry-run while tuning candidate policy and custom formats.
+servarr_language_check = true
+servarr_language_dry_run = true
+servarr_language_candidate_policy = "custom-format-or-title"
+required_audio_languages = "eng"
+# Leave subtitle requirements empty unless subtitle completeness is a goal.
+required_subtitle_languages = ""
+# Optional: for trusted English-native libraries, retag untagged audio before
+# deciding the file is missing English audio.
+servarr_untagged_audio_language = "eng"
 ```
+
+To catch delayed dubs/subs that arrive after the first import, run the same
+binary periodically with `--servarr-language-audit`. Use
+`--servarr-language-audit-scope inventory` for a Sonarr current-library sweep.
+Before applying broad language replacements, follow the
+[Safe language upgrade runbook](https://ns-mkusper.github.io/direct-play-nice/servarr.html#safe-language-upgrade-runbook)
+in the Sonarr/Radarr manual.
 
 ![Running as a custom script in Sonarr][sonarr-script-img]
 
