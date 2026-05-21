@@ -356,6 +356,10 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL: 2
         run: |
           set -euo pipefail
+          if [[ -f /home/mkusper/vcpkg/.vcpkg-root && -d /home/mkusper/vcpkg/installed ]]; then
+            echo "Using runner vcpkg workspace at /home/mkusper/vcpkg; skipping cargo vcpkg build."
+            exit 0
+          fi
           if [[ -f target/vcpkg/.vcpkg-root && -d target/vcpkg/installed ]]; then
             echo "Using cached vcpkg workspace at target/vcpkg; skipping cargo vcpkg build."
             exit 0
@@ -364,15 +368,22 @@ jobs:
 
       - name: Export VCPKG_ROOT
         if: steps.cached-bin.outputs.missing == 'true'
-        run: echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f /home/mkusper/vcpkg/.vcpkg-root && -d /home/mkusper/vcpkg/installed ]]; then
+            echo "VCPKG_ROOT=/home/mkusper/vcpkg" >> "$GITHUB_ENV"
+          else
+            echo "VCPKG_ROOT=$(pwd)/target/vcpkg" >> "$GITHUB_ENV"
+          fi
 
       - name: Validate VCPKG root
         if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f target/vcpkg/.vcpkg-root ]]; then
-            echo "::warning title=Missing vcpkg workspace::target/vcpkg/.vcpkg-root not found; continuing with local toolchain/runtime."
+          if [[ ! -f "$VCPKG_ROOT/.vcpkg-root" ]]; then
+            echo "::warning title=Missing vcpkg workspace::$VCPKG_ROOT/.vcpkg-root not found; continuing with local toolchain/runtime."
           fi
 
       - name: Export LIBCLANG_PATH
