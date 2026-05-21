@@ -258,6 +258,7 @@ fn remux_with_retagged_unknown_streams(
 
     output_ctx.write_trailer()?;
     drop(output_ctx);
+    drop(input_ctx);
     replace_with_temp(&tmp_path, path, "retagging unknown stream languages")
 }
 
