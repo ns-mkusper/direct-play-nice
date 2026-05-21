@@ -396,6 +396,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -x "${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}/bin/cargo" ]]; then
+            export CARGO_HOME="${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}"
+            export RUSTUP_HOME="${DPN_BENCH_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          fi
           export PATH="$CARGO_HOME/bin:$PATH"
           cargo --version
           rustc --version
@@ -416,7 +420,11 @@ jobs:
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           if [[ ! -x "$bin" ]]; then
             echo "Benchmark binary missing after initial build; rebuilding current checkout."
-            export PATH="$CARGO_HOME/bin:$PATH"
+          if [[ -x "${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}/bin/cargo" ]]; then
+            export CARGO_HOME="${DPN_BENCH_CARGO_HOME:-/home/mkusper/.cargo}"
+            export RUSTUP_HOME="${DPN_BENCH_RUSTUP_HOME:-/home/mkusper/.rustup}"
+          fi
+          export PATH="$CARGO_HOME/bin:$PATH"
             cargo build --release --bin direct_play_nice --verbose
           fi
           if [[ ! -x "$bin" ]]; then
