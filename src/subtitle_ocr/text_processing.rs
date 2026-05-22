@@ -257,6 +257,9 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     if lower == "standdown" {
         return Some(format!("{} {}", &token[..5], &token[5..]));
     }
+    if let Some(split) = segment_glued_english_token_with_dictionary(token) {
+        return Some(split);
+    }
     if let Some(split) = split_glued_contraction(token, &lower) {
         return Some(split);
     }
@@ -361,6 +364,267 @@ fn ascii_language_likelihood(token: &str) -> f32 {
     }
     normalized -= bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
     normalized.max(NGRAM_FLOOR_SCORE)
+}
+
+fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
+    const WORDS: &[&str] = &[
+        "a",
+        "about",
+        "after",
+        "again",
+        "all",
+        "allright",
+        "always",
+        "am",
+        "an",
+        "and",
+        "any",
+        "anyone",
+        "are",
+        "around",
+        "as",
+        "at",
+        "bad",
+        "be",
+        "because",
+        "been",
+        "before",
+        "being",
+        "belong",
+        "beneath",
+        "besides",
+        "bewith",
+        "blue",
+        "bones",
+        "boy",
+        "breathe",
+        "bring",
+        "but",
+        "by",
+        "called",
+        "can",
+        "can't",
+        "cannot",
+        "care",
+        "city",
+        "come",
+        "decided",
+        "desert",
+        "do",
+        "does",
+        "doesn't",
+        "doing",
+        "don't",
+        "down",
+        "dream",
+        "eat",
+        "end",
+        "even",
+        "every",
+        "everyone",
+        "fall",
+        "fine",
+        "find",
+        "flower",
+        "for",
+        "forget",
+        "friend",
+        "from",
+        "get",
+        "given",
+        "go",
+        "going",
+        "gonna",
+        "good",
+        "got",
+        "have",
+        "haven't",
+        "he",
+        "he's",
+        "hearing",
+        "here",
+        "hey",
+        "him",
+        "his",
+        "howl",
+        "humans",
+        "i",
+        "i'd",
+        "i'll",
+        "i'm",
+        "i've",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "it's",
+        "jerk",
+        "kind",
+        "know",
+        "land",
+        "leaving",
+        "let",
+        "let's",
+        "lie",
+        "like",
+        "likes",
+        "little",
+        "live",
+        "look",
+        "looking",
+        "matter",
+        "me",
+        "mean",
+        "meeting",
+        "mind",
+        "much",
+        "my",
+        "no",
+        "not",
+        "nothing",
+        "now",
+        "of",
+        "off",
+        "okay",
+        "on",
+        "one",
+        "paradise",
+        "people",
+        "place",
+        "please",
+        "positive",
+        "put",
+        "really",
+        "remember",
+        "remind",
+        "rocks",
+        "sand",
+        "say",
+        "see",
+        "seems",
+        "self",
+        "sniveling",
+        "so",
+        "somebody",
+        "stay",
+        "staying",
+        "still",
+        "sure",
+        "take",
+        "takes",
+        "that",
+        "that's",
+        "the",
+        "then",
+        "there",
+        "there's",
+        "these",
+        "they",
+        "thing",
+        "thinks",
+        "this",
+        "those",
+        "to",
+        "too",
+        "up",
+        "us",
+        "used",
+        "voices",
+        "want",
+        "wanted",
+        "was",
+        "we",
+        "went",
+        "what",
+        "what's",
+        "when",
+        "where",
+        "whether",
+        "who",
+        "who's",
+        "why",
+        "will",
+        "with",
+        "within",
+        "without",
+        "wolf",
+        "wolves",
+        "world",
+        "worry",
+        "would",
+        "you",
+        "you'd",
+        "you'll",
+        "you're",
+        "you've",
+        "your",
+        "yourself",
+    ];
+    let lower = token.to_ascii_lowercase();
+    let n = lower.len();
+    if n < 6 {
+        return None;
+    }
+    let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1];
+    best[0] = Some((0, 0, 0)); // score, prev, segments
+    for end in 1..=n {
+        let start_min = end.saturating_sub(16);
+        for start in start_min..end {
+            let Some((prev_score, _, prev_segments)) = best[start] else {
+                continue;
+            };
+            let piece = &lower[start..end];
+            if !WORDS.contains(&piece) {
+                continue;
+            }
+            let len = end - start;
+            let mut score = prev_score + (len as i32 * 10);
+            if len <= 2 {
+                score -= 8;
+            }
+            if len >= 4 {
+                score += 6;
+            }
+            if piece.contains('\'') {
+                score += 4;
+            }
+            let segments = prev_segments + 1;
+            let replace = best[end]
+                .as_ref()
+                .map(|(cur, _, cur_segments)| {
+                    score > *cur || (score == *cur && segments < *cur_segments)
+                })
+                .unwrap_or(true);
+            if replace {
+                best[end] = Some((score, start, segments));
+            }
+        }
+    }
+    let (_score, _, segments) = best[n]?;
+    if segments < 2 {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    let mut idx = n;
+    while idx > 0 {
+        let (_score, prev, _segments) = best[idx]?;
+        ranges.push((prev, idx));
+        idx = prev;
+    }
+    ranges.reverse();
+    if ranges.iter().any(|(start, end)| {
+        end - start == 1 && &lower[*start..*end] != "i" && &lower[*start..*end] != "a"
+    }) {
+        return None;
+    }
+    Some(
+        ranges
+            .into_iter()
+            .map(|(start, end)| token[start..end].to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn segment_glued_english_token(token: &str) -> Option<String> {
