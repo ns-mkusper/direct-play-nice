@@ -758,3 +758,35 @@ fn ppocr_geometry_needs_fallback(lines: &[OcrLine], language: &str) -> bool {
     }
     checked > 0 && suspicious > 0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subtitle_ocr::OcrLine;
+
+    fn ocr_line(text: &str) -> OcrLine {
+        OcrLine {
+            text: text.to_string(),
+            bbox: None,
+            score: Some(0.95),
+            color: None,
+            italic: false,
+        }
+    }
+
+    #[test]
+    fn spacing_fallback_flags_long_spaceless_english_tokens() {
+        let lines = vec![
+            ocr_line("Whereareyou?"),
+            ocr_line("Whatyoullfindbeyondthoserocks"),
+        ];
+        assert!(ppocr_spacing_needs_fallback(&lines));
+        assert!(ppocr_needs_quality_fallback(&lines, "eng"));
+    }
+
+    #[test]
+    fn spacing_fallback_does_not_flag_short_single_word_cues() {
+        let lines = vec![ocr_line("Kiba!"), ocr_line("Hello")];
+        assert!(!ppocr_spacing_needs_fallback(&lines));
+    }
+}

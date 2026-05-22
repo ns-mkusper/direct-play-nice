@@ -425,12 +425,21 @@ fn extract_subtitle_lines(
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
             && !is_english_language(params.language)
             && language_uses_spaces(params.language);
+        let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
-        let should_try_quality_fallback = quality_fallback_requested
-            && thresholds.is_some_and(|thresholds| {
-                ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
-            });
+        let should_try_quality_fallback = if spacing_fallback_requested {
+            // Severe PP-OCR glue can be consistent for an entire subtitle track,
+            // so a dynamic baseline trained on the same bad output will not catch
+            // it. Try Tesseract immediately when a space-using language produces
+            // long alphabetic tokens with no inter-word spaces.
+            true
+        } else {
+            quality_fallback_requested
+                && thresholds.is_some_and(|thresholds| {
+                    ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
+                })
+        };
         if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
@@ -441,8 +450,16 @@ fn extract_subtitle_lines(
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // For non-English streams, prefer language-specific Tesseract
                         // because the bundled PP-OCR recognizer is English-focused.
+                        let candidate_has_spaces = candidate.text.split_whitespace().count() > 1;
                         let should_replace_with_tesseract = if force_tesseract_non_english {
                             true
+                        } else if spacing_fallback_requested && candidate_has_spaces {
+                            // Prefer a spaced Tesseract result when PP-OCR glues a
+                            // space-using subtitle line into one long token. The
+                            // generic quality score intentionally penalizes glue
+                            // lightly for proper nouns, so do not require the
+                            // normal min-gain threshold here.
+                            candidate.quality + 0.10 >= ppocr_quality
                         } else {
                             let min_gain = tesseract_quality_fallback_min_gain();
                             candidate.quality >= ppocr_quality + min_gain
