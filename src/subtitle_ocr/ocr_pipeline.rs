@@ -402,7 +402,7 @@ fn extract_subtitle_lines(
             "ocr-s{}-p{}-r{}.pgm",
             params.stream_index, params.packet_seq, i
         ));
-        fs::write(&pgm_path, pgm)
+        fs::write(&pgm_path, &pgm)
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
         let mut output = engine.extract_lines(&pgm_path, params.language)?;
@@ -621,7 +621,7 @@ fn try_ppocr_word_segmentation_recovery(
         ));
         fs::write(&crop_path, crop)
             .with_context(|| format!("writing OCR word crop {}", crop_path.display()))?;
-        let mut word_output = engine.extract_lines(&crop_path, language)?;
+        let word_output = engine.extract_lines(&crop_path, language)?;
         let _ = fs::remove_file(&crop_path);
         let text = normalize_utf8_text(&lines_text_for_quality(&word_output.lines));
         if text.is_empty() {
