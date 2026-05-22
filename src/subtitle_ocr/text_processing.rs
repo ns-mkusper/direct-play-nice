@@ -96,7 +96,7 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_before_opening_quote(&out);
 
     // Targeted corrections for frequently observed OCR glue patterns.
-    const ENGLISH_GLUE_FIXES: [(&str, &str); 42] = [
+    const ENGLISH_GLUE_FIXES: &[(&str, &str)] = &[
         ("noneother", "none other"),
         ("notonlyme", "not only me"),
         ("notonly", "not only"),
