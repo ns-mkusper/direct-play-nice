@@ -361,10 +361,6 @@ fn crop_pgm(
     out
 }
 
-pub(super) fn split_pgm_into_word_crops(pgm: &[u8]) -> Vec<(Vec<u8>, OcrBoundingBox)> {
-    split_pgm_into_word_crops_with_gap(pgm, None)
-}
-
 pub(super) fn split_pgm_into_word_crops_with_gap(
     pgm: &[u8],
     gap_override: Option<usize>,
