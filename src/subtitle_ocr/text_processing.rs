@@ -1093,4 +1093,24 @@ mod tests {
         let lines = vec![ocr_line("Kiba!"), ocr_line("Hello")];
         assert!(!ppocr_spacing_needs_fallback(&lines));
     }
+
+    #[test]
+    fn dictionary_split_handles_common_glued_phrases() {
+        assert_eq!(
+            split_glued_ascii_token("Whatyou'll"),
+            Some("What you'll".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("findbeyondthoserocks"),
+            Some("find beyond those rocks".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lookingforhimwon't"),
+            Some("looking for him won't".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("doanygood"),
+            Some("do any good".to_string())
+        );
+    }
 }
