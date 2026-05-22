@@ -4,6 +4,7 @@
 //! serialization to SRT/ASS.
 
 use super::*;
+use std::env;
 pub(super) struct TesseractCandidate {
     pub(super) text: String,
     pub(super) psm: u8,
@@ -257,7 +258,12 @@ pub(super) fn rect_to_pgm(
     }
 
     let (final_raster, final_w, final_h) = if ai_mode {
-        upscale_grayscale_nearest(&raster, width, height, 2)
+        let scale = env::var("DPN_OCR_PGM_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| (1..=6).contains(v))
+            .unwrap_or(2);
+        upscale_grayscale_nearest(&raster, width, height, scale)
     } else {
         (raster, width, height)
     };

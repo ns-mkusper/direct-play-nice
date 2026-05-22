@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -68,6 +69,54 @@ impl SubtitleConverter for ExternalEngine {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PpOcrDetectParams {
+    padding: u32,
+    max_side_len: u32,
+    box_score_thresh: f32,
+    box_thresh: f32,
+    un_clip_ratio: f32,
+    do_angle: bool,
+    most_angle: bool,
+}
+
+fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
+    fn env_u32(key: &str, default: u32) -> u32 {
+        env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(default)
+    }
+    fn env_f32(key: &str, default: f32) -> f32 {
+        env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or(default)
+    }
+    fn env_bool(key: &str, default: bool) -> bool {
+        env::var(key)
+            .ok()
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(default)
+    }
+
+    PpOcrDetectParams {
+        padding: env_u32("DPN_OCR_DET_PADDING", 50),
+        max_side_len: env_u32("DPN_OCR_DET_MAX_SIDE", 1024),
+        box_score_thresh: env_f32("DPN_OCR_DET_BOX_SCORE", 0.5),
+        box_thresh: env_f32("DPN_OCR_DET_BOX_THRESH", 0.3),
+        un_clip_ratio: env_f32("DPN_OCR_DET_UNCLIP", 1.6),
+        do_angle: env_bool("DPN_OCR_DET_DO_ANGLE", false),
+        most_angle: env_bool("DPN_OCR_DET_MOST_ANGLE", false),
+    }
+}
+
 impl SubtitleConverter for PpOcrEngine {
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let PpOcrEngine {
@@ -116,8 +165,18 @@ impl SubtitleConverter for PpOcrEngine {
         };
 
         let img = load_image(image_path)?;
+        let params = ppocr_detect_params_from_env();
         let result = ocr
-            .detect(&img, 50, 1024, 0.5, 0.3, 1.6, false, false)
+            .detect(
+                &img,
+                params.padding,
+                params.max_side_len,
+                params.box_score_thresh,
+                params.box_thresh,
+                params.un_clip_ratio,
+                params.do_angle,
+                params.most_angle,
+            )
             .map_err(|err| {
                 anyhow!(
                     "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
