@@ -423,6 +423,8 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "come",
         "decided",
         "desert",
+        "or",
+        "didn't",
         "do",
         "does",
         "doesn't",
