@@ -362,6 +362,13 @@ fn crop_pgm(
 }
 
 pub(super) fn split_pgm_into_word_crops(pgm: &[u8]) -> Vec<(Vec<u8>, OcrBoundingBox)> {
+    split_pgm_into_word_crops_with_gap(pgm, None)
+}
+
+pub(super) fn split_pgm_into_word_crops_with_gap(
+    pgm: &[u8],
+    gap_override: Option<usize>,
+) -> Vec<(Vec<u8>, OcrBoundingBox)> {
     let Some((width, height, header_len)) = pgm_header_len(pgm) else {
         return Vec::new();
     };
@@ -396,10 +403,13 @@ pub(super) fn split_pgm_into_word_crops(pgm: &[u8]) -> Vec<(Vec<u8>, OcrBounding
     for (band_top, band_bottom) in bands {
         let band_h = band_bottom - band_top;
         let col_has_ink = |x: usize| (band_top..band_bottom).any(|yy| has_ink(x, yy));
-        let min_gap = env::var("DPN_OCR_WORD_GAP_COLUMNS")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|v| (1..=32).contains(v))
+        let min_gap = gap_override
+            .or_else(|| {
+                env::var("DPN_OCR_WORD_GAP_COLUMNS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .filter(|v| (1..=32).contains(v))
+            })
             .unwrap_or_else(|| (band_h / 6).clamp(2, 8));
         let mut spans = Vec::new();
         let mut x = 0usize;

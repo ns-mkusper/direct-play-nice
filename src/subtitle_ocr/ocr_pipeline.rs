@@ -614,7 +614,36 @@ fn try_ppocr_word_segmentation_recovery(
     language: &str,
     color: Option<(u8, u8, u8)>,
 ) -> Result<Option<OcrOutput>> {
-    let crops = split_pgm_into_word_crops(pgm);
+    let candidate_gaps = [None, Some(5usize), Some(8usize)];
+    let mut best: Option<(f32, OcrOutput)> = None;
+    for gap in candidate_gaps {
+        let Some(candidate) =
+            recognize_ppocr_word_crops(engine, pgm, pgm_path, language, color, gap)?
+        else {
+            continue;
+        };
+        let text = lines_text_for_quality(&candidate.lines);
+        let quality = ocr_text_quality_score(&text, language);
+        let replace = best
+            .as_ref()
+            .map(|(best_quality, _)| quality > *best_quality + 0.001)
+            .unwrap_or(true);
+        if replace {
+            best = Some((quality, candidate));
+        }
+    }
+    Ok(best.map(|(_, output)| output))
+}
+
+fn recognize_ppocr_word_crops(
+    engine: &mut dyn SubtitleConverter,
+    pgm: &[u8],
+    pgm_path: &Path,
+    language: &str,
+    color: Option<(u8, u8, u8)>,
+    gap_override: Option<usize>,
+) -> Result<Option<OcrOutput>> {
+    let crops = split_pgm_into_word_crops_with_gap(pgm, gap_override);
     if crops.len() < 2 || crops.len() > 80 {
         return Ok(None);
     }

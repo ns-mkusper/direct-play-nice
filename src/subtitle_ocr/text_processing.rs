@@ -676,15 +676,55 @@ pub(super) fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
 
     if language_uses_spaces(language) {
         if letters >= 12 && word_count <= 1 {
-            score -= 0.2;
+            score -= 0.35;
         }
-        // Keep this light to avoid penalizing proper nouns and stylized titles.
         if avg_word_len > 10.5 {
-            score -= 0.05;
+            score -= ((avg_word_len - 10.5) * 0.035).min(0.22);
         }
         let long_word_ratio = long_word_count as f32 / word_count as f32;
-        if long_word_ratio > 0.45 {
-            score -= ((long_word_ratio - 0.45) * 0.20).min(0.15);
+        if long_word_ratio > 0.12 {
+            score -= ((long_word_ratio - 0.12) * 0.65).min(0.35);
+        }
+
+        let space_rate = spaces as f32 / total;
+        if letters >= 80 && space_rate < 0.08 {
+            score -= ((0.08 - space_rate) * 3.0).min(0.25);
+        }
+
+        let mut ascii_tokens = 0usize;
+        let mut invalid_short_tokens = 0usize;
+        let mut camelcase_tokens = 0usize;
+        const COMMON_SHORT_WORDS: &[&str] = &[
+            "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+            "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+        ];
+        for word in &words_vec {
+            let trimmed = word.trim_matches(|ch: char| !ch.is_ascii_alphabetic() && ch != '\'');
+            if trimmed.is_empty() || !trimmed.is_ascii() {
+                continue;
+            }
+            ascii_tokens += 1;
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.len() <= 2 && !COMMON_SHORT_WORDS.contains(&lower.as_str()) {
+                invalid_short_tokens += 1;
+            }
+            if trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            {
+                camelcase_tokens += 1;
+            }
+        }
+        if ascii_tokens > 0 {
+            let invalid_short_ratio = invalid_short_tokens as f32 / ascii_tokens as f32;
+            if invalid_short_ratio > 0.06 {
+                score -= ((invalid_short_ratio - 0.06) * 1.2).min(0.30);
+            }
+            let camelcase_ratio = camelcase_tokens as f32 / ascii_tokens as f32;
+            if camelcase_ratio > 0.02 {
+                score -= ((camelcase_ratio - 0.02) * 1.0).min(0.20);
+            }
         }
     }
 
