@@ -373,7 +373,6 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "after",
         "again",
         "all",
-        "allright",
         "always",
         "am",
         "an",
@@ -393,7 +392,6 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "belong",
         "beneath",
         "besides",
-        "bewith",
         "blue",
         "alive",
         "along",
@@ -446,6 +444,8 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "friend",
         "from",
         "get",
+        "give",
+        "starting",
         "given",
         "go",
         "going",
@@ -578,7 +578,7 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
     ];
     let lower = token.to_ascii_lowercase();
     let n = lower.len();
-    if n < 6 {
+    if n < 5 {
         return None;
     }
     let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1];
@@ -594,7 +594,7 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
                 continue;
             }
             let len = end - start;
-            let mut score = prev_score + (len as i32 * 10);
+            let mut score = prev_score + (len as i32 * 10) - 8;
             if len <= 2 {
                 score -= 8;
             }
