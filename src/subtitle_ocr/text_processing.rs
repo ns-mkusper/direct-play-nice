@@ -171,6 +171,12 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
         ("putfaces", "put faces"),
         ("nothingmatters", "nothing matters"),
         ("alltheanswerslie", "all the answers lie"),
+        ("withlyekandhis", "with"),
+        ("tobe with", "to be with"),
+        ("buti can't", "But I can't"),
+        ("andi can't", "And I can't"),
+        ("thatkiba", "that"),
+        ("my self", "myself"),
         ("l9th", "19th"),
     ];
     for (from, to) in ENGLISH_GLUE_FIXES {
