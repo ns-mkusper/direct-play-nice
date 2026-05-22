@@ -428,7 +428,16 @@ fn extract_subtitle_lines(
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
-        if spacing_fallback_requested {
+        let word_segmentation_enabled = env::var("DPN_OCR_WORD_SEGMENTATION")
+            .ok()
+            .map(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            })
+            .unwrap_or(true);
+        if spacing_fallback_requested && word_segmentation_enabled {
             if let Some(segmented) = try_ppocr_word_segmentation_recovery(
                 engine,
                 &pgm,
