@@ -445,12 +445,12 @@ pub(super) fn split_pgm_into_word_crops_with_gap(
                 .ok()
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .filter(|v| (0..=32).contains(v))
-                .unwrap_or(6);
+                .unwrap_or(2);
             let pad_y = env::var("DPN_OCR_WORD_PAD_Y")
                 .ok()
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .filter(|v| (0..=24).contains(v))
-                .unwrap_or(4);
+                .unwrap_or(2);
             let l = left.saturating_sub(pad_x);
             let r = (right + pad_x).min(width);
             let t = band_top.saturating_sub(pad_y);
