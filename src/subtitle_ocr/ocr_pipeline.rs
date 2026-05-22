@@ -428,11 +428,40 @@ fn extract_subtitle_lines(
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
+        if spacing_fallback_requested {
+            if let Some(segmented) = try_ppocr_word_segmentation_recovery(
+                engine,
+                &pgm,
+                &pgm_path,
+                params.language,
+                rect_color,
+            )? {
+                let segmented_text = lines_text_for_quality(&segmented.lines);
+                let segmented_quality = ocr_text_quality_score(&segmented_text, params.language);
+                if segmented_quality + 0.02 >= ppocr_quality {
+                    info!(
+                        "{} spacing recovery: split subtitle stream {} packet {} rect {} into {} PP-OCR word crops (segmented_score={:.2}, ppocr_score={:.2})",
+                        ppocr_engine_label(ocr_engine),
+                        params.stream_index,
+                        params.packet_seq,
+                        i,
+                        segmented.lines.len(),
+                        segmented_quality,
+                        ppocr_quality
+                    );
+                    output = segmented;
+                }
+            }
+        }
+        let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
+        let ppocr_text = lines_text_for_quality(&output.lines);
+        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
+        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
         let should_try_quality_fallback = if spacing_fallback_requested {
             // Severe PP-OCR glue can be consistent for an entire subtitle track,
             // so a dynamic baseline trained on the same bad output will not catch
-            // it. Try Tesseract immediately when a space-using language produces
-            // long alphabetic tokens with no inter-word spaces.
+            // it. Try Tesseract immediately when PP-OCR word segmentation cannot
+            // recover spaces for a space-using language.
             true
         } else {
             quality_fallback_requested
@@ -567,6 +596,58 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn try_ppocr_word_segmentation_recovery(
+    engine: &mut dyn SubtitleConverter,
+    pgm: &[u8],
+    pgm_path: &Path,
+    language: &str,
+    color: Option<(u8, u8, u8)>,
+) -> Result<Option<OcrOutput>> {
+    let crops = split_pgm_into_word_crops(pgm);
+    if crops.len() < 2 || crops.len() > 80 {
+        return Ok(None);
+    }
+    let mut lines = Vec::new();
+    for (idx, (crop, bbox)) in crops.into_iter().enumerate() {
+        let crop_path = pgm_path.with_file_name(format!(
+            "{}-word-{}.pgm",
+            pgm_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("ocr"),
+            idx
+        ));
+        fs::write(&crop_path, crop)
+            .with_context(|| format!("writing OCR word crop {}", crop_path.display()))?;
+        let mut word_output = engine.extract_lines(&crop_path, language)?;
+        let _ = fs::remove_file(&crop_path);
+        let text = normalize_utf8_text(&lines_text_for_quality(&word_output.lines));
+        if text.is_empty() {
+            continue;
+        }
+        let mut bbox = bbox;
+        let score = ppocr_average_confidence(&word_output.lines);
+        if let Some(first_bbox) = word_output.lines.iter().find_map(|line| line.bbox.as_ref()) {
+            // Keep the coarse crop position. Internal PP-OCR boxes are relative to the crop.
+            bbox.top += first_bbox.top;
+            bbox.bottom = bbox.top + (first_bbox.bottom - first_bbox.top).max(1);
+        }
+        lines.push(OcrLine {
+            text,
+            bbox: Some(bbox),
+            score,
+            color,
+            italic: false,
+        });
+    }
+    if lines.len() < 2 {
+        return Ok(None);
+    }
+    Ok(Some(OcrOutput {
+        lines: merge_ocr_lines_with_spacing(lines),
+    }))
 }
 
 pub(super) fn force_tesseract_non_english_enabled() -> bool {
