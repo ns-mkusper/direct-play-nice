@@ -327,9 +327,8 @@ fn pgm_header_len(pgm: &[u8]) -> Option<(usize, usize, usize)> {
                 .ok()?,
         );
     }
-    while i < pgm.len() && pgm[i].is_ascii_whitespace() {
+    if i < pgm.len() && pgm[i].is_ascii_whitespace() {
         i += 1;
-        break;
     }
     if tokens.len() != 3 || tokens[2] != 255 {
         return None;
