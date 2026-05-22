@@ -428,6 +428,9 @@ fn extract_subtitle_lines(
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
+        let raw_postprocess_quality = output_quality_after_postprocess(&output, params.language);
+        let raw_postprocess_needs_spacing_fallback =
+            output_needs_spacing_after_postprocess(&output, params.language);
         let word_segmentation_enabled = env::var("DPN_OCR_WORD_SEGMENTATION")
             .ok()
             .map(|v| {
@@ -437,7 +440,10 @@ fn extract_subtitle_lines(
                 )
             })
             .unwrap_or(true);
-        if spacing_fallback_requested && word_segmentation_enabled {
+        if spacing_fallback_requested
+            && raw_postprocess_needs_spacing_fallback
+            && word_segmentation_enabled
+        {
             if let Some(segmented) = try_ppocr_word_segmentation_recovery(
                 engine,
                 &pgm,
@@ -445,9 +451,9 @@ fn extract_subtitle_lines(
                 params.language,
                 rect_color,
             )? {
-                let segmented_text = lines_text_for_quality(&segmented.lines);
-                let segmented_quality = ocr_text_quality_score(&segmented_text, params.language);
-                if segmented_quality + 0.02 >= ppocr_quality {
+                let segmented_quality =
+                    output_quality_after_postprocess(&segmented, params.language);
+                if segmented_quality > raw_postprocess_quality + 0.03 {
                     info!(
                         "{} spacing recovery: split subtitle stream {} packet {} rect {} into {} PP-OCR word crops (segmented_score={:.2}, ppocr_score={:.2})",
                         ppocr_engine_label(ocr_engine),
@@ -456,13 +462,14 @@ fn extract_subtitle_lines(
                         i,
                         segmented.lines.len(),
                         segmented_quality,
-                        ppocr_quality
+                        raw_postprocess_quality
                     );
                     output = segmented;
                 }
             }
         }
-        let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
+        let spacing_fallback_requested =
+            output_needs_spacing_after_postprocess(&output, params.language);
         let ppocr_text = lines_text_for_quality(&output.lines);
         let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
@@ -605,6 +612,33 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn output_quality_after_postprocess(output: &OcrOutput, language: &str) -> f32 {
+    let processed = output
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    ocr_text_quality_score(&processed, language)
+}
+
+fn output_needs_spacing_after_postprocess(output: &OcrOutput, language: &str) -> bool {
+    let lines = output
+        .lines
+        .iter()
+        .map(|line| OcrLine {
+            text: postprocess_ocr_text(&line.text, language),
+            bbox: line.bbox.clone(),
+            score: line.score,
+            color: line.color,
+            italic: line.italic,
+        })
+        .collect::<Vec<_>>();
+    ppocr_spacing_needs_fallback(&lines) || ppocr_needs_quality_fallback(&lines, language)
 }
 
 fn try_ppocr_word_segmentation_recovery(
