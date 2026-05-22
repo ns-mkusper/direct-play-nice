@@ -441,8 +441,16 @@ pub(super) fn split_pgm_into_word_crops_with_gap(
             continue;
         }
         for (left, right) in spans {
-            let pad_x = 2usize;
-            let pad_y = 2usize;
+            let pad_x = env::var("DPN_OCR_WORD_PAD_X")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|v| (0..=32).contains(v))
+                .unwrap_or(6);
+            let pad_y = env::var("DPN_OCR_WORD_PAD_Y")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|v| (0..=24).contains(v))
+                .unwrap_or(4);
             let l = left.saturating_sub(pad_x);
             let r = (right + pad_x).min(width);
             let t = band_top.saturating_sub(pad_y);
