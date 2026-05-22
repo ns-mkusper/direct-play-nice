@@ -281,6 +281,9 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     if lower == "standdown" {
         return Some(format!("{} {}", &token[..5], &token[5..]));
     }
+    if let Some(split) = split_camelcase_proper_noun_suffix(token) {
+        return Some(split);
+    }
     if let Some(split) = segment_glued_english_token_with_dictionary(token) {
         return Some(split);
     }
@@ -388,6 +391,33 @@ fn ascii_language_likelihood(token: &str) -> f32 {
     }
     normalized -= bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
     normalized.max(NGRAM_FLOOR_SCORE)
+}
+
+fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
+    if token.len() < 6 || !token.is_ascii() {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    for idx in 2..bytes.len().saturating_sub(1) {
+        if bytes[idx - 1].is_ascii_lowercase() && bytes[idx].is_ascii_uppercase() {
+            let prefix = &token[..idx];
+            let suffix = &token[idx..];
+            if suffix.len() < 2 || !suffix.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                continue;
+            }
+            let suffix_has_lower = suffix.chars().skip(1).any(|ch| ch.is_ascii_lowercase());
+            if !suffix_has_lower {
+                continue;
+            }
+            let split_prefix = segment_glued_english_token_with_dictionary(prefix)
+                .or_else(|| split_glued_contraction(prefix, &prefix.to_ascii_lowercase()))
+                .or_else(|| segment_glued_english_token(prefix));
+            if let Some(split_prefix) = split_prefix {
+                return Some(format!("{} {}", split_prefix, suffix));
+            }
+        }
+    }
+    None
 }
 
 fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
@@ -1135,6 +1165,18 @@ mod tests {
     fn spacing_fallback_does_not_flag_short_single_word_cues() {
         let lines = vec![ocr_line("Kiba!"), ocr_line("Hello")];
         assert!(!ppocr_spacing_needs_fallback(&lines));
+    }
+
+    #[test]
+    fn camelcase_split_preserves_proper_noun_suffixes() {
+        assert_eq!(
+            split_glued_ascii_token("positivethatKiba"),
+            Some("positive that Kiba".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("goingtoParadise"),
+            Some("going to Paradise".to_string())
+        );
     }
 
     #[test]
