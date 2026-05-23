@@ -255,7 +255,7 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     if matches!(token.chars().next(), Some('I' | 'i')) && token.len() >= 5 {
         const I_PREFIX_CONTINUATIONS: [&str; 16] = [
             "am", "have", "had", "shall", "will", "beg", "think", "know", "need", "must", "want",
-            "did", "do", "was", "were", "would",
+            "did", "do", "was", "were", "would", "hear",
         ];
         let rest = &lower[1..];
         if I_PREFIX_CONTINUATIONS
@@ -764,6 +764,9 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "ooyears",
         "appear",
         "only",
+        "someone's",
+        "c'm",
+        "another",
         "with",
         "within",
         "without",
