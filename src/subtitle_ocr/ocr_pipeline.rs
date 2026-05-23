@@ -599,7 +599,9 @@ fn extract_subtitle_lines(
                 );
             }
         }
-        let _ = fs::remove_file(&pgm_path);
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&pgm_path);
+        }
         for mut line in output.lines {
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
@@ -615,6 +617,18 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn keep_ocr_intermediates() -> bool {
+    env::var("DPN_OCR_KEEP_INTERMEDIATES")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn output_quality_after_postprocess(output: &OcrOutput, language: &str) -> f32 {
@@ -743,7 +757,9 @@ fn recognize_ppocr_word_crops(
         fs::write(&crop_path, crop)
             .with_context(|| format!("writing OCR word crop {}", crop_path.display()))?;
         let word_output = engine.extract_lines(&crop_path, language)?;
-        let _ = fs::remove_file(&crop_path);
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&crop_path);
+        }
         let text = normalize_utf8_text(&lines_text_for_quality(&word_output.lines));
         if text.is_empty() {
             continue;
