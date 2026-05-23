@@ -110,6 +110,7 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_before_opening_quote(&out);
 
     out = split_glued_english_phrases(&out);
+    out = split_fragmented_english_phrases(&out);
 
     normalize_utf8_text(&out)
 }
@@ -146,7 +147,7 @@ fn normalize_mixed_case_ocr_token(token: &str) -> String {
             'I' if after_lower && next.is_none() => 'i',
             'Q' if surrounded_by_lower || after_lower => 'u',
             'O' if surrounded_by_lower || after_lower => 'o',
-            'N' if after_lower && next.is_none() => 'n',
+            'N' if after_lower && next.is_none() && !chars[0].is_ascii_uppercase() => 'n',
             _ => ch,
         };
         out.push(replacement);
@@ -227,6 +228,112 @@ fn split_glued_english_phrases(input: &str) -> String {
     flush_token(&mut token, &mut out);
 
     out
+}
+
+#[derive(Clone)]
+struct FragmentWord<'a> {
+    leading: &'a str,
+    core: &'a str,
+    trailing: &'a str,
+}
+
+fn split_fragmented_english_phrases(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut buffered: Vec<FragmentWord<'_>> = Vec::new();
+
+    for raw in input.split_whitespace() {
+        if let Some(word) = parse_fragment_word(raw) {
+            let has_trailing_punctuation = !word.trailing.is_empty();
+            buffered.push(word);
+            if has_trailing_punctuation {
+                flush_fragment_words(&mut buffered, &mut out);
+            }
+        } else {
+            flush_fragment_words(&mut buffered, &mut out);
+            push_space_separated(&mut out, raw);
+        }
+    }
+    flush_fragment_words(&mut buffered, &mut out);
+    out
+}
+
+fn parse_fragment_word(raw: &str) -> Option<FragmentWord<'_>> {
+    let core_start = raw.find(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')?;
+    let core_end = raw.rfind(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')? + 1;
+    if core_start >= core_end {
+        return None;
+    }
+    let core = &raw[core_start..core_end];
+    if core
+        .chars()
+        .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+        && core.chars().any(|ch| ch.is_ascii_alphabetic())
+    {
+        Some(FragmentWord {
+            leading: &raw[..core_start],
+            core,
+            trailing: &raw[core_end..],
+        })
+    } else {
+        None
+    }
+}
+
+fn flush_fragment_words(buffered: &mut Vec<FragmentWord<'_>>, out: &mut String) {
+    if buffered.is_empty() {
+        return;
+    }
+    if let Some(repaired) = repair_fragment_words(buffered) {
+        push_space_separated(out, &repaired);
+    } else {
+        for word in buffered.iter() {
+            let raw = format!("{}{}{}", word.leading, word.core, word.trailing);
+            push_space_separated(out, &raw);
+        }
+    }
+    buffered.clear();
+}
+
+fn repair_fragment_words(words: &[FragmentWord<'_>]) -> Option<String> {
+    if words.len() < 2 || words.len() > 12 {
+        return None;
+    }
+    let suspicious = words.iter().any(|word| {
+        word.core.len() >= 12
+            || word
+                .core
+                .as_bytes()
+                .windows(2)
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            || (word.core.len() <= 3 && word.core.chars().any(|ch| ch.is_ascii_uppercase()))
+    });
+    let joined = words.iter().map(|word| word.core).collect::<String>();
+    if !suspicious || joined.len() < 8 {
+        return None;
+    }
+    let split = split_glued_ascii_token(&joined)?;
+    let split_word_count = split.split_whitespace().count();
+    if split_word_count < words.len() {
+        return None;
+    }
+    if split_word_count <= 1 {
+        return None;
+    }
+    let mut repaired = String::new();
+    repaired.push_str(words.first()?.leading);
+    repaired.push_str(&split);
+    repaired.push_str(words.last()?.trailing);
+    Some(repaired)
+}
+
+fn push_space_separated(out: &mut String, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    if !out.is_empty() && !out.ends_with(' ') {
+        out.push(' ');
+    }
+    out.push_str(value);
 }
 
 pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
@@ -771,14 +878,13 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "ooyears",
         "appear",
         "only",
+        "our",
         "someone's",
         "c'm",
         "another",
         "running",
         "pack",
         "fighting",
-        "lookslike",
-        "advancesquad",
         "advice",
         "aint",
         "arm",
@@ -875,6 +981,97 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "you've",
         "your",
         "yourself",
+        "ancient",
+        "anything",
+        "ass",
+        "back",
+        "became",
+        "bit",
+        "blend",
+        "blood",
+        "born",
+        "carcass",
+        "cared",
+        "cleaning",
+        "could",
+        "department",
+        "died",
+        "drove",
+        "easily",
+        "evidence",
+        "ever",
+        "first",
+        "front",
+        "friends",
+        "gone",
+        "guess",
+        "it'll",
+        "its",
+        "kiss",
+        "leave",
+        "made",
+        "many",
+        "prove",
+        "provisions",
+        "response",
+        "sank",
+        "saw",
+        "scholars",
+        "showed",
+        "sit",
+        "sort",
+        "survived",
+        "thought",
+        "wasn't",
+        "words",
+        "yet",
+        "alongside",
+        "caught",
+        "crew",
+        "dangerous",
+        "disappeared",
+        "else",
+        "eventually",
+        "exist",
+        "form",
+        "flowers",
+        "get",
+        "gift",
+        "ground",
+        "guys",
+        "happen",
+        "her",
+        "hide",
+        "humans",
+        "interesting",
+        "keep",
+        "left",
+        "lying",
+        "over",
+        "overworked",
+        "packing",
+        "patient",
+        "piece",
+        "pretended",
+        "proven",
+        "real",
+        "reaction",
+        "related",
+        "saying",
+        "screwed",
+        "seen",
+        "scent",
+        "spell",
+        "supplies",
+        "survive",
+        "takes",
+        "terror",
+        "things",
+        "times",
+        "true",
+        "trying",
+        "work",
+        "worked",
     ];
     let lower = token.to_ascii_lowercase();
     let n = lower.len();
@@ -890,11 +1087,12 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
                 continue;
             };
             let piece = &lower[start..end];
-            if !WORDS.contains(&piece) {
+            let Some(piece_score_adjustment) = dictionary_piece_score_adjustment(piece, WORDS)
+            else {
                 continue;
-            }
+            };
             let len = end - start;
-            let mut score = prev_score + (len as i32 * 10) - 8;
+            let mut score = prev_score + (len as i32 * 10) - 8 + piece_score_adjustment;
             if len <= 2 {
                 score -= 6;
             }
@@ -946,6 +1144,31 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     )
+}
+
+fn dictionary_piece_score_adjustment(piece: &str, words: &[&str]) -> Option<i32> {
+    if words.contains(&piece) {
+        return Some(0);
+    }
+    if piece == "'em" {
+        return Some(-2);
+    }
+    if let Some(base) = piece.strip_suffix("'s") {
+        if base.len() >= 3 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    if let Some(base) = piece.strip_suffix('\'') {
+        if base.len() >= 3 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    if let Some(base) = piece.strip_suffix("n't") {
+        if base.len() >= 2 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    None
 }
 
 fn segment_glued_english_token(token: &str) -> Option<String> {
@@ -1407,6 +1630,54 @@ mod tests {
         assert_eq!(
             split_glued_ascii_token("doanygood"),
             Some("do any good".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("totellmeabout'em"),
+            Some("to tell me about 'em".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("there'salwaysalittletruthin'em"),
+            Some("there's always a little truth in 'em".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("sosecurity's"),
+            Some("so security's".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("gonnabetight"),
+            Some("gonna be tight".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Ithoughtthatmaybeyoudidn't"),
+            Some("I thought that maybe you didn't".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("peopleyousitnexttoatabar"),
+            Some("people you sit next to at a bar".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lookingforcleaningsupplies"),
+            Some("looking for cleaning supplies".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lyingtoyourself"),
+            Some("lying to yourself".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("workedyourselfintotheground"),
+            Some("worked yourself into the ground".to_string())
+        );
+    }
+
+    #[test]
+    fn fragmented_glue_repair_joins_bad_ocr_fragments_before_splitting() {
+        assert_eq!(
+            postprocess_ocr_text("TheN obles'provis ions oughttobepas sing", "eng"),
+            "The Nobles' provisions ought to be passing"
+        );
+        assert_eq!(
+            postprocess_ocr_text("Ifwehideourtrueform, wecanblendin", "eng"),
+            "If we hide our true form, we can blend in"
         );
     }
 }
