@@ -175,6 +175,10 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
         ("buti can't", "But I can't"),
         ("andi can't", "And I can't"),
         ("my self", "myself"),
+        ("thatkiba", "that Kiba"),
+        ("withlyekandhis", "with Lyek and his"),
+        ("tsumeandhige", "Tsume and Hige"),
+        ("andhige", "and Hige"),
         ("l9th", "19th"),
     ];
     for (from, to) in ENGLISH_GLUE_FIXES {
@@ -575,9 +579,6 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "see",
         "seems",
         "self",
-        "withlyekandhis",
-        "eemslikeparadisetome",
-        "thatkiba",
         "sniveling",
         "so",
         "somebody",
