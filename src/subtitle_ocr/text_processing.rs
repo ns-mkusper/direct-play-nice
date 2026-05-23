@@ -228,7 +228,7 @@ fn split_glued_english_phrases(input: &str) -> String {
 }
 
 pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
-    if token.len() < 5 || !token.is_ascii() {
+    if token.len() < 4 || !token.is_ascii() {
         return None;
     }
     if !token
@@ -760,6 +760,10 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "time",
         "wrong",
         "yaiden",
+        "hear",
+        "ooyears",
+        "appear",
+        "only",
         "with",
         "within",
         "without",
@@ -778,7 +782,7 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
     ];
     let lower = token.to_ascii_lowercase();
     let n = lower.len();
-    if n < 5 {
+    if n < 4 {
         return None;
     }
     let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1];
@@ -796,7 +800,13 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
             let len = end - start;
             let mut score = prev_score + (len as i32 * 10) - 8;
             if len <= 2 {
-                score -= 8;
+                score -= 6;
+            }
+            if matches!(
+                piece,
+                "if" | "it" | "in" | "on" | "of" | "to" | "me" | "we" | "he" | "as" | "is"
+            ) {
+                score += 4;
             }
             if len >= 4 {
                 score += 6;
