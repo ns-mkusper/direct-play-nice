@@ -61,23 +61,33 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     if lines.is_empty() {
         return false;
     }
-    let mut has_spaces = false;
-    let mut long_token = false;
     let mut has_letters = false;
+    let mut has_any_space = false;
+    let mut long_alpha_tokens = 0usize;
+    let mut very_long_alpha_token = false;
+
     for line in lines {
         let text = line.text.trim();
-        if text.contains(' ') {
-            has_spaces = true;
-            break;
+        has_any_space |= text.contains(' ');
+        has_letters |= text.chars().any(|c| c.is_alphabetic());
+        for token in text.split_whitespace().flat_map(|part| {
+            part.split(|ch: char| !ch.is_alphabetic() && ch != ''')
+        }) {
+            let alpha_len = token.chars().filter(|ch| ch.is_alphabetic()).count();
+            if alpha_len >= 14 {
+                long_alpha_tokens += 1;
+            }
+            if alpha_len >= 20 {
+                very_long_alpha_token = true;
+            }
         }
-        if text.len() >= 12 {
-            long_token = true;
-        }
-        if text.chars().any(|c| c.is_alphabetic()) {
-            has_letters = true;
+        // A no-space line with many letters is the classic PP-OCR subtitle glue failure.
+        if !text.contains(' ') && text.chars().filter(|c| c.is_alphabetic()).count() >= 12 {
+            long_alpha_tokens += 1;
         }
     }
-    has_letters && long_token && !has_spaces
+
+    has_letters && (!has_any_space && long_alpha_tokens > 0 || very_long_alpha_token || long_alpha_tokens >= 2)
 }
 
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
