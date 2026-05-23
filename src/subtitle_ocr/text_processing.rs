@@ -95,95 +95,6 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
 
-    // Targeted corrections for frequently observed OCR glue patterns.
-    const ENGLISH_GLUE_FIXES: &[(&str, &str)] = &[
-        ("noneother", "none other"),
-        ("notonlyme", "not only me"),
-        ("notonly", "not only"),
-        ("itis", "it is"),
-        ("whylost", "why lost"),
-        ("hesalive", "he's alive"),
-        ("he'salive", "he's alive"),
-        ("thats", "that's"),
-        ("goodwork", "good work"),
-        ("burnit", "burn it"),
-        ("yessir", "yes sir"),
-        ("praisetoyou", "praise to you"),
-        ("lordjesuschrist", "Lord Jesus Christ"),
-        ("paxchristi", "pax Christi"),
-        ("praisedbegod", "praised be God"),
-        ("constablecrane", "Constable Crane"),
-        ("whathappenedtohim", "what happened to him"),
-        ("beforehewentintotheriver", "before he went into the river"),
-        (
-            "thereislittlepeaceinthislandnow",
-            "there is little peace in this land now",
-        ),
-        ("allourprogresshasended", "all our progress has ended"),
-        ("newsuffering", "new suffering"),
-        ("tobeasdarkasitisnow", "to be as dark as it is now"),
-        ("tobeasdarkasit isnow", "to be as dark as it is now"),
-        ("to be as dark as itis now", "to be as dark as it is now"),
-        ("an done of", "and one of"),
-        ("butit's", "but it's"),
-        ("isit?", "is it?"),
-        (
-            "andthepainwouldbeprolonged",
-            "and the pain would be prolonged",
-        ),
-        (
-            "eachsmallsplashofthewater",
-            "each small splash of the water",
-        ),
-        ("waslikeaburningcoal", "was like a burning coal"),
-        ("therearehotspringsthere", "there are hot springs there"),
-        ("toabandongod", "to abandon God"),
-        (
-            "sotheycoulddemonstratethestrengthoftheirfaith",
-            "so they could demonstrate the strength of their faith",
-        ),
-        (
-            "andthepresenceofgodwithinthem",
-            "and the presence of God within them",
-        ),
-        ("standdown", "stand down"),
-        ("loppedoff", "lopped off"),
-        ("ibegpardon", "I beg pardon"),
-        ("ihavenot", "I have not"),
-        ("ishall", "I shall"),
-        ("begpardon", "beg pardon"),
-        ("havenot", "have not"),
-        ("stayingwith", "staying with"),
-        ("seemslike", "seems like"),
-        ("eems like", "seems like"),
-        ("paradisetome", "Paradise to me"),
-        ("didn'tyousayyou'dgivenup", "Didn't you say you'd given up"),
-        ("didn'tyousay", "Didn't you say"),
-        ("you'dgivenup", "you'd given up"),
-        ("aliveordead", "alive or dead"),
-        ("positivethat", "positive that"),
-        ("icant", "I can't"),
-        ("ican't", "I can't"),
-        ("ofhim", "Of him"),
-        ("bewith", "be with"),
-        ("startingto", "starting to"),
-        ("differentvoices", "different voices"),
-        ("putfaces", "put faces"),
-        ("nothingmatters", "nothing matters"),
-        ("alltheanswerslie", "all the answers lie"),
-        ("tobe with", "to be with"),
-        ("buti can't", "But I can't"),
-        ("andi can't", "And I can't"),
-        ("my self", "myself"),
-        ("thatkiba", "that Kiba"),
-        ("withlyekandhis", "with Lyek and his"),
-        ("tsumeandhige", "Tsume and Hige"),
-        ("andhige", "and Hige"),
-        ("l9th", "19th"),
-    ];
-    for (from, to) in ENGLISH_GLUE_FIXES {
-        out = replace_case_insensitive_ascii(&out, from, to);
-    }
     out = split_glued_english_phrases(&out);
 
     normalize_utf8_text(&out)
@@ -881,43 +792,6 @@ fn insert_space_before_opening_quote(input: &str) -> String {
     out
 }
 
-fn replace_case_insensitive_ascii(input: &str, from: &str, to: &str) -> String {
-    if from.is_empty() {
-        return input.to_string();
-    }
-    let input_lc = input.to_ascii_lowercase();
-    let from_lc = from.to_ascii_lowercase();
-    let mut out = String::with_capacity(input.len());
-    let mut pos = 0usize;
-    while let Some(rel_idx) = input_lc[pos..].find(&from_lc) {
-        let idx = pos + rel_idx;
-        out.push_str(&input[pos..idx]);
-        let orig = &input[idx..idx + from.len()];
-        let replacement = if orig
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_uppercase())
-        {
-            let mut chars = to.chars();
-            if let Some(first) = chars.next() {
-                format!(
-                    "{}{}",
-                    first.to_ascii_uppercase(),
-                    chars.collect::<String>()
-                )
-            } else {
-                to.to_string()
-            }
-        } else {
-            to.to_string()
-        };
-        out.push_str(&replacement);
-        pos = idx + from.len();
-    }
-    out.push_str(&input[pos..]);
-    out
-}
-
 pub(super) fn lines_text_for_quality(lines: &[OcrLine]) -> String {
     normalize_utf8_text(
         &lines
@@ -1172,12 +1046,12 @@ mod tests {
     #[test]
     fn camelcase_split_preserves_proper_noun_suffixes() {
         assert_eq!(
-            split_glued_ascii_token("positivethatKiba"),
-            Some("positive that Kiba".to_string())
-        );
-        assert_eq!(
             split_glued_ascii_token("goingtoParadise"),
             Some("going to Paradise".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("positiveaboutAlice"),
+            Some("positive about Alice".to_string())
         );
     }
 
