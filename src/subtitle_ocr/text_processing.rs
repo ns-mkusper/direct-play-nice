@@ -134,6 +134,8 @@ fn normalize_mixed_case_ocr_token(token: &str) -> String {
         let replacement = match ch {
             // Common OCR confusions from subtitle crops: uppercase I appears
             // inside lower-case words where the recognizer meant i/l.
+            'I' if after_lower && matches!(next, Some('I')) => 'i',
+            'I' if matches!(prev, Some('I')) && next.is_some_and(|c| c.is_ascii_lowercase()) => 'l',
             'I' if surrounded_by_lower => {
                 if matches!(prev, Some('u' | 'o')) && matches!(next, Some('d')) {
                     'l'
@@ -372,7 +374,12 @@ fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
             }
             let split_prefix = segment_glued_english_token_with_dictionary(prefix)
                 .or_else(|| split_glued_contraction(prefix, &prefix.to_ascii_lowercase()))
-                .or_else(|| segment_glued_english_token(prefix));
+                .or_else(|| segment_glued_english_token(prefix))
+                .or_else(|| {
+                    let plausible_word = prefix.len() >= 3
+                        && ascii_language_likelihood(&prefix.to_ascii_lowercase()) > -1.5;
+                    plausible_word.then(|| prefix.to_string())
+                });
             if let Some(split_prefix) = split_prefix {
                 return Some(format!("{} {}", split_prefix, suffix));
             }
