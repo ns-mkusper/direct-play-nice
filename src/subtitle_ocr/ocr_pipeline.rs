@@ -473,17 +473,20 @@ fn extract_subtitle_lines(
         let ppocr_text = lines_text_for_quality(&output.lines);
         let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
+        let residual_quality_fallback_requested = quality_fallback_requested
+            || postprocessed_text_needs_quality_fallback(&output, params.language);
         let should_try_quality_fallback = if spacing_fallback_requested {
             // Severe PP-OCR glue can be consistent for an entire subtitle track,
             // so a dynamic baseline trained on the same bad output will not catch
             // it. Try Tesseract immediately when PP-OCR word segmentation cannot
             // recover spaces for a space-using language.
             true
+        } else if residual_quality_fallback_requested {
+            true
         } else {
-            quality_fallback_requested
-                && thresholds.is_some_and(|thresholds| {
-                    ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
-                })
+            thresholds.is_some_and(|thresholds| {
+                ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
+            })
         };
         if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
@@ -639,6 +642,53 @@ fn output_needs_spacing_after_postprocess(output: &OcrOutput, language: &str) ->
         })
         .collect::<Vec<_>>();
     ppocr_spacing_needs_fallback(&lines) || ppocr_needs_quality_fallback(&lines, language)
+}
+
+
+fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str) -> bool {
+    if !language_uses_spaces(language) {
+        return false;
+    }
+    let processed = output
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    if processed.is_empty() {
+        return false;
+    }
+    let mut suspicious = 0usize;
+    for text in &processed {
+        let alpha_tokens = text
+            .split_whitespace()
+            .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '''))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let long_count = alpha_tokens
+            .iter()
+            .filter(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12)
+            .count();
+        let camel_count = alpha_tokens
+            .iter()
+            .filter(|tok| {
+                tok.as_bytes()
+                    .windows(2)
+                    .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            })
+            .count();
+        let alpha_chars = text.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+        let spaces = text.chars().filter(|ch| ch.is_whitespace()).count();
+        let space_rate = spaces as f32 / text.len().max(1) as f32;
+        if alpha_chars >= 18 && space_rate < 0.06 {
+            suspicious += 1;
+        }
+        if long_count >= 1 || camel_count >= 1 {
+            suspicious += 1;
+        }
+    }
+    suspicious > 0
 }
 
 fn try_ppocr_word_segmentation_recovery(
