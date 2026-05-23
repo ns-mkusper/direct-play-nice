@@ -644,7 +644,6 @@ fn output_needs_spacing_after_postprocess(output: &OcrOutput, language: &str) ->
     ppocr_spacing_needs_fallback(&lines) || ppocr_needs_quality_fallback(&lines, language)
 }
 
-
 fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str) -> bool {
     if !language_uses_spaces(language) {
         return false;
@@ -663,7 +662,7 @@ fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str)
     for text in &processed {
         let alpha_tokens = text
             .split_whitespace()
-            .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '''))
+            .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>();
         let long_count = alpha_tokens
