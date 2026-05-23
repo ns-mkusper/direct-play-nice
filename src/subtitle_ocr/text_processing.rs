@@ -119,6 +119,39 @@ pub(super) fn is_english_language(language: &str) -> bool {
     matches!(lang.as_str(), "eng" | "en" | "en-us" | "en_us")
 }
 
+fn normalize_mixed_case_ocr_token(token: &str) -> String {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() < 3 || !chars.iter().any(|ch| ch.is_ascii_lowercase()) {
+        return token.to_string();
+    }
+    let mut out = String::with_capacity(token.len());
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let next = chars.get(idx + 1).copied();
+        let surrounded_by_lower = prev.is_some_and(|c| c.is_ascii_lowercase())
+            && next.is_some_and(|c| c.is_ascii_lowercase());
+        let after_lower = prev.is_some_and(|c| c.is_ascii_lowercase());
+        let replacement = match ch {
+            // Common OCR confusions from subtitle crops: uppercase I appears
+            // inside lower-case words where the recognizer meant i/l.
+            'I' if surrounded_by_lower => {
+                if matches!(prev, Some('u' | 'o')) && matches!(next, Some('d')) {
+                    'l'
+                } else {
+                    'i'
+                }
+            }
+            'I' if after_lower && next.is_none() => 'i',
+            'Q' if surrounded_by_lower || after_lower => 'u',
+            'O' if surrounded_by_lower || after_lower => 'o',
+            'N' if after_lower && next.is_none() => 'n',
+            _ => ch,
+        };
+        out.push(replacement);
+    }
+    out
+}
+
 fn normalize_english_ocr_confusions(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut token = String::new();
@@ -148,6 +181,7 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
             }
         }
         normalized = normalized.replace('|', "I").replace("vv", "w");
+        normalized = normalize_mixed_case_ocr_token(&normalized);
         out.push_str(&normalized);
         tok.clear();
     };
@@ -681,6 +715,26 @@ fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
         "using",
         "whatmountain",
         "youmightbeattacked",
+        "wound",
+        "more",
+        "than",
+        "build",
+        "building",
+        "allergies",
+        "begins",
+        "improving",
+        "lifestyle",
+        "style",
+        "weird",
+        "aviation",
+        "bureau",
+        "sign",
+        "air",
+        "nasty",
+        "scent",
+        "heading",
+        "unnatural",
+        "some",
         "with",
         "within",
         "without",
