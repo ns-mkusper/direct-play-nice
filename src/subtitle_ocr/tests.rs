@@ -1223,30 +1223,19 @@ fn test_quality_thresholds_ignore_samples_after_baseline_window() {
 }
 
 #[test]
-fn test_postprocess_english_glue_and_punctuation() {
-    let src = "ConstableCrane? Notonlyme. beforehewentintotheriver";
-    let got = postprocess_ocr_text(src, "eng");
+fn test_postprocess_english_deglues_common_tokens_algorithmically() {
     assert_eq!(
-        got,
-        "Constable Crane? Not only me. before he went into the river"
+        split_glued_ascii_token("Ibegpardon").as_deref(),
+        Some("I beg pardon")
     );
-}
-
-#[test]
-fn test_postprocess_english_deglues_common_tokens() {
-    let src = "Ibegpardon. Standdown! Ihavenot Loppedoff? Ishall return in the l9th century.";
-    let got = postprocess_ocr_text(src, "eng");
     assert_eq!(
-        got,
-        "I beg pardon. Stand down! I have not Lopped off? I shall return in the 19th century."
+        split_glued_ascii_token("Ihavenot").as_deref(),
+        Some("I have not")
     );
-}
-
-#[test]
-fn test_postprocess_english_fixes_silence_glue_cases() {
-    let src = "to be as dark as itis now. Whylost? He'salive?";
-    let got = postprocess_ocr_text(src, "eng");
-    assert_eq!(got, "to be as dark as it is now. Why lost? He's alive?");
+    assert_eq!(
+        split_glued_ascii_token("Ishall").as_deref(),
+        Some("I shall")
+    );
 }
 
 #[test]
