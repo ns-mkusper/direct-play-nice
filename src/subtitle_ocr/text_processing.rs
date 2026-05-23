@@ -70,9 +70,10 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
         let text = line.text.trim();
         has_any_space |= text.contains(' ');
         has_letters |= text.chars().any(|c| c.is_alphabetic());
-        for token in text.split_whitespace().flat_map(|part| {
-            part.split(|ch: char| !ch.is_alphabetic() && ch != ''')
-        }) {
+        for token in text
+            .split_whitespace()
+            .flat_map(|part| part.split(|ch: char| !ch.is_alphabetic() && ch != '\''))
+        {
             let alpha_len = token.chars().filter(|ch| ch.is_alphabetic()).count();
             if alpha_len >= 14 {
                 long_alpha_tokens += 1;
@@ -87,7 +88,10 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
         }
     }
 
-    has_letters && (!has_any_space && long_alpha_tokens > 0 || very_long_alpha_token || long_alpha_tokens >= 2)
+    has_letters
+        && (!has_any_space && long_alpha_tokens > 0
+            || very_long_alpha_token
+            || long_alpha_tokens >= 2)
 }
 
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
