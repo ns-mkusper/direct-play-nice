@@ -253,7 +253,7 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     }
 
     if matches!(token.chars().next(), Some('I' | 'i')) && token.len() >= 5 {
-        const I_PREFIX_CONTINUATIONS: &[&str] = [
+        const I_PREFIX_CONTINUATIONS: &[&str] = &[
             "am", "have", "had", "shall", "will", "beg", "think", "know", "need", "must", "want",
             "did", "do", "was", "were", "would", "hear",
         ];
