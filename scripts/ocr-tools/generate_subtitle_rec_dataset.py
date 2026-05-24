@@ -154,8 +154,13 @@ def available_fonts(extra: Iterable[str]) -> list[Path]:
     candidates += sorted(Path("/usr/share/fonts").glob("**/*Sans*.ttf"))[:40]
     fonts = []
     for path in candidates:
-        if path.is_file() and path not in fonts:
-            fonts.append(path)
+        if not path.is_file() or path in fonts:
+            continue
+        try:
+            ImageFont.truetype(str(path), size=20)
+        except OSError:
+            continue
+        fonts.append(path)
     if not fonts:
         raise SystemExit("No usable fonts found; pass --font /path/to/font.ttf")
     return fonts
