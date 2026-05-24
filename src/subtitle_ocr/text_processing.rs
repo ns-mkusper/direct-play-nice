@@ -109,8 +109,8 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
 
-    out = split_glued_english_phrases(&out);
     out = split_fragmented_english_phrases(&out);
+    out = split_glued_english_phrases(&out);
 
     normalize_utf8_text(&out)
 }
@@ -355,6 +355,20 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
         return Some(split);
     }
     if let Some(split) = segment_glued_english_token_with_dictionary(token) {
+        let has_residual_glue = split
+            .split_whitespace()
+            .any(|part| part.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12);
+        if has_residual_glue {
+            if let Some(wordninja_split) = segment_glued_english_token_with_wordninja(token) {
+                return Some(wordninja_split);
+            }
+        }
+        return Some(split);
+    }
+    if let Some(split) = segment_glued_english_token_with_wordninja(token) {
+        return Some(split);
+    }
+    if let Some(split) = split_titlecase_prefix_with_wordninja(token) {
         return Some(split);
     }
     if let Some(split) = split_glued_contraction(token, &lower) {
@@ -472,7 +486,11 @@ fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
         if bytes[idx - 1].is_ascii_lowercase() && bytes[idx].is_ascii_uppercase() {
             let prefix = &token[..idx];
             let suffix = &token[idx..];
-            if suffix.len() < 2 || !suffix.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            if suffix.len() < 2
+                || !suffix
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+            {
                 continue;
             }
             let suffix_has_lower = suffix.chars().skip(1).any(|ch| ch.is_ascii_lowercase());
@@ -488,7 +506,11 @@ fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
                     plausible_word.then(|| prefix.to_string())
                 });
             if let Some(split_prefix) = split_prefix {
-                return Some(format!("{} {}", split_prefix, suffix));
+                let split_suffix = segment_glued_english_token_with_dictionary(suffix)
+                    .or_else(|| split_glued_contraction(suffix, &suffix.to_ascii_lowercase()))
+                    .or_else(|| segment_glued_english_token_with_wordninja(suffix))
+                    .unwrap_or_else(|| suffix.to_string());
+                return Some(format!("{} {}", split_prefix, split_suffix));
             }
         }
     }
@@ -1171,6 +1193,112 @@ fn dictionary_piece_score_adjustment(piece: &str, words: &[&str]) -> Option<i32>
     None
 }
 
+fn split_titlecase_prefix_with_wordninja(token: &str) -> Option<String> {
+    if token.len() < 12
+        || !token.is_ascii()
+        || !token.starts_with(|ch: char| ch.is_ascii_uppercase())
+    {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    for idx in 5..=token.len().min(10) {
+        if !bytes.get(idx).is_some_and(|b| b.is_ascii_lowercase()) {
+            continue;
+        }
+        let prefix = &token[..idx];
+        let rest = &token[idx..];
+        if rest.len() < 8
+            || !rest
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_lowercase())
+        {
+            continue;
+        }
+        let Some(split_rest) = segment_glued_english_token_with_dictionary(rest)
+            .or_else(|| segment_glued_english_token_with_wordninja(rest))
+        else {
+            continue;
+        };
+        if ascii_language_likelihood(&prefix.to_ascii_lowercase()) < -1.2 {
+            continue;
+        }
+        if split_rest.split_whitespace().count() >= 3 {
+            return Some(format!("{} {}", prefix, split_rest));
+        }
+    }
+    None
+}
+
+fn segment_glued_english_token_with_wordninja(token: &str) -> Option<String> {
+    if token.len() < 8 || !token.is_ascii() {
+        return None;
+    }
+    let parts = wordninja::DEFAULT_MODEL.split(token);
+    if parts.len() < 2 {
+        return None;
+    }
+    let joined = parts.iter().map(|part| part.as_ref()).collect::<String>();
+    if !joined.eq_ignore_ascii_case(token) {
+        return None;
+    }
+    let lower_parts = parts
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    const COMMON_SHORT_WORDS: &[&str] = &[
+        "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+        "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    ];
+    const COMMON_TITLE_PREFIX_WORDS: &[&str] = &[
+        "but", "the", "why", "who", "what", "when", "where", "how", "let", "if", "it", "is", "you",
+        "book",
+    ];
+    if lower_parts
+        .iter()
+        .any(|part| part.len() <= 2 && !COMMON_SHORT_WORDS.contains(&part.as_str()))
+    {
+        return None;
+    }
+    if lower_parts.get(1).is_some_and(|part| part == "a")
+        && lower_parts.first().is_some_and(|part| {
+            part.len() >= 4 && !COMMON_TITLE_PREFIX_WORDS.contains(&part.as_str())
+        })
+    {
+        return None;
+    }
+    if token
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+        && lower_parts.first().is_some_and(|part| {
+            part.len() <= 3
+                && !COMMON_SHORT_WORDS.contains(&part.as_str())
+                && !COMMON_TITLE_PREFIX_WORDS.contains(&part.as_str())
+        })
+        && lower_parts.len() > 3
+    {
+        return None;
+    }
+    let avg_len = token.len() as f32 / parts.len() as f32;
+    if parts.len() >= 6 && avg_len < 3.2 {
+        return None;
+    }
+    if lower_parts
+        .iter()
+        .any(|part| part.len() >= 3 && ascii_language_likelihood(part) < -2.2)
+    {
+        return None;
+    }
+    Some(
+        parts
+            .into_iter()
+            .map(|part| part.into_owned())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 fn segment_glued_english_token(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
     if lower.len() < 5 || ascii_language_likelihood(&lower) > NGRAM_SEGMENTATION_SKIP_THRESHOLD {
@@ -1666,6 +1794,34 @@ mod tests {
         assert_eq!(
             split_glued_ascii_token("workedyourselfintotheground"),
             Some("worked yourself into the ground".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Letusmeet"),
+            Some("Let us meet".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Ifwemeetagain"),
+            Some("If we meet again".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("BookoftheMoon"),
+            Some("Book of the Moon".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("FlowerMaidenandthewolves"),
+            Some("Flower Maiden and the wolves".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Butpridedoesn'tcountformuch"),
+            Some("But pride doesn't count for much".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Awoifsankitsclaws"),
+            Some("Awoif sank its claws".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Aliceherselfisthecrowningachievement"),
+            Some("Alice herself is the crowning achievement".to_string())
         );
     }
 
