@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--max-width", type=int, default=640)
+    p.add_argument("--arch", choices=["fcn", "crnn"], default="fcn")
     p.add_argument("--seed", type=int, default=125)
     p.add_argument(
         "--space-logit-bias",
@@ -112,23 +113,51 @@ def collate(batch):
     return torch.stack(padded), targets, target_lengths, labels
 
 
-class SubtitleCtcRecognizer(nn.Module):
-    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
+class ConvFeatures(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.space_logit_bias = float(space_logit_bias)
-        self.features = nn.Sequential(
+        self.layers = nn.Sequential(
             nn.Conv2d(3, 48, 3, padding=1), nn.BatchNorm2d(48), nn.ReLU(True), nn.MaxPool2d((2, 2)),
             nn.Conv2d(48, 96, 3, padding=1), nn.BatchNorm2d(96), nn.ReLU(True), nn.MaxPool2d((2, 2)),
             nn.Conv2d(96, 160, 3, padding=1), nn.BatchNorm2d(160), nn.ReLU(True), nn.MaxPool2d((2, 1)),
             nn.Conv2d(160, 224, 3, padding=1), nn.BatchNorm2d(224), nn.ReLU(True), nn.MaxPool2d((2, 1)),
             nn.Conv2d(224, 256, 3, padding=1), nn.BatchNorm2d(256), nn.ReLU(True),
         )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class SubtitleCtcRecognizer(nn.Module):
+    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
+        super().__init__()
+        self.space_logit_bias = float(space_logit_bias)
+        self.features = ConvFeatures()
         self.proj = nn.Conv2d(256, classes, kernel_size=1)
 
     def forward(self, x):
         x = self.features(x)
         x = x.mean(dim=2, keepdim=True)
         x = self.proj(x).squeeze(2).permute(0, 2, 1)
+        if self.space_logit_bias != 0.0:
+            x = x.clone()
+            x[..., SPACE_INDEX] = x[..., SPACE_INDEX] + self.space_logit_bias
+        return torch.softmax(x, dim=-1)
+
+
+class CrnnSubtitleCtcRecognizer(nn.Module):
+    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
+        super().__init__()
+        self.space_logit_bias = float(space_logit_bias)
+        self.features = ConvFeatures()
+        self.rnn = nn.LSTM(256, 192, num_layers=2, bidirectional=True, batch_first=True, dropout=0.10)
+        self.proj = nn.Linear(384, classes)
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.mean(dim=2).permute(0, 2, 1)
+        x, _ = self.rnn(x)
+        x = self.proj(x)
         if self.space_logit_bias != 0.0:
             x = x.clone()
             x[..., SPACE_INDEX] = x[..., SPACE_INDEX] + self.space_logit_bias
@@ -218,7 +247,8 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
-    model = SubtitleCtcRecognizer(space_logit_bias=args.space_logit_bias).to(device)
+    model_cls = CrnnSubtitleCtcRecognizer if args.arch == "crnn" else SubtitleCtcRecognizer
+    model = model_cls(space_logit_bias=args.space_logit_bias).to(device)
     if args.init_checkpoint is not None:
         checkpoint = torch.load(args.init_checkpoint, map_location=device)
         state = checkpoint.get("model", checkpoint)

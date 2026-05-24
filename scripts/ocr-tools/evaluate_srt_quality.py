@@ -166,9 +166,13 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--max-cer", type=float)
     parser.add_argument("--max-wer", type=float)
+    parser.add_argument("--strict", action="store_true", help="Use production OCR acceptance gates: CER <= 0.02 and WER <= 0.08.")
     parser.add_argument("--worst-lines", type=int, default=8)
     args = parser.parse_args()
 
+    if args.strict:
+        args.max_cer = 0.02 if args.max_cer is None else args.max_cer
+        args.max_wer = 0.08 if args.max_wer is None else args.max_wer
     metrics = evaluate(args.reference, args.hypothesis, args.worst_lines)
     payload = asdict(metrics)
     if args.json_out:
