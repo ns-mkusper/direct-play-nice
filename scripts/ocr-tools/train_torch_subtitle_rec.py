@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--max-width", type=int, default=640)
     p.add_argument("--seed", type=int, default=125)
+    p.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional best.pt checkpoint to initialize/fine-tune from.",
+    )
     return p.parse_args()
 
 
@@ -203,6 +209,11 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     model = SubtitleCtcRecognizer().to(device)
+    if args.init_checkpoint is not None:
+        checkpoint = torch.load(args.init_checkpoint, map_location=device)
+        state = checkpoint.get("model", checkpoint)
+        model.load_state_dict(state)
+        print(f"loaded_checkpoint={args.init_checkpoint}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_cer = float("inf")
     for epoch in range(1, args.epochs + 1):

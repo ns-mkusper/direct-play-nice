@@ -599,6 +599,7 @@ fn extract_subtitle_lines(
                 );
             }
         }
+        export_ocr_training_sample(&pgm_path, &output, params.language)?;
         if !keep_ocr_intermediates() {
             let _ = fs::remove_file(&pgm_path);
         }
@@ -617,6 +618,96 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &str) -> Result<()> {
+    let Some(manifest_path) = env::var_os("DPN_OCR_TRAINING_MANIFEST").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let processed = output
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if processed.is_empty() || ocr_text_quality_score(&processed, language) < 0.72 {
+        return Ok(());
+    }
+    let alpha_tokens = processed
+        .split_whitespace()
+        .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if alpha_tokens
+        .iter()
+        .any(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 14)
+    {
+        return Ok(());
+    }
+    let image_dir = env::var_os("DPN_OCR_TRAINING_IMAGE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            manifest_path
+                .parent()
+                .map(|parent| parent.join("images"))
+                .unwrap_or_else(|| PathBuf::from("images"))
+        });
+    fs::create_dir_all(&image_dir)
+        .with_context(|| format!("creating OCR training image dir '{}'", image_dir.display()))?;
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating OCR training manifest dir '{}'", parent.display())
+        })?;
+    }
+    let stem = pgm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    let filename = format!("{}-{}.pgm", stem, stable_label_hash(&processed));
+    let out_path = image_dir.join(&filename);
+    fs::copy(pgm_path, &out_path).with_context(|| {
+        format!(
+            "copying OCR training image '{}' -> '{}'",
+            pgm_path.display(),
+            out_path.display()
+        )
+    })?;
+    let rel_path = out_path
+        .strip_prefix(manifest_path.parent().unwrap_or_else(|| Path::new(".")))
+        .unwrap_or(&out_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut manifest = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&manifest_path)
+        .with_context(|| {
+            format!(
+                "opening OCR training manifest '{}'",
+                manifest_path.display()
+            )
+        })?;
+    let label = processed.replace(['\n', '\t'], " ");
+    let line = format!("{rel_path}\t{label}\n");
+    use std::io::Write as _;
+    manifest.write_all(line.as_bytes()).with_context(|| {
+        format!(
+            "writing OCR training manifest '{}'",
+            manifest_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn stable_label_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn keep_ocr_intermediates() -> bool {
