@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-width", type=int, default=640)
     p.add_argument("--seed", type=int, default=125)
     p.add_argument(
+        "--space-logit-bias",
+        type=float,
+        default=0.0,
+        help="Add this bias to the exported/trained space class logit before softmax.",
+    )
+    p.add_argument(
         "--init-checkpoint",
         type=Path,
         default=None,
@@ -107,8 +113,9 @@ def collate(batch):
 
 
 class SubtitleCtcRecognizer(nn.Module):
-    def __init__(self, classes: int = NUM_CLASSES):
+    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
         super().__init__()
+        self.space_logit_bias = float(space_logit_bias)
         self.features = nn.Sequential(
             nn.Conv2d(3, 48, 3, padding=1), nn.BatchNorm2d(48), nn.ReLU(True), nn.MaxPool2d((2, 2)),
             nn.Conv2d(48, 96, 3, padding=1), nn.BatchNorm2d(96), nn.ReLU(True), nn.MaxPool2d((2, 2)),
@@ -122,6 +129,9 @@ class SubtitleCtcRecognizer(nn.Module):
         x = self.features(x)
         x = x.mean(dim=2, keepdim=True)
         x = self.proj(x).squeeze(2).permute(0, 2, 1)
+        if self.space_logit_bias != 0.0:
+            x = x.clone()
+            x[..., SPACE_INDEX] = x[..., SPACE_INDEX] + self.space_logit_bias
         return torch.softmax(x, dim=-1)
 
 
@@ -208,7 +218,7 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
-    model = SubtitleCtcRecognizer().to(device)
+    model = SubtitleCtcRecognizer(space_logit_bias=args.space_logit_bias).to(device)
     if args.init_checkpoint is not None:
         checkpoint = torch.load(args.init_checkpoint, map_location=device)
         state = checkpoint.get("model", checkpoint)
@@ -216,6 +226,10 @@ def main() -> None:
         print(f"loaded_checkpoint={args.init_checkpoint}", flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_cer = float("inf")
+    if args.epochs <= 0:
+        export_onnx(model, args.output_dir / "subtitle_ctc_rec.onnx", device)
+        print(f"exported_onnx={args.output_dir / 'subtitle_ctc_rec.onnx'} space_logit_bias={args.space_logit_bias}")
+        return
     for epoch in range(1, args.epochs + 1):
         train_loss, train_cer = run_epoch(model, train_loader, optimizer, device, True)
         val_loss, val_cer = run_epoch(model, val_loader, optimizer, device, False)

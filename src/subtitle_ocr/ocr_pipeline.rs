@@ -624,28 +624,6 @@ fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &st
     let Some(manifest_path) = env::var_os("DPN_OCR_TRAINING_MANIFEST").map(PathBuf::from) else {
         return Ok(());
     };
-    let processed = output
-        .lines
-        .iter()
-        .map(|line| postprocess_ocr_text(&line.text, language))
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if processed.is_empty() || ocr_text_quality_score(&processed, language) < 0.72 {
-        return Ok(());
-    }
-    let alpha_tokens = processed
-        .split_whitespace()
-        .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if alpha_tokens
-        .iter()
-        .any(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 14)
-    {
-        return Ok(());
-    }
     let image_dir = env::var_os("DPN_OCR_TRAINING_IMAGE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -661,24 +639,34 @@ fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &st
             format!("creating OCR training manifest dir '{}'", parent.display())
         })?;
     }
-    let stem = pgm_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("ocr");
-    let filename = format!("{}-{}.pgm", stem, stable_label_hash(&processed));
-    let out_path = image_dir.join(&filename);
-    fs::copy(pgm_path, &out_path).with_context(|| {
-        format!(
-            "copying OCR training image '{}' -> '{}'",
-            pgm_path.display(),
-            out_path.display()
-        )
-    })?;
-    let rel_path = out_path
-        .strip_prefix(manifest_path.parent().unwrap_or_else(|| Path::new(".")))
-        .unwrap_or(&out_path)
-        .to_string_lossy()
-        .replace('\\', "/");
+
+    let pgm = fs::read(pgm_path)
+        .with_context(|| format!("reading OCR training image '{}'", pgm_path.display()))?;
+    let mode = env::var("DPN_OCR_TRAINING_SAMPLE_MODE")
+        .unwrap_or_else(|_| "line".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let mut samples = Vec::new();
+    if matches!(mode.as_str(), "line" | "lines" | "both") {
+        samples.extend(exportable_line_training_samples(&pgm, output, language));
+    }
+    if samples.is_empty() || mode == "rect" || mode == "both" {
+        let processed = output
+            .lines
+            .iter()
+            .map(|line| postprocess_ocr_text(&line.text, language))
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if is_exportable_training_label(&processed, language) {
+            samples.push((processed, pgm.clone(), "rect".to_string()));
+        }
+    }
+    if samples.is_empty() {
+        return Ok(());
+    }
+
     let mut manifest = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -689,7 +677,91 @@ fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &st
                 manifest_path.display()
             )
         })?;
-    let label = processed.replace(['\n', '\t'], " ");
+    for (label, image, suffix) in samples {
+        write_ocr_training_sample(
+            pgm_path,
+            &manifest_path,
+            &image_dir,
+            &mut manifest,
+            &label,
+            &image,
+            &suffix,
+        )?;
+    }
+    Ok(())
+}
+
+fn exportable_line_training_samples(
+    pgm: &[u8],
+    output: &OcrOutput,
+    language: &str,
+) -> Vec<(String, Vec<u8>, String)> {
+    let Some((width, height, header_len)) = parse_pgm_header(pgm) else {
+        return Vec::new();
+    };
+    let pixels = &pgm[header_len..];
+    if pixels.len() < width * height {
+        return Vec::new();
+    }
+    output
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let label = postprocess_ocr_text(&line.text, language)
+                .trim()
+                .to_string();
+            if !is_exportable_training_label(&label, language) {
+                return None;
+            }
+            let image = line
+                .bbox
+                .as_ref()
+                .and_then(|bbox| crop_pgm_to_bbox(pixels, width, height, bbox))
+                .unwrap_or_else(|| pgm.to_vec());
+            Some((label, image, format!("line{index}")))
+        })
+        .collect()
+}
+
+fn is_exportable_training_label(text: &str, language: &str) -> bool {
+    let processed = text.trim();
+    if processed.is_empty() || ocr_text_quality_score(processed, language) < 0.72 {
+        return false;
+    }
+    let alpha_tokens = processed
+        .split_whitespace()
+        .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    !alpha_tokens
+        .iter()
+        .any(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 14)
+}
+
+fn write_ocr_training_sample(
+    pgm_path: &Path,
+    manifest_path: &Path,
+    image_dir: &Path,
+    manifest: &mut fs::File,
+    label: &str,
+    image: &[u8],
+    suffix: &str,
+) -> Result<()> {
+    let stem = pgm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    let label = label.replace(['\n', '\t'], " ");
+    let filename = format!("{}-{}-{}.pgm", stem, suffix, stable_label_hash(&label));
+    let out_path = image_dir.join(&filename);
+    fs::write(&out_path, image)
+        .with_context(|| format!("writing OCR training image '{}'", out_path.display()))?;
+    let rel_path = out_path
+        .strip_prefix(manifest_path.parent().unwrap_or_else(|| Path::new(".")))
+        .unwrap_or(&out_path)
+        .to_string_lossy()
+        .replace('\\', "/");
     let line = format!("{rel_path}\t{label}\n");
     use std::io::Write as _;
     manifest.write_all(line.as_bytes()).with_context(|| {
@@ -699,6 +771,66 @@ fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &st
         )
     })?;
     Ok(())
+}
+
+fn parse_pgm_header(pgm: &[u8]) -> Option<(usize, usize, usize)> {
+    if !pgm.starts_with(b"P5") {
+        return None;
+    }
+    let mut i = 2usize;
+    let mut tokens = Vec::new();
+    while i < pgm.len() && tokens.len() < 3 {
+        while i < pgm.len() && pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= pgm.len() {
+            return None;
+        }
+        let start = i;
+        while i < pgm.len() && !pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tokens.push(std::str::from_utf8(&pgm[start..i]).ok()?.parse().ok()?);
+    }
+    if i < pgm.len() && pgm[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if tokens.len() != 3 || tokens[2] != 255 {
+        return None;
+    }
+    Some((tokens[0], tokens[1], i))
+}
+
+fn crop_pgm_to_bbox(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    bbox: &OcrBoundingBox,
+) -> Option<Vec<u8>> {
+    let pad_x = 3usize;
+    let pad_y = 2usize;
+    let left = bbox.left.max(0) as usize;
+    let top = bbox.top.max(0) as usize;
+    let right = bbox.right.max(0) as usize;
+    let bottom = bbox.bottom.max(0) as usize;
+    if right <= left || bottom <= top || left >= width || top >= height {
+        return None;
+    }
+    let left = left.saturating_sub(pad_x);
+    let top = top.saturating_sub(pad_y);
+    let right = (right + pad_x).min(width);
+    let bottom = (bottom + pad_y).min(height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let crop_w = right - left;
+    let crop_h = bottom - top;
+    let mut out = format!("P5\n{crop_w} {crop_h}\n255\n").into_bytes();
+    for y in top..bottom {
+        let row = y * width;
+        out.extend_from_slice(&pixels[row + left..row + right]);
+    }
+    Some(out)
 }
 
 fn stable_label_hash(text: &str) -> u64 {
