@@ -358,18 +358,20 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
         let has_residual_glue = split
             .split_whitespace()
             .any(|part| part.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12);
-        if has_residual_glue {
+        if has_residual_glue && probabilistic_english_deglue_enabled() {
             if let Some(wordninja_split) = segment_glued_english_token_with_wordninja(token) {
                 return Some(wordninja_split);
             }
         }
         return Some(split);
     }
-    if let Some(split) = segment_glued_english_token_with_wordninja(token) {
-        return Some(split);
-    }
-    if let Some(split) = split_titlecase_prefix_with_wordninja(token) {
-        return Some(split);
+    if probabilistic_english_deglue_enabled() {
+        if let Some(split) = segment_glued_english_token_with_wordninja(token) {
+            return Some(split);
+        }
+        if let Some(split) = split_titlecase_prefix_with_wordninja(token) {
+            return Some(split);
+        }
     }
     if let Some(split) = split_glued_contraction(token, &lower) {
         return Some(split);
@@ -477,6 +479,18 @@ fn ascii_language_likelihood(token: &str) -> f32 {
     normalized.max(NGRAM_FLOOR_SCORE)
 }
 
+fn probabilistic_english_deglue_enabled() -> bool {
+    std::env::var("DPN_OCR_PROBABILISTIC_DEGLUE")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
     if token.len() < 6 || !token.is_ascii() {
         return None;
@@ -508,7 +522,11 @@ fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
             if let Some(split_prefix) = split_prefix {
                 let split_suffix = segment_glued_english_token_with_dictionary(suffix)
                     .or_else(|| split_glued_contraction(suffix, &suffix.to_ascii_lowercase()))
-                    .or_else(|| segment_glued_english_token_with_wordninja(suffix))
+                    .or_else(|| {
+                        probabilistic_english_deglue_enabled()
+                            .then(|| segment_glued_english_token_with_wordninja(suffix))
+                            .flatten()
+                    })
                     .unwrap_or_else(|| suffix.to_string());
                 return Some(format!("{} {}", split_prefix, split_suffix));
             }
@@ -1702,6 +1720,7 @@ fn ppocr_geometry_needs_fallback(lines: &[OcrLine], language: &str) -> bool {
 mod tests {
     use super::*;
     use crate::subtitle_ocr::OcrLine;
+    use std::sync::{Mutex, OnceLock};
 
     fn ocr_line(text: &str) -> OcrLine {
         OcrLine {
@@ -1739,6 +1758,23 @@ mod tests {
             split_glued_ascii_token("positiveaboutAlice"),
             Some("positive about Alice".to_string())
         );
+    }
+
+    fn with_probabilistic_deglue_enabled<T>(f: impl FnOnce() -> T) -> T {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("DPN_OCR_PROBABILISTIC_DEGLUE");
+        std::env::set_var("DPN_OCR_PROBABILISTIC_DEGLUE", "1");
+        let result = f();
+        if let Some(previous) = previous {
+            std::env::set_var("DPN_OCR_PROBABILISTIC_DEGLUE", previous);
+        } else {
+            std::env::remove_var("DPN_OCR_PROBABILISTIC_DEGLUE");
+        }
+        result
     }
 
     #[test]
@@ -1795,34 +1831,40 @@ mod tests {
             split_glued_ascii_token("workedyourselfintotheground"),
             Some("worked yourself into the ground".to_string())
         );
-        assert_eq!(
-            split_glued_ascii_token("Letusmeet"),
-            Some("Let us meet".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("Ifwemeetagain"),
-            Some("If we meet again".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("BookoftheMoon"),
-            Some("Book of the Moon".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("FlowerMaidenandthewolves"),
-            Some("Flower Maiden and the wolves".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("Butpridedoesn'tcountformuch"),
-            Some("But pride doesn't count for much".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("Awoifsankitsclaws"),
-            Some("Awoif sank its claws".to_string())
-        );
-        assert_eq!(
-            split_glued_ascii_token("Aliceherselfisthecrowningachievement"),
-            Some("Alice herself is the crowning achievement".to_string())
-        );
+    }
+
+    #[test]
+    fn probabilistic_split_handles_unseen_glued_dialogue_when_enabled() {
+        with_probabilistic_deglue_enabled(|| {
+            assert_eq!(
+                split_glued_ascii_token("Letusmeet"),
+                Some("Let us meet".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Ifwemeetagain"),
+                Some("If we meet again".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("BookoftheMoon"),
+                Some("Book of the Moon".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("FlowerMaidenandthewolves"),
+                Some("Flower Maiden and the wolves".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Butpridedoesn'tcountformuch"),
+                Some("But pride doesn't count for much".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Awoifsankitsclaws"),
+                Some("Awoif sank its claws".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Aliceherselfisthecrowningachievement"),
+                Some("Alice herself is the crowning achievement".to_string())
+            );
+        });
     }
 
     #[test]
