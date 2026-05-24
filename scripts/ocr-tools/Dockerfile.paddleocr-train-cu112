@@ -12,7 +12,9 @@ RUN ln -s /usr/lib/x86_64-linux-gnu/libcudnn.so.8 /usr/lib/x86_64-linux-gnu/libc
     python3 -m pip install --upgrade pip setuptools wheel && \
     python3 -m pip install "numpy<2" && \
     python3 -m pip install paddlepaddle-gpu==2.6.1.post112 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html && \
-    python3 -m pip install paddleocr==2.7.3 onnx onnxruntime-gpu==1.16.3 paddle2onnx pillow
+    python3 -m pip install paddleocr==2.7.3 onnx onnxruntime-gpu==1.16.3 paddle2onnx pillow cffi && \
+    python3 -m pip uninstall -y lmdb && \
+    LMDB_PURE=1 python3 -m pip install --no-binary lmdb lmdb
 
 WORKDIR /work
 CMD ["/bin/bash"]
