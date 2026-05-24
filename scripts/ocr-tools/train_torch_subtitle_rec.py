@@ -54,8 +54,9 @@ def encode_label(text: str) -> list[int]:
 
 
 class RecDataset(Dataset):
-    def __init__(self, root: Path, manifest_name: str):
+    def __init__(self, root: Path, manifest_name: str, max_width: int = 384):
         self.root = root
+        self.max_width = max_width
         self.items: list[tuple[Path, str]] = []
         manifest = root / manifest_name
         for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -77,6 +78,7 @@ class RecDataset(Dataset):
         w, h = img.size
         new_h = 48
         new_w = max(8, int(math.ceil(w * (new_h / max(h, 1)))))
+        new_w = min(new_w, self.max_width)
         img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
         x = torch.ByteTensor(torch.ByteStorage.from_buffer(img.tobytes()))
         x = x.view(new_h, new_w, 3).permute(2, 0, 1).float() / 255.0
@@ -195,8 +197,8 @@ def main() -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    train_ds = RecDataset(args.data_root, "train.txt")
-    val_ds = RecDataset(args.data_root, "val.txt")
+    train_ds = RecDataset(args.data_root, "train.txt", args.max_width)
+    val_ds = RecDataset(args.data_root, "val.txt", args.max_width)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
