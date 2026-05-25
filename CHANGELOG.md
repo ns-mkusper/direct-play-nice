@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### 📋 Pending
+### 🛠️ Fixed
 
-- No changes yet.
+- Added Sonarr parity for completed pending language-upgrade force imports so
+  quality-downgrade dub replacements can be manually imported after DPN verifies
+  the pending file satisfies the configured language policy.
 
 ## [1.1.0-beta.1] - 2026-05-21
 
