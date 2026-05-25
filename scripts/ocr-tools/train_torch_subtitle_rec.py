@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         help="Add this bias to the exported/trained space class logit before softmax.",
     )
     p.add_argument(
+        "--blank-logit-bias",
+        type=float,
+        default=0.0,
+        help="Add this bias to the CTC blank class logit before softmax.",
+    )
+    p.add_argument(
         "--init-checkpoint",
         type=Path,
         default=None,
@@ -129,9 +135,10 @@ class ConvFeatures(nn.Module):
 
 
 class SubtitleCtcRecognizer(nn.Module):
-    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
+    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0, blank_logit_bias: float = 0.0):
         super().__init__()
         self.space_logit_bias = float(space_logit_bias)
+        self.blank_logit_bias = float(blank_logit_bias)
         self.features = ConvFeatures()
         self.proj = nn.Conv2d(256, classes, kernel_size=1)
 
@@ -139,16 +146,18 @@ class SubtitleCtcRecognizer(nn.Module):
         x = self.features(x)
         x = x.mean(dim=2, keepdim=True)
         x = self.proj(x).squeeze(2).permute(0, 2, 1)
-        if self.space_logit_bias != 0.0:
+        if self.space_logit_bias != 0.0 or self.blank_logit_bias != 0.0:
             x = x.clone()
+            x[..., 0] = x[..., 0] + self.blank_logit_bias
             x[..., SPACE_INDEX] = x[..., SPACE_INDEX] + self.space_logit_bias
         return torch.softmax(x, dim=-1)
 
 
 class CrnnSubtitleCtcRecognizer(nn.Module):
-    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0):
+    def __init__(self, classes: int = NUM_CLASSES, space_logit_bias: float = 0.0, blank_logit_bias: float = 0.0):
         super().__init__()
         self.space_logit_bias = float(space_logit_bias)
+        self.blank_logit_bias = float(blank_logit_bias)
         self.features = ConvFeatures()
         self.rnn = nn.LSTM(256, 192, num_layers=2, bidirectional=True, batch_first=True, dropout=0.10)
         self.proj = nn.Linear(384, classes)
@@ -158,8 +167,9 @@ class CrnnSubtitleCtcRecognizer(nn.Module):
         x = x.mean(dim=2).permute(0, 2, 1)
         x, _ = self.rnn(x)
         x = self.proj(x)
-        if self.space_logit_bias != 0.0:
+        if self.space_logit_bias != 0.0 or self.blank_logit_bias != 0.0:
             x = x.clone()
+            x[..., 0] = x[..., 0] + self.blank_logit_bias
             x[..., SPACE_INDEX] = x[..., SPACE_INDEX] + self.space_logit_bias
         return torch.softmax(x, dim=-1)
 
@@ -248,7 +258,7 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate)
     device = args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu"
     model_cls = CrnnSubtitleCtcRecognizer if args.arch == "crnn" else SubtitleCtcRecognizer
-    model = model_cls(space_logit_bias=args.space_logit_bias).to(device)
+    model = model_cls(space_logit_bias=args.space_logit_bias, blank_logit_bias=args.blank_logit_bias).to(device)
     if args.init_checkpoint is not None:
         checkpoint = torch.load(args.init_checkpoint, map_location=device)
         state = checkpoint.get("model", checkpoint)
@@ -258,7 +268,7 @@ def main() -> None:
     best_cer = float("inf")
     if args.epochs <= 0:
         export_onnx(model, args.output_dir / "subtitle_ctc_rec.onnx", device)
-        print(f"exported_onnx={args.output_dir / 'subtitle_ctc_rec.onnx'} space_logit_bias={args.space_logit_bias}")
+        print(f"exported_onnx={args.output_dir / 'subtitle_ctc_rec.onnx'} space_logit_bias={args.space_logit_bias} blank_logit_bias={args.blank_logit_bias}")
         return
     for epoch in range(1, args.epochs + 1):
         train_loss, train_cer = run_epoch(model, train_loader, optimizer, device, True)
