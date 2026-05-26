@@ -69,6 +69,18 @@ pub struct AuditSummary {
     pub errors: usize,
 }
 
+impl AuditSummary {
+    fn merge(&mut self, other: Self) {
+        self.checked += other.checked;
+        self.missing += other.missing;
+        self.searched += other.searched;
+        self.grabbed += other.grabbed;
+        self.dry_run += other.dry_run;
+        self.no_candidate += other.no_candidate;
+        self.errors += other.errors;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedownloadOutcome {
     Grabbed { title: String },
@@ -100,7 +112,9 @@ pub fn run_sonarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
-    let summary = match audit_options.scope {
+    let mut summary =
+        client.sonarr_force_import_pending_language_upgrades(requirements, redownload_options)?;
+    let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_sonarr_history_language_audit(
             &client,
             requirements,
@@ -114,6 +128,7 @@ pub fn run_sonarr_language_audit(
             audit_options,
         )?,
     };
+    summary.merge(audit_summary);
     log_audit_summary("Sonarr", &summary);
     Ok(summary)
 }
@@ -728,6 +743,194 @@ impl ApiClient {
         Ok(out)
     }
 
+    fn sonarr_force_import_pending_language_upgrades(
+        &self,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+    ) -> Result<AuditSummary> {
+        let mut summary = AuditSummary::default();
+        let response = self.get(&format!(
+            "{}/api/v3/queue?page=1&pageSize=100&includeSeries=true&includeEpisode=true",
+            self.base_url
+        ))?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for queue_item in records {
+            let state = queue_item
+                .get("trackedDownloadState")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let status = queue_item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if state != "importPending" || status != "completed" {
+                continue;
+            }
+            let Some(episode_id) =
+                queue_item
+                    .get("episodeId")
+                    .and_then(Value::as_i64)
+                    .or_else(|| {
+                        queue_item
+                            .get("episode")
+                            .and_then(|episode| episode.get("id"))
+                            .and_then(Value::as_i64)
+                    })
+            else {
+                continue;
+            };
+            let Some(download_id) = queue_item.get("downloadId").and_then(Value::as_str) else {
+                continue;
+            };
+            let current_file_id = match self
+                .sonarr_episode_file_id_for_queue_item(&queue_item, episode_id)
+            {
+                Ok(Some(file_id)) => file_id,
+                Ok(None) => continue,
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit could not resolve current episode file for pending episode {}: {}",
+                        episode_id, err
+                    );
+                    continue;
+                }
+            };
+            let current_file = match self.sonarr_episode_file(current_file_id) {
+                Ok(file) => file,
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit could not fetch current episode file {} for pending episode {}: {}",
+                        current_file_id, episode_id, err
+                    );
+                    continue;
+                }
+            };
+            let current_report = language_report_from_episode_file(&current_file, requirements);
+            if current_report.satisfied() {
+                continue;
+            }
+            let manual_items = self.sonarr_manual_import_items(download_id)?;
+            let Some(item) = manual_items.into_iter().find(|item| {
+                sonarr_manual_import_item_matches_episode(item, episode_id)
+                    && manual_import_item_satisfies(
+                        item,
+                        &queue_item,
+                        requirements,
+                        options.candidate_policy,
+                    )
+            }) else {
+                continue;
+            };
+            summary.missing += 1;
+            summary.searched += 1;
+            let title = queue_item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("<pending import>");
+            if options.dry_run {
+                summary.dry_run += 1;
+                info!(
+                    "Sonarr language audit dry-run: would force-import pending episode {} from '{}'.",
+                    episode_id, title
+                );
+                continue;
+            }
+            self.sonarr_delete_episode_file(current_file_id)?;
+            self.sonarr_post_manual_import(item, episode_id)?;
+            if let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) {
+                if let Err(err) = self.sonarr_delete_queue_item(queue_id) {
+                    warn!(
+                        "Sonarr language audit force-imported episode {} but could not remove completed queue item {}: {}",
+                        episode_id, queue_id, err
+                    );
+                }
+            }
+            summary.grabbed += 1;
+            info!(
+                "Sonarr language audit force-imported pending language upgrade for episode {} from '{}'.",
+                episode_id, title
+            );
+        }
+        Ok(summary)
+    }
+
+    fn sonarr_episode_file_id_for_queue_item(
+        &self,
+        queue_item: &Value,
+        episode_id: i64,
+    ) -> Result<Option<i64>> {
+        if let Some(file_id) = queue_item
+            .get("episodeFileId")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                queue_item
+                    .get("episode")
+                    .and_then(|episode| episode.get("episodeFileId"))
+                    .and_then(Value::as_i64)
+            })
+        {
+            return Ok(Some(file_id));
+        }
+        Ok(self
+            .sonarr_episode(episode_id)?
+            .get("episodeFileId")
+            .and_then(Value::as_i64))
+    }
+
+    fn sonarr_manual_import_items(&self, download_id: &str) -> Result<Vec<Value>> {
+        let endpoint = format!(
+            "{}/api/v3/manualimport?downloadId={}&filterExistingFiles=false",
+            self.base_url,
+            url_encode(download_id)
+        );
+        self.get(&endpoint)?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Sonarr manual import did not return an array"))
+    }
+
+    fn sonarr_post_manual_import(&self, mut item: Value, episode_id: i64) -> Result<()> {
+        if let Value::Object(ref mut map) = item {
+            map.insert(
+                "episodeIds".to_string(),
+                Value::Array(vec![Value::from(episode_id)]),
+            );
+            if !map.contains_key("seriesId") {
+                if let Some(series_id) = map
+                    .get("series")
+                    .and_then(|series| series.get("id"))
+                    .and_then(Value::as_i64)
+                {
+                    map.insert("seriesId".to_string(), Value::from(series_id));
+                }
+            }
+        }
+        let endpoint = format!("{}/api/v3/manualimport", self.base_url);
+        self.post_json(&endpoint, &Value::Array(vec![item]))?;
+        Ok(())
+    }
+
+    fn sonarr_delete_episode_file(&self, file_id: i64) -> Result<()> {
+        let endpoint = format!("{}/api/v3/episodefile/{}", self.base_url, file_id);
+        self.delete(&endpoint)?;
+        Ok(())
+    }
+
+    fn sonarr_delete_queue_item(&self, queue_id: i64) -> Result<()> {
+        let endpoint = format!(
+            "{}/api/v3/queue/{}?removeFromClient=false&blocklist=false",
+            self.base_url, queue_id
+        );
+        self.delete(&endpoint)?;
+        Ok(())
+    }
+
     fn radarr_movie(&self, movie_id: i64) -> Result<Value> {
         self.get(&format!("{}/api/v3/movie/{}", self.base_url, movie_id))
     }
@@ -1042,6 +1245,21 @@ fn manual_import_item_satisfies(
         map.insert("title".to_string(), Value::from(title));
     }
     release_satisfies_languages(&candidate, requirements, policy)
+}
+
+fn sonarr_manual_import_item_matches_episode(item: &Value, episode_id: i64) -> bool {
+    item.get("episodes")
+        .and_then(Value::as_array)
+        .is_some_and(|episodes| {
+            episodes
+                .iter()
+                .any(|episode| episode.get("id").and_then(Value::as_i64) == Some(episode_id))
+        })
+        || item
+            .get("episodeIds")
+            .and_then(Value::as_array)
+            .is_some_and(|episode_ids| episode_ids.iter().any(|id| id.as_i64() == Some(episode_id)))
+        || item.get("episodeId").and_then(Value::as_i64) == Some(episode_id)
 }
 
 fn language_report_from_episode_file(
@@ -1632,6 +1850,15 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
+    fn mock_empty_queue(server: &mut mockito::Server) -> mockito::Mock {
+        server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create()
+    }
+
     #[test]
     fn env_int_list_accepts_common_delimiters() {
         let _guard = env_lock();
@@ -1646,6 +1873,7 @@ mod tests {
     #[test]
     fn sonarr_inventory_audit_dry_run_searches_current_episode_files() {
         let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
         let series = server
             .mock("GET", "/api/v3/series")
             .with_status(200)
@@ -1724,6 +1952,7 @@ mod tests {
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.dry_run, 1);
         assert_eq!(summary.errors, 0);
+        queue.assert();
         series.assert();
         episodes.assert();
         history.assert();
@@ -1733,6 +1962,7 @@ mod tests {
     #[test]
     fn sonarr_inventory_audit_grabs_replacement_and_blocklists_latest_history() {
         let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
         let series = server
             .mock("GET", "/api/v3/series")
             .with_status(200)
@@ -1828,6 +2058,7 @@ mod tests {
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.grabbed, 1);
         assert_eq!(summary.errors, 0);
+        queue.assert();
         series.assert();
         episodes.assert();
         history.assert();
@@ -1839,6 +2070,7 @@ mod tests {
     #[test]
     fn sonarr_inventory_audit_stops_after_max_searches() {
         let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
         let series = server
             .mock("GET", "/api/v3/series")
             .with_status(200)
@@ -1917,6 +2149,7 @@ mod tests {
         assert_eq!(summary.missing, 1);
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.no_candidate, 1);
+        queue.assert();
         series.assert();
         episodes.assert();
         history.assert();
@@ -1926,6 +2159,7 @@ mod tests {
     #[test]
     fn sonarr_inventory_audit_targeted_episode_ids_skip_series_scan() {
         let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
         let episode = server
             .mock("GET", "/api/v3/episode/77")
             .with_status(200)
@@ -1986,6 +2220,7 @@ mod tests {
         assert_eq!(summary.missing, 1);
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.dry_run, 1);
+        queue.assert();
         episode.assert();
         episode_file.assert();
         history.assert();
@@ -1995,6 +2230,7 @@ mod tests {
     #[test]
     fn sonarr_inventory_apply_refuses_without_import_history() {
         let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
         let episode = server
             .mock("GET", "/api/v3/episode/77")
             .with_status(200)
@@ -2048,8 +2284,270 @@ mod tests {
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.errors, 1);
         assert_eq!(summary.grabbed, 0);
+        queue.assert();
         episode.assert();
         episode_file.assert();
+        history.assert();
+    }
+
+    fn sonarr_pending_queue_item() -> Value {
+        json!({
+            "id": 321,
+            "episodeId": 77,
+            "downloadId": "download 1",
+            "title": "episode dual audio",
+            "status": "completed",
+            "trackedDownloadState": "importPending",
+            "episode": {
+                "id": 77,
+                "episodeFileId": 555
+            }
+        })
+    }
+
+    fn language_requirements() -> LanguageRequirements {
+        LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string(), "jpn".to_string()],
+            subtitles: vec!["eng".to_string()],
+        }
+    }
+
+    #[test]
+    fn sonarr_force_import_pending_language_upgrade_dry_run_is_safe() {
+        let mut server = mockito::Server::new();
+        let queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+            .create();
+        let episode_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/episode.mkv",
+                    "episodes": [{"id": 77}],
+                    "series": {"id": 1},
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                lookback_days: 30,
+                max_searches: 10,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.dry_run, 1);
+        assert_eq!(summary.grabbed, 0);
+        queue.assert();
+        episode_file.assert();
+        manual.assert();
+        history.assert();
+    }
+
+    #[test]
+    fn sonarr_force_import_pending_language_upgrade_applies_manual_import() {
+        let mut server = mockito::Server::new();
+        let queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+            .create();
+        let episode_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/episode.mkv",
+                    "episodes": [{"id": 77}],
+                    "series": {"id": 1},
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let delete_file = server
+            .mock("DELETE", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let post_import = server
+            .mock("POST", "/api/v3/manualimport")
+            .match_header("content-type", "application/json")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let delete_queue = server
+            .mock("DELETE", "/api/v3/queue/321")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run: false,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                lookback_days: 30,
+                max_searches: 10,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.grabbed, 1);
+        assert_eq!(summary.errors, 0);
+        queue.assert();
+        episode_file.assert();
+        manual.assert();
+        delete_file.assert();
+        post_import.assert();
+        delete_queue.assert();
+        history.assert();
+    }
+
+    #[test]
+    fn sonarr_force_import_skips_when_manual_import_item_is_for_different_episode() {
+        let mut server = mockito::Server::new();
+        let queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+            .create();
+        let episode_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/wrong.mkv",
+                    "episodes": [{"id": 78}],
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run: false,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                lookback_days: 30,
+                max_searches: 10,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.missing, 0);
+        assert_eq!(summary.searched, 0);
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.errors, 0);
+        queue.assert();
+        episode_file.assert();
+        manual.assert();
         history.assert();
     }
 

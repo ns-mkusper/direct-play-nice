@@ -120,11 +120,11 @@ failed so the old release is blocklisted. It resolves that history item from the
 Arr download id when available, or from `DIRECT_PLAY_NICE_SONARR_HISTORY_ID` /
 `DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if your wrapper provides it.
 
-For Radarr, a language-better file can be stuck as a completed queue item when
-Radarr considers it a quality downgrade. Audit mode checks those pending imports;
-when the pending file satisfies DPN's language policy, apply mode deletes the old
-movie-file entry, posts Radarr manual import, and removes the completed queue
-item without deleting the downloaded replacement.
+For Sonarr/Radarr, a language-better file can be stuck as a completed queue item
+when Arr considers it a quality downgrade. Audit mode checks those pending
+imports; when the pending file satisfies DPN's language policy, apply mode
+deletes the old episode/movie-file entry, posts manual import, and removes the
+completed queue item without deleting the downloaded replacement.
 
 The default examples above require English audio only. Extra audio languages are
 allowed; a file with English plus Japanese audio still satisfies
@@ -185,11 +185,11 @@ item's latest import history entry before any apply-mode grab/blocklist action.
 For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
 comma-separated episode ID list.
 
-In Radarr mode DPN also checks completed pending imports that Radarr refused for
-quality hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
+DPN also checks completed pending imports that Sonarr/Radarr refused for quality
+hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
 `--servarr-language-dry-run` only when you want DPN to grab selected
 language-upgrade candidates, blocklist the old history item, and force-import
-eligible Radarr pending replacements.
+eligible pending replacements.
 
 This feature assumes DPN is the authority for language upgrades. To avoid Arr
 and DPN fighting each other, keep ordinary Arr quality-only upgrades conservative
@@ -257,10 +257,10 @@ observable batches. A safe operator workflow is:
    remaining missing items should either show a queued candidate, no candidate,
    or a rejection reason to fix before another apply batch.
 
-For Radarr, keep the same dry-run-first workflow. In apply mode, DPN may
+For Sonarr/Radarr, keep the same dry-run-first workflow. In apply mode, DPN may
 force-import completed pending replacements that satisfy the language policy by
-deleting the old Radarr movie-file entry, posting manual import, and removing the
-stale completed queue item.
+deleting the old episode/movie-file entry, posting manual import, and removing
+the stale completed queue item.
 
 ## Practical wrapper pattern
 
