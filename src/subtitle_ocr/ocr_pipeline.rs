@@ -917,7 +917,16 @@ fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str)
         let alpha_chars = text.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
         let spaces = text.chars().filter(|ch| ch.is_whitespace()).count();
         let space_rate = spaces as f32 / text.len().max(1) as f32;
+        let token_count = text.split_whitespace().count();
+        let text_len = text.chars().count();
+        let alpha_ratio = alpha_chars as f32 / text_len.max(1) as f32;
+        let has_low_information_garbage = text_len <= 12 && alpha_chars <= 4 && alpha_ratio < 0.75;
         if alpha_chars >= 18 && space_rate < 0.06 {
+            suspicious += 1;
+        }
+        if has_low_information_garbage
+            || (token_count <= 2 && ocr_text_quality_score(text, language) < 0.70)
+        {
             suspicious += 1;
         }
         if long_count >= 1 || camel_count >= 1 {

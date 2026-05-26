@@ -380,12 +380,13 @@ fn correct_english_ocr_token(token: &str) -> Option<String> {
     if lower == "exhusband" {
         return Some(match_token_case(token, "ex-husband"));
     }
-    let mut candidates = Vec::new();
-    candidates.push(lower.replace('v', "y"));
-    candidates.push(lower.replace('f', "t"));
-    candidates.push(lower.replace("hq", "n"));
-    candidates.push(lower.replace("fh", "th"));
-    candidates.push(lower.replace("cok", "ook"));
+    let mut candidates = vec![
+        lower.replace('v', "y"),
+        lower.replace('f', "t"),
+        lower.replace("hq", "n"),
+        lower.replace("fh", "th"),
+        lower.replace("cok", "ook"),
+    ];
     if lower.ends_with('f') {
         candidates.push(format!("{}th", &lower[..lower.len() - 1]));
     }
