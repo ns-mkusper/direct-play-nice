@@ -186,10 +186,12 @@ For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
 comma-separated episode ID list.
 
 DPN also checks completed pending imports that Sonarr/Radarr refused for quality
-hierarchy reasons. Keep dry-run enabled while reviewing reports; remove
-`--servarr-language-dry-run` only when you want DPN to grab selected
-language-upgrade candidates, blocklist the old history item, and force-import
-eligible pending replacements.
+hierarchy reasons. Sonarr auto-grabs are limited to releases that map back to the
+single requested episode; multi-episode and season-pack results are skipped even
+when their titles contain strong language hints. Keep dry-run enabled while
+reviewing reports; remove `--servarr-language-dry-run` only when you want DPN to
+grab selected language-upgrade candidates, blocklist the old history item, and
+force-import eligible pending replacements.
 
 This feature assumes DPN is the authority for language upgrades. To avoid Arr
 and DPN fighting each other, keep ordinary Arr quality-only upgrades conservative
