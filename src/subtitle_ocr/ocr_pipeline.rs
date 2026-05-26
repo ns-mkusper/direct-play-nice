@@ -402,7 +402,7 @@ fn extract_subtitle_lines(
             "ocr-s{}-p{}-r{}.pgm",
             params.stream_index, params.packet_seq, i
         ));
-        fs::write(&pgm_path, pgm)
+        fs::write(&pgm_path, &pgm)
             .with_context(|| format!("writing OCR frame {}", pgm_path.display()))?;
 
         let mut output = engine.extract_lines(&pgm_path, params.language)?;
@@ -425,12 +425,69 @@ fn extract_subtitle_lines(
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
             && !is_english_language(params.language)
             && language_uses_spaces(params.language);
+        let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
-        let should_try_quality_fallback = quality_fallback_requested
-            && thresholds.is_some_and(|thresholds| {
+        let raw_postprocess_quality = output_quality_after_postprocess(&output, params.language);
+        let raw_postprocess_needs_spacing_fallback =
+            output_needs_spacing_after_postprocess(&output, params.language);
+        let word_segmentation_enabled = env::var("DPN_OCR_WORD_SEGMENTATION")
+            .ok()
+            .map(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            })
+            .unwrap_or(true);
+        if spacing_fallback_requested
+            && raw_postprocess_needs_spacing_fallback
+            && word_segmentation_enabled
+        {
+            if let Some(segmented) = try_ppocr_word_segmentation_recovery(
+                engine,
+                &pgm,
+                &pgm_path,
+                params.language,
+                rect_color,
+            )? {
+                let segmented_quality =
+                    output_quality_after_postprocess(&segmented, params.language);
+                if segmented_quality > raw_postprocess_quality + 0.03 {
+                    info!(
+                        "{} spacing recovery: split subtitle stream {} packet {} rect {} into {} PP-OCR word crops (segmented_score={:.2}, ppocr_score={:.2})",
+                        ppocr_engine_label(ocr_engine),
+                        params.stream_index,
+                        params.packet_seq,
+                        i,
+                        segmented.lines.len(),
+                        segmented_quality,
+                        raw_postprocess_quality
+                    );
+                    output = segmented;
+                }
+            }
+        }
+        let spacing_fallback_requested =
+            output_needs_spacing_after_postprocess(&output, params.language);
+        let ppocr_text = lines_text_for_quality(&output.lines);
+        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
+        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
+        let residual_quality_fallback_requested = quality_fallback_requested
+            || postprocessed_text_needs_quality_fallback(&output, params.language);
+        let should_try_quality_fallback = if spacing_fallback_requested {
+            // Severe PP-OCR glue can be consistent for an entire subtitle track,
+            // so a dynamic baseline trained on the same bad output will not catch
+            // it. Try Tesseract immediately when PP-OCR word segmentation cannot
+            // recover spaces for a space-using language.
+            true
+        } else if residual_quality_fallback_requested {
+            true
+        } else {
+            thresholds.is_some_and(|thresholds| {
                 ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
-            });
+            })
+        };
         if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
@@ -441,8 +498,16 @@ fn extract_subtitle_lines(
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // For non-English streams, prefer language-specific Tesseract
                         // because the bundled PP-OCR recognizer is English-focused.
+                        let candidate_has_spaces = candidate.text.split_whitespace().count() > 1;
                         let should_replace_with_tesseract = if force_tesseract_non_english {
                             true
+                        } else if spacing_fallback_requested && candidate_has_spaces {
+                            // Prefer a spaced Tesseract result when PP-OCR glues a
+                            // space-using subtitle line into one long token. The
+                            // generic quality score intentionally penalizes glue
+                            // lightly for proper nouns, so do not require the
+                            // normal min-gain threshold here.
+                            candidate.quality + 0.10 >= ppocr_quality
                         } else {
                             let min_gain = tesseract_quality_fallback_min_gain();
                             candidate.quality >= ppocr_quality + min_gain
@@ -534,7 +599,10 @@ fn extract_subtitle_lines(
                 );
             }
         }
-        let _ = fs::remove_file(&pgm_path);
+        export_ocr_training_sample(&pgm_path, &output, params.language)?;
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&pgm_path);
+        }
         for mut line in output.lines {
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
@@ -550,6 +618,405 @@ fn extract_subtitle_lines(
     }
 
     Ok((lines, had_imagery))
+}
+
+fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &str) -> Result<()> {
+    let Some(manifest_path) = env::var_os("DPN_OCR_TRAINING_MANIFEST").map(PathBuf::from) else {
+        return Ok(());
+    };
+    let image_dir = env::var_os("DPN_OCR_TRAINING_IMAGE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            manifest_path
+                .parent()
+                .map(|parent| parent.join("images"))
+                .unwrap_or_else(|| PathBuf::from("images"))
+        });
+    fs::create_dir_all(&image_dir)
+        .with_context(|| format!("creating OCR training image dir '{}'", image_dir.display()))?;
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating OCR training manifest dir '{}'", parent.display())
+        })?;
+    }
+
+    let pgm = fs::read(pgm_path)
+        .with_context(|| format!("reading OCR training image '{}'", pgm_path.display()))?;
+    let mode = env::var("DPN_OCR_TRAINING_SAMPLE_MODE")
+        .unwrap_or_else(|_| "line".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let mut samples = Vec::new();
+    if matches!(mode.as_str(), "line" | "lines" | "both") {
+        samples.extend(exportable_line_training_samples(&pgm, output, language));
+    }
+    if samples.is_empty() || mode == "rect" || mode == "both" {
+        let processed = output
+            .lines
+            .iter()
+            .map(|line| postprocess_ocr_text(&line.text, language))
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if is_exportable_training_label(&processed, language) {
+            samples.push((processed, pgm.clone(), "rect".to_string()));
+        }
+    }
+    if samples.is_empty() {
+        return Ok(());
+    }
+
+    let mut manifest = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&manifest_path)
+        .with_context(|| {
+            format!(
+                "opening OCR training manifest '{}'",
+                manifest_path.display()
+            )
+        })?;
+    for (label, image, suffix) in samples {
+        write_ocr_training_sample(
+            pgm_path,
+            &manifest_path,
+            &image_dir,
+            &mut manifest,
+            &label,
+            &image,
+            &suffix,
+        )?;
+    }
+    Ok(())
+}
+
+fn exportable_line_training_samples(
+    pgm: &[u8],
+    output: &OcrOutput,
+    language: &str,
+) -> Vec<(String, Vec<u8>, String)> {
+    let Some((width, height, header_len)) = parse_pgm_header(pgm) else {
+        return Vec::new();
+    };
+    let pixels = &pgm[header_len..];
+    if pixels.len() < width * height {
+        return Vec::new();
+    }
+    output
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let label = postprocess_ocr_text(&line.text, language)
+                .trim()
+                .to_string();
+            if !is_exportable_training_label(&label, language) {
+                return None;
+            }
+            let image = line
+                .bbox
+                .as_ref()
+                .and_then(|bbox| crop_pgm_to_bbox(pixels, width, height, bbox))
+                .unwrap_or_else(|| pgm.to_vec());
+            Some((label, image, format!("line{index}")))
+        })
+        .collect()
+}
+
+fn is_exportable_training_label(text: &str, language: &str) -> bool {
+    let processed = text.trim();
+    if processed.is_empty() || ocr_text_quality_score(processed, language) < 0.72 {
+        return false;
+    }
+    let alpha_tokens = processed
+        .split_whitespace()
+        .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    !alpha_tokens
+        .iter()
+        .any(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 14)
+}
+
+fn write_ocr_training_sample(
+    pgm_path: &Path,
+    manifest_path: &Path,
+    image_dir: &Path,
+    manifest: &mut fs::File,
+    label: &str,
+    image: &[u8],
+    suffix: &str,
+) -> Result<()> {
+    let stem = pgm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    let label = label.replace(['\n', '\t'], " ");
+    let filename = format!("{}-{}-{}.pgm", stem, suffix, stable_label_hash(&label));
+    let out_path = image_dir.join(&filename);
+    fs::write(&out_path, image)
+        .with_context(|| format!("writing OCR training image '{}'", out_path.display()))?;
+    let rel_path = out_path
+        .strip_prefix(manifest_path.parent().unwrap_or_else(|| Path::new(".")))
+        .unwrap_or(&out_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let line = format!("{rel_path}\t{label}\n");
+    use std::io::Write as _;
+    manifest.write_all(line.as_bytes()).with_context(|| {
+        format!(
+            "writing OCR training manifest '{}'",
+            manifest_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn parse_pgm_header(pgm: &[u8]) -> Option<(usize, usize, usize)> {
+    if !pgm.starts_with(b"P5") {
+        return None;
+    }
+    let mut i = 2usize;
+    let mut tokens = Vec::new();
+    while i < pgm.len() && tokens.len() < 3 {
+        while i < pgm.len() && pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= pgm.len() {
+            return None;
+        }
+        let start = i;
+        while i < pgm.len() && !pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tokens.push(std::str::from_utf8(&pgm[start..i]).ok()?.parse().ok()?);
+    }
+    if i < pgm.len() && pgm[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if tokens.len() != 3 || tokens[2] != 255 {
+        return None;
+    }
+    Some((tokens[0], tokens[1], i))
+}
+
+fn crop_pgm_to_bbox(
+    pixels: &[u8],
+    width: usize,
+    height: usize,
+    bbox: &OcrBoundingBox,
+) -> Option<Vec<u8>> {
+    let pad_x = 3usize;
+    let pad_y = 2usize;
+    let left = bbox.left.max(0) as usize;
+    let top = bbox.top.max(0) as usize;
+    let right = bbox.right.max(0) as usize;
+    let bottom = bbox.bottom.max(0) as usize;
+    if right <= left || bottom <= top || left >= width || top >= height {
+        return None;
+    }
+    let left = left.saturating_sub(pad_x);
+    let top = top.saturating_sub(pad_y);
+    let right = (right + pad_x).min(width);
+    let bottom = (bottom + pad_y).min(height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let crop_w = right - left;
+    let crop_h = bottom - top;
+    let mut out = format!("P5\n{crop_w} {crop_h}\n255\n").into_bytes();
+    for y in top..bottom {
+        let row = y * width;
+        out.extend_from_slice(&pixels[row + left..row + right]);
+    }
+    Some(out)
+}
+
+fn stable_label_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn keep_ocr_intermediates() -> bool {
+    env::var("DPN_OCR_KEEP_INTERMEDIATES")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn output_quality_after_postprocess(output: &OcrOutput, language: &str) -> f32 {
+    let processed = output
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    ocr_text_quality_score(&processed, language)
+}
+
+fn output_needs_spacing_after_postprocess(output: &OcrOutput, language: &str) -> bool {
+    let lines = output
+        .lines
+        .iter()
+        .map(|line| OcrLine {
+            text: postprocess_ocr_text(&line.text, language),
+            bbox: line.bbox.clone(),
+            score: line.score,
+            color: line.color,
+            italic: line.italic,
+        })
+        .collect::<Vec<_>>();
+    ppocr_spacing_needs_fallback(&lines) || ppocr_needs_quality_fallback(&lines, language)
+}
+
+fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str) -> bool {
+    if !language_uses_spaces(language) {
+        return false;
+    }
+    let processed = output
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    if processed.is_empty() {
+        return false;
+    }
+    let mut suspicious = 0usize;
+    for text in &processed {
+        let alpha_tokens = text
+            .split_whitespace()
+            .flat_map(|part| part.split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\''))
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let long_count = alpha_tokens
+            .iter()
+            .filter(|tok| tok.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12)
+            .count();
+        let camel_count = alpha_tokens
+            .iter()
+            .filter(|tok| {
+                tok.as_bytes()
+                    .windows(2)
+                    .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            })
+            .count();
+        let alpha_chars = text.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+        let spaces = text.chars().filter(|ch| ch.is_whitespace()).count();
+        let space_rate = spaces as f32 / text.len().max(1) as f32;
+        let token_count = text.split_whitespace().count();
+        let text_len = text.chars().count();
+        let alpha_ratio = alpha_chars as f32 / text_len.max(1) as f32;
+        let has_low_information_garbage = text_len <= 12 && alpha_chars <= 4 && alpha_ratio < 0.75;
+        if alpha_chars >= 18 && space_rate < 0.06 {
+            suspicious += 1;
+        }
+        if has_low_information_garbage
+            || (token_count <= 2 && ocr_text_quality_score(text, language) < 0.70)
+        {
+            suspicious += 1;
+        }
+        if long_count >= 1 || camel_count >= 1 {
+            suspicious += 1;
+        }
+    }
+    suspicious > 0
+}
+
+fn try_ppocr_word_segmentation_recovery(
+    engine: &mut dyn SubtitleConverter,
+    pgm: &[u8],
+    pgm_path: &Path,
+    language: &str,
+    color: Option<(u8, u8, u8)>,
+) -> Result<Option<OcrOutput>> {
+    let candidate_gaps = [None, Some(5usize), Some(8usize)];
+    let mut best: Option<(f32, OcrOutput)> = None;
+    for gap in candidate_gaps {
+        let Some(candidate) =
+            recognize_ppocr_word_crops(engine, pgm, pgm_path, language, color, gap)?
+        else {
+            continue;
+        };
+        let text = lines_text_for_quality(&candidate.lines);
+        let quality = ocr_text_quality_score(&text, language);
+        let replace = best
+            .as_ref()
+            .map(|(best_quality, _)| quality > *best_quality + 0.001)
+            .unwrap_or(true);
+        if replace {
+            best = Some((quality, candidate));
+        }
+    }
+    Ok(best.map(|(_, output)| output))
+}
+
+fn recognize_ppocr_word_crops(
+    engine: &mut dyn SubtitleConverter,
+    pgm: &[u8],
+    pgm_path: &Path,
+    language: &str,
+    color: Option<(u8, u8, u8)>,
+    gap_override: Option<usize>,
+) -> Result<Option<OcrOutput>> {
+    let crops = split_pgm_into_word_crops_with_gap(pgm, gap_override);
+    if crops.len() < 2 || crops.len() > 80 {
+        return Ok(None);
+    }
+    let mut lines = Vec::new();
+    for (idx, (crop, bbox)) in crops.into_iter().enumerate() {
+        let crop_path = pgm_path.with_file_name(format!(
+            "{}-word-{}.pgm",
+            pgm_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("ocr"),
+            idx
+        ));
+        fs::write(&crop_path, crop)
+            .with_context(|| format!("writing OCR word crop {}", crop_path.display()))?;
+        let word_output = engine.extract_lines(&crop_path, language)?;
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&crop_path);
+        }
+        let text = normalize_utf8_text(&lines_text_for_quality(&word_output.lines));
+        if text.is_empty() {
+            continue;
+        }
+        let mut bbox = bbox;
+        let score = ppocr_average_confidence(&word_output.lines);
+        if let Some(first_bbox) = word_output.lines.iter().find_map(|line| line.bbox.as_ref()) {
+            // Keep the coarse crop position. Internal PP-OCR boxes are relative to the crop.
+            bbox.top += first_bbox.top;
+            bbox.bottom = bbox.top + (first_bbox.bottom - first_bbox.top).max(1);
+        }
+        lines.push(OcrLine {
+            text,
+            bbox: Some(bbox),
+            score,
+            color,
+            italic: false,
+        });
+    }
+    if lines.len() < 2 {
+        return Ok(None);
+    }
+    Ok(Some(OcrOutput {
+        lines: merge_ocr_lines_with_spacing(lines),
+    }))
 }
 
 pub(super) fn force_tesseract_non_english_enabled() -> bool {

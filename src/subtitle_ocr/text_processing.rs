@@ -61,23 +61,37 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     if lines.is_empty() {
         return false;
     }
-    let mut has_spaces = false;
-    let mut long_token = false;
     let mut has_letters = false;
+    let mut has_any_space = false;
+    let mut long_alpha_tokens = 0usize;
+    let mut very_long_alpha_token = false;
+
     for line in lines {
         let text = line.text.trim();
-        if text.contains(' ') {
-            has_spaces = true;
-            break;
+        has_any_space |= text.contains(' ');
+        has_letters |= text.chars().any(|c| c.is_alphabetic());
+        for token in text
+            .split_whitespace()
+            .flat_map(|part| part.split(|ch: char| !ch.is_alphabetic() && ch != '\''))
+        {
+            let alpha_len = token.chars().filter(|ch| ch.is_alphabetic()).count();
+            if alpha_len >= 14 {
+                long_alpha_tokens += 1;
+            }
+            if alpha_len >= 20 {
+                very_long_alpha_token = true;
+            }
         }
-        if text.len() >= 12 {
-            long_token = true;
-        }
-        if text.chars().any(|c| c.is_alphabetic()) {
-            has_letters = true;
+        // A no-space line with many letters is the classic PP-OCR subtitle glue failure.
+        if !text.contains(' ') && text.chars().filter(|c| c.is_alphabetic()).count() >= 12 {
+            long_alpha_tokens += 1;
         }
     }
-    has_letters && long_token && !has_spaces
+
+    has_letters
+        && (!has_any_space && long_alpha_tokens > 0
+            || very_long_alpha_token
+            || long_alpha_tokens >= 2)
 }
 
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
@@ -91,74 +105,15 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     }
 
     out = normalize_english_ocr_confusions(&out);
+    out = correct_english_ocr_dictionary_confusions(&out);
     out = insert_space_after_punctuation(&out);
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
 
-    // Targeted corrections for frequently observed OCR glue patterns.
-    const ENGLISH_GLUE_FIXES: [(&str, &str); 42] = [
-        ("noneother", "none other"),
-        ("notonlyme", "not only me"),
-        ("notonly", "not only"),
-        ("itis", "it is"),
-        ("whylost", "why lost"),
-        ("hesalive", "he's alive"),
-        ("he'salive", "he's alive"),
-        ("thats", "that's"),
-        ("goodwork", "good work"),
-        ("burnit", "burn it"),
-        ("yessir", "yes sir"),
-        ("praisetoyou", "praise to you"),
-        ("lordjesuschrist", "Lord Jesus Christ"),
-        ("paxchristi", "pax Christi"),
-        ("praisedbegod", "praised be God"),
-        ("constablecrane", "Constable Crane"),
-        ("whathappenedtohim", "what happened to him"),
-        ("beforehewentintotheriver", "before he went into the river"),
-        (
-            "thereislittlepeaceinthislandnow",
-            "there is little peace in this land now",
-        ),
-        ("allourprogresshasended", "all our progress has ended"),
-        ("newsuffering", "new suffering"),
-        ("tobeasdarkasitisnow", "to be as dark as it is now"),
-        ("tobeasdarkasit isnow", "to be as dark as it is now"),
-        ("to be as dark as itis now", "to be as dark as it is now"),
-        ("an done of", "and one of"),
-        ("butit's", "but it's"),
-        ("isit?", "is it?"),
-        (
-            "andthepainwouldbeprolonged",
-            "and the pain would be prolonged",
-        ),
-        (
-            "eachsmallsplashofthewater",
-            "each small splash of the water",
-        ),
-        ("waslikeaburningcoal", "was like a burning coal"),
-        ("therearehotspringsthere", "there are hot springs there"),
-        ("toabandongod", "to abandon God"),
-        (
-            "sotheycoulddemonstratethestrengthoftheirfaith",
-            "so they could demonstrate the strength of their faith",
-        ),
-        (
-            "andthepresenceofgodwithinthem",
-            "and the presence of God within them",
-        ),
-        ("standdown", "stand down"),
-        ("loppedoff", "lopped off"),
-        ("ibegpardon", "I beg pardon"),
-        ("ihavenot", "I have not"),
-        ("ishall", "I shall"),
-        ("begpardon", "beg pardon"),
-        ("havenot", "have not"),
-        ("l9th", "19th"),
-    ];
-    for (from, to) in ENGLISH_GLUE_FIXES {
-        out = replace_case_insensitive_ascii(&out, from, to);
-    }
+    out = split_fragmented_english_phrases(&out);
+    out = merge_common_fragmented_english_words(&out);
     out = split_glued_english_phrases(&out);
+    out = merge_common_fragmented_english_words(&out);
 
     normalize_utf8_text(&out)
 }
@@ -166,6 +121,41 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
 pub(super) fn is_english_language(language: &str) -> bool {
     let lang = language.trim().to_ascii_lowercase();
     matches!(lang.as_str(), "eng" | "en" | "en-us" | "en_us")
+}
+
+fn normalize_mixed_case_ocr_token(token: &str) -> String {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() < 3 || !chars.iter().any(|ch| ch.is_ascii_lowercase()) {
+        return token.to_string();
+    }
+    let mut out = String::with_capacity(token.len());
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let next = chars.get(idx + 1).copied();
+        let surrounded_by_lower = prev.is_some_and(|c| c.is_ascii_lowercase())
+            && next.is_some_and(|c| c.is_ascii_lowercase());
+        let after_lower = prev.is_some_and(|c| c.is_ascii_lowercase());
+        let replacement = match ch {
+            // Common OCR confusions from subtitle crops: uppercase I appears
+            // inside lower-case words where the recognizer meant i/l.
+            'I' if after_lower && matches!(next, Some('I')) => 'i',
+            'I' if matches!(prev, Some('I')) && next.is_some_and(|c| c.is_ascii_lowercase()) => 'l',
+            'I' if surrounded_by_lower => {
+                if matches!(prev, Some('u' | 'o')) && matches!(next, Some('d')) {
+                    'l'
+                } else {
+                    'i'
+                }
+            }
+            'I' if after_lower && next.is_none() => 'i',
+            'Q' if surrounded_by_lower || after_lower => 'u',
+            'O' if surrounded_by_lower || after_lower => 'o',
+            'N' if after_lower && next.is_none() && !chars[0].is_ascii_uppercase() => 'n',
+            _ => ch,
+        };
+        out.push(replacement);
+    }
+    out
 }
 
 fn normalize_english_ocr_confusions(input: &str) -> String {
@@ -197,6 +187,7 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
             }
         }
         normalized = normalized.replace('|', "I").replace("vv", "w");
+        normalized = normalize_mixed_case_ocr_token(&normalized);
         out.push_str(&normalized);
         tok.clear();
     };
@@ -210,6 +201,290 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
         }
     }
     flush_token(&mut token, &mut out);
+    out
+}
+
+fn correct_english_ocr_dictionary_confusions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut token = String::new();
+    let flush_token = |tok: &mut String, out: &mut String| {
+        if tok.is_empty() {
+            return;
+        }
+        if let Some(corrected) = correct_english_ocr_token(tok) {
+            out.push_str(&corrected);
+        } else {
+            out.push_str(tok);
+        }
+        tok.clear();
+    };
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphabetic() || ch == '\'' {
+            token.push(ch);
+        } else {
+            flush_token(&mut token, &mut out);
+            out.push(ch);
+        }
+    }
+    flush_token(&mut token, &mut out);
+    out
+}
+
+fn correct_english_ocr_token(token: &str) -> Option<String> {
+    const WORDS: &[&str] = &[
+        "about",
+        "again",
+        "all",
+        "am",
+        "and",
+        "anything",
+        "are",
+        "around",
+        "asleep",
+        "back",
+        "because",
+        "believe",
+        "but",
+        "can't",
+        "city",
+        "could",
+        "couldn't",
+        "day",
+        "days",
+        "did",
+        "didn't",
+        "do",
+        "does",
+        "doesn't",
+        "don't",
+        "down",
+        "enough",
+        "ever",
+        "every",
+        "everyone",
+        "everything",
+        "eye",
+        "feel",
+        "food",
+        "for",
+        "from",
+        "get",
+        "going",
+        "gone",
+        "guess",
+        "has",
+        "have",
+        "he",
+        "here",
+        "him",
+        "his",
+        "how",
+        "i",
+        "i'll",
+        "i'm",
+        "i've",
+        "if",
+        "in",
+        "is",
+        "it",
+        "it's",
+        "just",
+        "kind",
+        "know",
+        "let",
+        "like",
+        "little",
+        "long",
+        "look",
+        "made",
+        "make",
+        "maybe",
+        "me",
+        "month",
+        "more",
+        "myself",
+        "never",
+        "no",
+        "not",
+        "nothing",
+        "of",
+        "on",
+        "one",
+        "out",
+        "paradise",
+        "people",
+        "place",
+        "road",
+        "see",
+        "sleep",
+        "something",
+        "soon",
+        "still",
+        "that",
+        "that's",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "there's",
+        "these",
+        "they",
+        "they'll",
+        "thing",
+        "things",
+        "think",
+        "this",
+        "those",
+        "through",
+        "time",
+        "to",
+        "too",
+        "up",
+        "us",
+        "was",
+        "way",
+        "we",
+        "we'll",
+        "were",
+        "what",
+        "what're",
+        "when",
+        "where",
+        "who",
+        "why",
+        "will",
+        "with",
+        "wolf",
+        "wolves",
+        "work",
+        "would",
+        "wouldn't",
+        "you",
+        "you'll",
+        "you're",
+        "your",
+        "yourself",
+        "young",
+        "anybody",
+        "husband",
+    ];
+    let lower = token.to_ascii_lowercase();
+    if lower.len() < 3 || WORDS.contains(&lower.as_str()) {
+        return None;
+    }
+    if lower == "atl" {
+        return Some(match_token_case(token, "at"));
+    }
+    if lower == "exhusband" {
+        return Some(match_token_case(token, "ex-husband"));
+    }
+    let mut candidates = vec![
+        lower.replace('v', "y"),
+        lower.replace('f', "t"),
+        lower.replace("hq", "n"),
+        lower.replace("fh", "th"),
+        lower.replace("cok", "ook"),
+    ];
+    if lower.ends_with('f') {
+        candidates.push(format!("{}th", &lower[..lower.len() - 1]));
+    }
+    if lower.ends_with('l') {
+        candidates.push(format!("{}'ll", &lower[..lower.len() - 1]));
+    }
+    candidates.push(lower.replace("oc", "c"));
+    candidates.push(lower.replace("lo", "to"));
+    for candidate in candidates {
+        if candidate != lower && WORDS.contains(&candidate.as_str()) {
+            return Some(match_token_case(token, &candidate));
+        }
+    }
+    None
+}
+
+fn match_token_case(original: &str, replacement: &str) -> String {
+    if original.chars().all(|ch| ch.is_ascii_uppercase()) {
+        replacement.to_ascii_uppercase()
+    } else if original
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+    {
+        let mut chars = replacement.chars();
+        let mut out = String::new();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+        }
+        out.push_str(chars.as_str());
+        out
+    } else {
+        replacement.to_string()
+    }
+}
+
+fn merge_common_fragmented_english_words(input: &str) -> String {
+    let mut out = input
+        .replace("So on,", "Soon,")
+        .replace("so on,", "soon,")
+        .replace("So on.", "Soon.")
+        .replace("so on.", "soon.")
+        .replace("you'll!", "you'll")
+        .replace("we'll!", "we'll")
+        .replace("could n't", "couldn't")
+        .replace("Could n't", "Couldn't")
+        .replace("yo u", "you")
+        .replace("Yo u", "You")
+        .replace("me at", "meat")
+        .replace("Me at", "Meat")
+        .replace("\"?", "?");
+    for (from, to) in [
+        ("a sleep", "asleep"),
+        ("any more", "anymore"),
+        ("every thing", "everything"),
+        ("my self", "myself"),
+        ("your self", "yourself"),
+        ("kind a", "kind of"),
+        ("any way", "anyway"),
+        ("so on enough", "soon enough"),
+        ("so on,", "soon,"),
+        ("so on.", "soon."),
+        ("so on enough", "soon enough"),
+        ("yo u", "you"),
+        ("me at", "meat"),
+        ("could n't", "couldn't"),
+        ("you'll!", "you'll"),
+        ("we'll!", "we'll"),
+        ("com ing", "coming"),
+        ("liv ing", "living"),
+    ] {
+        out = replace_ascii_word_sequence(&out, from, to);
+    }
+    out
+}
+
+fn replace_ascii_word_sequence(input: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let lower = input.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find(from) {
+        let start = cursor + rel;
+        let end = start + from.len();
+        let before_ok = start == 0
+            || (!lower.as_bytes()[start - 1].is_ascii_alphanumeric()
+                && lower.as_bytes()[start - 1] != b'\'');
+        let after_ok = end == lower.len()
+            || (!lower.as_bytes()[end].is_ascii_alphanumeric() && lower.as_bytes()[end] != b'\'');
+        if before_ok && after_ok {
+            out.push_str(&input[cursor..start]);
+            out.push_str(&match_token_case(&input[start..end], to));
+            cursor = end;
+        } else {
+            out.push_str(&input[cursor..end]);
+            cursor = end;
+        }
+    }
+    out.push_str(&input[cursor..]);
     out
 }
 
@@ -242,8 +517,114 @@ fn split_glued_english_phrases(input: &str) -> String {
     out
 }
 
+#[derive(Clone)]
+struct FragmentWord<'a> {
+    leading: &'a str,
+    core: &'a str,
+    trailing: &'a str,
+}
+
+fn split_fragmented_english_phrases(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut buffered: Vec<FragmentWord<'_>> = Vec::new();
+
+    for raw in input.split_whitespace() {
+        if let Some(word) = parse_fragment_word(raw) {
+            let has_trailing_punctuation = !word.trailing.is_empty();
+            buffered.push(word);
+            if has_trailing_punctuation {
+                flush_fragment_words(&mut buffered, &mut out);
+            }
+        } else {
+            flush_fragment_words(&mut buffered, &mut out);
+            push_space_separated(&mut out, raw);
+        }
+    }
+    flush_fragment_words(&mut buffered, &mut out);
+    out
+}
+
+fn parse_fragment_word(raw: &str) -> Option<FragmentWord<'_>> {
+    let core_start = raw.find(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')?;
+    let core_end = raw.rfind(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')? + 1;
+    if core_start >= core_end {
+        return None;
+    }
+    let core = &raw[core_start..core_end];
+    if core
+        .chars()
+        .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+        && core.chars().any(|ch| ch.is_ascii_alphabetic())
+    {
+        Some(FragmentWord {
+            leading: &raw[..core_start],
+            core,
+            trailing: &raw[core_end..],
+        })
+    } else {
+        None
+    }
+}
+
+fn flush_fragment_words(buffered: &mut Vec<FragmentWord<'_>>, out: &mut String) {
+    if buffered.is_empty() {
+        return;
+    }
+    if let Some(repaired) = repair_fragment_words(buffered) {
+        push_space_separated(out, &repaired);
+    } else {
+        for word in buffered.iter() {
+            let raw = format!("{}{}{}", word.leading, word.core, word.trailing);
+            push_space_separated(out, &raw);
+        }
+    }
+    buffered.clear();
+}
+
+fn repair_fragment_words(words: &[FragmentWord<'_>]) -> Option<String> {
+    if words.len() < 2 || words.len() > 12 {
+        return None;
+    }
+    let suspicious = words.iter().any(|word| {
+        word.core.len() >= 12
+            || word
+                .core
+                .as_bytes()
+                .windows(2)
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            || (word.core.len() <= 3 && word.core.chars().any(|ch| ch.is_ascii_uppercase()))
+    });
+    let joined = words.iter().map(|word| word.core).collect::<String>();
+    if !suspicious || joined.len() < 8 {
+        return None;
+    }
+    let split = split_glued_ascii_token(&joined)?;
+    let split_word_count = split.split_whitespace().count();
+    if split_word_count < words.len() {
+        return None;
+    }
+    if split_word_count <= 1 {
+        return None;
+    }
+    let mut repaired = String::new();
+    repaired.push_str(words.first()?.leading);
+    repaired.push_str(&split);
+    repaired.push_str(words.last()?.trailing);
+    Some(repaired)
+}
+
+fn push_space_separated(out: &mut String, value: &str) {
+    if value.is_empty() {
+        return;
+    }
+    if !out.is_empty() && !out.ends_with(' ') {
+        out.push(' ');
+    }
+    out.push_str(value);
+}
+
 pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
-    if token.len() < 5 || !token.is_ascii() {
+    if token.len() < 4 || !token.is_ascii() {
         return None;
     }
     if !token
@@ -257,14 +638,36 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     if lower == "standdown" {
         return Some(format!("{} {}", &token[..5], &token[5..]));
     }
+    if let Some(split) = split_camelcase_proper_noun_suffix(token) {
+        return Some(split);
+    }
+    if let Some(split) = segment_glued_english_token_with_dictionary(token) {
+        let has_residual_glue = split
+            .split_whitespace()
+            .any(|part| part.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12);
+        if has_residual_glue && probabilistic_english_deglue_enabled() {
+            if let Some(wordninja_split) = segment_glued_english_token_with_wordninja(token) {
+                return Some(wordninja_split);
+            }
+        }
+        return Some(split);
+    }
+    if probabilistic_english_deglue_enabled() {
+        if let Some(split) = segment_glued_english_token_with_wordninja(token) {
+            return Some(split);
+        }
+        if let Some(split) = split_titlecase_prefix_with_wordninja(token) {
+            return Some(split);
+        }
+    }
     if let Some(split) = split_glued_contraction(token, &lower) {
         return Some(split);
     }
 
     if matches!(token.chars().next(), Some('I' | 'i')) && token.len() >= 5 {
-        const I_PREFIX_CONTINUATIONS: [&str; 16] = [
+        const I_PREFIX_CONTINUATIONS: &[&str] = &[
             "am", "have", "had", "shall", "will", "beg", "think", "know", "need", "must", "want",
-            "did", "do", "was", "were", "would",
+            "did", "do", "was", "were", "would", "hear",
         ];
         let rest = &lower[1..];
         if I_PREFIX_CONTINUATIONS
@@ -361,6 +764,844 @@ fn ascii_language_likelihood(token: &str) -> f32 {
     }
     normalized -= bad_chars as f32 * NGRAM_BAD_CHAR_PENALTY;
     normalized.max(NGRAM_FLOOR_SCORE)
+}
+
+fn probabilistic_english_deglue_enabled() -> bool {
+    std::env::var("DPN_OCR_PROBABILISTIC_DEGLUE")
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
+    if token.len() < 6 || !token.is_ascii() {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    for idx in 2..bytes.len().saturating_sub(1) {
+        if bytes[idx - 1].is_ascii_lowercase() && bytes[idx].is_ascii_uppercase() {
+            let prefix = &token[..idx];
+            let suffix = &token[idx..];
+            if suffix.len() < 2
+                || !suffix
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+            {
+                continue;
+            }
+            let suffix_has_lower = suffix.chars().skip(1).any(|ch| ch.is_ascii_lowercase());
+            if !suffix_has_lower {
+                continue;
+            }
+            let split_prefix = segment_glued_english_token_with_dictionary(prefix)
+                .or_else(|| split_glued_contraction(prefix, &prefix.to_ascii_lowercase()))
+                .or_else(|| segment_glued_english_token(prefix))
+                .or_else(|| {
+                    let plausible_word = prefix.len() >= 3
+                        && ascii_language_likelihood(&prefix.to_ascii_lowercase()) > -1.5;
+                    plausible_word.then(|| prefix.to_string())
+                });
+            if let Some(split_prefix) = split_prefix {
+                let split_suffix = segment_glued_english_token_with_dictionary(suffix)
+                    .or_else(|| split_glued_contraction(suffix, &suffix.to_ascii_lowercase()))
+                    .or_else(|| {
+                        probabilistic_english_deglue_enabled()
+                            .then(|| segment_glued_english_token_with_wordninja(suffix))
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| suffix.to_string());
+                return Some(format!("{} {}", split_prefix, split_suffix));
+            }
+        }
+    }
+    None
+}
+
+fn segment_glued_english_token_with_dictionary(token: &str) -> Option<String> {
+    const WORDS: &[&str] = &[
+        "a",
+        "about",
+        "after",
+        "again",
+        "all",
+        "always",
+        "am",
+        "an",
+        "and",
+        "any",
+        "anyone",
+        "are",
+        "around",
+        "as",
+        "at",
+        "bad",
+        "be",
+        "because",
+        "been",
+        "before",
+        "being",
+        "belong",
+        "beneath",
+        "besides",
+        "blue",
+        "alive",
+        "along",
+        "answers",
+        "beyond",
+        "coward",
+        "dead",
+        "desert's",
+        "different",
+        "faces",
+        "impression",
+        "matters",
+        "right",
+        "stop",
+        "wonder",
+        "won't",
+        "bones",
+        "boy",
+        "breathe",
+        "bring",
+        "but",
+        "by",
+        "called",
+        "can",
+        "can't",
+        "cannot",
+        "care",
+        "city",
+        "come",
+        "decided",
+        "desert",
+        "or",
+        "didn't",
+        "do",
+        "does",
+        "doesn't",
+        "doing",
+        "don't",
+        "down",
+        "dream",
+        "eat",
+        "end",
+        "even",
+        "every",
+        "everyone",
+        "fall",
+        "fine",
+        "find",
+        "flower",
+        "for",
+        "forget",
+        "friend",
+        "from",
+        "get",
+        "give",
+        "starting",
+        "given",
+        "go",
+        "going",
+        "gonna",
+        "good",
+        "got",
+        "have",
+        "haven't",
+        "he",
+        "he's",
+        "hearing",
+        "here",
+        "hey",
+        "him",
+        "his",
+        "howl",
+        "humans",
+        "i",
+        "i'd",
+        "i'll",
+        "i'm",
+        "i've",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "it's",
+        "jerk",
+        "kind",
+        "know",
+        "land",
+        "leaving",
+        "let",
+        "let's",
+        "lie",
+        "like",
+        "likes",
+        "little",
+        "live",
+        "look",
+        "looking",
+        "matter",
+        "me",
+        "mean",
+        "meeting",
+        "mind",
+        "much",
+        "my",
+        "no",
+        "not",
+        "nothing",
+        "now",
+        "of",
+        "off",
+        "okay",
+        "on",
+        "one",
+        "paradise",
+        "people",
+        "place",
+        "seem",
+        "ive",
+        "please",
+        "positive",
+        "put",
+        "really",
+        "remember",
+        "remind",
+        "rocks",
+        "sand",
+        "say",
+        "see",
+        "seems",
+        "self",
+        "sniveling",
+        "so",
+        "somebody",
+        "stay",
+        "staying",
+        "still",
+        "sure",
+        "take",
+        "takes",
+        "that",
+        "that's",
+        "the",
+        "then",
+        "there",
+        "there's",
+        "these",
+        "they",
+        "thing",
+        "thinks",
+        "this",
+        "those",
+        "to",
+        "too",
+        "up",
+        "us",
+        "used",
+        "voices",
+        "want",
+        "wanted",
+        "was",
+        "we",
+        "went",
+        "what",
+        "what's",
+        "when",
+        "where",
+        "whether",
+        "who",
+        "who's",
+        "why",
+        "will",
+        "able",
+        "actually",
+        "advance",
+        "advanced",
+        "ain't",
+        "almost",
+        "anywhere",
+        "appears",
+        "attacked",
+        "bears",
+        "beast",
+        "believe",
+        "big",
+        "call",
+        "calling",
+        "came",
+        "cold",
+        "coldly",
+        "crossing",
+        "curl",
+        "day",
+        "days",
+        "death",
+        "direction",
+        "dog",
+        "dome",
+        "driven",
+        "dumbass",
+        "earth",
+        "either",
+        "ends",
+        "enough",
+        "extinct",
+        "fairy",
+        "fairytale",
+        "fairytales",
+        "far",
+        "fit",
+        "following",
+        "garbage",
+        "grandpa",
+        "hate",
+        "heard",
+        "hit",
+        "hurry",
+        "inside",
+        "just",
+        "keeps",
+        "last",
+        "make",
+        "man",
+        "mountains",
+        "nobles",
+        "nobody",
+        "ought",
+        "pagan",
+        "pass",
+        "passing",
+        "plenty",
+        "provisions",
+        "pulled",
+        "rush",
+        "same",
+        "security",
+        "ship",
+        "should",
+        "sleep",
+        "someone",
+        "sound",
+        "squad",
+        "standby",
+        "stunt",
+        "such",
+        "surprise",
+        "surprised",
+        "telling",
+        "through",
+        "tight",
+        "today",
+        "tomorrow",
+        "truth",
+        "two",
+        "voice",
+        "walk",
+        "way",
+        "week",
+        "worth",
+        "years",
+        "away",
+        "bastard",
+        "bleeding",
+        "checkpoint",
+        "chen",
+        "coming",
+        "doubt",
+        "em",
+        "fair",
+        "fight",
+        "half",
+        "how",
+        "ions",
+        "kill",
+        "killing",
+        "living",
+        "long",
+        "looks",
+        "maybe",
+        "mountain",
+        "need",
+        "pride",
+        "protecting",
+        "provis",
+        "pull",
+        "quick",
+        "road",
+        "rotten",
+        "rules",
+        "said",
+        "says",
+        "sedo",
+        "seen",
+        "servants",
+        "shouldn't",
+        "somewhere",
+        "spite",
+        "talk",
+        "tell",
+        "them",
+        "throwing",
+        "using",
+        "wound",
+        "more",
+        "than",
+        "build",
+        "building",
+        "allergies",
+        "begins",
+        "improving",
+        "lifestyle",
+        "style",
+        "weird",
+        "aviation",
+        "bureau",
+        "sign",
+        "air",
+        "nasty",
+        "scent",
+        "heading",
+        "unnatural",
+        "some",
+        "across",
+        "appeared",
+        "chem",
+        "couldn't",
+        "darcia",
+        "dogs",
+        "door",
+        "gel",
+        "guard",
+        "guards",
+        "hige",
+        "leara",
+        "lord",
+        "lost",
+        "lyek",
+        "maiden",
+        "means",
+        "messed",
+        "might",
+        "myself",
+        "never",
+        "noble",
+        "out",
+        "point",
+        "quent",
+        "quite",
+        "something",
+        "they've",
+        "time",
+        "wrong",
+        "yaiden",
+        "hear",
+        "ooyears",
+        "appear",
+        "only",
+        "our",
+        "someone's",
+        "c'm",
+        "another",
+        "running",
+        "pack",
+        "fighting",
+        "advice",
+        "aint",
+        "arm",
+        "author",
+        "bar",
+        "between",
+        "book",
+        "bounces",
+        "breaking",
+        "brought",
+        "cats",
+        "chasing",
+        "claws",
+        "clue",
+        "completely",
+        "constructed",
+        "couldnt",
+        "created",
+        "damn",
+        "delicate",
+        "desire",
+        "didnt",
+        "drunk",
+        "dying",
+        "escaped",
+        "exactly",
+        "excuse",
+        "face",
+        "farther",
+        "ferrets",
+        "figured",
+        "follows",
+        "food",
+        "gratitude",
+        "great",
+        "guy",
+        "happened",
+        "hel",
+        "human",
+        "instead",
+        "isn't",
+        "isnt",
+        "lots",
+        "machine",
+        "messenger",
+        "miasma",
+        "mine",
+        "mixed",
+        "moon",
+        "necessarily",
+        "next",
+        "noise",
+        "nose",
+        "obsessed",
+        "other",
+        "outside",
+        "overcome",
+        "places",
+        "planning",
+        "rank",
+        "reason",
+        "red",
+        "robot",
+        "rough",
+        "sad",
+        "shouldnt",
+        "shut",
+        "skull",
+        "spirit",
+        "stolen",
+        "street",
+        "thats",
+        "tonight",
+        "town",
+        "turned",
+        "ways",
+        "white",
+        "woke",
+        "wouldn't",
+        "wouldnt",
+        "young",
+        "with",
+        "within",
+        "without",
+        "wolf",
+        "wolves",
+        "world",
+        "worry",
+        "would",
+        "you",
+        "you'd",
+        "you'll",
+        "you're",
+        "you've",
+        "your",
+        "yourself",
+        "ancient",
+        "anything",
+        "ass",
+        "back",
+        "became",
+        "bit",
+        "blend",
+        "blood",
+        "born",
+        "carcass",
+        "cared",
+        "cleaning",
+        "could",
+        "department",
+        "died",
+        "drove",
+        "easily",
+        "evidence",
+        "ever",
+        "first",
+        "front",
+        "friends",
+        "gone",
+        "guess",
+        "it'll",
+        "its",
+        "kiss",
+        "leave",
+        "made",
+        "many",
+        "prove",
+        "provisions",
+        "response",
+        "sank",
+        "saw",
+        "scholars",
+        "showed",
+        "sit",
+        "sort",
+        "survived",
+        "thought",
+        "wasn't",
+        "words",
+        "yet",
+        "alongside",
+        "caught",
+        "crew",
+        "dangerous",
+        "disappeared",
+        "else",
+        "eventually",
+        "exist",
+        "form",
+        "flowers",
+        "get",
+        "gift",
+        "ground",
+        "guys",
+        "happen",
+        "her",
+        "hide",
+        "humans",
+        "interesting",
+        "keep",
+        "left",
+        "lying",
+        "over",
+        "overworked",
+        "packing",
+        "patient",
+        "piece",
+        "pretended",
+        "proven",
+        "real",
+        "reaction",
+        "related",
+        "saying",
+        "screwed",
+        "seen",
+        "scent",
+        "spell",
+        "supplies",
+        "survive",
+        "takes",
+        "terror",
+        "things",
+        "times",
+        "true",
+        "trying",
+        "work",
+        "worked",
+    ];
+    let lower = token.to_ascii_lowercase();
+    let n = lower.len();
+    if n < 4 {
+        return None;
+    }
+    let mut best: Vec<Option<(i32, usize, usize)>> = vec![None; n + 1];
+    best[0] = Some((0, 0, 0)); // score, prev, segments
+    for end in 1..=n {
+        let start_min = end.saturating_sub(16);
+        for start in start_min..end {
+            let Some((prev_score, _, prev_segments)) = best[start] else {
+                continue;
+            };
+            let piece = &lower[start..end];
+            let Some(piece_score_adjustment) = dictionary_piece_score_adjustment(piece, WORDS)
+            else {
+                continue;
+            };
+            let len = end - start;
+            let mut score = prev_score + (len as i32 * 10) - 8 + piece_score_adjustment;
+            if len <= 2 {
+                score -= 6;
+            }
+            if matches!(
+                piece,
+                "if" | "it" | "in" | "on" | "of" | "to" | "me" | "we" | "he" | "as" | "is"
+            ) {
+                score += 4;
+            }
+            if len >= 4 {
+                score += 6;
+            }
+            if piece.contains('\'') {
+                score += 4;
+            }
+            let segments = prev_segments + 1;
+            let replace = best[end]
+                .as_ref()
+                .map(|(cur, _, cur_segments)| {
+                    score > *cur || (score == *cur && segments < *cur_segments)
+                })
+                .unwrap_or(true);
+            if replace {
+                best[end] = Some((score, start, segments));
+            }
+        }
+    }
+    let (_score, _, segments) = best[n]?;
+    if segments < 2 {
+        return None;
+    }
+    let mut ranges = Vec::new();
+    let mut idx = n;
+    while idx > 0 {
+        let (_score, prev, _segments) = best[idx]?;
+        ranges.push((prev, idx));
+        idx = prev;
+    }
+    ranges.reverse();
+    if ranges.iter().any(|(start, end)| {
+        end - start == 1 && &lower[*start..*end] != "i" && &lower[*start..*end] != "a"
+    }) {
+        return None;
+    }
+    Some(
+        ranges
+            .into_iter()
+            .map(|(start, end)| token[start..end].to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn dictionary_piece_score_adjustment(piece: &str, words: &[&str]) -> Option<i32> {
+    if words.contains(&piece) {
+        return Some(0);
+    }
+    if piece == "'em" {
+        return Some(-2);
+    }
+    if let Some(base) = piece.strip_suffix("'s") {
+        if base.len() >= 3 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    if let Some(base) = piece.strip_suffix('\'') {
+        if base.len() >= 3 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    if let Some(base) = piece.strip_suffix("n't") {
+        if base.len() >= 2 && words.contains(&base) {
+            return Some(-1);
+        }
+    }
+    None
+}
+
+fn split_titlecase_prefix_with_wordninja(token: &str) -> Option<String> {
+    if token.len() < 12
+        || !token.is_ascii()
+        || !token.starts_with(|ch: char| ch.is_ascii_uppercase())
+    {
+        return None;
+    }
+    let bytes = token.as_bytes();
+    for idx in 5..=token.len().min(10) {
+        if !bytes.get(idx).is_some_and(|b| b.is_ascii_lowercase()) {
+            continue;
+        }
+        let prefix = &token[..idx];
+        let rest = &token[idx..];
+        if rest.len() < 8
+            || !rest
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_lowercase())
+        {
+            continue;
+        }
+        let Some(split_rest) = segment_glued_english_token_with_dictionary(rest)
+            .or_else(|| segment_glued_english_token_with_wordninja(rest))
+        else {
+            continue;
+        };
+        if ascii_language_likelihood(&prefix.to_ascii_lowercase()) < -1.2 {
+            continue;
+        }
+        if split_rest.split_whitespace().count() >= 3 {
+            return Some(format!("{} {}", prefix, split_rest));
+        }
+    }
+    None
+}
+
+fn segment_glued_english_token_with_wordninja(token: &str) -> Option<String> {
+    if token.len() < 8 || !token.is_ascii() {
+        return None;
+    }
+    let parts = wordninja::DEFAULT_MODEL.split(token);
+    if parts.len() < 2 {
+        return None;
+    }
+    let joined = parts.iter().map(|part| part.as_ref()).collect::<String>();
+    if !joined.eq_ignore_ascii_case(token) {
+        return None;
+    }
+    let lower_parts = parts
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    const COMMON_SHORT_WORDS: &[&str] = &[
+        "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+        "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    ];
+    const COMMON_TITLE_PREFIX_WORDS: &[&str] = &[
+        "but", "the", "why", "who", "what", "when", "where", "how", "let", "if", "it", "is", "you",
+        "book",
+    ];
+    if lower_parts
+        .iter()
+        .any(|part| part.len() <= 2 && !COMMON_SHORT_WORDS.contains(&part.as_str()))
+    {
+        return None;
+    }
+    if lower_parts.get(1).is_some_and(|part| part == "a")
+        && lower_parts.first().is_some_and(|part| {
+            part.len() >= 4 && !COMMON_TITLE_PREFIX_WORDS.contains(&part.as_str())
+        })
+    {
+        return None;
+    }
+    if token
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+        && lower_parts.first().is_some_and(|part| {
+            part.len() <= 3
+                && !COMMON_SHORT_WORDS.contains(&part.as_str())
+                && !COMMON_TITLE_PREFIX_WORDS.contains(&part.as_str())
+        })
+        && lower_parts.len() > 3
+    {
+        return None;
+    }
+    let avg_len = token.len() as f32 / parts.len() as f32;
+    if parts.len() >= 6 && avg_len < 3.2 {
+        return None;
+    }
+    if lower_parts
+        .iter()
+        .any(|part| part.len() >= 3 && ascii_language_likelihood(part) < -2.2)
+    {
+        return None;
+    }
+    Some(
+        parts
+            .into_iter()
+            .map(|part| part.into_owned())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn segment_glued_english_token(token: &str) -> Option<String> {
@@ -542,43 +1783,6 @@ fn insert_space_before_opening_quote(input: &str) -> String {
     out
 }
 
-fn replace_case_insensitive_ascii(input: &str, from: &str, to: &str) -> String {
-    if from.is_empty() {
-        return input.to_string();
-    }
-    let input_lc = input.to_ascii_lowercase();
-    let from_lc = from.to_ascii_lowercase();
-    let mut out = String::with_capacity(input.len());
-    let mut pos = 0usize;
-    while let Some(rel_idx) = input_lc[pos..].find(&from_lc) {
-        let idx = pos + rel_idx;
-        out.push_str(&input[pos..idx]);
-        let orig = &input[idx..idx + from.len()];
-        let replacement = if orig
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_uppercase())
-        {
-            let mut chars = to.chars();
-            if let Some(first) = chars.next() {
-                format!(
-                    "{}{}",
-                    first.to_ascii_uppercase(),
-                    chars.collect::<String>()
-                )
-            } else {
-                to.to_string()
-            }
-        } else {
-            to.to_string()
-        };
-        out.push_str(&replacement);
-        pos = idx + from.len();
-    }
-    out.push_str(&input[pos..]);
-    out
-}
-
 pub(super) fn lines_text_for_quality(lines: &[OcrLine]) -> String {
     normalize_utf8_text(
         &lines
@@ -676,15 +1880,55 @@ pub(super) fn ocr_text_quality_score(text: &str, language: &str) -> f32 {
 
     if language_uses_spaces(language) {
         if letters >= 12 && word_count <= 1 {
-            score -= 0.2;
+            score -= 0.35;
         }
-        // Keep this light to avoid penalizing proper nouns and stylized titles.
         if avg_word_len > 10.5 {
-            score -= 0.05;
+            score -= ((avg_word_len - 10.5) * 0.035).min(0.22);
         }
         let long_word_ratio = long_word_count as f32 / word_count as f32;
-        if long_word_ratio > 0.45 {
-            score -= ((long_word_ratio - 0.45) * 0.20).min(0.15);
+        if long_word_ratio > 0.12 {
+            score -= ((long_word_ratio - 0.12) * 0.65).min(0.35);
+        }
+
+        let space_rate = spaces as f32 / total;
+        if letters >= 80 && space_rate < 0.08 {
+            score -= ((0.08 - space_rate) * 3.0).min(0.25);
+        }
+
+        let mut ascii_tokens = 0usize;
+        let mut invalid_short_tokens = 0usize;
+        let mut camelcase_tokens = 0usize;
+        const COMMON_SHORT_WORDS: &[&str] = &[
+            "a", "i", "am", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+            "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+        ];
+        for word in &words_vec {
+            let trimmed = word.trim_matches(|ch: char| !ch.is_ascii_alphabetic() && ch != '\'');
+            if trimmed.is_empty() || !trimmed.is_ascii() {
+                continue;
+            }
+            ascii_tokens += 1;
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.len() <= 2 && !COMMON_SHORT_WORDS.contains(&lower.as_str()) {
+                invalid_short_tokens += 1;
+            }
+            if trimmed
+                .as_bytes()
+                .windows(2)
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+            {
+                camelcase_tokens += 1;
+            }
+        }
+        if ascii_tokens > 0 {
+            let invalid_short_ratio = invalid_short_tokens as f32 / ascii_tokens as f32;
+            if invalid_short_ratio > 0.06 {
+                score -= ((invalid_short_ratio - 0.06) * 1.2).min(0.30);
+            }
+            let camelcase_ratio = camelcase_tokens as f32 / ascii_tokens as f32;
+            if camelcase_ratio > 0.02 {
+                score -= ((camelcase_ratio - 0.02) * 1.0).min(0.20);
+            }
         }
     }
 
@@ -757,4 +2001,168 @@ fn ppocr_geometry_needs_fallback(lines: &[OcrLine], language: &str) -> bool {
         }
     }
     checked > 0 && suspicious > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subtitle_ocr::OcrLine;
+    use std::sync::{Mutex, OnceLock};
+
+    fn ocr_line(text: &str) -> OcrLine {
+        OcrLine {
+            text: text.to_string(),
+            bbox: None,
+            score: Some(0.95),
+            color: None,
+            italic: false,
+        }
+    }
+
+    #[test]
+    fn spacing_fallback_flags_long_spaceless_english_tokens() {
+        let lines = vec![
+            ocr_line("Whereareyou?"),
+            ocr_line("Whatyoullfindbeyondthoserocks"),
+        ];
+        assert!(ppocr_spacing_needs_fallback(&lines));
+        assert!(ppocr_needs_quality_fallback(&lines, "eng"));
+    }
+
+    #[test]
+    fn spacing_fallback_does_not_flag_short_single_word_cues() {
+        let lines = vec![ocr_line("Kiba!"), ocr_line("Hello")];
+        assert!(!ppocr_spacing_needs_fallback(&lines));
+    }
+
+    #[test]
+    fn camelcase_split_preserves_proper_noun_suffixes() {
+        assert_eq!(
+            split_glued_ascii_token("goingtoParadise"),
+            Some("going to Paradise".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("positiveaboutAlice"),
+            Some("positive about Alice".to_string())
+        );
+    }
+
+    fn with_probabilistic_deglue_enabled<T>(f: impl FnOnce() -> T) -> T {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("DPN_OCR_PROBABILISTIC_DEGLUE");
+        std::env::set_var("DPN_OCR_PROBABILISTIC_DEGLUE", "1");
+        let result = f();
+        if let Some(previous) = previous {
+            std::env::set_var("DPN_OCR_PROBABILISTIC_DEGLUE", previous);
+        } else {
+            std::env::remove_var("DPN_OCR_PROBABILISTIC_DEGLUE");
+        }
+        result
+    }
+
+    #[test]
+    fn dictionary_split_handles_common_glued_phrases() {
+        assert_eq!(
+            split_glued_ascii_token("Whatyou'll"),
+            Some("What you'll".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("findbeyondthoserocks"),
+            Some("find beyond those rocks".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lookingforhimwon't"),
+            Some("looking for him won't".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("doanygood"),
+            Some("do any good".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("totellmeabout'em"),
+            Some("to tell me about 'em".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("there'salwaysalittletruthin'em"),
+            Some("there's always a little truth in 'em".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("sosecurity's"),
+            Some("so security's".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("gonnabetight"),
+            Some("gonna be tight".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("Ithoughtthatmaybeyoudidn't"),
+            Some("I thought that maybe you didn't".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("peopleyousitnexttoatabar"),
+            Some("people you sit next to at a bar".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lookingforcleaningsupplies"),
+            Some("looking for cleaning supplies".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("lyingtoyourself"),
+            Some("lying to yourself".to_string())
+        );
+        assert_eq!(
+            split_glued_ascii_token("workedyourselfintotheground"),
+            Some("worked yourself into the ground".to_string())
+        );
+    }
+
+    #[test]
+    fn probabilistic_split_handles_unseen_glued_dialogue_when_enabled() {
+        with_probabilistic_deglue_enabled(|| {
+            assert_eq!(
+                split_glued_ascii_token("Letusmeet"),
+                Some("Let us meet".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Ifwemeetagain"),
+                Some("If we meet again".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("BookoftheMoon"),
+                Some("Book of the Moon".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("FlowerMaidenandthewolves"),
+                Some("Flower Maiden and the wolves".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Butpridedoesn'tcountformuch"),
+                Some("But pride doesn't count for much".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Awoifsankitsclaws"),
+                Some("Awoif sank its claws".to_string())
+            );
+            assert_eq!(
+                split_glued_ascii_token("Aliceherselfisthecrowningachievement"),
+                Some("Alice herself is the crowning achievement".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn fragmented_glue_repair_joins_bad_ocr_fragments_before_splitting() {
+        assert_eq!(
+            postprocess_ocr_text("TheN obles'provis ions oughttobepas sing", "eng"),
+            "The Nobles' provisions ought to be passing"
+        );
+        assert_eq!(
+            postprocess_ocr_text("Ifwehideourtrueform, wecanblendin", "eng"),
+            "If we hide our true form, we can blend in"
+        );
+    }
 }
