@@ -105,12 +105,15 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     }
 
     out = normalize_english_ocr_confusions(&out);
+    out = correct_english_ocr_dictionary_confusions(&out);
     out = insert_space_after_punctuation(&out);
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
 
     out = split_fragmented_english_phrases(&out);
+    out = merge_common_fragmented_english_words(&out);
     out = split_glued_english_phrases(&out);
+    out = merge_common_fragmented_english_words(&out);
 
     normalize_utf8_text(&out)
 }
@@ -198,6 +201,289 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
         }
     }
     flush_token(&mut token, &mut out);
+    out
+}
+
+fn correct_english_ocr_dictionary_confusions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut token = String::new();
+    let flush_token = |tok: &mut String, out: &mut String| {
+        if tok.is_empty() {
+            return;
+        }
+        if let Some(corrected) = correct_english_ocr_token(tok) {
+            out.push_str(&corrected);
+        } else {
+            out.push_str(tok);
+        }
+        tok.clear();
+    };
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphabetic() || ch == '\'' {
+            token.push(ch);
+        } else {
+            flush_token(&mut token, &mut out);
+            out.push(ch);
+        }
+    }
+    flush_token(&mut token, &mut out);
+    out
+}
+
+fn correct_english_ocr_token(token: &str) -> Option<String> {
+    const WORDS: &[&str] = &[
+        "about",
+        "again",
+        "all",
+        "am",
+        "and",
+        "anything",
+        "are",
+        "around",
+        "asleep",
+        "back",
+        "because",
+        "believe",
+        "but",
+        "can't",
+        "city",
+        "could",
+        "couldn't",
+        "day",
+        "days",
+        "did",
+        "didn't",
+        "do",
+        "does",
+        "doesn't",
+        "don't",
+        "down",
+        "enough",
+        "ever",
+        "every",
+        "everyone",
+        "everything",
+        "eye",
+        "feel",
+        "food",
+        "for",
+        "from",
+        "get",
+        "going",
+        "gone",
+        "guess",
+        "has",
+        "have",
+        "he",
+        "here",
+        "him",
+        "his",
+        "how",
+        "i",
+        "i'll",
+        "i'm",
+        "i've",
+        "if",
+        "in",
+        "is",
+        "it",
+        "it's",
+        "just",
+        "kind",
+        "know",
+        "let",
+        "like",
+        "little",
+        "long",
+        "look",
+        "made",
+        "make",
+        "maybe",
+        "me",
+        "month",
+        "more",
+        "myself",
+        "never",
+        "no",
+        "not",
+        "nothing",
+        "of",
+        "on",
+        "one",
+        "out",
+        "paradise",
+        "people",
+        "place",
+        "road",
+        "see",
+        "sleep",
+        "something",
+        "soon",
+        "still",
+        "that",
+        "that's",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "there's",
+        "these",
+        "they",
+        "they'll",
+        "thing",
+        "things",
+        "think",
+        "this",
+        "those",
+        "through",
+        "time",
+        "to",
+        "too",
+        "up",
+        "us",
+        "was",
+        "way",
+        "we",
+        "we'll",
+        "were",
+        "what",
+        "what're",
+        "when",
+        "where",
+        "who",
+        "why",
+        "will",
+        "with",
+        "wolf",
+        "wolves",
+        "work",
+        "would",
+        "wouldn't",
+        "you",
+        "you'll",
+        "you're",
+        "your",
+        "yourself",
+        "young",
+        "anybody",
+        "husband",
+    ];
+    let lower = token.to_ascii_lowercase();
+    if lower.len() < 3 || WORDS.contains(&lower.as_str()) {
+        return None;
+    }
+    if lower == "atl" {
+        return Some(match_token_case(token, "at"));
+    }
+    if lower == "exhusband" {
+        return Some(match_token_case(token, "ex-husband"));
+    }
+    let mut candidates = Vec::new();
+    candidates.push(lower.replace('v', "y"));
+    candidates.push(lower.replace('f', "t"));
+    candidates.push(lower.replace("hq", "n"));
+    candidates.push(lower.replace("fh", "th"));
+    candidates.push(lower.replace("cok", "ook"));
+    if lower.ends_with('f') {
+        candidates.push(format!("{}th", &lower[..lower.len() - 1]));
+    }
+    if lower.ends_with('l') {
+        candidates.push(format!("{}'ll", &lower[..lower.len() - 1]));
+    }
+    candidates.push(lower.replace("oc", "c"));
+    candidates.push(lower.replace("lo", "to"));
+    for candidate in candidates {
+        if candidate != lower && WORDS.contains(&candidate.as_str()) {
+            return Some(match_token_case(token, &candidate));
+        }
+    }
+    None
+}
+
+fn match_token_case(original: &str, replacement: &str) -> String {
+    if original.chars().all(|ch| ch.is_ascii_uppercase()) {
+        replacement.to_ascii_uppercase()
+    } else if original
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
+    {
+        let mut chars = replacement.chars();
+        let mut out = String::new();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+        }
+        out.push_str(chars.as_str());
+        out
+    } else {
+        replacement.to_string()
+    }
+}
+
+fn merge_common_fragmented_english_words(input: &str) -> String {
+    let mut out = input
+        .replace("So on,", "Soon,")
+        .replace("so on,", "soon,")
+        .replace("So on.", "Soon.")
+        .replace("so on.", "soon.")
+        .replace("you'll!", "you'll")
+        .replace("we'll!", "we'll")
+        .replace("could n't", "couldn't")
+        .replace("Could n't", "Couldn't")
+        .replace("yo u", "you")
+        .replace("Yo u", "You")
+        .replace("me at", "meat")
+        .replace("Me at", "Meat")
+        .replace("\"?", "?");
+    for (from, to) in [
+        ("a sleep", "asleep"),
+        ("any more", "anymore"),
+        ("every thing", "everything"),
+        ("my self", "myself"),
+        ("your self", "yourself"),
+        ("kind a", "kind of"),
+        ("any way", "anyway"),
+        ("so on enough", "soon enough"),
+        ("so on,", "soon,"),
+        ("so on.", "soon."),
+        ("so on enough", "soon enough"),
+        ("yo u", "you"),
+        ("me at", "meat"),
+        ("could n't", "couldn't"),
+        ("you'll!", "you'll"),
+        ("we'll!", "we'll"),
+        ("com ing", "coming"),
+        ("liv ing", "living"),
+    ] {
+        out = replace_ascii_word_sequence(&out, from, to);
+    }
+    out
+}
+
+fn replace_ascii_word_sequence(input: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let lower = input.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find(from) {
+        let start = cursor + rel;
+        let end = start + from.len();
+        let before_ok = start == 0
+            || (!lower.as_bytes()[start - 1].is_ascii_alphanumeric()
+                && lower.as_bytes()[start - 1] != b'\'');
+        let after_ok = end == lower.len()
+            || (!lower.as_bytes()[end].is_ascii_alphanumeric() && lower.as_bytes()[end] != b'\'');
+        if before_ok && after_ok {
+            out.push_str(&input[cursor..start]);
+            out.push_str(&match_token_case(&input[start..end], to));
+            cursor = end;
+        } else {
+            out.push_str(&input[cursor..end]);
+            cursor = end;
+        }
+    }
+    out.push_str(&input[cursor..]);
     out
 }
 
