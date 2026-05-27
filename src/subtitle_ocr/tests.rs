@@ -66,6 +66,80 @@ fn char_error_rate(expected: &str, actual: &str) -> f32 {
 }
 
 #[test]
+fn bitmap_subtitle_canvas_fallback_uses_video_dimensions_when_decoder_has_no_size() {
+    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+        .expect("PGS decoder should be available in FFmpeg build");
+    let mut ctx = AVCodecContext::new(&decoder);
+
+    apply_bitmap_subtitle_canvas_fallback(
+        &mut ctx,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        0,
+        0,
+        Some((1440, 1080)),
+        3,
+    );
+
+    assert_eq!(ctx.width, 1440);
+    assert_eq!(ctx.height, 1080);
+    assert_eq!(ctx.coded_width, 1440);
+    assert_eq!(ctx.coded_height, 1080);
+}
+
+#[test]
+fn bitmap_subtitle_canvas_fallback_preserves_existing_decoder_size() {
+    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+        .expect("PGS decoder should be available in FFmpeg build");
+    let mut ctx = AVCodecContext::new(&decoder);
+    unsafe {
+        (*ctx.as_mut_ptr()).width = 1920;
+        (*ctx.as_mut_ptr()).height = 1080;
+        (*ctx.as_mut_ptr()).coded_width = 1920;
+        (*ctx.as_mut_ptr()).coded_height = 1080;
+    }
+
+    apply_bitmap_subtitle_canvas_fallback(
+        &mut ctx,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        0,
+        0,
+        Some((1440, 1080)),
+        3,
+    );
+
+    assert_eq!(ctx.width, 1920);
+    assert_eq!(ctx.height, 1080);
+    assert_eq!(ctx.coded_width, 1920);
+    assert_eq!(ctx.coded_height, 1080);
+}
+
+#[test]
+fn bitmap_subtitle_canvas_fallback_uses_larger_stream_dimensions() {
+    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+        .expect("PGS decoder should be available in FFmpeg build");
+    let mut ctx = AVCodecContext::new(&decoder);
+
+    apply_bitmap_subtitle_canvas_fallback(
+        &mut ctx,
+        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        1920,
+        1080,
+        Some((1440, 1080)),
+        3,
+    );
+
+    assert_eq!(ctx.width, 1920);
+    assert_eq!(ctx.height, 1080);
+    assert_eq!(ctx.coded_width, 1920);
+    assert_eq!(ctx.coded_height, 1080);
+}
+
+#[test]
+fn subtitle_rect_counts_handles_null_subtitle() {
+    assert_eq!(subtitle_rect_counts(std::ptr::null()), (0, 0));
+}
+
+#[test]
 fn external_ocr_command_parser_requires_program_name() {
     assert!(parse_external_ocr_argv("").is_err());
     assert!(parse_external_ocr_argv("   ").is_err());

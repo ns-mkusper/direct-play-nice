@@ -124,11 +124,14 @@ pub(super) fn ocr_single_stream(
     let input_cstr = CString::new(request.input_path).context("input path has interior NUL")?;
     let mut ictx = AVFormatContextInput::open(input_cstr.as_c_str())?;
 
-    let (stream_time_base, stream_codec_id) = ictx
+    let (stream_time_base, stream_codec_id, stream_width, stream_height) = ictx
         .streams()
         .iter()
         .find(|st| st.index == request.stream_index)
-        .map(|st| (st.time_base, st.codecpar().codec_id))
+        .map(|st| {
+            let cp = st.codecpar();
+            (st.time_base, cp.codec_id, cp.width, cp.height)
+        })
         .ok_or_else(|| anyhow!("subtitle stream {} not found", request.stream_index))?;
 
     let decoder = AVCodec::find_decoder(stream_codec_id).ok_or_else(|| {
@@ -155,10 +158,22 @@ pub(super) fn ocr_single_stream(
         );
     }
     decode_context.set_time_base(stream_time_base);
+    apply_bitmap_subtitle_canvas_fallback(
+        &mut decode_context,
+        stream_codec_id,
+        stream_width,
+        stream_height,
+        request.video_dimensions,
+        request.stream_index,
+    );
     decode_context.open(None)?;
 
     let mut cues = Vec::new();
     let mut packet_seq: usize = 0;
+    let mut subtitle_packet_count: usize = 0;
+    let mut decoded_subtitle_count: usize = 0;
+    let mut decoded_rect_count: usize = 0;
+    let mut decoded_image_rect_count: usize = 0;
     let mut quality_baseline = OcrQualityBaseline::default();
 
     loop {
@@ -170,6 +185,7 @@ pub(super) fn ocr_single_stream(
         if packet.stream_index != request.stream_index {
             continue;
         }
+        subtitle_packet_count += 1;
 
         let src_pts = packet.pts;
         let src_dur = packet.duration;
@@ -177,6 +193,10 @@ pub(super) fn ocr_single_stream(
         packet.rescale_ts(stream_time_base, decode_context.time_base);
 
         if let Some(subtitle) = decode_context.decode_subtitle(Some(&mut packet))? {
+            decoded_subtitle_count += 1;
+            let (rect_count, image_rect_count) = subtitle_rect_counts(subtitle.as_ptr());
+            decoded_rect_count += rect_count;
+            decoded_image_rect_count += image_rect_count;
             let fallback_start_ms = timestamp_to_ms(src_pts, stream_time_base).unwrap_or(0);
             let fallback_dur_ms = timestamp_to_ms(src_dur, stream_time_base)
                 .unwrap_or(0)
@@ -207,6 +227,10 @@ pub(super) fn ocr_single_stream(
         let Some(subtitle) = decode_context.decode_subtitle(None)? else {
             break;
         };
+        decoded_subtitle_count += 1;
+        let (rect_count, image_rect_count) = subtitle_rect_counts(subtitle.as_ptr());
+        decoded_rect_count += rect_count;
+        decoded_image_rect_count += image_rect_count;
         let cue_params = CueBuildParams {
             language: request.language,
             stream_index: request.stream_index,
@@ -230,7 +254,89 @@ pub(super) fn ocr_single_stream(
 
     sanitize_cues(&mut cues, request.ocr_format);
 
+    if cues.is_empty() && subtitle_packet_count > 0 && is_image_based_subtitle(stream_codec_id) {
+        bail!(
+            "OCR produced no cues for bitmap subtitle stream {} ({}) despite reading {} subtitle packet(s); decoded_subtitles={}, decoded_rects={}, decoded_image_rects={}, video_dimensions={:?}. This usually means the bitmap subtitle decoder could not derive a valid canvas/rectangle layout.",
+            request.stream_index,
+            codec_name(stream_codec_id),
+            subtitle_packet_count,
+            decoded_subtitle_count,
+            decoded_rect_count,
+            decoded_image_rect_count,
+            request.video_dimensions
+        );
+    }
+
     Ok(cues)
+}
+
+pub(super) fn apply_bitmap_subtitle_canvas_fallback(
+    decode_context: &mut AVCodecContext,
+    codec_id: ffi::AVCodecID,
+    stream_width: i32,
+    stream_height: i32,
+    video_dimensions: Option<(u32, u32)>,
+    stream_index: i32,
+) {
+    if !is_image_based_subtitle(codec_id) {
+        return;
+    }
+    if decode_context.width > 0 && decode_context.height > 0 {
+        return;
+    }
+
+    let Some((video_width, video_height)) = video_dimensions else {
+        return;
+    };
+    if video_width == 0 || video_height == 0 {
+        return;
+    }
+
+    let width = stream_width.max(video_width as i32);
+    let height = stream_height.max(video_height as i32);
+    if width <= 0 || height <= 0 {
+        return;
+    }
+
+    unsafe {
+        let ctx = decode_context.as_mut_ptr();
+        (*ctx).width = width;
+        (*ctx).height = height;
+        (*ctx).coded_width = width;
+        (*ctx).coded_height = height;
+    }
+    info!(
+        "Applying bitmap subtitle canvas fallback for stream {} ({}): {}x{} from video dimensions {:?}",
+        stream_index,
+        codec_name(codec_id),
+        width,
+        height,
+        video_dimensions
+    );
+}
+
+pub(super) fn subtitle_rect_counts(subtitle: *const ffi::AVSubtitle) -> (usize, usize) {
+    if subtitle.is_null() {
+        return (0, 0);
+    }
+    let sub = unsafe { &*subtitle };
+    if sub.num_rects == 0 || sub.rects.is_null() {
+        return (0, 0);
+    }
+
+    let mut image_rects = 0usize;
+    for i in 0..sub.num_rects {
+        let rect_ptr = unsafe { *sub.rects.add(i as usize) };
+        if rect_ptr.is_null() {
+            continue;
+        }
+        let rect = unsafe { &*rect_ptr };
+        if rect.type_ == ffi::SUBTITLE_BITMAP {
+            image_rects += 1;
+        }
+    }
+
+    (sub.num_rects as usize, image_rects)
 }
 
 fn subtitle_to_cues(
