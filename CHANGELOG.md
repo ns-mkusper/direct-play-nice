@@ -4,13 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.2] - 2026-05-27
+
 ### 🛠️ Fixed
 
+- Added OCR quality fallback handling for severely glued bitmap-subtitle text so
+  PP-OCR failures can recover at cue level instead of emitting unreadable text.
+- Added generic OCR word-fragment normalization for common recognition artifacts
+  without media-specific replacement tables.
 - Added Sonarr parity for completed pending language-upgrade force imports so
   quality-downgrade dub replacements can be manually imported after DPN verifies
   the pending file satisfies the configured language policy.
 - Skipped Sonarr multi-episode and season-pack release results for automatic
   language redownloads unless the release maps to the single requested episode.
+
+### 🧪 Validation and Tooling
+
+- Added OCR text-quality metrics and a post-merge spacing regression benchmark
+  gate to catch low-space-rate and long-token regressions.
+- Added strict SRT reference comparison tooling for CER/WER validation of OCR
+  recognizer candidates.
+- Added gated OCR training data export and recognizer training utilities for
+  continued GPU OCR improvements.
+
+### 📚 Documentation
+
+- Documented the bitmap-subtitle OCR flow with a Mermaid diagram covering
+  PP-OCR, generic normalization, word/phrase recovery, and safety fallback.
 
 ## [1.1.0-beta.1] - 2026-05-21
 
