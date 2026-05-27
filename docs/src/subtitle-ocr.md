@@ -23,6 +23,39 @@ For official GPU architecture/provider references and compatibility links, see
 - `--ocr-format ass` request ASS (may be downgraded in MP4)
 - `--ocr-write-srt-sidecar` write `.srt` sidecars in addition to embedded output
 
+## OCR flow
+
+Bitmap subtitle OCR runs as a side pass after the main media streams are planned.
+The default path is PP-OCR first; Tesseract is only used as a quality fallback
+when enabled and when the PP-OCR result fails generic quality checks.
+
+```mermaid
+flowchart TD
+    A[Input container] --> B{Subtitle stream type}
+    B -->|Text subtitle| C[Copy or remux text subtitle]
+    B -->|Bitmap subtitle| D[Decode subtitle packets]
+    D --> E[Rasterize subtitle rectangles to OCR images]
+    E --> F[Select OCR engine and runtime provider]
+    F --> G[Run PP-OCR detector and recognizer]
+    G --> H[Prune impossible geometry]
+    H --> I[Generic text normalization]
+    I --> J{Spacing or quality issue?}
+    J -->|No| N[Emit OCR cue]
+    J -->|Yes| K[Try PP-OCR word/phrase recovery]
+    K --> L{Recovered output improves quality?}
+    L -->|Yes| N
+    L -->|No| M{Safety fallback enabled and useful?}
+    M -->|Yes| N
+    M -->|No| N
+    N --> O[Write SRT/ASS track]
+    O --> P[Mux output and optional sidecar]
+```
+
+Quality checks include low spacing density, long glued tokens, mixed-case glue,
+low-information garbage fragments, and impossible bounding boxes. The goal is to
+prefer the best AI OCR result first, then use the fallback only for residual
+cue-level failures.
+
 ## GPU behavior
 
 The OCR runtime attempts provider fallback when available (for example CUDA,

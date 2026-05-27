@@ -4,6 +4,7 @@
 //! serialization to SRT/ASS.
 
 use super::*;
+use std::env;
 pub(super) struct TesseractCandidate {
     pub(super) text: String,
     pub(super) psm: u8,
@@ -257,7 +258,12 @@ pub(super) fn rect_to_pgm(
     }
 
     let (final_raster, final_w, final_h) = if ai_mode {
-        upscale_grayscale_nearest(&raster, width, height, 2)
+        let scale = env::var("DPN_OCR_PGM_SCALE")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|v| (1..=6).contains(v))
+            .unwrap_or(2);
+        upscale_grayscale_nearest(&raster, width, height, scale)
     } else {
         (raster, width, height)
     };
@@ -295,6 +301,173 @@ pub(super) fn upscale_grayscale_nearest(
         }
     }
     (out, out_w, out_h)
+}
+
+fn pgm_header_len(pgm: &[u8]) -> Option<(usize, usize, usize)> {
+    if !pgm.starts_with(b"P5") {
+        return None;
+    }
+    let mut i = 2usize;
+    let mut tokens = Vec::new();
+    while i < pgm.len() && tokens.len() < 3 {
+        while i < pgm.len() && pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= pgm.len() {
+            return None;
+        }
+        let start = i;
+        while i < pgm.len() && !pgm[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        tokens.push(
+            std::str::from_utf8(&pgm[start..i])
+                .ok()?
+                .parse::<usize>()
+                .ok()?,
+        );
+    }
+    if i < pgm.len() && pgm[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if tokens.len() != 3 || tokens[2] != 255 {
+        return None;
+    }
+    Some((tokens[0], tokens[1], i))
+}
+
+fn crop_pgm(
+    pixels: &[u8],
+    width: usize,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) -> Vec<u8> {
+    let crop_w = right.saturating_sub(left).max(1);
+    let crop_h = bottom.saturating_sub(top).max(1);
+    let mut out = format!(
+        "P5
+{} {}
+255
+",
+        crop_w, crop_h
+    )
+    .into_bytes();
+    for y in top..bottom {
+        let row = y * width;
+        out.extend_from_slice(&pixels[row + left..row + right]);
+    }
+    out
+}
+
+pub(super) fn split_pgm_into_word_crops_with_gap(
+    pgm: &[u8],
+    gap_override: Option<usize>,
+) -> Vec<(Vec<u8>, OcrBoundingBox)> {
+    let Some((width, height, header_len)) = pgm_header_len(pgm) else {
+        return Vec::new();
+    };
+    let pixels = &pgm[header_len..];
+    if width == 0 || height == 0 || pixels.len() < width * height {
+        return Vec::new();
+    }
+
+    let has_ink = |x: usize, y: usize| pixels[y * width + x] < 245;
+    let row_has_ink = |y: usize| (0..width).any(|x| has_ink(x, y));
+
+    let mut bands = Vec::new();
+    let mut y = 0usize;
+    while y < height {
+        while y < height && !row_has_ink(y) {
+            y += 1;
+        }
+        if y >= height {
+            break;
+        }
+        let start = y;
+        while y < height && row_has_ink(y) {
+            y += 1;
+        }
+        let end = y;
+        if end.saturating_sub(start) >= 4 {
+            bands.push((start, end));
+        }
+    }
+
+    let mut crops = Vec::new();
+    for (band_top, band_bottom) in bands {
+        let band_h = band_bottom - band_top;
+        let col_has_ink = |x: usize| (band_top..band_bottom).any(|yy| has_ink(x, yy));
+        let min_gap = gap_override
+            .or_else(|| {
+                env::var("DPN_OCR_WORD_GAP_COLUMNS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .filter(|v| (1..=32).contains(v))
+            })
+            .unwrap_or_else(|| (band_h / 6).clamp(2, 8));
+        let mut spans = Vec::new();
+        let mut x = 0usize;
+        while x < width {
+            while x < width && !col_has_ink(x) {
+                x += 1;
+            }
+            if x >= width {
+                break;
+            }
+            let start = x;
+            let mut last_ink = x;
+            let mut blank_run = 0usize;
+            while x < width {
+                if col_has_ink(x) {
+                    last_ink = x;
+                    blank_run = 0;
+                } else {
+                    blank_run += 1;
+                    if blank_run >= min_gap {
+                        break;
+                    }
+                }
+                x += 1;
+            }
+            let end = last_ink + 1;
+            if end > start + 1 {
+                spans.push((start, end));
+            }
+        }
+        // If no real word gaps were found, do not return a single full-line crop.
+        if spans.len() < 2 {
+            continue;
+        }
+        for (left, right) in spans {
+            let pad_x = env::var("DPN_OCR_WORD_PAD_X")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|v| (0..=32).contains(v))
+                .unwrap_or(2);
+            let pad_y = env::var("DPN_OCR_WORD_PAD_Y")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|v| (0..=24).contains(v))
+                .unwrap_or(2);
+            let l = left.saturating_sub(pad_x);
+            let r = (right + pad_x).min(width);
+            let t = band_top.saturating_sub(pad_y);
+            let b = (band_bottom + pad_y).min(height);
+            let crop = crop_pgm(pixels, width, l, t, r, b);
+            crops.push((
+                crop,
+                OcrBoundingBox {
+                    left: l as i32,
+                    right: r as i32,
+                    top: t as i32,
+                    bottom: b as i32,
+                },
+            ));
+        }
+    }
+    crops
 }
 
 pub(super) fn dominant_color_from_rect(rect: &ffi::AVSubtitleRect) -> Option<(u8, u8, u8)> {

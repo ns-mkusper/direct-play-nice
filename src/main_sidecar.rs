@@ -88,6 +88,22 @@ impl OcrWorkDir {
 
 impl Drop for OcrWorkDir {
     fn drop(&mut self) {
+        if std::env::var("DPN_OCR_KEEP_WORK_DIR")
+            .ok()
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+        {
+            debug!(
+                "Keeping OCR temporary directory '{}' due to DPN_OCR_KEEP_WORK_DIR",
+                self.path.display()
+            );
+            return;
+        }
         if let Err(err) = fs::remove_dir_all(&self.path) {
             debug!(
                 "Failed to clean OCR temporary directory '{}': {}",

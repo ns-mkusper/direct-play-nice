@@ -18,6 +18,7 @@ Usage:
     [--jobs-per-gpu 1] \
     [--cuda-devices 0,1] \
     [--require-gpu] \
+    [--min-ocr-space-rate 0.12] \
     [--]
 
 Notes:
@@ -46,6 +47,7 @@ OCR_MAX_JOBS=""
 JOBS_PER_GPU=""
 CUDA_DEVICES=""
 REQUIRE_GPU="0"
+MIN_OCR_SPACE_RATE=""
 EXTRA_ENVS=()
 
 while [[ $# -gt 0 ]]; do
@@ -76,6 +78,8 @@ while [[ $# -gt 0 ]]; do
       CUDA_DEVICES="$2"; shift 2 ;;
     --require-gpu)
       REQUIRE_GPU="1"; shift ;;
+    --min-ocr-space-rate)
+      MIN_OCR_SPACE_RATE="$2"; shift 2 ;;
     --env)
       EXTRA_ENVS+=("$2"); shift 2 ;;
     --help|-h)
@@ -110,6 +114,12 @@ fi
 if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
   if ! [[ "$MAX_SOURCE_SECONDS" =~ ^[0-9]+$ ]] || (( MAX_SOURCE_SECONDS < 30 )); then
     echo "--max-source-seconds must be an integer >= 30" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$MIN_OCR_SPACE_RATE" ]]; then
+  if ! [[ "$MIN_OCR_SPACE_RATE" =~ ^0(\.[0-9]+)?$|^1(\.0+)?$ ]]; then
+    echo "--min-ocr-space-rate must be a decimal between 0 and 1" >&2
     exit 2
   fi
 fi
@@ -157,6 +167,7 @@ printf '\n' >>"$CMD_TXT"
   echo "REQUIRE_GPU=$REQUIRE_GPU"
   echo "MAX_SOURCE_SECONDS=${MAX_SOURCE_SECONDS:-}"
   echo "SAMPLE_MS=$SAMPLE_MS"
+  echo "MIN_OCR_SPACE_RATE=${MIN_OCR_SPACE_RATE:-}"
   echo "START_HUMAN=$(date -Is)"
 } >"$META"
 
@@ -412,6 +423,85 @@ for ln in ocr_stream_lines:
         continue
     ocr_stream_cues.append({"stream_index": int(m.group(1)), "cues": int(m.group(2))})
 total_ocr_cues = sum(item["cues"] for item in ocr_stream_cues)
+
+def extract_output_subtitle_text_metrics(path: Path):
+    metrics = []
+    if not path.exists():
+        return metrics
+    try:
+        streams_obj = json.loads(
+            subprocess.check_output(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "s",
+                    "-show_entries",
+                    "stream=index,codec_name:stream_tags=language,title",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                text=True,
+            )
+        )
+    except Exception:
+        return metrics
+    for ordinal, stream in enumerate(streams_obj.get("streams", [])):
+        codec = stream.get("codec_name") or "unknown"
+        tags = stream.get("tags") or {}
+        language = tags.get("language") or "und"
+        try:
+            text = subprocess.check_output(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-map",
+                    f"0:s:{ordinal}",
+                    "-f",
+                    "srt",
+                    "-",
+                ],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            continue
+        cue_lines = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.isdigit() or "-->" in line:
+                continue
+            cue_lines.append(line)
+        chars = sum(len(line) for line in cue_lines)
+        spaces = sum(line.count(" ") for line in cue_lines)
+        words = sum(len(line.split()) for line in cue_lines)
+        tokens = [tok for line in cue_lines for tok in line.split()]
+        long_tokens = sum(1 for tok in tokens if len(tok) >= 14)
+        max_token_len = max((len(tok) for tok in tokens), default=0)
+        metrics.append(
+            {
+                "stream_index": stream.get("index"),
+                "stream_ordinal": ordinal,
+                "codec": codec,
+                "language": language,
+                "title": tags.get("title") or "",
+                "line_count": len(cue_lines),
+                "char_count": chars,
+                "space_count": spaces,
+                "word_count": words,
+                "space_rate": (spaces / chars) if chars else None,
+                "long_token_count": long_tokens,
+                "max_token_len": max_token_len,
+            }
+        )
+    return metrics
+
+output_subtitle_text_metrics = extract_output_subtitle_text_metrics(out_path)
 quality_fallback_lines = [
     ln for ln in log_text.splitlines() if "quality fallback: using Tesseract" in ln
 ]
@@ -470,6 +560,8 @@ summary = {
     "ocr_stream_lines": ocr_stream_lines,
     "ocr_stream_cues": ocr_stream_cues,
     "total_ocr_cues": total_ocr_cues,
+    "output_subtitle_text_metrics": output_subtitle_text_metrics,
+    "min_ocr_space_rate": float(meta.get("MIN_OCR_SPACE_RATE") or 0.0),
     "force_tess_non_english": meta.get("FORCE_TESS_NON_ENGLISH", ""),
     "disable_tess_fallback": meta.get("DISABLE_TESS_FALLBACK", ""),
     "tess_fallback_min_gain": meta.get("TESS_FALLBACK_MIN_GAIN", ""),
@@ -559,6 +651,21 @@ if ocr_stream_lines:
 else:
     lines.append("- No OCR stream summary lines found in run.log")
 lines.append("")
+lines.append("## Output Subtitle Text Quality")
+lines.append("")
+if output_subtitle_text_metrics:
+    lines.append("| Stream | Language | Lines | Chars | Spaces | Space Rate | Long Tokens | Max Token |")
+    lines.append("| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for item in output_subtitle_text_metrics:
+        rate = item["space_rate"]
+        rate_s = f"{rate:.4f}" if rate is not None else "n/a"
+        lines.append(
+            f"| {item['stream_index']} | {item['language']} | {item['line_count']} | {item['char_count']} | "
+            f"{item['space_count']} | {rate_s} | {item['long_token_count']} | {item['max_token_len']} |"
+        )
+else:
+    lines.append("- No extractable text subtitle streams found in output.")
+lines.append("")
 lines.append("## Fallback Counts")
 lines.append("")
 lines.append(f"- Quality fallback count: `{summary['quality_fallback_count']}`")
@@ -588,6 +695,22 @@ if summary["worker_plan_lines"]:
 else:
     lines.append("- No OCR worker plan lines found in run.log")
 summary_md.write_text("\n".join(lines) + "\n")
+
+min_space_rate = float(meta.get("MIN_OCR_SPACE_RATE") or 0.0)
+if min_space_rate > 0.0:
+    checked = [
+        item for item in output_subtitle_text_metrics
+        if item.get("language", "").lower() in {"eng", "en", "en-us", "en_us"}
+        and item.get("char_count", 0) >= 120
+    ]
+    failing = [item for item in checked if (item.get("space_rate") or 0.0) < min_space_rate]
+    if failing:
+        details = ", ".join(
+            f"stream {item['stream_index']} space_rate={item['space_rate']:.4f}"
+            for item in failing
+        )
+        print(f"OCR text quality gate failed: {details}; threshold={min_space_rate:.4f}", file=sys.stderr)
+        sys.exit(3)
 PY
 
 echo "Benchmark completed with status $status"

@@ -23,6 +23,7 @@ jobs:
       contents: read
     env:
       BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      BENCHMARK_OCR_SPACING_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_OCR_SPACING_SOURCE_PATH }}
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
@@ -264,6 +265,7 @@ jobs:
       actions: write
     env:
       BENCHMARK_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_SOURCE_PATH }}
+      BENCHMARK_OCR_SPACING_SOURCE_PATH_SECRET: ${{ secrets.BENCHMARK_OCR_SPACING_SOURCE_PATH }}
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
@@ -566,6 +568,35 @@ jobs:
           rm -rf benchmark_artifacts/ocr
           cp -a benchmark_artifacts/ocr_gpu benchmark_artifacts/ocr
 
+      - name: Run OCR spacing regression benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${{ steps.cached-bin.outputs.bin_path }}"
+          spacing_source="${BENCHMARK_OCR_SPACING_SOURCE_PATH_SECRET:-/mnt/data2/benchmarks/direct_play_nice_ocr/sources/spacing-regression-source.mkv}"
+          if [[ ! -f "$spacing_source" ]]; then
+            echo "::warning title=OCR spacing regression source missing::Set BENCHMARK_OCR_SPACING_SOURCE_PATH or create $spacing_source to enable the low-space-rate OCR quality gate."
+            exit 0
+          fi
+          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+            --bin "$bin" \
+            --source "$spacing_source" \
+            --run-dir benchmark_artifacts/ocr_spacing \
+            --output-name ocr-spacing.mp4 \
+            --ocr-engine pp-ocr-v3 \
+            --sub-mode force \
+            --max-source-seconds 600 \
+            --sample-ms "200" \
+            --ocr-max-jobs 2 \
+            --jobs-per-gpu 1 \
+            --cuda-devices 0,1 \
+            --min-ocr-space-rate 0.10 \
+            --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "DPN_OCR_SKIP_CLS=1" \
+            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+            --env "DPN_OCR_FORCE_CPU=1"
+
       - name: Run transcoding benchmark
         shell: bash
         run: |
@@ -615,6 +646,9 @@ jobs:
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
           [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
           [[ -f benchmark_artifacts/ocr/gpu_smi.csv ]] && cp -f benchmark_artifacts/ocr/gpu_smi.csv benchmark_artifacts/OCR_BENCHMARK_GPU.csv || true
+          [[ -f benchmark_artifacts/ocr_spacing/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_spacing/benchmark_summary.md benchmark_artifacts/OCR_SPACING_BENCHMARK.md || true
+          [[ -f benchmark_artifacts/ocr_spacing/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr_spacing/benchmark_summary.json benchmark_artifacts/OCR_SPACING_BENCHMARK.json || true
+          [[ -f benchmark_artifacts/ocr_spacing/run.log ]] && cp -f benchmark_artifacts/ocr_spacing/run.log benchmark_artifacts/OCR_SPACING_BENCHMARK.log || true
           [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
           [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
 
@@ -650,6 +684,12 @@ jobs:
               echo "_No resize benchmark CSV produced._"
               echo
             fi
+            if [[ -f benchmark_artifacts/OCR_SPACING_BENCHMARK.md ]]; then
+              echo "## OCR Spacing Regression Benchmark"
+              echo
+              cat benchmark_artifacts/OCR_SPACING_BENCHMARK.md
+              echo
+            fi
             if [[ -f benchmark_artifacts/OCR_BENCHMARK.md ]]; then
               echo "## OCR Benchmark"
               echo
@@ -679,6 +719,9 @@ jobs:
             benchmark_artifacts/OCR_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.log
             benchmark_artifacts/OCR_BENCHMARK_GPU.csv
+            benchmark_artifacts/OCR_SPACING_BENCHMARK.md
+            benchmark_artifacts/OCR_SPACING_BENCHMARK.json
+            benchmark_artifacts/OCR_SPACING_BENCHMARK.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.md
 
