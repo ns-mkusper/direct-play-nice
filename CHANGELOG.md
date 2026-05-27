@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
 - Added Sonarr parity for completed pending language-upgrade force imports so
   quality-downgrade dub replacements can be manually imported after DPN verifies
   the pending file satisfies the configured language policy.
+- Skipped Sonarr multi-episode and season-pack release results for automatic
+  language redownloads unless the release maps to the single requested episode.
 
 ## [1.1.0-beta.1] - 2026-05-21
 

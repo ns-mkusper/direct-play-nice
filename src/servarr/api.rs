@@ -355,8 +355,12 @@ pub fn trigger_verified_redownload(
     let client = ApiClient::from_settings(kind, settings)?;
     let target = Target::from_env(kind)?;
     let releases = client.search_releases(&target)?;
-    let Some(release) = select_verified_release(&releases, requirements, options.candidate_policy)
-    else {
+    let Some(release) = select_verified_release_for_target(
+        &releases,
+        target,
+        requirements,
+        options.candidate_policy,
+    ) else {
         return Ok(RedownloadOutcome::NoVerifiedRelease {
             reason: format!(
                 "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
@@ -477,9 +481,12 @@ impl ApiClient {
         options: RedownloadOptions,
     ) -> Result<RedownloadOutcome> {
         let releases = self.search_releases(&target)?;
-        let Some(release) =
-            select_verified_release(&releases, requirements, options.candidate_policy)
-        else {
+        let Some(release) = select_verified_release_for_target(
+            &releases,
+            target,
+            requirements,
+            options.candidate_policy,
+        ) else {
             return Ok(RedownloadOutcome::NoVerifiedRelease {
                 reason: format!(
                     "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
@@ -1248,18 +1255,14 @@ fn manual_import_item_satisfies(
 }
 
 fn sonarr_manual_import_item_matches_episode(item: &Value, episode_id: i64) -> bool {
-    item.get("episodes")
-        .and_then(Value::as_array)
-        .is_some_and(|episodes| {
-            episodes
-                .iter()
-                .any(|episode| episode.get("id").and_then(Value::as_i64) == Some(episode_id))
-        })
-        || item
-            .get("episodeIds")
-            .and_then(Value::as_array)
-            .is_some_and(|episode_ids| episode_ids.iter().any(|id| id.as_i64() == Some(episode_id)))
-        || item.get("episodeId").and_then(Value::as_i64) == Some(episode_id)
+    if let Some(episodes) = item.get("episodes").and_then(Value::as_array) {
+        return episodes.len() == 1
+            && episodes[0].get("id").and_then(Value::as_i64) == Some(episode_id);
+    }
+    if let Some(episode_ids) = item.get("episodeIds").and_then(Value::as_array) {
+        return episode_ids.len() == 1 && episode_ids[0].as_i64() == Some(episode_id);
+    }
+    item.get("episodeId").and_then(Value::as_i64) == Some(episode_id)
 }
 
 fn language_report_from_episode_file(
@@ -1451,16 +1454,112 @@ impl Target {
     }
 }
 
-fn select_verified_release<'a>(
+fn select_verified_release_for_target<'a>(
     releases: &'a [Value],
+    target: Target,
     requirements: &LanguageRequirements,
     policy: ServarrLanguageCandidatePolicy,
 ) -> Option<&'a Value> {
     releases
         .iter()
+        .filter(|release| release_matches_target(release, target))
         .filter(|release| release_can_be_language_upgrade_candidate(release))
         .filter(|release| release_satisfies_languages(release, requirements, policy))
         .max_by_key(|release| release_score(release))
+}
+
+fn release_matches_target(release: &Value, target: Target) -> bool {
+    match target {
+        Target::RadarrMovie { .. } => true,
+        Target::SonarrEpisode { episode_id } => sonarr_release_matches_episode(release, episode_id),
+    }
+}
+
+fn sonarr_release_matches_episode(release: &Value, episode_id: i64) -> bool {
+    if release_type_is_multi_episode_or_pack(release) {
+        return false;
+    }
+    if let Some(mapped) = release.get("mappedEpisodeInfo").and_then(Value::as_array) {
+        if !mapped.is_empty() {
+            return mapped.len() == 1
+                && mapped[0].get("id").and_then(Value::as_i64) == Some(episode_id);
+        }
+    }
+    if let Some(ids) = release.get("episodeIds").and_then(Value::as_array) {
+        return ids.len() == 1 && ids[0].as_i64() == Some(episode_id);
+    }
+    if let Some(id) = release.get("episodeId").and_then(Value::as_i64) {
+        return id == episode_id;
+    }
+    if release
+        .get("episodeNumbers")
+        .and_then(Value::as_array)
+        .is_some_and(|numbers| numbers.len() > 1)
+    {
+        return false;
+    }
+    if release
+        .get("absoluteEpisodeNumbers")
+        .and_then(Value::as_array)
+        .is_some_and(|numbers| numbers.len() > 1)
+    {
+        return false;
+    }
+    !release_title_looks_like_episode_range(release)
+}
+
+fn release_type_is_multi_episode_or_pack(release: &Value) -> bool {
+    release
+        .get("releaseType")
+        .and_then(Value::as_str)
+        .map(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("pack") || value.contains("multi") || value.contains("season")
+        })
+        .unwrap_or(false)
+}
+
+fn release_title_looks_like_episode_range(release: &Value) -> bool {
+    let Some(title) = release_title(release) else {
+        return false;
+    };
+    title_has_numeric_episode_range(&title)
+}
+
+fn title_has_numeric_episode_range(title: &str) -> bool {
+    let bytes = title.as_bytes();
+    for idx in 0..bytes.len() {
+        if bytes[idx] != b'-' {
+            continue;
+        }
+        let left = count_ascii_digits_before(bytes, idx);
+        let right = count_ascii_digits_after(bytes, idx + 1);
+        if (1..=3).contains(&left) && (1..=3).contains(&right) {
+            return true;
+        }
+    }
+    false
+}
+
+fn count_ascii_digits_before(bytes: &[u8], mut idx: usize) -> usize {
+    let mut count = 0;
+    while idx > 0 {
+        idx -= 1;
+        if !bytes[idx].is_ascii_digit() {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
+fn count_ascii_digits_after(bytes: &[u8], mut idx: usize) -> usize {
+    let mut count = 0;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        count += 1;
+        idx += 1;
+    }
+    count
 }
 
 fn release_can_be_language_upgrade_candidate(release: &Value) -> bool {
@@ -2480,6 +2579,78 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_force_import_skips_multi_episode_manual_import_item() {
+        let mut server = mockito::Server::new();
+        let queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+            .create();
+        let episode_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/pack.mkv",
+                    "episodes": [{"id": 77}, {"id": 78}],
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run: false,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                lookback_days: 30,
+                max_searches: 10,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.missing, 0);
+        assert_eq!(summary.searched, 0);
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.errors, 0);
+        queue.assert();
+        episode_file.assert();
+        manual.assert();
+        history.assert();
+    }
+
+    #[test]
     fn sonarr_force_import_skips_when_manual_import_item_is_for_different_episode() {
         let mut server = mockito::Server::new();
         let queue = server
@@ -2969,6 +3140,102 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_target_selection_rejects_multi_episode_pack_even_when_language_matches() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![
+            json!({
+                "title":"Show - 01-12 1080p Dual Audio",
+                "rejected": true,
+                "downloadAllowed": true,
+                "rejections":["Existing file meets cutoff: Unknown"],
+                "mappedEpisodeInfo":[
+                    {"id": 77, "seasonNumber": 1, "episodeNumber": 1},
+                    {"id": 78, "seasonNumber": 1, "episodeNumber": 2}
+                ],
+                "languages":[{"name":"English"}],
+                "customFormatScore": 900
+            }),
+            json!({
+                "title":"Show S01E01 1080p English Dub",
+                "rejected": true,
+                "downloadAllowed": true,
+                "rejections":["Existing file meets cutoff: Unknown"],
+                "mappedEpisodeInfo":[{"id": 77, "seasonNumber": 1, "episodeNumber": 1}],
+                "languages":[{"name":"English"}],
+                "customFormatScore": 100
+            }),
+        ];
+
+        let selected = select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            release_title(selected).as_deref(),
+            Some("Show S01E01 1080p English Dub")
+        );
+    }
+
+    #[test]
+    fn sonarr_target_selection_rejects_pack_without_mapping_by_title_range() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![json!({
+            "title":"Show - 01-12 1080p Dual Audio",
+            "rejected": false,
+            "languages":[{"name":"English"}],
+            "customFormatScore": 900
+        })];
+
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn sonarr_target_selection_rejects_episode_requested_rejection() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![json!({
+            "title":"Wrong Show - 12 Dual Audio",
+            "rejected": true,
+            "downloadAllowed": true,
+            "rejections":[
+                "Existing file meets cutoff: Unknown",
+                "Episode wasn't requested: 1x12"
+            ],
+            "mappedEpisodeInfo":[{"id": 88, "seasonNumber": 1, "episodeNumber": 12}],
+            "languages":[{"name":"English"}],
+            "customFormatScore": 900
+        })];
+
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn accepts_existing_file_cutoff_rejection_for_language_upgrade_candidate() {
         let req = LanguageRequirements {
             enabled: true,
@@ -2988,8 +3255,9 @@ mod tests {
             "customFormatScore": 875
         })];
 
-        assert!(select_verified_release(
+        assert!(select_verified_release_for_target(
             &releases,
+            Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle
         )
@@ -3011,8 +3279,9 @@ mod tests {
             "customFormatScore": 875
         })];
 
-        assert!(select_verified_release(
+        assert!(select_verified_release_for_target(
             &releases,
+            Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle
         )
@@ -3079,8 +3348,9 @@ mod tests {
             "customFormatScore": 600
         })];
 
-        assert!(select_verified_release(
+        assert!(select_verified_release_for_target(
             &releases,
+            Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormat
         )
@@ -3099,8 +3369,9 @@ mod tests {
             "rejected": false
         })];
 
-        assert!(select_verified_release(
+        assert!(select_verified_release_for_target(
             &releases,
+            Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle
         )
@@ -3120,9 +3391,13 @@ mod tests {
             json!({"title":"good", "rejected": false, "languages":[{"name":"English"}], "customFormatScore": 10}),
         ];
 
-        let selected =
-            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
-                .unwrap();
+        let selected = select_verified_release_for_target(
+            &releases,
+            Target::RadarrMovie { movie_id: 1 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict,
+        )
+        .unwrap();
         assert_eq!(release_title(selected).as_deref(), Some("good"));
     }
 
@@ -3134,10 +3409,13 @@ mod tests {
             subtitles: vec!["spa".to_string()],
         };
         let releases = vec![json!({"title":"ambiguous", "languages":[{"name":"English"}]})];
-        assert!(
-            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
-                .is_none()
-        );
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::RadarrMovie { movie_id: 1 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict
+        )
+        .is_none());
     }
 
     #[test]
@@ -3152,9 +3430,12 @@ mod tests {
             "languages":[{"name":"English"}],
             "subtitleLanguages":[{"name":"Spanish"}]
         })];
-        assert!(
-            select_verified_release(&releases, &req, ServarrLanguageCandidatePolicy::Strict)
-                .is_some()
-        );
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::RadarrMovie { movie_id: 1 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict
+        )
+        .is_some());
     }
 }
