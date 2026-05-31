@@ -22,7 +22,7 @@ pub(super) struct OcrSidecarRequest<'a> {
     pub(super) ocr_write_srt_sidecar: bool,
 }
 
-pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<()> {
+pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<bool> {
     let OcrSidecarRequest {
         input_file,
         mux_source_file,
@@ -36,7 +36,7 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
     } = request;
 
     if matches!(sub_mode, SubMode::Skip) {
-        return Ok(());
+        return Ok(false);
     }
 
     let ocr_work_dir = OcrWorkDir::create()?;
@@ -50,10 +50,15 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
         ocr_format,
         ocr_external_command,
     )?;
+    if tracks.is_empty() {
+        info!("No bitmap subtitle tracks required OCR; no OCR mux output was produced.");
+        return Ok(false);
+    }
+
     subtitle_ocr::mux_text_tracks_from(mux_source_file, output_file, &tracks)?;
     write_ocr_srt_sidecars(output_file, &tracks, ocr_write_srt_sidecar)?;
 
-    Ok(())
+    Ok(true)
 }
 
 struct OcrWorkDir {

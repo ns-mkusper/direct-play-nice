@@ -28,6 +28,53 @@ fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     }
 }
 
+fn gen_direct_play_mp4(path: &Path) {
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=640x360:rate=30:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=48000:duration=2",
+                "-c:v",
+                "libx264",
+                "-b:v",
+                "700k",
+                "-minrate",
+                "700k",
+                "-maxrate",
+                "700k",
+                "-bufsize",
+                "1400k",
+                "-profile:v",
+                "high",
+                "-level:v",
+                "4.1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "96k",
+                "-movflags",
+                "+faststart",
+                path.to_string_lossy().as_ref(),
+            ])
+            .status()
+            .expect("invoke ffmpeg")
+            .success(),
+        "ffmpeg failed to generate direct-play sample"
+    );
+}
+
 #[test]
 fn sonarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
@@ -66,6 +113,72 @@ fn sonarr_grab_event_skips_conversion() -> Result<(), Box<dyn std::error::Error>
     assert!(
         !backup_path.exists(),
         "no backup file should be produced for Grab events"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn sonarr_download_skips_already_direct_play_without_replacement(
+) -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("already_direct_play.mp4");
+    gen_direct_play_mp4(&input);
+
+    let final_path = input.with_file_name("already_direct_play.fixed.mp4");
+    let temp_path = append_suffix(&final_path, ".direct-play-nice.tmp");
+    let backup_path = append_suffix(&input, ".direct-play-nice.bak");
+
+    let config_path = tmp.path().join("direct-play-nice.toml");
+    fs::write(&config_path, "")?;
+
+    let lock_dir = tmp.path().join("locks");
+    fs::create_dir_all(&lock_dir)?;
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("sonarr_eventtype", "Download")
+        .env("sonarr_episodefile_path", &input)
+        .env("sonarr_series_title", "Compat Test")
+        .arg("--config-file")
+        .arg(&config_path)
+        .arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg("--video-quality")
+        .arg("480p")
+        .arg("--audio-quality")
+        .arg("128k")
+        .arg("--max-video-bitrate")
+        .arg("1M")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "expected already-compatible Sonarr file to be skipped successfully; stderr:
+{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Input is direct-play compatible"),
+        "stderr did not include direct-play skip message:
+{stderr}"
+    );
+
+    assert!(input.exists(), "original file should remain in place");
+    assert!(
+        !final_path.exists(),
+        "skip path should not promote a replacement output"
+    );
+    assert!(
+        !temp_path.exists(),
+        "skip path should not leave a temporary output"
+    );
+    assert!(
+        !backup_path.exists(),
+        "skip path should not create a source backup"
     );
 
     Ok(())
