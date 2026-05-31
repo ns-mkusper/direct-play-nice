@@ -90,11 +90,11 @@ fn update_filename_quality(stem: &str, desired_video_quality: VideoQuality) -> S
             let before_ok = stem[..start]
                 .chars()
                 .next_back()
-                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
             let after_ok = stem[p_idx + 1..]
                 .chars()
                 .next()
-                .map_or(true, |ch| !ch.is_ascii_alphanumeric());
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
 
             if is_known_quality && before_ok && after_ok {
                 last_match = Some((start, p_idx + 1));
