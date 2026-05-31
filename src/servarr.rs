@@ -1,5 +1,6 @@
 //! Sonarr/Radarr integration workflow for event handling, path planning, and atomic media replacement.
 
+use crate::transcoder::VideoQuality;
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
 use std::env;
@@ -217,6 +218,7 @@ pub struct ArgsView<'a> {
     pub has_output: bool,
     pub desired_extension: &'a str,
     pub desired_suffix: &'a str,
+    pub desired_video_quality: VideoQuality,
     pub language_requirements: LanguageRequirements,
     pub untagged_retag: language::UntaggedRetagOptions,
     pub api_settings: ApiSettings,
@@ -437,8 +439,12 @@ fn prepare_download(
             );
         }
 
-        let final_output_path =
-            resolve_output_path(&input_path, view.desired_extension, effective_suffix)?;
+        let final_output_path = resolve_output_path(
+            &input_path,
+            view.desired_extension,
+            effective_suffix,
+            view.desired_video_quality,
+        )?;
         let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
         let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
 
@@ -472,8 +478,14 @@ fn resolve_output_path(
     input_path: &Path,
     desired_ext: &str,
     desired_suffix: &str,
+    desired_video_quality: VideoQuality,
 ) -> Result<PathBuf> {
-    path_policy::resolve_output_path(input_path, desired_ext, desired_suffix)
+    path_policy::resolve_output_path(
+        input_path,
+        desired_ext,
+        desired_suffix,
+        desired_video_quality,
+    )
 }
 
 fn append_suffix(path: &Path, suffix: &str) -> PathBuf {

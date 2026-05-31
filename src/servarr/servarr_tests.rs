@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::servarr::*;
+    use crate::transcoder::VideoQuality;
     use std::ffi::CString;
     use std::sync::Mutex;
     use tempfile::tempdir;
@@ -19,29 +20,57 @@ mod tests {
     #[test]
     fn resolve_output_path_match_input() {
         let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "match-input", "").unwrap();
+        let resolved =
+            resolve_output_path(&base, "match-input", "", VideoQuality::MatchSource).unwrap();
         assert_eq!(resolved, base);
     }
 
     #[test]
     fn resolve_output_path_custom_extension() {
         let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "mp4", "").unwrap();
+        let resolved = resolve_output_path(&base, "mp4", "", VideoQuality::MatchSource).unwrap();
         assert_eq!(resolved, PathBuf::from("Movie.mp4"));
     }
 
     #[test]
     fn resolve_output_path_with_suffix_and_extension() {
         let base = PathBuf::from("Movie.mkv");
-        let resolved = resolve_output_path(&base, "mp4", ".fixed").unwrap();
+        let resolved =
+            resolve_output_path(&base, "mp4", ".fixed", VideoQuality::MatchSource).unwrap();
         assert_eq!(resolved, PathBuf::from("Movie.fixed.mp4"));
     }
 
     #[test]
     fn resolve_output_path_with_suffix_and_match_input() {
         let base = PathBuf::from("Episode.mkv");
-        let resolved = resolve_output_path(&base, "match-input", "fixed").unwrap();
+        let resolved =
+            resolve_output_path(&base, "match-input", "fixed", VideoQuality::MatchSource).unwrap();
         assert_eq!(resolved, PathBuf::from("Episode.fixed.mkv"));
+    }
+
+    #[test]
+    fn resolve_output_path_updates_filename_quality() {
+        let base = PathBuf::from("Show.S01E01.1080p.WEB-DL.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P720).unwrap();
+        assert_eq!(resolved, PathBuf::from("Show.S01E01.720p.WEB-DL.fixed.mp4"));
+    }
+
+    #[test]
+    fn resolve_output_path_updates_uppercase_filename_quality() {
+        let base = PathBuf::from("Show.S01E01.1080P.WEB-DL.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P720).unwrap();
+        assert_eq!(resolved, PathBuf::from("Show.S01E01.720p.WEB-DL.fixed.mp4"));
+    }
+
+    #[test]
+    fn resolve_output_path_preserves_filename_quality_for_match_source() {
+        let base = PathBuf::from("Show.S01E01.1080p.WEB-DL.mkv");
+        let resolved =
+            resolve_output_path(&base, "mp4", ".fixed", VideoQuality::MatchSource).unwrap();
+        assert_eq!(
+            resolved,
+            PathBuf::from("Show.S01E01.1080p.WEB-DL.fixed.mp4")
+        );
     }
 
     #[test]
@@ -208,6 +237,7 @@ mod tests {
             has_output: false,
             desired_extension: "mp4",
             desired_suffix: "",
+            desired_video_quality: VideoQuality::MatchSource,
             language_requirements: LanguageRequirements::default(),
             untagged_retag: UntaggedRetagOptions::default(),
             api_settings: ApiSettings::default(),
@@ -244,6 +274,7 @@ mod tests {
             has_output: false,
             desired_extension: "mp4",
             desired_suffix: "",
+            desired_video_quality: VideoQuality::MatchSource,
             language_requirements: LanguageRequirements::default(),
             untagged_retag: UntaggedRetagOptions::default(),
             api_settings: ApiSettings::default(),

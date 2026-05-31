@@ -1,5 +1,6 @@
 //! Output path-policy rules that apply extension and suffix transformations for replacement outputs.
 
+use crate::transcoder::VideoQuality;
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ pub(super) fn resolve_output_path(
     input_path: &Path,
     desired_ext: &str,
     desired_suffix: &str,
+    desired_video_quality: VideoQuality,
 ) -> Result<PathBuf> {
     let parent = input_path.parent();
     let stem = input_path
@@ -42,7 +44,7 @@ pub(super) fn resolve_output_path(
         trimmed.to_string()
     };
 
-    let mut filename = String::from(stem);
+    let mut filename = update_filename_quality(stem, desired_video_quality);
     if let Some(sfx) = suffix.as_ref() {
         filename.push_str(sfx);
     }
@@ -57,6 +59,59 @@ pub(super) fn resolve_output_path(
     };
 
     Ok(new_path)
+}
+
+fn update_filename_quality(stem: &str, desired_video_quality: VideoQuality) -> String {
+    let target = match desired_video_quality {
+        VideoQuality::MatchSource => return stem.to_string(),
+        quality => quality.to_string(),
+    };
+
+    let mut replaced = String::with_capacity(stem.len());
+    let mut search_start = 0;
+    let mut last_match = None;
+
+    while let Some((relative_start, _)) = stem[search_start..]
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, 'p' | 'P'))
+    {
+        let p_idx = search_start + relative_start;
+        let digit_start = stem[..p_idx]
+            .char_indices()
+            .rev()
+            .take_while(|(_, ch)| ch.is_ascii_digit())
+            .last()
+            .map(|(idx, _)| idx);
+
+        if let Some(start) = digit_start {
+            let digits = &stem[start..p_idx];
+            let is_known_quality =
+                matches!(digits, "360" | "480" | "720" | "1080" | "1440" | "2160");
+            let before_ok = stem[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
+            let after_ok = stem[p_idx + 1..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphanumeric());
+
+            if is_known_quality && before_ok && after_ok {
+                last_match = Some((start, p_idx + 1));
+            }
+        }
+
+        search_start = p_idx + 'p'.len_utf8();
+    }
+
+    if let Some((start, end)) = last_match {
+        replaced.push_str(&stem[..start]);
+        replaced.push_str(&target);
+        replaced.push_str(&stem[end..]);
+        replaced
+    } else {
+        stem.to_string()
+    }
 }
 
 /// Normalizes a suffix value to either `None` or a dot-prefixed string.
