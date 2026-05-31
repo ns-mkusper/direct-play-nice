@@ -260,6 +260,7 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
         desired_suffix: &args.servarr_output_suffix,
+        desired_video_quality: args.video_quality,
         language_requirements: servarr::LanguageRequirements {
             enabled: args.servarr_language_check,
             audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
