@@ -672,6 +672,8 @@ fn run_conversion(
         }
     }
 
+    let mut output_ready = conversion_result.is_ok() && needs_conversion && !output_is_mkv;
+
     if conversion_result.is_ok() && should_ocr {
         let mux_source_file = if needs_conversion {
             conversion_output_file
@@ -679,7 +681,7 @@ fn run_conversion(
             input_file
         };
         conversion_result = conversion_result.and_then(|outcome| {
-            post_process_ocr_subtitles(OcrSidecarRequest {
+            let ocr_output_ready = post_process_ocr_subtitles(OcrSidecarRequest {
                 input_file,
                 mux_source_file,
                 output_file,
@@ -690,13 +692,19 @@ fn run_conversion(
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
             })?;
+            output_ready = output_ready || ocr_output_ready;
             Ok(outcome)
         });
+        if conversion_result.is_ok() && !output_ready && needs_conversion && output_is_mkv {
+            subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
+            output_ready = true;
+        }
     } else if conversion_result.is_ok() && needs_conversion && output_is_mkv {
         subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
+        output_ready = true;
     }
 
-    if conversion_result.is_ok() && args.validate_output {
+    if conversion_result.is_ok() && output_ready && args.validate_output {
         if let Err(err) = validate_output_file(output_file, target_video_codec, common_audio_codec)
         {
             conversion_result = Err(err);
@@ -713,6 +721,14 @@ fn run_conversion(
     match (plan, conversion_result) {
         (Some(plan), Ok(outcome)) => {
             debug_assert!(outcome.profile_verified());
+            if !output_ready {
+                info!(
+                    "No output was produced for {:?} integration because the input was already compatible; leaving source file '{}' untouched.",
+                    plan.kind,
+                    plan.input_path.display()
+                );
+                return Ok(());
+            }
             let final_path = plan.finalize_success()?;
             if let Some(ref refresher) = plex_refresher {
                 if let Err(err) = refresher.refresh_path(&final_path) {
@@ -735,7 +751,7 @@ fn run_conversion(
             Err(err)
         }
         (None, Ok(outcome)) => {
-            if args.delete_source.unwrap_or(false) {
+            if args.delete_source.unwrap_or(false) && output_ready {
                 if !outcome.profile_verified() {
                     warn!(
                         "Skipping --delete-source because profile/level verification did not confirm expected constraints"
@@ -764,15 +780,17 @@ fn run_conversion(
                     }
                 }
             }
-            if let Some(ref refresher) = plex_refresher {
-                if let Some(output_cstr) = args.output_file.as_ref() {
-                    let output_path = cstr_to_path_buf(output_cstr);
-                    if let Err(err) = refresher.refresh_path(&output_path) {
-                        warn!(
-                            "Plex refresh failed for '{}': {}",
-                            output_path.display(),
-                            err
-                        );
+            if output_ready {
+                if let Some(ref refresher) = plex_refresher {
+                    if let Some(output_cstr) = args.output_file.as_ref() {
+                        let output_path = cstr_to_path_buf(output_cstr);
+                        if let Err(err) = refresher.refresh_path(&output_path) {
+                            warn!(
+                                "Plex refresh failed for '{}': {}",
+                                output_path.display(),
+                                err
+                            );
+                        }
                     }
                 }
             }
