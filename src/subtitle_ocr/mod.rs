@@ -54,7 +54,10 @@ pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_
 use language::*;
 pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};
 #[cfg(test)]
-use ocr_pipeline::{quality_fallback_thresholds, OcrQualityBaseline};
+use ocr_pipeline::{
+    apply_bitmap_subtitle_canvas_fallback, quality_fallback_thresholds, subtitle_rect_counts,
+    OcrQualityBaseline,
+};
 use text_render::*;
 
 #[cfg(test)]
