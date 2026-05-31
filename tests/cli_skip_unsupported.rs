@@ -610,3 +610,142 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
     }
     Ok(())
 }
+
+#[test]
+fn cli_skips_mov_text_encode_overflow_subtitle() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+
+    let tmp = TempDir::new()?;
+    let dir = tmp.path();
+    let video = dir.join("overflow_v.mkv");
+    let audio = dir.join("overflow_a.mp2");
+    let ass_file = dir.join("overflow.ass");
+    let input = dir.join("input_with_overflow_subtitle.mkv");
+
+    // A single extremely large ASS dialogue event triggers FFmpeg's mov_text encoder
+    // failure (`Numerical result out of range`), matching the Chainsaw Man S01E08
+    // failure mode from issue #8 without needing a copyrighted fixture.
+    let large_dialogue = "A".repeat(70_000);
+    std::fs::write(
+        &ass_file,
+        format!(
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{}\n",
+            large_dialogue
+        ),
+    )?;
+
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=25:duration=3",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "mpeg4",
+                &video.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg video generation failed"
+    );
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100:duration=3",
+                "-c:a",
+                "mp2",
+                &audio.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg audio generation failed"
+    );
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &video.to_string_lossy(),
+                "-i",
+                &audio.to_string_lossy(),
+                "-i",
+                &ass_file.to_string_lossy(),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-map",
+                "2:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-c:s",
+                "ass",
+                &input.to_string_lossy(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg mux with overflow subtitle failed"
+    );
+
+    let output = dir.join("out_overflow_skip.mp4");
+    let mut skip_cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    skip_cmd
+        .arg("--hw-accel")
+        .arg("none")
+        .arg("--delete-source")
+        .arg("false")
+        .arg("--subtitle-failure-policy")
+        .arg("skip-stream")
+        .arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg(&input)
+        .arg(&output);
+    skip_cmd.assert().success().stdout(str::is_empty());
+
+    assert!(output.exists(), "output file was not created");
+    let output_cstr = CString::new(output.to_string_lossy().to_string()).unwrap();
+    let octx = AVFormatContextInput::open(output_cstr.as_c_str())?;
+    let mut saw_v = false;
+    let mut saw_a = false;
+    for st in octx.streams() {
+        let par = st.codecpar();
+        saw_v |= par.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
+        saw_a |= par.codec_type == ffi::AVMEDIA_TYPE_AUDIO;
+    }
+    assert!(
+        saw_v && saw_a,
+        "output lost A/V streams after subtitle encode failure"
+    );
+
+    // Keep a failing-policy assertion so the synthetic fixture proves it is still
+    // exercising the exact subtitle encoder failure path.
+    let fail_output = dir.join("out_overflow_fail.mp4");
+    let mut fail_cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    fail_cmd
+        .arg("--hw-accel")
+        .arg("none")
+        .arg("--delete-source")
+        .arg("false")
+        .arg("--subtitle-failure-policy")
+        .arg("fail")
+        .arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg(&input)
+        .arg(&fail_output);
+    fail_cmd
+        .assert()
+        .failure()
+        .stderr(str::contains("subtitle-failure-policy=fail"));
+
+    Ok(())
+}
