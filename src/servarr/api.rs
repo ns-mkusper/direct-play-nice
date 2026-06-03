@@ -16,6 +16,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use ureq::{Agent, AgentBuilder};
 
+const SERVARR_HISTORY_PAGE_SIZE: u32 = 100;
+const SERVARR_HISTORY_MAX_PAGES: u32 = 1_000;
+
 #[derive(Debug, Clone, Default)]
 pub struct ApiSettings {
     pub url: Option<String>,
@@ -522,9 +525,9 @@ impl ApiClient {
     fn sonarr_recent_import_history(&self, lookback_days: u32) -> Result<Vec<Value>> {
         let mut out = Vec::new();
         let min_day = current_day_number().saturating_sub(lookback_days as i64);
-        for page in 1..=10 {
+        for page in 1..=SERVARR_HISTORY_MAX_PAGES {
             let endpoint = format!(
-                "{}/api/v3/history?page={page}&pageSize=100&sortKey=date&sortDirection=descending&includeSeries=true&includeEpisode=true",
+                "{}/api/v3/history?page={page}&pageSize={SERVARR_HISTORY_PAGE_SIZE}&sortKey=date&sortDirection=descending&includeSeries=true&includeEpisode=true",
                 self.base_url
             );
             let response = self.get(&endpoint)?;
@@ -712,9 +715,9 @@ impl ApiClient {
     fn radarr_recent_import_history(&self, lookback_days: u32) -> Result<Vec<Value>> {
         let mut out = Vec::new();
         let min_day = current_day_number().saturating_sub(lookback_days as i64);
-        for page in 1..=10 {
+        for page in 1..=SERVARR_HISTORY_MAX_PAGES {
             let endpoint = format!(
-                "{}/api/v3/history?page={page}&pageSize=100&sortKey=date&sortDirection=descending&includeMovie=true",
+                "{}/api/v3/history?page={page}&pageSize={SERVARR_HISTORY_PAGE_SIZE}&sortKey=date&sortDirection=descending&includeMovie=true",
                 self.base_url
             );
             let response = self.get(&endpoint)?;
@@ -1956,6 +1959,137 @@ mod tests {
             .with_status(200)
             .with_body(json!({ "records": [] }).to_string())
             .create()
+    }
+
+    fn test_client(kind: IntegrationKind, url: String) -> ApiClient {
+        ApiClient::from_settings(
+            kind,
+            &ApiSettings {
+                url: Some(url),
+                api_key: Some("test-key".to_string()),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sonarr_recent_import_history_scans_beyond_ten_pages_within_lookback() {
+        let mut server = mockito::Server::new();
+        let mut mocks = Vec::new();
+        for page in 1..=10 {
+            mocks.push(
+                server
+                    .mock("GET", "/api/v3/history")
+                    .match_query(Matcher::UrlEncoded("page".into(), page.to_string()))
+                    .with_status(200)
+                    .with_body(
+                        json!({
+                            "records": [{
+                                "id": page,
+                                "eventType": "grabbed",
+                                "date": "9999-01-01T00:00:00Z"
+                            }]
+                        })
+                        .to_string(),
+                    )
+                    .create(),
+            );
+        }
+        mocks.push(
+            server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::UrlEncoded("page".into(), "11".into()))
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "records": [{
+                            "id": 1234,
+                            "eventType": "downloadFolderImported",
+                            "episodeId": 77,
+                            "date": "9999-01-01T00:00:00Z"
+                        }]
+                    })
+                    .to_string(),
+                )
+                .create(),
+        );
+        mocks.push(
+            server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::UrlEncoded("page".into(), "12".into()))
+                .with_status(200)
+                .with_body(json!({ "records": [] }).to_string())
+                .create(),
+        );
+
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        let records = client.sonarr_recent_import_history(30).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].get("id").and_then(Value::as_i64), Some(1234));
+        for mock in mocks {
+            mock.assert();
+        }
+    }
+
+    #[test]
+    fn radarr_recent_import_history_scans_beyond_ten_pages_within_lookback() {
+        let mut server = mockito::Server::new();
+        let mut mocks = Vec::new();
+        for page in 1..=10 {
+            mocks.push(
+                server
+                    .mock("GET", "/api/v3/history")
+                    .match_query(Matcher::UrlEncoded("page".into(), page.to_string()))
+                    .with_status(200)
+                    .with_body(
+                        json!({
+                            "records": [{
+                                "id": page,
+                                "eventType": "grabbed",
+                                "date": "9999-01-01T00:00:00Z"
+                            }]
+                        })
+                        .to_string(),
+                    )
+                    .create(),
+            );
+        }
+        mocks.push(
+            server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::UrlEncoded("page".into(), "11".into()))
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "records": [{
+                            "id": 4321,
+                            "eventType": "downloadFolderImported",
+                            "movieId": 88,
+                            "date": "9999-01-01T00:00:00Z"
+                        }]
+                    })
+                    .to_string(),
+                )
+                .create(),
+        );
+        mocks.push(
+            server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::UrlEncoded("page".into(), "12".into()))
+                .with_status(200)
+                .with_body(json!({ "records": [] }).to_string())
+                .create(),
+        );
+
+        let client = test_client(IntegrationKind::Radarr, server.url());
+        let records = client.radarr_recent_import_history(30).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].get("id").and_then(Value::as_i64), Some(4321));
+        for mock in mocks {
+            mock.assert();
+        }
     }
 
     #[test]
