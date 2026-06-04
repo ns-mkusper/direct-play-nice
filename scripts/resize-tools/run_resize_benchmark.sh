@@ -58,15 +58,21 @@ ffmpeg -hide_banner -y -i "$source_high" \
   -vf "scale=640:360:flags=lanczos,format=yuv420p" \
   -c:v libx264 -preset veryfast -crf 16 -an "$ref"
 
+candidate_log_path() {
+  local output="$1"
+  printf "%s/run_%s.log" "$work_dir" "$(basename "$output")"
+}
+
 run_candidate() {
   local quality="$1"
   local backend="$2"
   local hw_accel="$3"
   local output="$4"
-  local started ended elapsed fps realtime size_bytes
+  local log_file started ended elapsed fps realtime size_bytes
 
+  log_file="$(candidate_log_path "$output")"
   started="$(date +%s.%N)"
-  "$bin" \
+  if ! "$bin" \
     --config-file "$config_file" \
     --device chromecast \
     --hw-accel "$hw_accel" \
@@ -74,7 +80,11 @@ run_candidate() {
     --resize-quality "$quality" \
     --resize-backend "$backend" \
     --skip-codec-check \
-    "$source_high" "$output" >/dev/null
+    "$source_high" "$output" >"$log_file" 2>&1; then
+    echo "resize candidate failed: quality=$quality backend=$backend hw_accel=$hw_accel log=$log_file" >&2
+    tail -n 80 "$log_file" >&2 || true
+    return 1
+  fi
   ended="$(date +%s.%N)"
 
   elapsed="$(awk -v s="$started" -v e="$ended" 'BEGIN { printf "%.3f", e - s }')"
@@ -83,6 +93,34 @@ run_candidate() {
   size_bytes="$(wc -c < "$output" | tr -d ' ')"
 
   printf "%s,%s,%s,%s,%s,%s,%s" "$quality" "$backend" "$hw_accel" "$elapsed" "$fps" "$realtime" "$size_bytes"
+}
+
+append_candidate() {
+  local quality="$1"
+  local backend="$2"
+  local hw_accel="$3"
+  local output="$4"
+  local required="${5:-1}"
+  local row_prefix status
+
+  if row_prefix="$(run_candidate "$quality" "$backend" "$hw_accel" "$output")"; then
+    {
+      printf "%s" "$row_prefix"
+      metric_summary "$output"
+    } >> "$report"
+    return 0
+  fi
+
+  status=$?
+  printf "%s,%s,%s,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na\n" \
+    "$quality" "$backend" "$hw_accel" >> "$report"
+
+  if [ "$required" = "1" ]; then
+    return "$status"
+  fi
+
+  echo "optional resize candidate failed; continuing because it is not required: quality=$quality backend=$backend hw_accel=$hw_accel" >&2
+  return 0
 }
 
 metric_field() {
@@ -177,25 +215,17 @@ metric_summary() {
 
 echo "quality,backend,hw_accel,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db" > "$report"
 
-{
-  run_candidate "fast-bilinear" "software" "none" "$baseline"
-  metric_summary "$baseline"
-} >> "$report"
+append_candidate "fast-bilinear" "software" "none" "$baseline"
 
 for quality in bilinear bicubic lanczos spline; do
   output="$work_dir/resize_${quality}.mp4"
-  {
-    run_candidate "$quality" "software" "none" "$output"
-    metric_summary "$output"
-  } >> "$report"
+  append_candidate "$quality" "software" "none" "$output"
 done
 
 if [ "${DPN_RESIZE_CUDA:-0}" = "1" ]; then
   output="$work_dir/resize_lanczos_cuda.mp4"
-  {
-    run_candidate "lanczos" "cuda" "${DPN_RESIZE_CUDA_HW_ACCEL:-nvenc}" "$output"
-    metric_summary "$output"
-  } >> "$report"
+  cuda_required="${DPN_RESIZE_CUDA_REQUIRED:-0}"
+  append_candidate "lanczos" "cuda" "${DPN_RESIZE_CUDA_HW_ACCEL:-nvenc}" "$output" "$cuda_required"
 fi
 
 echo "Resize benchmark report: $report"

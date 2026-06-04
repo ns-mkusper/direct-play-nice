@@ -498,6 +498,24 @@ jobs:
           command -v nvidia-smi >/dev/null 2>&1
           nvidia-smi -L
 
+      - name: Export benchmark CUDA runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          cuda_runtime_paths=(
+            /opt/direct-play-nice/cudnn8-runtime/usr/lib
+            /opt/direct-play-nice/cudnn9-runtime/lib
+            /opt/direct-play-nice/nvrtc12-runtime/lib
+            /opt/direct-play-nice/cuda12-runtime/lib
+            /opt/direct-play-nice/ort116-runtime/lib
+            /opt/direct-play-nice/ort122-runtime/lib
+            /opt/cuda/lib64
+            /usr/lib
+          )
+          joined_paths="$(IFS=:; echo "${cuda_runtime_paths[*]}")"
+          echo "DPN_BENCH_CUDA_LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
       - name: Run OCR benchmark (GPU attempt)
         id: ocr_gpu
         continue-on-error: true
@@ -602,6 +620,7 @@ jobs:
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
+          export LD_LIBRARY_PATH="${DPN_BENCH_CUDA_LD_LIBRARY_PATH:-${LD_LIBRARY_PATH:-}}"
           export DIRECT_PLAY_NICE_LOCK_DIR=benchmark_artifacts/transcode/locks
           bash scripts/transcode-tools/run_transcode_benchmark.sh \
             --bin "$bin" \
@@ -624,9 +643,11 @@ jobs:
           DPN_RESIZE_HW_ACCEL: none
           DPN_RESIZE_CUDA: "1"
           DPN_RESIZE_CUDA_HW_ACCEL: nvenc
+          DPN_RESIZE_CUDA_REQUIRED: "0"
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
+          export LD_LIBRARY_PATH="${DPN_BENCH_CUDA_LD_LIBRARY_PATH:-${LD_LIBRARY_PATH:-}}"
           export DPN_RESIZE_BENCH_BIN="$bin"
           export DIRECT_PLAY_NICE_LOCK_DIR=benchmark_artifacts/resize/locks
           bash scripts/resize-tools/run_resize_benchmark.sh
@@ -642,6 +663,9 @@ jobs:
           [[ -f benchmark_artifacts/transcode/hw.log ]] && cp -f benchmark_artifacts/transcode/hw.log benchmark_artifacts/TRANSCODE_HW.log || true
           [[ -f benchmark_artifacts/transcode/meta.txt ]] && cp -f benchmark_artifacts/transcode/meta.txt benchmark_artifacts/TRANSCODE_META.txt || true
           [[ -f benchmark_artifacts/resize/resize_report.csv ]] && cp -f benchmark_artifacts/resize/resize_report.csv benchmark_artifacts/RESIZE_BENCHMARK.csv || true
+          if compgen -G 'benchmark_artifacts/resize/*.log' > /dev/null; then
+            tar -czf benchmark_artifacts/RESIZE_BENCHMARK_LOGS.tar.gz -C benchmark_artifacts/resize ./*.log
+          fi
           [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
           [[ -f benchmark_artifacts/ocr/run.log ]] && cp -f benchmark_artifacts/ocr/run.log benchmark_artifacts/OCR_BENCHMARK.log || true
@@ -715,6 +739,7 @@ jobs:
             benchmark_artifacts/TRANSCODE_HW.log
             benchmark_artifacts/TRANSCODE_META.txt
             benchmark_artifacts/RESIZE_BENCHMARK.csv
+            benchmark_artifacts/RESIZE_BENCHMARK_LOGS.tar.gz
             benchmark_artifacts/OCR_BENCHMARK.md
             benchmark_artifacts/OCR_BENCHMARK.json
             benchmark_artifacts/OCR_BENCHMARK.log
