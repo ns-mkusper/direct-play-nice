@@ -5,6 +5,10 @@ on:
     branches:
       - "**"
     types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -15,7 +19,7 @@ concurrency:
 
 jobs:
   test:
-    if: ${{ !contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]') }}
+    if: ${{ github.event_name != 'pull_request' || (!contains(github.event.pull_request.title, '[skip ci]') && !contains(github.event.pull_request.body, '[skip ci]')) }}
     name: Test (Linux) (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
     env:
