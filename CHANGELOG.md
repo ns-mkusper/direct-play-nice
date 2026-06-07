@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.3] - 2026-06-01
+
+### 🛠️ Beta 3 Fixes
+
+- Fixed bitmap-subtitle OCR canvas seeding so bitmap subtitles render more
+  reliably before OCR.
+- Fixed Servarr handling for direct-play-compatible files so already-compatible
+  imports are detected and skipped correctly.
+- Fixed Servarr output filename quality tags to reflect the requested output
+  quality instead of stale or source quality metadata.
+
+### 🧪 Beta 3 Validation
+
+- Added regression coverage for subtitle encode overflow and unsupported
+  subtitle-character handling, covering both skip-stream completion and
+  fail-policy failure behavior.
+- Validated post-merge GPU OCR, spacing regression, NVENC transcode, and resize
+  benchmark results before cutting this release candidate.
+
 ## [1.1.0-beta.2] - 2026-05-27
 
 ### 🛠️ Fixed
