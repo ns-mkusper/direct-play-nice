@@ -664,7 +664,10 @@ jobs:
           [[ -f benchmark_artifacts/transcode/meta.txt ]] && cp -f benchmark_artifacts/transcode/meta.txt benchmark_artifacts/TRANSCODE_META.txt || true
           [[ -f benchmark_artifacts/resize/resize_report.csv ]] && cp -f benchmark_artifacts/resize/resize_report.csv benchmark_artifacts/RESIZE_BENCHMARK.csv || true
           if compgen -G 'benchmark_artifacts/resize/*.log' > /dev/null; then
-            tar -czf benchmark_artifacts/RESIZE_BENCHMARK_LOGS.tar.gz -C benchmark_artifacts/resize ./*.log
+            (
+              cd benchmark_artifacts/resize
+              tar -czf ../RESIZE_BENCHMARK_LOGS.tar.gz ./*.log
+            )
           fi
           [[ -f benchmark_artifacts/ocr/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.md benchmark_artifacts/OCR_BENCHMARK.md || true
           [[ -f benchmark_artifacts/ocr/benchmark_summary.json ]] && cp -f benchmark_artifacts/ocr/benchmark_summary.json benchmark_artifacts/OCR_BENCHMARK.json || true
