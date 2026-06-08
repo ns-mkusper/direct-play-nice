@@ -63,6 +63,31 @@ candidate_log_path() {
   printf "%s/run_%s.log" "$work_dir" "$(basename "$output")"
 }
 
+csv_escape() {
+  local value="${1:-}"
+  value="${value//$'\n'/ }"
+  value="${value//$'\r'/ }"
+  value="${value//\"/\"\"}"
+  printf '"%s"' "$value"
+}
+
+classify_failure_reason() {
+  local log_file="$1"
+  if grep -Eiq "linked FFmpeg filter 'scale_cuda' is missing|FFmpeg filter 'scale_cuda' is not available|scale_cuda.*(missing|unavailable|not available)" "$log_file" 2>/dev/null; then
+    printf "linked_ffmpeg_scale_cuda_unavailable"
+  elif grep -Eiq -- "--resize-backend=cuda unavailable" "$log_file" 2>/dev/null; then
+    printf "cuda_resize_prerequisite_failed"
+  elif grep -Eiq "CUDA hardware decode is inactive|requires CUDA decode" "$log_file" 2>/dev/null; then
+    printf "cuda_hw_decode_unavailable"
+  elif grep -Eiq "selected encoder is not NVENC|NVENC|nvenc" "$log_file" 2>/dev/null; then
+    printf "nvenc_unavailable"
+  elif grep -Eiq "CUDA hardware device is unavailable|No CUDA device|cuda.*device" "$log_file" 2>/dev/null; then
+    printf "cuda_device_unavailable"
+  else
+    printf "candidate_failed"
+  fi
+}
+
 run_candidate() {
   local quality="$1"
   local backend="$2"
@@ -101,28 +126,34 @@ append_candidate() {
   local hw_accel="$3"
   local output="$4"
   local required="${5:-1}"
-  local row_prefix status
+  local row_prefix status log_file failure_reason
 
+  log_file="$(candidate_log_path "$output")"
   if row_prefix="$(run_candidate "$quality" "$backend" "$hw_accel" "$output")"; then
     {
       printf "%s" "$row_prefix"
       metric_summary "$output"
+      printf ",ok,,"
+      csv_escape "$log_file"
+      printf "\n"
     } >> "$report"
     return 0
   fi
 
   status=$?
-  printf "%s,%s,%s,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na\n" \
-    "$quality" "$backend" "$hw_accel" >> "$report"
+  failure_reason="$(classify_failure_reason "$log_file")"
+  printf "%s,%s,%s,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na,na,failed,%s," \
+    "$quality" "$backend" "$hw_accel" "$failure_reason" >> "$report"
+  csv_escape "$log_file" >> "$report"
+  printf "\n" >> "$report"
 
   if [ "$required" = "1" ]; then
     return "$status"
   fi
 
-  echo "optional resize candidate failed; continuing because it is not required: quality=$quality backend=$backend hw_accel=$hw_accel" >&2
+  echo "optional resize candidate failed; continuing because it is not required: quality=$quality backend=$backend hw_accel=$hw_accel reason=$failure_reason" >&2
   return 0
 }
-
 metric_field() {
   local line="$1"
   local name="$2"
@@ -207,13 +238,13 @@ metric_summary() {
   ssim_all="$(metric_field "$ssim_line" "All")"
   ssim_db="$(ssim_db_value "$ssim_line")"
 
-  printf ",%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+  printf ",%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s" \
     "${vmaf:-na}" \
     "${psnr_y:-na}" "${psnr_u:-na}" "${psnr_v:-na}" "${psnr_avg:-na}" "${psnr_min:-na}" "${psnr_max:-na}" \
     "${ssim_y:-na}" "${ssim_u:-na}" "${ssim_v:-na}" "${ssim_all:-na}" "${ssim_db:-na}"
 }
 
-echo "quality,backend,hw_accel,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db" > "$report"
+echo "quality,backend,hw_accel,elapsed_seconds,fps,realtime_factor,size_bytes,vmaf,psnr_y,psnr_u,psnr_v,psnr_avg,psnr_min,psnr_max,ssim_y,ssim_u,ssim_v,ssim_all,ssim_db,status,failure_reason,log_path" > "$report"
 
 append_candidate "fast-bilinear" "software" "none" "$baseline"
 

@@ -27,6 +27,22 @@ pub enum HwAccel {
     Amf,
 }
 
+/// Reports whether the linked FFmpeg avfilter build exposes the `scale_cuda` filter.
+pub fn scale_cuda_filter_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(name) = CString::new("scale_cuda") else {
+            return false;
+        };
+        unsafe { !ffi::avfilter_get_by_name(name.as_ptr()).is_null() }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// Attempts to create an FFmpeg hardware device by name.
 ///
 /// Returns a retained `AVBufferRef` on success.
@@ -326,6 +342,14 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
         println!("  avformat: {}", ver_fmt);
         println!("  avutil: {}", ver_util);
         println!("Configuration:\n  {}\n", conf.to_string_lossy());
+        println!(
+            "CUDA resize filters:\n  - scale_cuda {:<11} (linked FFmpeg avfilter)\n",
+            if scale_cuda_filter_available() {
+                "available"
+            } else {
+                "unavailable"
+            }
+        );
 
         let mut opaque: *mut c_void = std::ptr::null_mut();
         let mut enc_count = 0usize;
@@ -450,10 +474,19 @@ pub struct CodecEntry {
 }
 
 #[derive(Serialize)]
+/// Structured summary of CUDA resize probe information.
+pub struct CudaResizeProbe {
+    /// Whether the linked FFmpeg avfilter build exposes the `scale_cuda` filter.
+    pub scale_cuda_filter_available: bool,
+}
+
+#[derive(Serialize)]
 /// Structured summary of hardware and codec probe information.
 pub struct CodecProbeSummary {
     /// FFmpeg version and configuration metadata.
     pub ffmpeg: serde_json::Value,
+    /// CUDA resize-specific FFmpeg filter availability.
+    pub cuda_resize: CudaResizeProbe,
     /// Hardware-device probe rows.
     pub devices: Vec<HwDeviceEntry>,
     /// Hardware-encoder probe rows.
@@ -600,6 +633,9 @@ pub fn gather_probe_json(
         }
         CodecProbeSummary {
             ffmpeg: ver,
+            cuda_resize: CudaResizeProbe {
+                scale_cuda_filter_available: scale_cuda_filter_available(),
+            },
             devices: device_entries,
             hw_encoders: hw_encs,
             encoders,
