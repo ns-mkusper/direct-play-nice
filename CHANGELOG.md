@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.3] - 2026-06-08
+
+### 🛠️ CUDA Resize Fixes
+
+- Fixed CUDA resize reliability on the Plex benchmark runner by requiring the
+  linked FFmpeg build to expose `scale_cuda` before selecting the CUDA resize
+  path.
+- Reported CUDA resize prerequisites individually so missing decode, encoder,
+  device, quality, or linked-filter support is visible in logs and probe output.
+- Improved resize benchmark failure reporting with explicit status, failure
+  reason, and log path fields, including `linked_ffmpeg_scale_cuda_unavailable`
+  for FFmpeg builds without `scale_cuda`.
+
+### 🧪 CUDA Resize Validation
+
+- Added manual benchmark workflow validation that fails clearly when vcpkg
+  FFmpeg is missing CUDA resize support.
+- Validated required CUDA resize on `plexserver` with `scale_cuda` selected and
+  the CUDA benchmark row completing with `status=ok`.
+
 ## [1.1.0-beta.2] - 2026-05-27
 
 ### 🛠️ Fixed

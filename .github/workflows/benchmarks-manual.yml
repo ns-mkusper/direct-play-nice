@@ -115,9 +115,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
+          key: vcpkg-bench-scale-cuda-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
           restore-keys: |
-            vcpkg-bench-${{ runner.os }}-
+            vcpkg-bench-scale-cuda-v1-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
         if: steps.cached-bin.outputs.missing == 'true'
@@ -344,9 +344,9 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-bench-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
+          key: vcpkg-bench-scale-cuda-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'vcpkg.json', 'vcpkg-configuration.json', 'VCPKG_DEPS_LIST.txt') }}
           restore-keys: |
-            vcpkg-bench-${{ runner.os }}-
+            vcpkg-bench-scale-cuda-v1-${{ runner.os }}-
 
       - name: Build vcpkg dependencies
         if: steps.cached-bin.outputs.missing == 'true'
@@ -389,14 +389,36 @@ jobs:
           joined_paths="$(IFS=:; echo "${lib_paths[*]}")"
           echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
-      - name: Validate VCPKG root
+      - name: Validate VCPKG FFmpeg CUDA resize support
         if: steps.cached-bin.outputs.missing == 'true'
         shell: bash
         run: |
           set -euo pipefail
           if [[ ! -f "$VCPKG_ROOT/.vcpkg-root" ]]; then
-            echo "::warning title=Missing vcpkg workspace::$VCPKG_ROOT/.vcpkg-root not found; continuing with local toolchain/runtime."
+            echo "::error title=Missing vcpkg workspace::$VCPKG_ROOT/.vcpkg-root not found."
+            exit 1
           fi
+
+          config_mak="$VCPKG_ROOT/buildtrees/ffmpeg/x64-linux-rel/ffbuild/config.mak"
+          avfilter_lib="$VCPKG_ROOT/installed/x64-linux/lib/libavfilter.a"
+          missing=()
+          if [[ ! -f "$config_mak" ]] || ! grep -q '^CONFIG_SCALE_CUDA_FILTER=yes$' "$config_mak"; then
+            missing+=("CONFIG_SCALE_CUDA_FILTER=yes in $config_mak")
+          fi
+          if [[ ! -f "$avfilter_lib" ]] || ! ar t "$avfilter_lib" | grep '^vf_scale_cuda\.o$' >/dev/null; then
+            missing+=("vf_scale_cuda.o in $avfilter_lib")
+          fi
+          if [[ ! -f "$avfilter_lib" ]] || ! strings "$avfilter_lib" | grep 'scale_cuda' >/dev/null; then
+            missing+=("scale_cuda symbols/strings in $avfilter_lib")
+          fi
+          if [[ "${#missing[@]}" -ne 0 ]]; then
+            echo "::error title=VCPKG FFmpeg missing CUDA resize support::Rebuild FFmpeg with --enable-cuda-llvm --enable-filter=scale_cuda. Missing: ${missing[*]}"
+            if [[ -f "$config_mak" ]]; then
+              grep -E 'CONFIG_SCALE_CUDA_FILTER|cuda_llvm|cuda_nvcc' "$config_mak" || true
+            fi
+            exit 1
+          fi
+          echo "Validated vcpkg FFmpeg scale_cuda support in $VCPKG_ROOT."
 
       - name: Export LIBCLANG_PATH
         if: steps.cached-bin.outputs.missing == 'true'

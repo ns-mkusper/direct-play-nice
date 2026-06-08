@@ -18,10 +18,6 @@ mod non_linux {
         false
     }
 
-    pub(crate) fn scale_cuda_filter_available() -> bool {
-        false
-    }
-
     pub(crate) fn attach_cuda_encoder_frames_context(
         _encode_context: &mut AVCodecContext,
         _device: *mut ffi::AVBufferRef,

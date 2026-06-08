@@ -451,14 +451,31 @@ pub(crate) fn convert_video_file(
 
                 let dimensions_change = input_stream_codecpar.width != encode_context.width
                     || input_stream_codecpar.height != encode_context.height;
-                let can_use_cuda_resize = hw_decoder_active
-                    && using_hw_encoder
-                    && encoder_name_lower.contains("nvenc")
-                    && maybe_hw_dev.is_some()
-                    && cuda_resize_supported_for_quality(resize_quality)
-                    && scale_cuda_filter_available();
+                let cuda_resize_prereqs = CudaResizePrerequisites::new(
+                    dimensions_change,
+                    hw_decoder_active,
+                    using_hw_encoder,
+                    encoder_name_lower.contains("nvenc"),
+                    maybe_hw_dev.is_some(),
+                    cuda_resize_supported_for_quality(resize_quality),
+                    scale_cuda_filter_available(),
+                );
+                if dimensions_change
+                    || matches!(resize_backend, ResizeBackend::Cuda | ResizeBackend::Auto)
+                {
+                    info!(
+                        "CUDA resize prerequisites: dimensions_change={}, cuda_hw_decode={}, hardware_encoder={}, nvenc_encoder={}, cuda_hw_device={}, quality_supported={}, linked_scale_cuda_filter={}",
+                        cuda_resize_prereqs.dimensions_change,
+                        cuda_resize_prereqs.cuda_hw_decode,
+                        cuda_resize_prereqs.hardware_encoder,
+                        cuda_resize_prereqs.nvenc_encoder,
+                        cuda_resize_prereqs.cuda_hw_device,
+                        cuda_resize_prereqs.quality_supported,
+                        cuda_resize_prereqs.linked_scale_cuda_filter,
+                    );
+                }
                 active_resize_backend =
-                    select_resize_backend(resize_backend, dimensions_change, can_use_cuda_resize)?;
+                    select_resize_backend(resize_backend, &cuda_resize_prereqs)?;
                 if matches!(active_resize_backend, ResizeBackend::Cuda) {
                     info!(
                         "Resize backend selected: cuda (scale_cuda, quality {}, {}x{} -> {}x{})",
@@ -708,22 +725,101 @@ pub(crate) fn convert_video_file(
     Ok(ConversionOutcome { h264_verification })
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CudaResizePrerequisites {
+    dimensions_change: bool,
+    cuda_hw_decode: bool,
+    hardware_encoder: bool,
+    nvenc_encoder: bool,
+    cuda_hw_device: bool,
+    quality_supported: bool,
+    linked_scale_cuda_filter: bool,
+}
+
+impl CudaResizePrerequisites {
+    fn new(
+        dimensions_change: bool,
+        cuda_hw_decode: bool,
+        hardware_encoder: bool,
+        nvenc_encoder: bool,
+        cuda_hw_device: bool,
+        quality_supported: bool,
+        linked_scale_cuda_filter: bool,
+    ) -> Self {
+        Self {
+            dimensions_change,
+            cuda_hw_decode,
+            hardware_encoder,
+            nvenc_encoder,
+            cuda_hw_device,
+            quality_supported,
+            linked_scale_cuda_filter,
+        }
+    }
+
+    fn available(self) -> bool {
+        self.dimensions_change
+            && self.cuda_hw_decode
+            && self.hardware_encoder
+            && self.nvenc_encoder
+            && self.cuda_hw_device
+            && self.quality_supported
+            && self.linked_scale_cuda_filter
+    }
+
+    fn missing_reasons(self) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
+        if !self.dimensions_change {
+            reasons.push("video dimensions are unchanged");
+        }
+        if !self.cuda_hw_decode {
+            reasons.push("CUDA hardware decode is inactive");
+        }
+        if !self.hardware_encoder {
+            reasons.push("hardware encoder is inactive");
+        }
+        if !self.nvenc_encoder {
+            reasons.push("selected encoder is not NVENC");
+        }
+        if !self.cuda_hw_device {
+            reasons.push("CUDA hardware device is unavailable");
+        }
+        if !self.quality_supported {
+            reasons.push("resize quality is not scale_cuda-compatible (supported: bilinear, bicubic, lanczos)");
+        }
+        if !self.linked_scale_cuda_filter {
+            reasons.push("linked FFmpeg filter 'scale_cuda' is missing");
+        }
+        reasons
+    }
+
+    fn missing_reason_summary(self) -> String {
+        self.missing_reasons().join("; ")
+    }
+}
+
 fn select_resize_backend(
     requested: ResizeBackend,
-    dimensions_change: bool,
-    cuda_available: bool,
+    prerequisites: &CudaResizePrerequisites,
 ) -> Result<ResizeBackend> {
-    if !dimensions_change {
+    if !prerequisites.dimensions_change {
         return Ok(ResizeBackend::Software);
     }
 
     match requested {
         ResizeBackend::Software => Ok(ResizeBackend::Software),
-        ResizeBackend::Auto if cuda_available => Ok(ResizeBackend::Cuda),
-        ResizeBackend::Auto => Ok(ResizeBackend::Software),
-        ResizeBackend::Cuda if cuda_available => Ok(ResizeBackend::Cuda),
+        ResizeBackend::Auto if prerequisites.available() => Ok(ResizeBackend::Cuda),
+        ResizeBackend::Auto => {
+            info!(
+                "CUDA resize unavailable; falling back to software resize: {}",
+                prerequisites.missing_reason_summary()
+            );
+            Ok(ResizeBackend::Software)
+        }
+        ResizeBackend::Cuda if prerequisites.available() => Ok(ResizeBackend::Cuda),
         ResizeBackend::Cuda => bail!(
-            "--resize-backend=cuda requires CUDA decode, NVENC encode, scale_cuda filter support, and a scale_cuda-compatible resize quality (bilinear, bicubic, lanczos)"
+            "--resize-backend=cuda unavailable: {}",
+            prerequisites.missing_reason_summary()
         ),
     }
 }
@@ -972,32 +1068,41 @@ fn verify_h264_output(request: H264VerificationRequest<'_>) -> Result<Option<H26
 mod tests {
     use super::*;
 
+    fn available_cuda_resize_prerequisites() -> CudaResizePrerequisites {
+        CudaResizePrerequisites::new(true, true, true, true, true, true, true)
+    }
+
     #[test]
     fn cuda_resize_backend_is_ignored_when_dimensions_do_not_change() {
+        let prerequisites =
+            CudaResizePrerequisites::new(false, false, false, false, false, false, false);
         assert_eq!(
-            select_resize_backend(ResizeBackend::Cuda, false, false).unwrap(),
+            select_resize_backend(ResizeBackend::Cuda, &prerequisites).unwrap(),
             ResizeBackend::Software
         );
     }
 
     #[test]
     fn auto_resize_backend_prefers_cuda_only_when_available() {
+        let available = available_cuda_resize_prerequisites();
         assert_eq!(
-            select_resize_backend(ResizeBackend::Auto, true, true).unwrap(),
+            select_resize_backend(ResizeBackend::Auto, &available).unwrap(),
             ResizeBackend::Cuda
         );
+        let unavailable = CudaResizePrerequisites::new(true, true, true, true, true, true, false);
         assert_eq!(
-            select_resize_backend(ResizeBackend::Auto, true, false).unwrap(),
+            select_resize_backend(ResizeBackend::Auto, &unavailable).unwrap(),
             ResizeBackend::Software
         );
     }
 
     #[test]
-    fn required_cuda_resize_backend_fails_when_unavailable() {
-        let err = select_resize_backend(ResizeBackend::Cuda, true, false).unwrap_err();
+    fn required_cuda_resize_backend_fails_with_missing_reason() {
+        let prerequisites = CudaResizePrerequisites::new(true, true, true, true, true, true, false);
+        let err = select_resize_backend(ResizeBackend::Cuda, &prerequisites).unwrap_err();
         assert!(
             err.to_string()
-                .contains("--resize-backend=cuda requires CUDA decode"),
+                .contains("linked FFmpeg filter 'scale_cuda' is missing"),
             "unexpected error: {err}"
         );
     }

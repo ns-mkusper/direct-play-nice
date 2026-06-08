@@ -8,6 +8,7 @@ use rsmpeg::ffi;
 use std::ffi::CString;
 use std::ptr;
 
+use crate::gpu::scale_cuda_filter_available;
 use crate::transcoder::ffmpeg_diagnostics::av_error_to_string;
 use crate::types::ResizeQuality;
 
@@ -61,13 +62,6 @@ pub(crate) fn attach_cuda_encoder_frames_context(
         (*encode_context.as_mut_ptr()).hw_frames_ctx = frames_ref;
     }
     Ok(())
-}
-
-pub(crate) fn scale_cuda_filter_available() -> bool {
-    let Ok(name) = CString::new("scale_cuda") else {
-        return false;
-    };
-    unsafe { !ffi::avfilter_get_by_name(name.as_ptr()).is_null() }
 }
 
 pub(crate) struct CudaResizeFilter {
