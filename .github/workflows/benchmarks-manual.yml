@@ -340,6 +340,7 @@ jobs:
               opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
             fi
             shim="$opencv5_cuda_prefix/lib/libdpn_opencv5_cuda_preprocess.so"
+            echo "OpenCV 5 CUDA preprocess requested; shim path: $shim"
             if [[ ! -f "$shim" ]]; then
               use_nvcc() {
                 local cuda_bin="$1"
@@ -383,10 +384,13 @@ jobs:
                 if [[ ! -x "$uv_bin" ]]; then
                   uv_installer="$(mktemp)"
                   if command -v curl >/dev/null 2>&1; then
+                    echo "Installing uv with curl to bootstrap Python for CUDA toolkit wheels."
                     curl -fsSL https://astral.sh/uv/install.sh -o "$uv_installer" || return 1
                   elif command -v wget >/dev/null 2>&1; then
+                    echo "Installing uv with wget to bootstrap Python for CUDA toolkit wheels."
                     wget -qO "$uv_installer" https://astral.sh/uv/install.sh || return 1
                   else
+                    echo "Cannot install uv: neither curl nor wget is available."
                     return 1
                   fi
                   UV_INSTALL_DIR="$(dirname "$uv_bin")" sh "$uv_installer" || return 1
@@ -400,8 +404,12 @@ jobs:
                 [[ -x "$python_bin" ]]
               }
               ensure_python() {
-                find_python && return 0
+                if find_python; then
+                  echo "Using existing Python for CUDA toolkit bootstrap: $python_bin"
+                  return 0
+                fi
                 if [[ "${DPN_OPENCV5_CUDA_INSTALL_PYTHON:-1}" != "1" ]]; then
+                  echo "Python bootstrap is disabled by DPN_OPENCV5_CUDA_INSTALL_PYTHON."
                   return 1
                 fi
                 install_uv_python
@@ -433,6 +441,7 @@ jobs:
                   echo "Unable to bootstrap Python/pip for NVIDIA CUDA 12 pip wheels."
                   return 1
                 fi
+                echo "Installing NVIDIA CUDA 12 pip-wheel toolkit with $python_bin."
                 local cuda_prefix site_pkg component dir src entry pip_args
                 cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
                 pip_args=(install --user --upgrade)
@@ -471,14 +480,20 @@ jobs:
                 use_nvcc "$cuda_prefix/bin"
               }
               install_cuda_toolkit() {
+                echo "Searching for CUDA 12 nvcc."
                 if find_nvcc; then
+                  echo "Found CUDA 12 nvcc at $(command -v nvcc)."
                   return 0
                 fi
                 if [[ "${DPN_OPENCV5_CUDA_INSTALL_TOOLKIT:-1}" != "1" ]]; then
+                  echo "CUDA toolkit bootstrap is disabled by DPN_OPENCV5_CUDA_INSTALL_TOOLKIT."
                   return 1
                 fi
+                echo "Attempting NVIDIA CUDA 12 pip-wheel toolkit bootstrap."
                 install_pip_cuda_toolkit && return 0
+                echo "NVIDIA CUDA 12 pip-wheel toolkit bootstrap did not provide nvcc."
                 if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+                  echo "Passwordless sudo apt fallback is unavailable."
                   return 1
                 fi
                 if [[ -r /etc/os-release ]]; then
@@ -516,7 +531,7 @@ jobs:
                 done
                 [[ "$installed" -eq 1 ]] && find_nvcc
               }
-              install_cuda_toolkit || true
+              install_cuda_toolkit || echo "CUDA toolkit provisioning did not provide CUDA 12 nvcc."
               missing_cuda_build=()
               for tool in git cmake c++ nvcc; do
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
