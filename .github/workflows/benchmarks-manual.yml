@@ -409,6 +409,59 @@ jobs:
                 echo "LD_LIBRARY_PATH=$lib_dir:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
                 export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
               }
+              install_redist_cuda_toolkit() {
+                local cuda_prefix redist_base redist_cache redist_work arch component archive rel sha archive_path extract_root
+                cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
+                if use_nvcc "$cuda_prefix/bin"; then
+                  echo "Using existing CUDA 12 redist toolkit at $cuda_prefix."
+                  return 0
+                fi
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  *)
+                    echo "CUDA redist bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                redist_base="${DPN_OPENCV5_CUDA_REDIST_BASE_URL:-https://developer.download.nvidia.com/compute/cuda/redist}"
+                redist_cache="${DPN_OPENCV5_CUDA_REDIST_CACHE:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-redist-cache}"
+                redist_work="${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-redist-work"
+                rm -rf "$cuda_prefix" "$redist_work"
+                mkdir -p "$cuda_prefix" "$redist_cache" "$redist_work"
+                local packages=(
+                  'cuda_cccl|cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.6.77-archive.tar.xz|9c3145ef01f73e50c0f5fcf923f0899c847f487c529817daa8f8b1a3ecf20925'
+                  'cuda_cudart|cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz|f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9'
+                  'cuda_nvcc|cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.6.85-archive.tar.xz|840deff234d9bef20d6856439c49881cb4f29423b214f9ecd2fa59b7ac323817'
+                  'cuda_nvrtc|cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.6.85-archive.tar.xz|a4289ba86f0deeccf4e1d94c58559eae4c8184fcb6eaade8fcab45584e6cf402'
+                  'cuda_nvtx|cuda_nvtx/linux-x86_64/cuda_nvtx-linux-x86_64-12.6.77-archive.tar.xz|d97dd4f3bbc23e57302990c1573f737bea55f3174b2c8e3d19067d9b189a446b'
+                  'libnpp|libnpp/linux-x86_64/libnpp-linux-x86_64-12.3.1.54-archive.tar.xz|0a7f5bb81e65e60775f831990a567394682a209694b396a4e9233a6c91db65e3'
+                  'libnvjitlink|libnvjitlink/linux-x86_64/libnvjitlink-linux-x86_64-12.6.85-archive.tar.xz|1055077ce594fad6fd86d23604c60c64b673cdc8dd01fae7e0cbec633c35930d'
+                )
+                for component in "${packages[@]}"; do
+                  IFS='|' read -r component rel sha <<< "$component"
+                  archive="$(basename "$rel")"
+                  archive_path="$redist_cache/$archive"
+                  if [[ ! -s "$archive_path" ]]; then
+                    echo "Downloading CUDA 12 redist component $component."
+                    fetch_url "$redist_base/$rel" "$archive_path" || return 1
+                  else
+                    echo "Using cached CUDA 12 redist component $component."
+                  fi
+                  if command -v sha256sum >/dev/null 2>&1; then
+                    echo "$sha  $archive_path" | sha256sum --check --status || return 1
+                  fi
+                  rm -rf "$redist_work/$component"
+                  mkdir -p "$redist_work/$component"
+                  tar -xJf "$archive_path" -C "$redist_work/$component"
+                  extract_root="$(find "$redist_work/$component" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+                  [[ -n "$extract_root" ]]
+                  cp -a "$extract_root"/. "$cuda_prefix"/
+                done
+                if [[ ! -e "$cuda_prefix/lib64" && -d "$cuda_prefix/lib" ]]; then
+                  ln -s lib "$cuda_prefix/lib64"
+                fi
+                use_nvcc "$cuda_prefix/bin"
+              }
               install_runfile_cuda_toolkit() {
                 local cuda_prefix runfile_url runfile_tmp arch
                 cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
@@ -453,6 +506,9 @@ jobs:
                 echo "Attempting NVIDIA CUDA 12 runfile toolkit bootstrap."
                 install_runfile_cuda_toolkit && return 0
                 echo "NVIDIA CUDA 12 runfile toolkit bootstrap did not provide nvcc."
+                echo "Attempting NVIDIA CUDA 12 redist toolkit bootstrap."
+                install_redist_cuda_toolkit && return 0
+                echo "NVIDIA CUDA 12 redist toolkit bootstrap did not provide nvcc."
                 if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
                   echo "Passwordless sudo apt fallback is unavailable."
                   return 1
@@ -498,7 +554,7 @@ jobs:
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
               done
               if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
-                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, set DPN_OPENCV5_CUDA_RUNFILE_URL to a CUDA 12 runfile, or provide curl/wget so the workflow can install a CUDA 12 runfile toolkit without sudo."
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, set DPN_OPENCV5_CUDA_RUNFILE_URL to a CUDA 12 runfile, or provide curl/wget so the workflow can install a CUDA 12 runfile or redist toolkit without sudo."
                 exit 1
               fi
               nvcc --version
