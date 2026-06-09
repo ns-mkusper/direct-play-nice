@@ -338,20 +338,83 @@ jobs:
             opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
             shim="$opencv5_cuda_prefix/lib/libdpn_opencv5_cuda_preprocess.so"
             if [[ ! -f "$shim" ]]; then
+              find_nvcc() {
+                if command -v nvcc >/dev/null 2>&1; then
+                  return 0
+                fi
+                local cuda_bin
+                for cuda_bin in /usr/local/cuda-12*/bin /usr/local/cuda/bin /opt/cuda/bin /opt/direct-play-nice/cuda12-toolkit/bin; do
+                  if [[ -x "$cuda_bin/nvcc" ]]; then
+                    echo "PATH=$cuda_bin:$PATH" >> "$GITHUB_ENV"
+                    export PATH="$cuda_bin:$PATH"
+                    echo "CUDA_HOME=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
+                    export CUDA_HOME="$(dirname "$cuda_bin")"
+                    return 0
+                  fi
+                done
+                return 1
+              }
+              install_cuda_toolkit() {
+                if find_nvcc; then
+                  return 0
+                fi
+                if [[ "${DPN_OPENCV5_CUDA_INSTALL_TOOLKIT:-1}" != "1" ]]; then
+                  return 1
+                fi
+                if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1; then
+                  return 1
+                fi
+                if [[ -r /etc/os-release ]]; then
+                  . /etc/os-release
+                fi
+                if [[ "${ID:-}" != "ubuntu" ]]; then
+                  return 1
+                fi
+                local arch repo_id keyring_url keyring_tmp fetch_status package installed
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  aarch64) arch=sbsa ;;
+                  *) return 1 ;;
+                esac
+                repo_id="ubuntu${VERSION_ID//./}"
+                keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/${repo_id}/${arch}/cuda-keyring_1.1-1_all.deb"
+                keyring_tmp="$(mktemp)"
+                fetch_status=1
+                if command -v curl >/dev/null 2>&1; then
+                  curl -fsSL "$keyring_url" -o "$keyring_tmp" && fetch_status=0
+                elif command -v wget >/dev/null 2>&1; then
+                  wget -qO "$keyring_tmp" "$keyring_url" && fetch_status=0
+                fi
+                if [[ "$fetch_status" -eq 0 ]]; then
+                  sudo dpkg -i "$keyring_tmp"
+                fi
+                rm -f "$keyring_tmp"
+                sudo apt-get update -y
+                installed=0
+                for package in ${DPN_OPENCV5_CUDA_TOOLKIT_PACKAGE:-cuda-toolkit-12-6} cuda-toolkit-12-5 cuda-toolkit-12-4 cuda-toolkit-12-3 cuda-toolkit-12-2; do
+                  if sudo DEBIAN_FRONTEND=noninteractive apt-get --assume-yes install --no-install-recommends "$package"; then
+                    installed=1
+                    break
+                  fi
+                done
+                [[ "$installed" -eq 1 ]] && find_nvcc
+              }
+              install_cuda_toolkit || true
               missing_cuda_build=()
               for tool in git cmake c++ nvcc; do
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
               done
               if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
-                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}."
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc or set DPN_OPENCV5_CUDA_INSTALL_TOOLKIT=1 on an Ubuntu runner with sudo."
                 exit 1
               fi
+              nvcc --version
               echo "OpenCV 5 CUDA preprocess shim missing; provisioning $shim."
               build_cmd=(scripts/opencv-tools/build_opencv5_cuda.sh --prefix "$opencv5_cuda_prefix" --cuda-arch 5.2 --jobs "${DPN_OPENCV5_CUDA_BUILD_JOBS:-2}")
               if [[ -w "$opencv5_cuda_prefix" || ( ! -e "$opencv5_cuda_prefix" && -w "$(dirname "$opencv5_cuda_prefix")" ) ]]; then
                 "${build_cmd[@]}"
               elif command -v sudo >/dev/null 2>&1; then
-                sudo --preserve-env=PATH,CUDA_HOME,CUDA_PATH,LD_LIBRARY_PATH,PKG_CONFIG_PATH "${build_cmd[@]}"
+                sudo env "PATH=$PATH" "CUDA_HOME=${CUDA_HOME:-}" "CUDA_PATH=${CUDA_PATH:-}" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}" "${build_cmd[@]}"
               else
                 echo "::error title=Cannot provision OpenCV 5 CUDA::No write access to $opencv5_cuda_prefix and sudo is unavailable."
                 exit 1
