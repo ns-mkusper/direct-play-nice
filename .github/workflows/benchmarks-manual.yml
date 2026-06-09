@@ -335,24 +335,75 @@ jobs:
             exit 1
           fi
           if [[ "$needs_cuda_opencv" == "1" ]]; then
-            opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
+            opencv5_cuda_prefix="${DPN_OPENCV5_CUDA_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-opencv5-cuda}"
+            if [[ -z "${DPN_OPENCV5_CUDA_PREFIX:-}" && -f /opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so ]]; then
+              opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
+            fi
             shim="$opencv5_cuda_prefix/lib/libdpn_opencv5_cuda_preprocess.so"
             if [[ ! -f "$shim" ]]; then
-              find_nvcc() {
-                if command -v nvcc >/dev/null 2>&1; then
-                  return 0
+              use_nvcc() {
+                local cuda_bin="$1"
+                if [[ ! -x "$cuda_bin/nvcc" ]] || ! "$cuda_bin/nvcc" --version | grep -q 'release 12\.'; then
+                  return 1
                 fi
-                local cuda_bin
+                echo "PATH=$cuda_bin:$PATH" >> "$GITHUB_ENV"
+                export PATH="$cuda_bin:$PATH"
+                echo "CUDA_HOME=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
+                echo "CUDA_PATH=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
+                export CUDA_HOME="$(dirname "$cuda_bin")"
+                export CUDA_PATH="$CUDA_HOME"
+                return 0
+              }
+              find_nvcc() {
+                local cuda_bin nvcc_path
                 for cuda_bin in /usr/local/cuda-12*/bin /usr/local/cuda/bin /opt/cuda/bin /opt/direct-play-nice/cuda12-toolkit/bin; do
-                  if [[ -x "$cuda_bin/nvcc" ]]; then
-                    echo "PATH=$cuda_bin:$PATH" >> "$GITHUB_ENV"
-                    export PATH="$cuda_bin:$PATH"
-                    echo "CUDA_HOME=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
-                    export CUDA_HOME="$(dirname "$cuda_bin")"
-                    return 0
-                  fi
+                  use_nvcc "$cuda_bin" && return 0
                 done
+                if nvcc_path="$(command -v nvcc 2>/dev/null)"; then
+                  use_nvcc "$(dirname "$nvcc_path")" && return 0
+                fi
                 return 1
+              }
+              install_pip_cuda_toolkit() {
+                if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
+                  return 1
+                fi
+                local cuda_prefix site_pkg component dir src entry pip_args
+                cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
+                pip_args=(install --user --upgrade)
+                if python3 -m pip help install | grep -q -- '--break-system-packages'; then
+                  pip_args+=(--break-system-packages)
+                fi
+                python3 -m pip "${pip_args[@]}" \
+                  nvidia-cuda-nvcc-cu12 \
+                  nvidia-cuda-runtime-cu12 \
+                  nvidia-cuda-cupti-cu12 \
+                  nvidia-cublas-cu12 \
+                  nvidia-cufft-cu12 \
+                  nvidia-curand-cu12 \
+                  nvidia-npp-cu12 \
+                  nvidia-nvjitlink-cu12 \
+                  nvidia-nvtx-cu12
+                site_pkg="$(python3 -c 'import site; print(site.getusersitepackages())')"
+                mkdir -p "$cuda_prefix/bin" "$cuda_prefix/include" "$cuda_prefix/lib" "$cuda_prefix/lib64" "$cuda_prefix/nvvm"
+                for component in cuda_nvcc cuda_runtime cuda_cupti cublas cufft curand npp nvjitlink nvtx; do
+                  for dir in bin include lib lib64 nvvm; do
+                    src="$site_pkg/nvidia/$component/$dir"
+                    if [[ -d "$src" ]]; then
+                      while IFS= read -r entry; do
+                        ln -sfn "$entry" "$cuda_prefix/$dir/$(basename "$entry")"
+                      done < <(find "$src" -mindepth 1 -maxdepth 1)
+                    fi
+                  done
+                done
+                if [[ -d "$cuda_prefix/lib" ]]; then
+                  while IFS= read -r entry; do
+                    ln -sfn "$entry" "$cuda_prefix/lib64/$(basename "$entry")"
+                  done < <(find "$cuda_prefix/lib" -mindepth 1 -maxdepth 1)
+                fi
+                echo "LD_LIBRARY_PATH=$cuda_prefix/lib64:$cuda_prefix/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                export LD_LIBRARY_PATH="$cuda_prefix/lib64:$cuda_prefix/lib:${LD_LIBRARY_PATH:-}"
+                use_nvcc "$cuda_prefix/bin"
               }
               install_cuda_toolkit() {
                 if find_nvcc; then
@@ -361,7 +412,8 @@ jobs:
                 if [[ "${DPN_OPENCV5_CUDA_INSTALL_TOOLKIT:-1}" != "1" ]]; then
                   return 1
                 fi
-                if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1; then
+                install_pip_cuda_toolkit && return 0
+                if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
                   return 1
                 fi
                 if [[ -r /etc/os-release ]]; then
