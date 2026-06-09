@@ -297,6 +297,12 @@ jobs:
           fi
           echo "path=$source_path" >> "$GITHUB_OUTPUT"
 
+      - name: Install Python for CUDA toolkit bootstrap
+        if: contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv5-cuda-')
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Ensure benchmark dependencies
         shell: bash
         run: |
