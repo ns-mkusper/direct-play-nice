@@ -146,7 +146,6 @@ Override recognition profile routing (language -> profile) with:
   Path to custom TOML routing manifest
   (default: `config/ocr-routing.toml` in the repo source tree).
 
-
 ## Optional OpenCV 5 CUDA preprocessing
 
 For NVIDIA hosts with a CUDA-enabled OpenCV 5 install, build the binary with

@@ -335,13 +335,36 @@ jobs:
             exit 1
           fi
           if [[ "$needs_cuda_opencv" == "1" ]]; then
-            shim=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+            opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
+            shim="$opencv5_cuda_prefix/lib/libdpn_opencv5_cuda_preprocess.so"
             if [[ ! -f "$shim" ]]; then
-              echo "::error title=Missing OpenCV 5 CUDA preprocess shim::CUDA OpenCV preprocess profiles require $shim. Provision it with scripts/opencv-tools/build_opencv5_cuda.sh --prefix /opt/direct-play-nice/opencv5-cuda --cuda-arch 5.2 using CUDA 12.x."
+              missing_cuda_build=()
+              for tool in git cmake c++ nvcc; do
+                command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
+              done
+              if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}."
+                exit 1
+              fi
+              echo "OpenCV 5 CUDA preprocess shim missing; provisioning $shim."
+              build_cmd=(scripts/opencv-tools/build_opencv5_cuda.sh --prefix "$opencv5_cuda_prefix" --cuda-arch 5.2 --jobs "${DPN_OPENCV5_CUDA_BUILD_JOBS:-2}")
+              if [[ -w "$opencv5_cuda_prefix" || ( ! -e "$opencv5_cuda_prefix" && -w "$(dirname "$opencv5_cuda_prefix")" ) ]]; then
+                "${build_cmd[@]}"
+              elif command -v sudo >/dev/null 2>&1; then
+                sudo --preserve-env=PATH,CUDA_HOME,CUDA_PATH,LD_LIBRARY_PATH,PKG_CONFIG_PATH "${build_cmd[@]}"
+              else
+                echo "::error title=Cannot provision OpenCV 5 CUDA::No write access to $opencv5_cuda_prefix and sudo is unavailable."
+                exit 1
+              fi
+            fi
+            if [[ ! -f "$shim" ]]; then
+              echo "::error title=Missing OpenCV 5 CUDA preprocess shim::CUDA OpenCV preprocess profiles require $shim after provisioning."
               exit 1
             fi
-            if ! PKG_CONFIG_PATH="/opt/direct-play-nice/opencv5-cuda/lib/pkgconfig:/opt/direct-play-nice/opencv5-cuda/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" pkg-config --exists opencv5; then
-              echo "::warning title=Missing opencv5 pkg-config::The runtime shim exists, but pkg-config opencv5 was not found under /opt/direct-play-nice/opencv5-cuda. Build can continue because the Rust CUDA path loads the shim dynamically."
+            echo "DPN_OPENCV5_CUDA_PREPROCESS_LIB=$shim" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=$opencv5_cuda_prefix/lib:$opencv5_cuda_prefix/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+            if ! PKG_CONFIG_PATH="$opencv5_cuda_prefix/lib/pkgconfig:$opencv5_cuda_prefix/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" pkg-config --exists opencv5; then
+              echo "::warning title=Missing opencv5 pkg-config::The runtime shim exists, but pkg-config opencv5 was not found under $opencv5_cuda_prefix. Build can continue because the Rust CUDA path loads the shim dynamically."
             fi
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
