@@ -88,6 +88,7 @@ if [[ "$SKIP_OPENCV" != "1" ]]; then
     -DWITH_CUDA=ON \
     -DCUDA_ARCH_BIN="$CUDA_ARCH" \
     -DCUDA_ARCH_PTX= \
+    -DCUDA_NVCC_FLAGS="--allow-unsupported-compiler" \
     -DWITH_CUDNN=OFF \
     -DWITH_NVCUVID=OFF \
     -DBUILD_TESTS=OFF \
