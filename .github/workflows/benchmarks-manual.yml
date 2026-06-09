@@ -379,6 +379,36 @@ jobs:
                   return 1
                 fi
               }
+              ensure_runfile_libxml2() {
+                if ldconfig -p 2>/dev/null | grep -q 'libxml2[.]so[.]2'; then
+                  return 0
+                fi
+                if [[ -e /usr/lib/x86_64-linux-gnu/libxml2.so.2 || -e /usr/lib64/libxml2.so.2 || -e /usr/lib/libxml2.so.2 ]]; then
+                  return 0
+                fi
+                if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-deb >/dev/null 2>&1; then
+                  echo "Cannot bootstrap libxml2 for CUDA runfile: apt-get or dpkg-deb is unavailable."
+                  return 1
+                fi
+                local deps_prefix deps_work deb lib_dir
+                deps_prefix="${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda-runfile-deps"
+                deps_work="$deps_prefix/download"
+                mkdir -p "$deps_work" "$deps_prefix/root"
+                if ! find "$deps_prefix/root" -name 'libxml2.so.2*' -print -quit | grep -q .; then
+                  echo "Downloading libxml2 locally for the CUDA runfile installer."
+                  (cd "$deps_work" && apt-get download libxml2)
+                  deb="$(find "$deps_work" -maxdepth 1 -name 'libxml2*.deb' | head -n 1)"
+                  [[ -n "$deb" ]]
+                  dpkg-deb -x "$deb" "$deps_prefix/root"
+                fi
+                lib_dir="$(dirname "$(find "$deps_prefix/root" -name 'libxml2.so.2*' | head -n 1)")"
+                if [[ -z "$lib_dir" || ! -d "$lib_dir" ]]; then
+                  echo "Unable to locate locally extracted libxml2.so.2."
+                  return 1
+                fi
+                echo "LD_LIBRARY_PATH=$lib_dir:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
+              }
               install_runfile_cuda_toolkit() {
                 local cuda_prefix runfile_url runfile_tmp arch
                 cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
@@ -403,6 +433,7 @@ jobs:
                   echo "Using cached CUDA 12 toolkit runfile at $runfile_tmp."
                 fi
                 chmod +x "$runfile_tmp"
+                ensure_runfile_libxml2 || return 1
                 rm -rf "$cuda_prefix"
                 mkdir -p "$cuda_prefix"
                 echo "Installing CUDA 12 toolkit from runfile into $cuda_prefix without sudo."
