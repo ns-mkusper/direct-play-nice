@@ -14,6 +14,9 @@ pub(super) fn preprocess_ocr_pgm(pgm: &[u8], mode: OcrPreprocess) -> Result<Vec<
         OcrPreprocess::OpenCvBasic | OcrPreprocess::OpenCvSubtitle => {
             preprocess_ocr_pgm_with_opencv(pgm, mode)
         }
+        OcrPreprocess::OpenCv5CudaBasic | OcrPreprocess::OpenCv5CudaSubtitle => {
+            preprocess_ocr_pgm_with_opencv_cuda(pgm, mode)
+        }
     }
 }
 
@@ -93,7 +96,11 @@ fn preprocess_ocr_pgm_with_opencv(pgm: &[u8], mode: OcrPreprocess) -> Result<Vec
             )
             .context("OpenCV morphology close")?;
         }
-        OcrPreprocess::None => unreachable!("OpenCV preprocessing is not used for no-op mode"),
+        OcrPreprocess::None
+        | OcrPreprocess::OpenCv5CudaBasic
+        | OcrPreprocess::OpenCv5CudaSubtitle => {
+            unreachable!("CPU OpenCV preprocessing is not used for this mode")
+        }
     }
 
     let bytes = output
@@ -126,23 +133,210 @@ fn adaptive_block_size(width: usize, height: usize) -> i32 {
     block
 }
 
-#[cfg(not(feature = "opencv-preprocess"))]
+#[cfg(not(feature = "opencv-cuda-preprocess"))]
+fn preprocess_ocr_pgm_with_opencv_cuda(_pgm: &[u8], mode: OcrPreprocess) -> Result<Vec<u8>> {
+    bail!(
+        "--ocr-preprocess={} requires building direct-play-nice with --features opencv-cuda-preprocess and installing the OpenCV 5 CUDA shim",
+        mode_label(mode)
+    )
+}
+
+#[cfg(feature = "opencv-cuda-preprocess")]
+fn preprocess_ocr_pgm_with_opencv_cuda(pgm: &[u8], mode: OcrPreprocess) -> Result<Vec<u8>> {
+    use anyhow::{anyhow, Context};
+    use libloading::Library;
+    use std::ffi::{c_char, c_int, c_uchar, CStr, OsString};
+    use std::path::PathBuf;
+    use std::sync::{Once, OnceLock};
+
+    type DeviceCountFn = unsafe extern "C" fn(*mut c_char, usize) -> c_int;
+    type BuildInfoFn = unsafe extern "C" fn() -> *const c_char;
+    type PreprocessFn = unsafe extern "C" fn(
+        *const c_uchar,
+        usize,
+        c_int,
+        c_int,
+        c_int,
+        *mut c_uchar,
+        usize,
+        *mut c_char,
+        usize,
+    ) -> c_int;
+
+    struct CudaShim {
+        _library: Library,
+        device_count: DeviceCountFn,
+        build_info: BuildInfoFn,
+        preprocess: PreprocessFn,
+    }
+
+    // Keep the library handle alive for the lifetime of the process; the copied function pointers
+    // are only valid while this handle remains loaded.
+    unsafe impl Send for CudaShim {}
+    unsafe impl Sync for CudaShim {}
+
+    static SHIM: OnceLock<Result<CudaShim, String>> = OnceLock::new();
+    static DIAGNOSTICS: Once = Once::new();
+
+    fn candidate_paths() -> Vec<OsString> {
+        let mut paths = Vec::new();
+        if let Some(path) = std::env::var_os("DPN_OPENCV5_CUDA_PREPROCESS_LIB") {
+            paths.push(path);
+        }
+        paths.push(OsString::from(
+            "/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so",
+        ));
+        paths.push(OsString::from(
+            "/usr/local/lib/libdpn_opencv5_cuda_preprocess.so",
+        ));
+        paths.push(OsString::from("libdpn_opencv5_cuda_preprocess.so"));
+        paths
+    }
+
+    fn load_shim() -> Result<CudaShim> {
+        let mut errors = Vec::new();
+        for path in candidate_paths() {
+            let display = PathBuf::from(&path).display().to_string();
+            let library = match unsafe { Library::new(&path) } {
+                Ok(library) => library,
+                Err(err) => {
+                    errors.push(format!("{display}: {err}"));
+                    continue;
+                }
+            };
+            let device_count = unsafe {
+                *library
+                    .get::<DeviceCountFn>(b"dpn_opencv5_cuda_device_count\0")
+                    .with_context(|| format!("loading device-count symbol from {display}"))?
+            };
+            let build_info = unsafe {
+                *library
+                    .get::<BuildInfoFn>(b"dpn_opencv5_cuda_build_info\0")
+                    .with_context(|| format!("loading build-info symbol from {display}"))?
+            };
+            let preprocess = unsafe {
+                *library
+                    .get::<PreprocessFn>(b"dpn_opencv5_cuda_preprocess_gray8\0")
+                    .with_context(|| format!("loading preprocess symbol from {display}"))?
+            };
+            return Ok(CudaShim {
+                _library: library,
+                device_count,
+                build_info,
+                preprocess,
+            });
+        }
+        Err(anyhow!(
+            "OpenCV 5 CUDA preprocess shim not found. Set DPN_OPENCV5_CUDA_PREPROCESS_LIB or install it with scripts/opencv-tools/build_opencv5_cuda.sh. Tried: {}",
+            errors.join("; ")
+        ))
+    }
+
+    fn err_string(buf: &[c_char]) -> String {
+        if buf.first().copied().unwrap_or_default() == 0 {
+            return String::new();
+        }
+        // Error buffers passed to the shim are zero-initialized, and the shim always reserves the
+        // last byte for NUL termination.
+        unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    let image = parse_pgm_p5(pgm)?;
+    let shim = SHIM
+        .get_or_init(|| load_shim().map_err(|err| err.to_string()))
+        .as_ref()
+        .map_err(|err| anyhow!(err.clone()))?;
+
+    DIAGNOSTICS.call_once(|| {
+        let mut err = [0 as c_char; 512];
+        let device_count = unsafe { (shim.device_count)(err.as_mut_ptr(), err.len()) };
+        let info = unsafe {
+            let ptr = (shim.build_info)();
+            if ptr.is_null() {
+                "OpenCV CUDA preprocess shim".to_string()
+            } else {
+                CStr::from_ptr(ptr).to_string_lossy().into_owned()
+            }
+        };
+        if device_count > 0 {
+            log::info!(
+                "OCR OpenCV CUDA preprocessing enabled: {info}; CUDA devices={device_count}"
+            );
+        } else {
+            let detail = err_string(&err);
+            log::warn!(
+                "OCR OpenCV CUDA preprocessing selected but OpenCV reported CUDA devices={device_count}; {detail}"
+            );
+        }
+    });
+
+    let expected_len = image
+        .width
+        .checked_mul(image.height)
+        .ok_or_else(|| anyhow!("PGM dimensions overflow"))?;
+    let mut output = vec![0u8; expected_len];
+    let mut err = [0 as c_char; 2048];
+    let shim_mode = match mode {
+        OcrPreprocess::OpenCv5CudaBasic => 1,
+        OcrPreprocess::OpenCv5CudaSubtitle => 2,
+        _ => unreachable!("CUDA OpenCV preprocessing is not used for this mode"),
+    };
+    let status = unsafe {
+        (shim.preprocess)(
+            image.pixels.as_ptr(),
+            image.pixels.len(),
+            image.width as c_int,
+            image.height as c_int,
+            shim_mode,
+            output.as_mut_ptr(),
+            output.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        )
+    };
+    if status != 0 {
+        bail!("OpenCV 5 CUDA preprocessing failed: {}", err_string(&err));
+    }
+
+    Ok(write_pgm_p5(image.width, image.height, &output))
+}
+
+#[cfg_attr(
+    all(
+        feature = "opencv-preprocess",
+        feature = "opencv-cuda-preprocess",
+        not(test)
+    ),
+    allow(dead_code)
+)]
 fn mode_label(mode: OcrPreprocess) -> &'static str {
     match mode {
         OcrPreprocess::None => "none",
         OcrPreprocess::OpenCvBasic => "open-cv-basic",
         OcrPreprocess::OpenCvSubtitle => "open-cv-subtitle",
+        OcrPreprocess::OpenCv5CudaBasic => "open-cv5-cuda-basic",
+        OcrPreprocess::OpenCv5CudaSubtitle => "open-cv5-cuda-subtitle",
     }
 }
 
-#[cfg(any(feature = "opencv-preprocess", test))]
+#[cfg(any(
+    feature = "opencv-preprocess",
+    feature = "opencv-cuda-preprocess",
+    test
+))]
 struct PgmImage<'a> {
     width: usize,
     height: usize,
     pixels: &'a [u8],
 }
 
-#[cfg(any(feature = "opencv-preprocess", test))]
+#[cfg(any(
+    feature = "opencv-preprocess",
+    feature = "opencv-cuda-preprocess",
+    test
+))]
 fn parse_pgm_p5(pgm: &[u8]) -> Result<PgmImage<'_>> {
     use anyhow::Context;
 
@@ -182,7 +376,11 @@ fn parse_pgm_p5(pgm: &[u8]) -> Result<PgmImage<'_>> {
     })
 }
 
-#[cfg(any(feature = "opencv-preprocess", test))]
+#[cfg(any(
+    feature = "opencv-preprocess",
+    feature = "opencv-cuda-preprocess",
+    test
+))]
 fn next_pgm_token<'a>(pgm: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
     loop {
         while *cursor < pgm.len() && pgm[*cursor].is_ascii_whitespace() {
@@ -206,7 +404,11 @@ fn next_pgm_token<'a>(pgm: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
     Some(&pgm[start..*cursor])
 }
 
-#[cfg(any(feature = "opencv-preprocess", test))]
+#[cfg(any(
+    feature = "opencv-preprocess",
+    feature = "opencv-cuda-preprocess",
+    test
+))]
 fn parse_usize_token(token: &[u8]) -> Result<usize> {
     use anyhow::Context;
 
@@ -215,7 +417,7 @@ fn parse_usize_token(token: &[u8]) -> Result<usize> {
         .with_context(|| format!("invalid PGM integer token '{text}'"))
 }
 
-#[cfg(feature = "opencv-preprocess")]
+#[cfg(any(feature = "opencv-preprocess", feature = "opencv-cuda-preprocess"))]
 fn write_pgm_p5(width: usize, height: usize, pixels: &[u8]) -> Vec<u8> {
     let mut output = format!("P5\n{width} {height}\n255\n").into_bytes();
     output.extend_from_slice(pixels);
@@ -241,11 +443,33 @@ mod tests {
         assert_eq!(parsed.pixels, &[1, 2]);
     }
 
+    #[test]
+    fn mode_labels_include_cuda_profiles() {
+        assert_eq!(
+            mode_label(OcrPreprocess::OpenCv5CudaBasic),
+            "open-cv5-cuda-basic"
+        );
+        assert_eq!(
+            mode_label(OcrPreprocess::OpenCv5CudaSubtitle),
+            "open-cv5-cuda-subtitle"
+        );
+    }
+
     #[cfg(not(feature = "opencv-preprocess"))]
     #[test]
     fn opencv_mode_requires_feature_when_not_compiled_in() {
         let pgm = b"P5\n1 1\n255\n\xff";
         let err = preprocess_ocr_pgm(pgm, OcrPreprocess::OpenCvBasic).unwrap_err();
         assert!(err.to_string().contains("--features opencv-preprocess"));
+    }
+
+    #[cfg(not(feature = "opencv-cuda-preprocess"))]
+    #[test]
+    fn opencv_cuda_mode_requires_feature_when_not_compiled_in() {
+        let pgm = b"P5\n1 1\n255\n\xff";
+        let err = preprocess_ocr_pgm(pgm, OcrPreprocess::OpenCv5CudaBasic).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("--features opencv-cuda-preprocess"));
     }
 }

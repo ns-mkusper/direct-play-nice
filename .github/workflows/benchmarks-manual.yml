@@ -9,7 +9,7 @@ on:
       ocr_preprocess_profiles:
         description: Comma-separated OCR preprocess profiles to benchmark
         required: false
-        default: none,open-cv-basic,open-cv-subtitle
+        default: none,open-cv-basic,open-cv-subtitle,open-cv5-cuda-basic,open-cv5-cuda-subtitle
       ocr_max_source_seconds:
         description: Max source seconds for each OCR benchmark profile
         required: false
@@ -309,7 +309,16 @@ jobs:
             echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}."
             exit 1
           fi
-          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
+          profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+          needs_cpu_opencv=0
+          needs_cuda_opencv=0
+          if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+            needs_cpu_opencv=1
+          fi
+          if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+            needs_cuda_opencv=1
+          fi
+          if [[ "$needs_cpu_opencv" == "1" ]] && ! pkg-config --exists opencv4; then
             if command -v apt-get >/dev/null 2>&1; then
               apt_cmd=(apt-get)
               if command -v sudo >/dev/null 2>&1; then
@@ -319,11 +328,21 @@ jobs:
               "${apt_cmd[@]}" --assume-yes install libopencv-dev libclang-dev pkg-config
             fi
           fi
-          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
-            echo "::error title=Missing OpenCV development package::OpenCV preprocess profiles require pkg-config opencv4 (for example libopencv-dev)."
+          if [[ "$needs_cpu_opencv" == "1" ]] && ! pkg-config --exists opencv4; then
+            echo "::error title=Missing OpenCV CPU development package::CPU OpenCV preprocess profiles require pkg-config opencv4 (for example libopencv-dev)."
             echo "sudo: $(command -v sudo || true)"
             echo "apt-get: $(command -v apt-get || true)"
             exit 1
+          fi
+          if [[ "$needs_cuda_opencv" == "1" ]]; then
+            shim=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+            if [[ ! -f "$shim" ]]; then
+              echo "::error title=Missing OpenCV 5 CUDA preprocess shim::CUDA OpenCV preprocess profiles require $shim. Provision it with scripts/opencv-tools/build_opencv5_cuda.sh --prefix /opt/direct-play-nice/opencv5-cuda --cuda-arch 5.2 using CUDA 12.x."
+              exit 1
+            fi
+            if ! PKG_CONFIG_PATH="/opt/direct-play-nice/opencv5-cuda/lib/pkgconfig:/opt/direct-play-nice/opencv5-cuda/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" pkg-config --exists opencv5; then
+              echo "::warning title=Missing opencv5 pkg-config::The runtime shim exists, but pkg-config opencv5 was not found under /opt/direct-play-nice/opencv5-cuda. Build can continue because the Rust CUDA path loads the shim dynamically."
+            fi
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
 
@@ -415,6 +434,7 @@ jobs:
           lib_paths+=(/usr/lib)
           joined_paths="$(IFS=:; echo "${lib_paths[*]}")"
           echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so" >> "$GITHUB_ENV"
 
       - name: Validate VCPKG FFmpeg CUDA resize support
         if: steps.cached-bin.outputs.missing == 'true'
@@ -448,7 +468,7 @@ jobs:
           echo "Validated vcpkg FFmpeg scale_cuda support in $VCPKG_ROOT."
 
       - name: Export LIBCLANG_PATH
-        if: steps.cached-bin.outputs.missing == 'true' || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-')
+        if: steps.cached-bin.outputs.missing == 'true' || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-basic') || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-subtitle')
         shell: bash
         run: |
           set -euo pipefail
@@ -484,9 +504,20 @@ jobs:
           fi
           cargo "${cargo_toolchain[@]}" --version
           rustc "${cargo_toolchain[@]}" --version
+          features=()
+          profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+          if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+            features+=(opencv-preprocess)
+          fi
+          if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+            features+=(opencv-cuda-preprocess)
+            export DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+            export LD_LIBRARY_PATH="/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:${LD_LIBRARY_PATH:-}"
+          fi
           build_features=()
-          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]]; then
-            build_features=(--features opencv-preprocess)
+          if [[ "${#features[@]}" -gt 0 ]]; then
+            feature_csv="$(IFS=,; echo "${features[*]}")"
+            build_features=(--features "$feature_csv")
           fi
           cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           test -x target/release/direct_play_nice
@@ -519,9 +550,20 @@ jobs:
             if cargo +stable --version >/dev/null 2>&1; then
               cargo_toolchain=(+stable)
             fi
+            features=()
+            profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+            if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+              features+=(opencv-preprocess)
+            fi
+            if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+              features+=(opencv-cuda-preprocess)
+              export DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+              export LD_LIBRARY_PATH="/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:${LD_LIBRARY_PATH:-}"
+            fi
             build_features=()
-            if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]]; then
-              build_features=(--features opencv-preprocess)
+            if [[ "${#features[@]}" -gt 0 ]]; then
+              feature_csv="$(IFS=,; echo "${features[*]}")"
+              build_features=(--features "$feature_csv")
             fi
             cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           fi
@@ -560,6 +602,8 @@ jobs:
         run: |
           set -euo pipefail
           cuda_runtime_paths=(
+            /opt/direct-play-nice/opencv5-cuda/lib
+            /opt/direct-play-nice/opencv5-cuda/lib64
             /opt/direct-play-nice/cudnn8-runtime/usr/lib
             /opt/direct-play-nice/cudnn9-runtime/lib
             /opt/direct-play-nice/nvrtc12-runtime/lib
@@ -616,12 +660,13 @@ jobs:
               --cuda-devices 0,1 \
               --require-gpu \
               --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-              --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+              --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
               --env "DPN_OCR_SKIP_CLS=1" \
               --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
               --env "DPN_OCR_FORCE_CPU=0" \
               --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=0" \
-              --env "DPN_OCR_CUDA_CONV_ALGO=heuristic"
+              --env "DPN_OCR_CUDA_CONV_ALGO=heuristic" \
+              --env "DPN_OPENCV5_CUDA_PREPROCESS_LIB=${DPN_OPENCV5_CUDA_PREPROCESS_LIB:-/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so}"
             status=$?
             set -e
             worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
@@ -682,7 +727,7 @@ jobs:
             --jobs-per-gpu 1 \
             --cuda-devices 0,1 \
             --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_SKIP_CLS=1" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_FORCE_CPU=1"
@@ -727,7 +772,7 @@ jobs:
             --cuda-devices 0,1 \
             --min-ocr-space-rate 0.10 \
             --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_SKIP_CLS=1" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_FORCE_CPU=1"

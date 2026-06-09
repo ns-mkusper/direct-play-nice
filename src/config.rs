@@ -257,6 +257,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_opencv5_cuda_ocr_preprocess_setting() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            ocr_preprocess = "open-cv5-cuda-subtitle"
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.ocr_preprocess, Some(OcrPreprocess::OpenCv5CudaSubtitle));
+    }
+
+    #[test]
     fn parses_servarr_language_check_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(

@@ -11,7 +11,7 @@ Usage:
     [--output-name output.mp4] \
     [--ort-lib /path/to/onnxruntime/lib] \
     [--ocr-engine pp-ocr-v3] \
-    [--ocr-preprocess none|open-cv-basic|open-cv-subtitle] \
+    [--ocr-preprocess none|open-cv-basic|open-cv-subtitle|open-cv5-cuda-basic|open-cv5-cuda-subtitle] \
     [--sub-mode force] \
     [--max-source-seconds 600] \
     [--sample-ms 200] \

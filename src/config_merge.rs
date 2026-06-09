@@ -344,6 +344,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_opencv5_cuda_ocr_preprocess_from_cli() {
+        let (args, _) = parse_args(&[
+            "direct_play_nice",
+            "--ocr-preprocess",
+            "open-cv5-cuda-basic",
+        ]);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCv5CudaBasic);
+    }
+
+    #[test]
+    fn applies_opencv5_cuda_ocr_preprocess_from_config() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            ocr_preprocess: Some(OcrPreprocess::OpenCv5CudaSubtitle),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCv5CudaSubtitle);
+    }
+
+    #[test]
     fn applies_servarr_language_settings_from_config_when_not_set_in_cli() {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
