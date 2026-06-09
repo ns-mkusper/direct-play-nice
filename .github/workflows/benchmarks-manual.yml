@@ -402,13 +402,36 @@ jobs:
                 fi
                 return 0
               }
+              cuda_host_compiler_works() {
+                local cxx="$1" smoke_dir smoke_cu smoke_o smoke_log
+                if ! command -v nvcc >/dev/null 2>&1; then
+                  return 0
+                fi
+                smoke_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/dpn-cuda-host-smoke.XXXXXX")"
+                smoke_cu="$smoke_dir/smoke.cu"
+                smoke_o="$smoke_dir/smoke.o"
+                smoke_log="$smoke_dir/nvcc.log"
+                printf '%s\n' \
+                  '#include <cuda_runtime.h>' \
+                  '#include <cmath>' \
+                  '__global__ void dpn_smoke_kernel(float *out) { out[0] = std::cos(0.0f); }' \
+                  > "$smoke_cu"
+                if nvcc -ccbin "$cxx" --allow-unsupported-compiler -std=c++17 -arch=sm_52 -c "$smoke_cu" -o "$smoke_o" >"$smoke_log" 2>&1; then
+                  rm -rf "$smoke_dir"
+                  return 0
+                fi
+                echo "CUDA host compiler smoke test failed for $cxx:"
+                sed -n '1,120p' "$smoke_log"
+                rm -rf "$smoke_dir"
+                return 1
+              }
               find_compatible_cuda_host_compiler() {
                 local candidate version major
                 for candidate in \
                   "${DPN_OPENCV5_CUDA_HOST_CXX:-}" \
+                  "${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13/env/bin/x86_64-conda-linux-gnu-g++" \
                   g++-13 g++-12 g++-11 g++-10 \
-                  /usr/bin/g++-13 /usr/bin/g++-12 /usr/bin/g++-11 /usr/bin/g++-10 \
-                  "${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13/env/bin/x86_64-conda-linux-gnu-g++"; do
+                  /usr/bin/g++-13 /usr/bin/g++-12 /usr/bin/g++-11 /usr/bin/g++-10; do
                   [[ -n "$candidate" ]] || continue
                   if [[ ! -x "$candidate" ]]; then
                     candidate="$(command -v "$candidate" 2>/dev/null || true)"
@@ -416,7 +439,7 @@ jobs:
                   [[ -n "$candidate" && -x "$candidate" ]] || continue
                   version="$("$candidate" -dumpfullversion -dumpversion 2>/dev/null | head -n 1 || true)"
                   major="${version%%.*}"
-                  if [[ "$major" =~ ^[0-9]+$ && "$major" -le 13 ]]; then
+                  if [[ "$major" =~ ^[0-9]+$ && "$major" -le 13 ]] && cuda_host_compiler_works "$candidate"; then
                     use_cuda_host_compiler "$candidate" && return 0
                   fi
                 done
@@ -436,7 +459,7 @@ jobs:
                 env="$mamba_root/env"
                 cxx="$env/bin/x86_64-conda-linux-gnu-g++"
                 if [[ -x "$cxx" ]]; then
-                  use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc" && return 0
+                  cuda_host_compiler_works "$cxx" && use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc" && return 0
                 fi
                 mkdir -p "$mamba_root"
                 if [[ ! -x "$mamba" ]]; then
@@ -451,7 +474,7 @@ jobs:
                   echo "LD_LIBRARY_PATH=$env/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
                   export LD_LIBRARY_PATH="$env/lib:${LD_LIBRARY_PATH:-}"
                 fi
-                use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc"
+                cuda_host_compiler_works "$cxx" && use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc"
               }
               configure_cuda_host_compiler() {
                 if find_compatible_cuda_host_compiler; then
