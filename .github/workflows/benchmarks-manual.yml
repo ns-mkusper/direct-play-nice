@@ -310,13 +310,19 @@ jobs:
             exit 1
           fi
           if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
-            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-              sudo apt-get update -y
-              sudo apt-get --assume-yes install libopencv-dev libclang-dev pkg-config
+            if command -v apt-get >/dev/null 2>&1; then
+              apt_cmd=(apt-get)
+              if command -v sudo >/dev/null 2>&1; then
+                apt_cmd=(sudo apt-get)
+              fi
+              "${apt_cmd[@]}" update -y
+              "${apt_cmd[@]}" --assume-yes install libopencv-dev libclang-dev pkg-config
             fi
           fi
           if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
             echo "::error title=Missing OpenCV development package::OpenCV preprocess profiles require pkg-config opencv4 (for example libopencv-dev)."
+            echo "sudo: $(command -v sudo || true)"
+            echo "apt-get: $(command -v apt-get || true)"
             exit 1
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
