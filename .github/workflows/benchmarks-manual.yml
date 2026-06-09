@@ -434,6 +434,8 @@ jobs:
                   'cuda_nvcc|cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.6.85-archive.tar.xz|840deff234d9bef20d6856439c49881cb4f29423b214f9ecd2fa59b7ac323817'
                   'cuda_nvrtc|cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.6.85-archive.tar.xz|a4289ba86f0deeccf4e1d94c58559eae4c8184fcb6eaade8fcab45584e6cf402'
                   'cuda_nvtx|cuda_nvtx/linux-x86_64/cuda_nvtx-linux-x86_64-12.6.77-archive.tar.xz|d97dd4f3bbc23e57302990c1573f737bea55f3174b2c8e3d19067d9b189a446b'
+                  'libcublas|libcublas/linux-x86_64/libcublas-linux-x86_64-12.6.4.1-archive.tar.xz|ec682bac6387f9cdfd0c20b25a16cd6ed0b8b3b7ff42be9eaeb41828e3a72572'
+                  'libcufft|libcufft/linux-x86_64/libcufft-linux-x86_64-11.3.0.4-archive.tar.xz|63a046d51a45388e10612c3fd423bb7fa5127496aa9bb3951a609e8b9d996852'
                   'libnpp|libnpp/linux-x86_64/libnpp-linux-x86_64-12.3.1.54-archive.tar.xz|0a7f5bb81e65e60775f831990a567394682a209694b396a4e9233a6c91db65e3'
                   'libnvjitlink|libnvjitlink/linux-x86_64/libnvjitlink-linux-x86_64-12.6.85-archive.tar.xz|1055077ce594fad6fd86d23604c60c64b673cdc8dd01fae7e0cbec633c35930d'
                 )
