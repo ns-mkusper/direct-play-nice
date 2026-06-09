@@ -79,9 +79,24 @@ if [[ "$SKIP_OPENCV" != "1" ]]; then
     git clone --depth 1 --branch "$TAG" https://github.com/opencv/opencv_contrib.git "$WORK_DIR/opencv_contrib"
   fi
 
+  cmake_compiler_args=()
+  if [[ -n "${DPN_OPENCV5_CUDA_HOST_CC:-}" ]]; then
+    cmake_compiler_args+=("-DCMAKE_C_COMPILER=${DPN_OPENCV5_CUDA_HOST_CC}")
+  fi
+  if [[ -n "${DPN_OPENCV5_CUDA_HOST_CXX:-}" ]]; then
+    cmake_compiler_args+=(
+      "-DCMAKE_CXX_COMPILER=${DPN_OPENCV5_CUDA_HOST_CXX}"
+      "-DCUDA_HOST_COMPILER=${DPN_OPENCV5_CUDA_HOST_CXX}"
+      "-DCMAKE_CUDA_HOST_COMPILER=${DPN_OPENCV5_CUDA_HOST_CXX}"
+    )
+  fi
+
+  rm -rf "$WORK_DIR/build"
+
   cmake -S "$WORK_DIR/opencv" -B "$WORK_DIR/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    "${cmake_compiler_args[@]}" \
     -DOPENCV_EXTRA_MODULES_PATH="$WORK_DIR/opencv_contrib/modules" \
     -DOPENCV_GENERATE_PKGCONFIG=ON \
     -DBUILD_LIST=core,imgproc,cudev,cudaarithm,cudaimgproc,cudafilters \
@@ -113,7 +128,8 @@ fi
 cxxflags="$(pkg-config --cflags "$pc_name")"
 libs="$(pkg-config --libs "$pc_name")"
 mkdir -p "$PREFIX/lib"
-c++ -std=c++17 -O3 -DNDEBUG -fPIC -shared \
+shim_cxx="${DPN_OPENCV5_CUDA_HOST_CXX:-${CXX:-c++}}"
+"$shim_cxx" -std=c++17 -O3 -DNDEBUG -fPIC -shared \
   $cxxflags \
   "$repo_root/scripts/opencv-tools/dpn_opencv5_cuda_preprocess.cpp" \
   -o "$PREFIX/lib/libdpn_opencv5_cuda_preprocess.so" \

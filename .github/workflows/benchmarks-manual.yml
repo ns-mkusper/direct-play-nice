@@ -379,6 +379,90 @@ jobs:
                   return 1
                 fi
               }
+              use_cuda_host_compiler() {
+                local cxx="$1" cc="${2:-}"
+                if [[ ! -x "$cxx" ]]; then
+                  cxx="$(command -v "$cxx" 2>/dev/null || true)"
+                fi
+                [[ -n "$cxx" && -x "$cxx" ]] || return 1
+                if [[ -z "$cc" ]]; then
+                  case "$(basename "$cxx")" in
+                    g++*) cc="$(dirname "$cxx")/$(basename "$cxx" | sed 's/g++/gcc/')" ;;
+                    *-g++) cc="${cxx%-g++}-gcc" ;;
+                  esac
+                fi
+                if [[ -n "$cc" && ! -x "$cc" ]]; then
+                  cc="$(command -v "$cc" 2>/dev/null || true)"
+                fi
+                export DPN_OPENCV5_CUDA_HOST_CXX="$cxx"
+                echo "Using CUDA host C++ compiler: $DPN_OPENCV5_CUDA_HOST_CXX ($("$cxx" -dumpfullversion -dumpversion 2>/dev/null | head -n 1 || true))"
+                if [[ -n "$cc" && -x "$cc" ]]; then
+                  export DPN_OPENCV5_CUDA_HOST_CC="$cc"
+                  echo "Using CUDA host C compiler: $DPN_OPENCV5_CUDA_HOST_CC"
+                fi
+                return 0
+              }
+              find_compatible_cuda_host_compiler() {
+                local candidate version major
+                for candidate in \
+                  "${DPN_OPENCV5_CUDA_HOST_CXX:-}" \
+                  g++-13 g++-12 g++-11 g++-10 \
+                  /usr/bin/g++-13 /usr/bin/g++-12 /usr/bin/g++-11 /usr/bin/g++-10 \
+                  "${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13/env/bin/x86_64-conda-linux-gnu-g++"; do
+                  [[ -n "$candidate" ]] || continue
+                  if [[ ! -x "$candidate" ]]; then
+                    candidate="$(command -v "$candidate" 2>/dev/null || true)"
+                  fi
+                  [[ -n "$candidate" && -x "$candidate" ]] || continue
+                  version="$("$candidate" -dumpfullversion -dumpversion 2>/dev/null | head -n 1 || true)"
+                  major="${version%%.*}"
+                  if [[ "$major" =~ ^[0-9]+$ && "$major" -le 13 ]]; then
+                    use_cuda_host_compiler "$candidate" && return 0
+                  fi
+                done
+                return 1
+              }
+              install_conda_gcc13() {
+                local mamba_root mamba_archive mamba env cxx
+                case "$(uname -m)" in
+                  x86_64) ;;
+                  *)
+                    echo "Conda GCC 13 bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                mamba_root="${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13"
+                mamba="$mamba_root/bin/micromamba"
+                env="$mamba_root/env"
+                cxx="$env/bin/x86_64-conda-linux-gnu-g++"
+                if [[ -x "$cxx" ]]; then
+                  use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc" && return 0
+                fi
+                mkdir -p "$mamba_root"
+                if [[ ! -x "$mamba" ]]; then
+                  mamba_archive="$mamba_root/micromamba.tar.bz2"
+                  echo "Downloading micromamba for CUDA-compatible GCC 13 bootstrap."
+                  fetch_url "https://micro.mamba.pm/api/micromamba/linux-64/latest" "$mamba_archive" || return 1
+                  tar -xjf "$mamba_archive" -C "$mamba_root" bin/micromamba || return 1
+                fi
+                echo "Installing GCC/G++ 13 locally for CUDA 12 nvcc."
+                MAMBA_ROOT_PREFIX="$mamba_root/root" "$mamba" create --yes --prefix "$env" --channel conda-forge gcc_linux-64=13 gxx_linux-64=13 || return 1
+                if [[ -d "$env/lib" ]]; then
+                  echo "LD_LIBRARY_PATH=$env/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                  export LD_LIBRARY_PATH="$env/lib:${LD_LIBRARY_PATH:-}"
+                fi
+                use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc"
+              }
+              configure_cuda_host_compiler() {
+                if find_compatible_cuda_host_compiler; then
+                  return 0
+                fi
+                echo "No GCC/G++ <=13 host compiler found for CUDA 12; attempting local conda GCC 13 bootstrap."
+                install_conda_gcc13 || {
+                  echo "CUDA host compiler bootstrap failed; OpenCV CUDA build will try the runner default compiler."
+                  return 1
+                }
+              }
               ensure_runfile_libxml2() {
                 if ldconfig -p 2>/dev/null | grep -q 'libxml2[.]so[.]2'; then
                   return 0
@@ -551,13 +635,23 @@ jobs:
                 [[ "$installed" -eq 1 ]] && find_nvcc
               }
               install_cuda_toolkit || echo "CUDA toolkit provisioning did not provide CUDA 12 nvcc."
+              configure_cuda_host_compiler || true
               missing_cuda_build=()
-              for tool in git cmake c++ nvcc; do
+              for tool in git cmake nvcc; do
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
               done
+              if [[ -z "${DPN_OPENCV5_CUDA_HOST_CXX:-}" ]] && ! command -v c++ >/dev/null 2>&1; then
+                missing_cuda_build+=("c++")
+              fi
               if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
                 echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, set DPN_OPENCV5_CUDA_RUNFILE_URL to a CUDA 12 runfile, or provide curl/wget so the workflow can install a CUDA 12 runfile or redist toolkit without sudo."
                 exit 1
+              fi
+              if [[ -n "${DPN_OPENCV5_CUDA_HOST_CXX:-}" ]]; then
+                echo "DPN_OPENCV5_CUDA_HOST_CXX=$DPN_OPENCV5_CUDA_HOST_CXX" >> "$GITHUB_ENV"
+              fi
+              if [[ -n "${DPN_OPENCV5_CUDA_HOST_CC:-}" ]]; then
+                echo "DPN_OPENCV5_CUDA_HOST_CC=$DPN_OPENCV5_CUDA_HOST_CC" >> "$GITHUB_ENV"
               fi
               nvcc --version
               echo "OpenCV 5 CUDA preprocess shim missing; provisioning $shim."
