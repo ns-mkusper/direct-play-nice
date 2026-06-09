@@ -353,6 +353,10 @@ jobs:
                 echo "CUDA_PATH=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
                 export CUDA_HOME="$(dirname "$cuda_bin")"
                 export CUDA_PATH="$CUDA_HOME"
+                if [[ -d "$CUDA_HOME/lib64" || -d "$CUDA_HOME/lib" ]]; then
+                  echo "LD_LIBRARY_PATH=$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                  export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
+                fi
                 return 0
               }
               find_nvcc() {
@@ -365,118 +369,44 @@ jobs:
                 fi
                 return 1
               }
-              python_bin=""
-              find_python() {
-                if command -v python3 >/dev/null 2>&1; then
-                  python_bin="$(command -v python3)"
-                  return 0
-                fi
-                if command -v python >/dev/null 2>&1; then
-                  python_bin="$(command -v python)"
-                  return 0
-                fi
-                return 1
-              }
-              install_uv_python() {
-                local uv_bin uv_installer
-                mkdir -p "$HOME"
-                uv_bin="${RUNNER_TEMP:-/tmp}/direct-play-nice-uv-bin/uv"
-                if [[ ! -x "$uv_bin" ]]; then
-                  uv_installer="$(mktemp)"
-                  if command -v curl >/dev/null 2>&1; then
-                    echo "Installing uv with curl to bootstrap Python for CUDA toolkit wheels."
-                    curl -fsSL https://astral.sh/uv/install.sh -o "$uv_installer" || return 1
-                  elif command -v wget >/dev/null 2>&1; then
-                    echo "Installing uv with wget to bootstrap Python for CUDA toolkit wheels."
-                    wget -qO "$uv_installer" https://astral.sh/uv/install.sh || return 1
-                  else
-                    echo "Cannot install uv: neither curl nor wget is available."
-                    return 1
-                  fi
-                  UV_INSTALL_DIR="$(dirname "$uv_bin")" sh "$uv_installer" || return 1
-                  rm -f "$uv_installer"
-                fi
-                echo "PATH=$(dirname "$uv_bin"):$PATH" >> "$GITHUB_ENV"
-                export PATH="$(dirname "$uv_bin"):$PATH"
-                "$uv_bin" python install 3.12
-                python_bin="$($uv_bin python find 3.12)"
-                echo "Using uv-installed Python: $python_bin"
-                [[ -x "$python_bin" ]]
-              }
-              ensure_python() {
-                if find_python; then
-                  echo "Using existing Python for CUDA toolkit bootstrap: $python_bin"
-                  return 0
-                fi
-                if [[ "${DPN_OPENCV5_CUDA_INSTALL_PYTHON:-1}" != "1" ]]; then
-                  echo "Python bootstrap is disabled by DPN_OPENCV5_CUDA_INSTALL_PYTHON."
-                  return 1
-                fi
-                install_uv_python
-              }
-              ensure_pip() {
-                ensure_python || return 1
-                if "$python_bin" -m pip --version >/dev/null 2>&1; then
-                  return 0
-                fi
-                "$python_bin" -m ensurepip --user >/dev/null 2>&1 && return 0
-                if command -v uv >/dev/null 2>&1; then
-                  uv pip install --python "$python_bin" pip >/dev/null 2>&1 && "$python_bin" -m pip --version >/dev/null 2>&1 && return 0
-                fi
-                local get_pip
-                get_pip="$(mktemp)"
+              fetch_url() {
+                local url="$1" dest="$2"
                 if command -v curl >/dev/null 2>&1; then
-                  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$get_pip" || return 1
+                  curl --fail --location --retry 3 --retry-delay 5 --output "$dest" "$url"
                 elif command -v wget >/dev/null 2>&1; then
-                  wget -qO "$get_pip" https://bootstrap.pypa.io/get-pip.py || return 1
+                  wget --tries=3 --waitretry=5 --output-document "$dest" "$url"
                 else
                   return 1
                 fi
-                "$python_bin" "$get_pip" --user >/dev/null
-                rm -f "$get_pip"
-                "$python_bin" -m pip --version >/dev/null 2>&1
               }
-              install_pip_cuda_toolkit() {
-                if ! ensure_pip; then
-                  echo "Unable to bootstrap Python/pip for NVIDIA CUDA 12 pip wheels."
-                  return 1
-                fi
-                echo "Installing NVIDIA CUDA 12 pip-wheel toolkit with $python_bin."
-                local cuda_prefix site_pkg component dir src entry pip_args
+              install_runfile_cuda_toolkit() {
+                local cuda_prefix runfile_url runfile_tmp arch
                 cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
-                pip_args=(install --user --upgrade)
-                if "$python_bin" -m pip help install | grep -q -- '--break-system-packages'; then
-                  pip_args+=(--break-system-packages)
+                if use_nvcc "$cuda_prefix/bin"; then
+                  echo "Using existing CUDA 12 runfile toolkit at $cuda_prefix."
+                  return 0
                 fi
-                "$python_bin" -m pip "${pip_args[@]}" \
-                  nvidia-cuda-nvcc-cu12 \
-                  nvidia-cuda-runtime-cu12 \
-                  nvidia-cuda-cupti-cu12 \
-                  nvidia-cublas-cu12 \
-                  nvidia-cufft-cu12 \
-                  nvidia-curand-cu12 \
-                  nvidia-npp-cu12 \
-                  nvidia-nvjitlink-cu12 \
-                  nvidia-nvtx-cu12
-                site_pkg="$($python_bin -c 'import site; print(site.getusersitepackages())')"
-                mkdir -p "$cuda_prefix/bin" "$cuda_prefix/include" "$cuda_prefix/lib" "$cuda_prefix/lib64" "$cuda_prefix/nvvm"
-                for component in cuda_nvcc cuda_runtime cuda_cupti cublas cufft curand npp nvjitlink nvtx; do
-                  for dir in bin include lib lib64 nvvm; do
-                    src="$site_pkg/nvidia/$component/$dir"
-                    if [[ -d "$src" ]]; then
-                      while IFS= read -r entry; do
-                        ln -sfn "$entry" "$cuda_prefix/$dir/$(basename "$entry")"
-                      done < <(find "$src" -mindepth 1 -maxdepth 1)
-                    fi
-                  done
-                done
-                if [[ -d "$cuda_prefix/lib" ]]; then
-                  while IFS= read -r entry; do
-                    ln -sfn "$entry" "$cuda_prefix/lib64/$(basename "$entry")"
-                  done < <(find "$cuda_prefix/lib" -mindepth 1 -maxdepth 1)
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  *)
+                    echo "CUDA runfile bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                runfile_url="${DPN_OPENCV5_CUDA_RUNFILE_URL:-https://developer.download.nvidia.com/compute/cuda/12.6.3/local_installers/cuda_12.6.3_560.35.05_linux.run}"
+                runfile_tmp="${DPN_OPENCV5_CUDA_RUNFILE_PATH:-${RUNNER_TEMP:-/tmp}/$(basename "$runfile_url")}"
+                mkdir -p "$(dirname "$runfile_tmp")"
+                if [[ ! -s "$runfile_tmp" ]]; then
+                  echo "Downloading CUDA 12 toolkit runfile for $arch from $runfile_url."
+                  fetch_url "$runfile_url" "$runfile_tmp" || return 1
+                else
+                  echo "Using cached CUDA 12 toolkit runfile at $runfile_tmp."
                 fi
-                echo "LD_LIBRARY_PATH=$cuda_prefix/lib64:$cuda_prefix/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-                export LD_LIBRARY_PATH="$cuda_prefix/lib64:$cuda_prefix/lib:${LD_LIBRARY_PATH:-}"
+                chmod +x "$runfile_tmp"
+                rm -rf "$cuda_prefix"
+                mkdir -p "$cuda_prefix"
+                echo "Installing CUDA 12 toolkit from runfile into $cuda_prefix without sudo."
+                sh "$runfile_tmp" --silent --toolkit --toolkitpath="$cuda_prefix" --override
                 use_nvcc "$cuda_prefix/bin"
               }
               install_cuda_toolkit() {
@@ -489,9 +419,9 @@ jobs:
                   echo "CUDA toolkit bootstrap is disabled by DPN_OPENCV5_CUDA_INSTALL_TOOLKIT."
                   return 1
                 fi
-                echo "Attempting NVIDIA CUDA 12 pip-wheel toolkit bootstrap."
-                install_pip_cuda_toolkit && return 0
-                echo "NVIDIA CUDA 12 pip-wheel toolkit bootstrap did not provide nvcc."
+                echo "Attempting NVIDIA CUDA 12 runfile toolkit bootstrap."
+                install_runfile_cuda_toolkit && return 0
+                echo "NVIDIA CUDA 12 runfile toolkit bootstrap did not provide nvcc."
                 if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
                   echo "Passwordless sudo apt fallback is unavailable."
                   return 1
@@ -537,7 +467,7 @@ jobs:
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
               done
               if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
-                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, or provide python/python3+curl/wget so the workflow can install NVIDIA CUDA 12 pip wheels without sudo, or allow uv-based Python bootstrap."
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, set DPN_OPENCV5_CUDA_RUNFILE_URL to a CUDA 12 runfile, or provide curl/wget so the workflow can install a CUDA 12 runfile toolkit without sudo."
                 exit 1
               fi
               nvcc --version
