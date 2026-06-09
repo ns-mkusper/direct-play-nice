@@ -364,8 +364,26 @@ jobs:
                 fi
                 return 1
               }
+              ensure_pip() {
+                if python3 -m pip --version >/dev/null 2>&1; then
+                  return 0
+                fi
+                python3 -m ensurepip --user >/dev/null 2>&1 && return 0
+                local get_pip
+                get_pip="$(mktemp)"
+                if command -v curl >/dev/null 2>&1; then
+                  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "$get_pip" || return 1
+                elif command -v wget >/dev/null 2>&1; then
+                  wget -qO "$get_pip" https://bootstrap.pypa.io/get-pip.py || return 1
+                else
+                  return 1
+                fi
+                python3 "$get_pip" --user >/dev/null
+                rm -f "$get_pip"
+                python3 -m pip --version >/dev/null 2>&1
+              }
               install_pip_cuda_toolkit() {
-                if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
+                if ! command -v python3 >/dev/null 2>&1 || ! ensure_pip; then
                   return 1
                 fi
                 local cuda_prefix site_pkg component dir src entry pip_args
@@ -457,7 +475,7 @@ jobs:
                 command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
               done
               if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
-                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc or set DPN_OPENCV5_CUDA_INSTALL_TOOLKIT=1 on an Ubuntu runner with sudo."
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, or provide python3+curl/wget so the workflow can install NVIDIA CUDA 12 pip wheels without sudo."
                 exit 1
               fi
               nvcc --version
