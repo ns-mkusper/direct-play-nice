@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      ocr_preprocess_profiles:
+        description: Comma-separated OCR preprocess profiles to benchmark
+        required: false
+        default: none,open-cv-basic,open-cv-subtitle
+      ocr_max_source_seconds:
+        description: Max source seconds for each OCR benchmark profile
+        required: false
+        default: "600"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -269,6 +278,8 @@ jobs:
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
+      OCR_PREPROCESS_PROFILES_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.ocr_preprocess_profiles || 'none' }}
+      OCR_MAX_SOURCE_SECONDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.ocr_max_source_seconds || '600' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -291,11 +302,21 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake pkg-config nvidia-smi; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
           if [[ "${#missing[@]}" -ne 0 ]]; then
             echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}."
+            exit 1
+          fi
+          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update -y
+              sudo apt-get --assume-yes install libopencv-dev libclang-dev pkg-config
+            fi
+          fi
+          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]] && ! pkg-config --exists opencv4; then
+            echo "::error title=Missing OpenCV development package::OpenCV preprocess profiles require pkg-config opencv4 (for example libopencv-dev)."
             exit 1
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
@@ -421,7 +442,7 @@ jobs:
           echo "Validated vcpkg FFmpeg scale_cuda support in $VCPKG_ROOT."
 
       - name: Export LIBCLANG_PATH
-        if: steps.cached-bin.outputs.missing == 'true'
+        if: steps.cached-bin.outputs.missing == 'true' || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-')
         shell: bash
         run: |
           set -euo pipefail
@@ -457,7 +478,11 @@ jobs:
           fi
           cargo "${cargo_toolchain[@]}" --version
           rustc "${cargo_toolchain[@]}" --version
-          cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
+          build_features=()
+          if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]]; then
+            build_features=(--features opencv-preprocess)
+          fi
+          cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           test -x target/release/direct_play_nice
 
       - name: Validate benchmark source file
@@ -488,7 +513,11 @@ jobs:
             if cargo +stable --version >/dev/null 2>&1; then
               cargo_toolchain=(+stable)
             fi
-            cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
+            build_features=()
+            if [[ "${OCR_PREPROCESS_PROFILES_INPUT:-none}" == *"open-cv-"* ]]; then
+              build_features=(--features opencv-preprocess)
+            fi
+            cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           fi
           if [[ ! -x "$bin" ]]; then
             echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
@@ -538,49 +567,100 @@ jobs:
           echo "DPN_BENCH_CUDA_LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
-      - name: Run OCR benchmark (GPU attempt)
+      - name: Run OCR benchmark matrix (GPU attempt)
         id: ocr_gpu
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
-          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
-            --bin "$bin" \
-            --source "${{ steps.source.outputs.path }}" \
-            --run-dir benchmark_artifacts/ocr_gpu \
-            --output-name ocr.mp4 \
-            --ocr-engine pp-ocr-v3 \
-            --sub-mode force \
-            --max-source-seconds 600 \
-            --sample-ms "200" \
-            --ocr-max-jobs 2 \
-            --jobs-per-gpu 1 \
-            --cuda-devices 0,1 \
-            --require-gpu \
-            --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
-            --env "DPN_OCR_SKIP_CLS=1" \
-            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
-            --env "DPN_OCR_FORCE_CPU=0" \
-            --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=0" \
-            --env "DPN_OCR_CUDA_CONV_ALGO=heuristic"
+          profiles_raw="${OCR_PREPROCESS_PROFILES_INPUT:-none}"
+          max_source_seconds="${OCR_MAX_SOURCE_SECONDS_INPUT:-600}"
+          mkdir -p benchmark_artifacts/ocr_profiles
+          matrix_summary="benchmark_artifacts/OCR_PREPROCESS_MATRIX.md"
+          {
+            echo "# OCR Preprocess GPU Matrix"
+            echo
+            echo "- Profiles: \`${profiles_raw}\`"
+            echo "- Max source seconds: \`${max_source_seconds}\`"
+            echo
+          } > "$matrix_summary"
+
+          IFS=',' read -r -a profiles <<< "$profiles_raw"
+          failures=0
+          for raw_profile in "${profiles[@]}"; do
+            profile="$(echo "$raw_profile" | xargs)"
+            [[ -n "$profile" ]] || continue
+            safe_profile="${profile//[^A-Za-z0-9_.-]/_}"
+            run_dir="benchmark_artifacts/ocr_profiles/${safe_profile}"
+            mkdir -p "$run_dir"
+            set +e
+            bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+              --bin "$bin" \
+              --source "${{ steps.source.outputs.path }}" \
+              --run-dir "$run_dir" \
+              --output-name "ocr-${safe_profile}.mp4" \
+              --ocr-engine pp-ocr-v3 \
+              --ocr-preprocess "$profile" \
+              --sub-mode force \
+              --max-source-seconds "$max_source_seconds" \
+              --sample-ms "200" \
+              --ocr-max-jobs 2 \
+              --jobs-per-gpu 1 \
+              --cuda-devices 0,1 \
+              --require-gpu \
+              --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
+              --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+              --env "DPN_OCR_SKIP_CLS=1" \
+              --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+              --env "DPN_OCR_FORCE_CPU=0" \
+              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=0" \
+              --env "DPN_OCR_CUDA_CONV_ALGO=heuristic"
+            status=$?
+            set -e
+            worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            elapsed="$(grep '^ELAPSED_SEC=' "$run_dir/meta.txt" 2>/dev/null | cut -d= -f2- || true)"
+            gpu_ok=false
+            if [[ "$worker_plan" == *"gpu_available=true"* ]]; then
+              gpu_ok=true
+            fi
+            if [[ "$status" -ne 0 || "$gpu_ok" != true ]]; then
+              failures=$((failures + 1))
+            fi
+            {
+              echo "## ${profile}"
+              echo "- Exit status: \`${status}\`"
+              echo "- GPU available: \`${gpu_ok}\`"
+              echo "- Elapsed seconds: \`${elapsed:-unknown}\`"
+              echo "- Worker plan: \`${worker_plan}\`"
+              echo "- Run dir: \`${run_dir}\`"
+              echo
+            } >> "$matrix_summary"
+          done
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "::error title=OCR preprocess GPU matrix failed::${failures} profile(s) failed or did not report gpu_available=true."
+            exit 1
+          fi
 
       - name: Validate OCR benchmark used GPU
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q "OCR worker plan:.*gpu_available=true" benchmark_artifacts/ocr_gpu/run.log; then
-            echo "::warning title=OCR GPU attempt did not report gpu_available=true::Inspect benchmark_artifacts/ocr_gpu/run.log."
-          fi
+          shopt -s nullglob
+          for log in benchmark_artifacts/ocr_profiles/*/run.log; do
+            if ! grep -q "OCR worker plan:.*gpu_available=true" "$log"; then
+              echo "::warning title=OCR GPU profile did not report gpu_available=true::Inspect $log."
+            fi
+          done
 
       - name: Run OCR benchmark (CPU fallback)
         if: steps.ocr_gpu.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
-          echo "::warning title=GPU OCR failed::Falling back to CPU OCR benchmark for this run."
+          echo "::warning title=GPU OCR matrix failed::Falling back to CPU OCR benchmark for this run."
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
             --bin "$bin" \
@@ -588,8 +668,9 @@ jobs:
             --run-dir benchmark_artifacts/ocr \
             --output-name ocr.mp4 \
             --ocr-engine pp-ocr-v3 \
+            --ocr-preprocess none \
             --sub-mode force \
-            --max-source-seconds 600 \
+            --max-source-seconds "${OCR_MAX_SOURCE_SECONDS_INPUT:-600}" \
             --sample-ms "200" \
             --ocr-max-jobs 2 \
             --jobs-per-gpu 1 \
@@ -605,8 +686,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf benchmark_artifacts/ocr
-          cp -a benchmark_artifacts/ocr_gpu benchmark_artifacts/ocr
+          rm -rf benchmark_artifacts/ocr benchmark_artifacts/ocr_gpu
+          if [[ -d benchmark_artifacts/ocr_profiles/none ]]; then
+            cp -a benchmark_artifacts/ocr_profiles/none benchmark_artifacts/ocr
+          else
+            first_profile="$(find benchmark_artifacts/ocr_profiles -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)"
+            test -n "$first_profile"
+            cp -a "$first_profile" benchmark_artifacts/ocr
+          fi
+          cp -a benchmark_artifacts/ocr benchmark_artifacts/ocr_gpu
 
       - name: Run OCR spacing regression benchmark
         shell: bash
@@ -624,8 +712,9 @@ jobs:
             --run-dir benchmark_artifacts/ocr_spacing \
             --output-name ocr-spacing.mp4 \
             --ocr-engine pp-ocr-v3 \
+            --ocr-preprocess none \
             --sub-mode force \
-            --max-source-seconds 600 \
+            --max-source-seconds "${OCR_MAX_SOURCE_SECONDS_INPUT:-600}" \
             --sample-ms "200" \
             --ocr-max-jobs 2 \
             --jobs-per-gpu 1 \
@@ -700,6 +789,9 @@ jobs:
           [[ -f benchmark_artifacts/ocr_spacing/run.log ]] && cp -f benchmark_artifacts/ocr_spacing/run.log benchmark_artifacts/OCR_SPACING_BENCHMARK.log || true
           [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
           [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
+          if [[ -d benchmark_artifacts/ocr_profiles ]]; then
+            tar -czf benchmark_artifacts/OCR_PREPROCESS_PROFILES.tar.gz -C benchmark_artifacts ocr_profiles
+          fi
 
       - name: Publish benchmark summary in run UI
         if: always()
@@ -731,6 +823,12 @@ jobs:
               echo "## Resize Benchmark"
               echo
               echo "_No resize benchmark CSV produced._"
+              echo
+            fi
+            if [[ -f benchmark_artifacts/OCR_PREPROCESS_MATRIX.md ]]; then
+              echo "## OCR Preprocess Matrix"
+              echo
+              cat benchmark_artifacts/OCR_PREPROCESS_MATRIX.md
               echo
             fi
             if [[ -f benchmark_artifacts/OCR_SPACING_BENCHMARK.md ]]; then
@@ -774,6 +872,8 @@ jobs:
             benchmark_artifacts/OCR_SPACING_BENCHMARK.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.md
+            benchmark_artifacts/OCR_PREPROCESS_MATRIX.md
+            benchmark_artifacts/OCR_PREPROCESS_PROFILES.tar.gz
 
       - name: Cleanup local benchmark outputs
         if: always()

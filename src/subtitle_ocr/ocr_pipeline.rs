@@ -102,6 +102,7 @@ pub(super) struct OcrStreamRequest<'a> {
     pub(super) language: &'a str,
     pub(super) work_dir: &'a Path,
     pub(super) ocr_format: OcrFormat,
+    pub(super) ocr_preprocess: OcrPreprocess,
     pub(super) video_dimensions: Option<(u32, u32)>,
     pub(super) ocr_engine: OcrEngine,
 }
@@ -113,6 +114,7 @@ struct CueBuildParams<'a> {
     packet_seq: usize,
     work_dir: &'a Path,
     ocr_format: OcrFormat,
+    ocr_preprocess: OcrPreprocess,
     video_dimensions: Option<(u32, u32)>,
     ocr_engine: OcrEngine,
 }
@@ -207,6 +209,7 @@ pub(super) fn ocr_single_stream(
                 packet_seq,
                 work_dir: request.work_dir,
                 ocr_format: request.ocr_format,
+                ocr_preprocess: request.ocr_preprocess,
                 video_dimensions: request.video_dimensions,
                 ocr_engine: request.ocr_engine,
             };
@@ -237,6 +240,7 @@ pub(super) fn ocr_single_stream(
             packet_seq,
             work_dir: request.work_dir,
             ocr_format: request.ocr_format,
+            ocr_preprocess: request.ocr_preprocess,
             video_dimensions: request.video_dimensions,
             ocr_engine: request.ocr_engine,
         };
@@ -495,13 +499,20 @@ fn extract_subtitle_lines(
             continue;
         }
 
-        let Some((pgm, has_visible_pixels)) = rect_to_pgm(rect, ocr_engine) else {
+        let Some((mut pgm, has_visible_pixels)) = rect_to_pgm(rect, ocr_engine) else {
             continue;
         };
         had_imagery = had_imagery || has_visible_pixels;
         if !has_visible_pixels {
             continue;
         }
+
+        pgm = preprocess_ocr_pgm(&pgm, params.ocr_preprocess).with_context(|| {
+            format!(
+                "preprocessing OCR frame for subtitle stream {} packet {} rect {}",
+                params.stream_index, params.packet_seq, i
+            )
+        })?;
 
         let rect_color = dominant_color_from_rect(rect);
         let pgm_path = params.work_dir.join(format!(

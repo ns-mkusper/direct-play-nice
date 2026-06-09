@@ -16,9 +16,9 @@ use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
-    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    OcrEngine, OcrFormat, OcrPreprocess, OutputFormat, PrimaryVideoCriteria, ResizeBackend,
+    ResizeQuality, ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter,
+    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -344,6 +344,15 @@ pub(crate) struct Args {
         id = "ocr_format"
     )]
     pub(crate) ocr_format: OcrFormat,
+
+    /// Optional extra preprocessing for rendered OCR subtitle bitmaps before OCR inference.
+    #[arg(
+        long = "ocr-preprocess",
+        value_enum,
+        default_value_t = OcrPreprocess::None,
+        id = "ocr_preprocess"
+    )]
+    pub(crate) ocr_preprocess: OcrPreprocess,
 
     /// Executable and arguments used when --ocr-engine=external. Values are parsed without a shell. The command receives DPN_OCR_IMAGE and DPN_OCR_LANGUAGE env vars and must print recognized text to stdout.
     #[arg(

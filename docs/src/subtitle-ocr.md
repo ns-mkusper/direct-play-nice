@@ -13,6 +13,7 @@ For official GPU architecture/provider references and compatibility links, see
 - `--sub-mode auto`
 - `--ocr-engine auto`
 - `--ocr-format srt`
+- `--ocr-preprocess none`
 
 ## Common overrides
 
@@ -21,6 +22,7 @@ For official GPU architecture/provider references and compatibility links, see
 - `--ocr-engine pp-ocr-v4` force PP-OCR v4 pipeline
 - `--ocr-engine pp-ocr-v3` fallback for older GPU/runtime combinations
 - `--ocr-format ass` request ASS (may be downgraded in MP4)
+- `--ocr-preprocess open-cv-basic` or `open-cv-subtitle` enable optional OpenCV bitmap cleanup before OCR
 - `--ocr-write-srt-sidecar` write `.srt` sidecars in addition to embedded output
 
 ## OCR flow
@@ -55,6 +57,21 @@ Quality checks include low spacing density, long glued tokens, mixed-case glue,
 low-information garbage fragments, and impossible bounding boxes. The goal is to
 prefer the best AI OCR result first, then use the fallback only for residual
 cue-level failures.
+
+## Optional OpenCV preprocessing
+
+`--ocr-preprocess` defaults to `none` and preserves existing OCR behavior. Builds
+compiled with `--features opencv-preprocess` can select CPU-side OpenCV cleanup
+of rasterized subtitle bitmaps before PP-OCR/Tesseract sees the frame:
+
+- `open-cv-basic`: median blur plus Otsu thresholding.
+- `open-cv-subtitle`: light Gaussian blur, adaptive thresholding, and a small
+  morphological close tuned for subtitle glyph cleanup.
+
+The OpenCV path preprocesses the PGM frame bytes only; PP-OCR inference still
+uses the configured ONNX Runtime execution provider, so CUDA/DirectML/CoreML GPU
+acceleration is unchanged. Selecting an `open-cv-*` mode in a build without the
+feature fails fast with a clear runtime error.
 
 ## GPU behavior
 
@@ -133,6 +150,7 @@ sub_mode = "auto"           # auto | force | skip
 ocr_default_language = "eng"
 ocr_engine = "auto"         # auto | tesseract | pp-ocr-v3 | pp-ocr-v4 | external
 ocr_format = "srt"          # srt | ass
+ocr_preprocess = "none"       # none | open-cv-basic | open-cv-subtitle
 ocr_write_srt_sidecar = false
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```

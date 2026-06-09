@@ -86,6 +86,7 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--ocr-default-language <ocr_default_language>`
 - `--ocr-engine <ocr_engine>` `auto|tesseract|pp-ocr-v3|pp-ocr-v4|external`
 - `--ocr-format <ocr_format>` `srt|ass`
+- `--ocr-preprocess <ocr_preprocess>` `none|open-cv-basic|open-cv-subtitle`
 - `--ocr-write-srt-sidecar`
 
 ## Failure policy

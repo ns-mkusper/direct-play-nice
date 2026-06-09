@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
 
-use crate::{OcrEngine, OcrFormat, SubMode};
+use crate::{OcrEngine, OcrFormat, OcrPreprocess, SubMode};
 #[cfg(test)]
 use text_processing::split_glued_ascii_token;
 use text_processing::{
@@ -46,10 +46,11 @@ mod fixture_eval;
 mod language;
 mod muxing;
 mod ocr_pipeline;
+mod preprocess;
 mod text_render;
 
-pub(crate) use engine::convert_bitmap_subtitles;
 use engine::*;
+pub(crate) use engine::{convert_bitmap_subtitles, BitmapSubtitleOcrRequest};
 pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
 use language::*;
 pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};
@@ -58,6 +59,7 @@ use ocr_pipeline::{
     apply_bitmap_subtitle_canvas_fallback, quality_fallback_thresholds, subtitle_rect_counts,
     OcrQualityBaseline,
 };
+use preprocess::preprocess_ocr_pgm;
 use text_render::*;
 
 #[cfg(test)]
