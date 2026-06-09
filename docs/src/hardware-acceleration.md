@@ -51,8 +51,9 @@ legacy-NVIDIA logic in `auto` mode.
 
 ### OCR workload guidance by hardware class
 
-- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`[^nvidia-cuda-gpus]
-  and keep GPU acceleration through ONNX Runtime CUDA rather than OpenCV DNN/GPU paths.
+- Older NVIDIA families (Maxwell/Pascal-era systems): prefer
+  `--ocr-engine pp-ocr-v3`[^nvidia-cuda-gpus] and keep GPU acceleration
+  through ONNX Runtime CUDA rather than OpenCV DNN/GPU paths.
 - Newer NVIDIA families (Turing/Ampere/Ada): start with `--ocr-engine pp-ocr-v4`
 - Non-NVIDIA GPUs: use `auto` and verify provider availability with probe logs;
   if providers are unavailable, OCR falls back to CPU/Tesseract path

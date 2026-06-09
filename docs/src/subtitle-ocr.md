@@ -22,7 +22,8 @@ For official GPU architecture/provider references and compatibility links, see
 - `--ocr-engine pp-ocr-v4` force PP-OCR v4 pipeline
 - `--ocr-engine pp-ocr-v3` fallback for older GPU/runtime combinations
 - `--ocr-format ass` request ASS (may be downgraded in MP4)
-- `--ocr-preprocess open-cv-basic` or `open-cv-subtitle` enable optional OpenCV bitmap cleanup before OCR
+- `--ocr-preprocess open-cv-basic` or `open-cv-subtitle` enable optional
+  OpenCV bitmap cleanup before OCR
 - `--ocr-write-srt-sidecar` write `.srt` sidecars in addition to embedded output
 
 ## OCR flow
