@@ -25,7 +25,7 @@ For official GPU architecture/provider references and compatibility links, see
 - `--ocr-preprocess open-cv-basic` or `open-cv-subtitle` enable optional
   CPU OpenCV bitmap cleanup before OCR
 - `--ocr-preprocess open-cv5-cuda-basic` or `open-cv5-cuda-subtitle` enable
-  OpenCV 5 CUDA bitmap cleanup before OCR
+  adaptive OpenCV 5 CUDA bitmap cleanup for OCR rescue candidates
 - `--ocr-write-srt-sidecar` write `.srt` sidecars in addition to embedded output
 
 ## OCR flow
@@ -164,13 +164,18 @@ Then select one of the CUDA profiles:
 - `open-cv5-cuda-basic`
 - `open-cv5-cuda-subtitle`
 
-These modes upload each rendered grayscale subtitle bitmap to `cv::cuda::GpuMat`,
-run OpenCV CUDA filters/thresholding, download the processed bitmap, and then
-continue through the normal OCR engine. The CUDA profiles intentionally use fixed
-thresholds in the shim, so they are GPU-oriented approximations of the CPU
-adaptive/Otsu profiles rather than byte-identical implementations. PP-OCR
-inference remains on ONNX Runtime providers such as CUDA; the OpenCV 5 CUDA path
-accelerates preprocessing rather than replacing the OCR inference provider.
+These modes keep the normal PP-OCR flow as the fast path. Each rendered subtitle
+bitmap is OCR'd first without CUDA preprocessing; after existing word-segmentation
+recovery, frames that still show spacing/quality issues are uploaded to
+`cv::cuda::GpuMat`, filtered/thresholded, downloaded, and OCR'd again. The CUDA
+result is accepted only when it fixes spacing without meaningful quality loss or
+when it produces a clear quality gain. This avoids paying GPU upload/download
+cost for frames whose baseline OCR is already good. The CUDA profiles
+intentionally use fixed thresholds in the shim, so they are GPU-oriented
+approximations of the CPU adaptive/Otsu profiles rather than byte-identical
+implementations. PP-OCR inference remains on ONNX Runtime providers such as CUDA;
+the OpenCV 5 CUDA path accelerates preprocessing rather than replacing the OCR
+inference provider.
 
 ## Config-file example
 

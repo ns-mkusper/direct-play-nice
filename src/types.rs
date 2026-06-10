@@ -60,9 +60,9 @@ pub(crate) enum OcrPreprocess {
     OpenCvBasic,
     /// Apply OpenCV adaptive thresholding and light morphology tuned for subtitle glyphs.
     OpenCvSubtitle,
-    /// Apply OpenCV 5 CUDA denoise and binarization through the external CUDA preprocess shim.
+    /// Try OpenCV 5 CUDA denoise and binarization as an adaptive OCR rescue path.
     OpenCv5CudaBasic,
-    /// Apply OpenCV 5 CUDA denoise, binarization, and morphology through the external CUDA preprocess shim.
+    /// Try OpenCV 5 CUDA denoise, binarization, and morphology as an adaptive OCR rescue path.
     OpenCv5CudaSubtitle,
 }
 

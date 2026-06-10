@@ -49,8 +49,10 @@ legacy-NVIDIA logic in `auto` mode.
 - Optional `--ocr-preprocess open-cv-basic|open-cv-subtitle` modes are CPU-side
   bitmap preprocessing.
 - Optional `--ocr-preprocess open-cv5-cuda-*` modes use the OpenCV 5 CUDA
-  preprocess shim for bitmap denoise/binarization/morphology before OCR
-  inference; they do not replace ONNX Runtime CUDA/DirectML/CoreML inference.
+  preprocess shim as an adaptive OCR rescue path: PP-OCR runs on the original
+  bitmap first, and CUDA denoise/binarization/morphology is tried only when
+  postprocessed output still has spacing/quality issues. They do not replace
+  ONNX Runtime CUDA/DirectML/CoreML inference.
 
 ### OCR workload guidance by hardware class
 
