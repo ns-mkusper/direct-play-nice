@@ -543,8 +543,6 @@ fn extract_subtitle_lines(
             && !is_english_language(params.language)
             && language_uses_spaces(params.language);
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
-        let quality_fallback_requested =
-            ppocr_needs_quality_fallback(&output.lines, params.language);
         let raw_postprocess_quality = output_quality_after_postprocess(&output, params.language);
         let raw_postprocess_needs_spacing_fallback =
             output_needs_spacing_after_postprocess(&output, params.language);
@@ -587,13 +585,21 @@ fn extract_subtitle_lines(
         }
         let mut spacing_fallback_requested =
             output_needs_spacing_after_postprocess(&output, params.language);
-        if spacing_fallback_requested
+        let quality_rescue_requested = ppocr_needs_quality_fallback(&output.lines, params.language)
+            || postprocessed_text_needs_quality_fallback(&output, params.language);
+        if (spacing_fallback_requested || quality_rescue_requested)
             && matches!(
                 params.ocr_preprocess,
                 OcrPreprocess::OpenCv5CudaBasic | OcrPreprocess::OpenCv5CudaSubtitle
             )
         {
-            if let Some(rescued) = try_opencv_cuda_spacing_rescue(
+            let rescue_reason = match (spacing_fallback_requested, quality_rescue_requested) {
+                (true, true) => "spacing+quality",
+                (true, false) => "spacing",
+                (false, true) => "quality",
+                (false, false) => "unknown",
+            };
+            if let Some(rescued) = try_opencv_cuda_ocr_rescue(
                 engine,
                 &pgm,
                 &pgm_path,
@@ -603,6 +609,7 @@ fn extract_subtitle_lines(
                 params.stream_index,
                 params.packet_seq,
                 i,
+                rescue_reason,
                 &output,
             )? {
                 output = rescued.output;
@@ -616,8 +623,9 @@ fn extract_subtitle_lines(
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
         quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
         let thresholds = quality_fallback_thresholds(quality_baseline);
-        let residual_quality_fallback_requested = quality_fallback_requested
-            || postprocessed_text_needs_quality_fallback(&output, params.language);
+        let residual_quality_fallback_requested =
+            ppocr_needs_quality_fallback(&output.lines, params.language)
+                || postprocessed_text_needs_quality_fallback(&output, params.language);
         let should_try_quality_fallback = if spacing_fallback_requested {
             // Severe PP-OCR glue can be consistent for an entire subtitle track,
             // so a dynamic baseline trained on the same bad output will not catch
@@ -1084,7 +1092,7 @@ struct OcrPreprocessRescue {
     path: PathBuf,
 }
 
-fn try_opencv_cuda_spacing_rescue(
+fn try_opencv_cuda_ocr_rescue(
     engine: &mut dyn SubtitleConverter,
     original_pgm: &[u8],
     original_pgm_path: &Path,
@@ -1094,6 +1102,7 @@ fn try_opencv_cuda_spacing_rescue(
     stream_index: i32,
     packet_seq: usize,
     rect_index: u32,
+    rescue_reason: &str,
     baseline: &OcrOutput,
 ) -> Result<Option<OcrPreprocessRescue>> {
     debug_assert!(matches!(
@@ -1147,11 +1156,12 @@ fn try_opencv_cuda_spacing_rescue(
 
     if use_candidate {
         info!(
-            "{} OpenCV 5 CUDA rescue: using preprocessed OCR for subtitle stream {} packet {} rect {} (candidate_score={:.2}, baseline_score={:.2}, candidate_conf={:.2})",
+            "{} OpenCV 5 CUDA rescue: using preprocessed OCR for subtitle stream {} packet {} rect {} (reason={}, candidate_score={:.2}, baseline_score={:.2}, candidate_conf={:.2})",
             ppocr_engine_label(ocr_engine),
             stream_index,
             packet_seq,
             rect_index,
+            rescue_reason,
             candidate_quality,
             baseline_quality,
             candidate_confidence
@@ -1164,12 +1174,13 @@ fn try_opencv_cuda_spacing_rescue(
             path: rescue_path,
         }))
     } else {
-        debug!(
-            "{} OpenCV 5 CUDA rescue skipped for subtitle stream {} packet {} rect {} (candidate_score={:.2}, baseline_score={:.2}, candidate_spacing_bad={}, baseline_spacing_bad={}, candidate_conf={:.2})",
+        info!(
+            "{} OpenCV 5 CUDA rescue rejected for subtitle stream {} packet {} rect {} (reason={}, candidate_score={:.2}, baseline_score={:.2}, candidate_spacing_bad={}, baseline_spacing_bad={}, candidate_conf={:.2})",
             ppocr_engine_label(ocr_engine),
             stream_index,
             packet_seq,
             rect_index,
+            rescue_reason,
             candidate_quality,
             baseline_quality,
             candidate_spacing_bad,
