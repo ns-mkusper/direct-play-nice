@@ -585,8 +585,10 @@ fn extract_subtitle_lines(
         }
         let mut spacing_fallback_requested =
             output_needs_spacing_after_postprocess(&output, params.language);
-        let quality_rescue_requested = ppocr_needs_quality_fallback(&output.lines, params.language)
-            || postprocessed_text_needs_quality_fallback(&output, params.language);
+        let postprocess_quality = output_quality_after_postprocess(&output, params.language);
+        let quality_rescue_requested = postprocess_quality < 0.60
+            && (ppocr_needs_quality_fallback(&output.lines, params.language)
+                || postprocessed_text_needs_quality_fallback(&output, params.language));
         if (spacing_fallback_requested || quality_rescue_requested)
             && matches!(
                 params.ocr_preprocess,
