@@ -55,8 +55,9 @@ use language::*;
 pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};
 #[cfg(test)]
 use ocr_pipeline::{
-    apply_bitmap_subtitle_canvas_fallback, quality_fallback_thresholds, subtitle_rect_counts,
-    OcrQualityBaseline,
+    apply_bitmap_subtitle_canvas_fallback, normalize_bitmap_subtitle_stream_for_ocr,
+    quality_fallback_thresholds, should_retry_bitmap_ocr_with_external_remux, subtitle_rect_counts,
+    OcrDecodeOutcome, OcrQualityBaseline, OcrStreamRequest,
 };
 use text_render::*;
 

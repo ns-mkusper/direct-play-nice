@@ -140,6 +140,85 @@ fn subtitle_rect_counts_handles_null_subtitle() {
 }
 
 #[test]
+fn bitmap_ocr_remux_retry_requires_packets_and_zero_decodes() {
+    let retry = OcrDecodeOutcome {
+        cues: Vec::new(),
+        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        subtitle_packet_count: 12,
+        decoded_subtitle_count: 0,
+        decoded_rect_count: 0,
+        decoded_image_rect_count: 0,
+    };
+    assert!(should_retry_bitmap_ocr_with_external_remux(&retry));
+
+    let decoded_without_cues = OcrDecodeOutcome {
+        decoded_subtitle_count: 1,
+        ..retry
+    };
+    assert!(!should_retry_bitmap_ocr_with_external_remux(
+        &decoded_without_cues
+    ));
+
+    let text_subtitle = OcrDecodeOutcome {
+        decoded_subtitle_count: 0,
+        stream_codec_id: ffi::AV_CODEC_ID_SUBRIP,
+        ..decoded_without_cues
+    };
+    assert!(!should_retry_bitmap_ocr_with_external_remux(&text_subtitle));
+}
+
+#[cfg(unix)]
+#[test]
+fn bitmap_subtitle_normalization_invokes_ffmpeg_copy_remux() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock();
+    let temp = TempDir::new().expect("temp dir");
+    let fake_ffmpeg = temp.path().join("ffmpeg-stub");
+    let args_file = temp.path().join("args.txt");
+    std::fs::write(
+        &fake_ffmpeg,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DPN_FFMPEG_ARGS\"\nout=\"\"\nfor arg do out=\"$arg\"; done\nprintf stub > \"$out\"\n",
+    )
+    .expect("write ffmpeg stub");
+    let mut perms = std::fs::metadata(&fake_ffmpeg)
+        .expect("stub metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_ffmpeg, perms).expect("chmod ffmpeg stub");
+
+    std::env::set_var("DPN_FFMPEG_BINARY", &fake_ffmpeg);
+    std::env::set_var("DPN_FFMPEG_ARGS", &args_file);
+
+    let request = OcrStreamRequest {
+        input_path: "/media/input.mkv",
+        stream_index: 3,
+        language: "eng",
+        work_dir: temp.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: Some((1440, 1080)),
+        ocr_engine: OcrEngine::External,
+    };
+
+    let normalized = normalize_bitmap_subtitle_stream_for_ocr(&request)
+        .expect("normalization succeeds")
+        .expect("normalization output");
+
+    assert_eq!(normalized, temp.path().join("ocr-s3-normalized.mks"));
+    assert_eq!(
+        std::fs::read(&normalized).expect("normalized data"),
+        b"stub"
+    );
+    let args = std::fs::read_to_string(args_file).expect("captured args");
+    assert!(args.contains("-map\n0:3\n"), "args were {args:?}");
+    assert!(args.contains("-c\ncopy\n"), "args were {args:?}");
+    assert!(args.contains("-f\nmatroska\n"), "args were {args:?}");
+
+    std::env::remove_var("DPN_FFMPEG_BINARY");
+    std::env::remove_var("DPN_FFMPEG_ARGS");
+}
+
+#[test]
 fn external_ocr_command_parser_requires_program_name() {
     assert!(parse_external_ocr_argv("").is_err());
     assert!(parse_external_ocr_argv("   ").is_err());
