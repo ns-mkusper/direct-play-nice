@@ -117,10 +117,86 @@ struct CueBuildParams<'a> {
     ocr_engine: OcrEngine,
 }
 
+#[derive(Debug)]
+pub(super) struct OcrDecodeOutcome {
+    pub(super) cues: Vec<SubtitleCue>,
+    pub(super) stream_codec_id: ffi::AVCodecID,
+    pub(super) subtitle_packet_count: usize,
+    pub(super) decoded_subtitle_count: usize,
+    pub(super) decoded_rect_count: usize,
+    pub(super) decoded_image_rect_count: usize,
+}
+
 pub(super) fn ocr_single_stream(
     request: &OcrStreamRequest<'_>,
     engine: &mut dyn SubtitleConverter,
 ) -> Result<Vec<SubtitleCue>> {
+    let mut outcome = ocr_single_stream_once(request, engine)?;
+
+    if should_retry_bitmap_ocr_with_external_remux(&outcome) {
+        match normalize_bitmap_subtitle_stream_for_ocr(request) {
+            Ok(Some(normalized_path)) => {
+                let normalized_input = normalized_path.to_string_lossy().into_owned();
+                let retry_request = OcrStreamRequest {
+                    input_path: &normalized_input,
+                    stream_index: 0,
+                    language: request.language,
+                    work_dir: request.work_dir,
+                    ocr_format: request.ocr_format,
+                    video_dimensions: request.video_dimensions,
+                    ocr_engine: request.ocr_engine,
+                };
+                let retry = ocr_single_stream_once(&retry_request, engine)?;
+                if !retry.cues.is_empty() {
+                    info!(
+                        "OCR subtitle stream {} recovered after ffmpeg subtitle remux fallback ({} cues)",
+                        request.stream_index,
+                        retry.cues.len()
+                    );
+                    return Ok(retry.cues);
+                }
+                warn!(
+                    "OCR subtitle stream {} ffmpeg subtitle remux fallback produced no cues; decoded_subtitles={}, decoded_rects={}, decoded_image_rects={}",
+                    request.stream_index,
+                    retry.decoded_subtitle_count,
+                    retry.decoded_rect_count,
+                    retry.decoded_image_rect_count
+                );
+                outcome = retry;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                warn!(
+                    "OCR subtitle stream {} ffmpeg subtitle remux fallback failed: {err:#}",
+                    request.stream_index
+                );
+            }
+        }
+    }
+
+    if outcome.cues.is_empty()
+        && outcome.subtitle_packet_count > 0
+        && is_image_based_subtitle(outcome.stream_codec_id)
+    {
+        bail!(
+            "OCR produced no cues for bitmap subtitle stream {} ({}) despite reading {} subtitle packet(s); decoded_subtitles={}, decoded_rects={}, decoded_image_rects={}, video_dimensions={:?}. This usually means the bitmap subtitle decoder could not derive a valid canvas/rectangle layout.",
+            request.stream_index,
+            codec_name(outcome.stream_codec_id),
+            outcome.subtitle_packet_count,
+            outcome.decoded_subtitle_count,
+            outcome.decoded_rect_count,
+            outcome.decoded_image_rect_count,
+            request.video_dimensions
+        );
+    }
+
+    Ok(outcome.cues)
+}
+
+fn ocr_single_stream_once(
+    request: &OcrStreamRequest<'_>,
+    engine: &mut dyn SubtitleConverter,
+) -> Result<OcrDecodeOutcome> {
     let input_cstr = CString::new(request.input_path).context("input path has interior NUL")?;
     let mut ictx = AVFormatContextInput::open(input_cstr.as_c_str())?;
 
@@ -254,20 +330,91 @@ pub(super) fn ocr_single_stream(
 
     sanitize_cues(&mut cues, request.ocr_format);
 
-    if cues.is_empty() && subtitle_packet_count > 0 && is_image_based_subtitle(stream_codec_id) {
+    Ok(OcrDecodeOutcome {
+        cues,
+        stream_codec_id,
+        subtitle_packet_count,
+        decoded_subtitle_count,
+        decoded_rect_count,
+        decoded_image_rect_count,
+    })
+}
+
+pub(super) fn should_retry_bitmap_ocr_with_external_remux(outcome: &OcrDecodeOutcome) -> bool {
+    outcome.cues.is_empty()
+        && outcome.subtitle_packet_count > 0
+        && outcome.decoded_subtitle_count == 0
+        && is_image_based_subtitle(outcome.stream_codec_id)
+}
+
+pub(super) fn normalize_bitmap_subtitle_stream_for_ocr(
+    request: &OcrStreamRequest<'_>,
+) -> Result<Option<PathBuf>> {
+    let ffmpeg = env::var("DPN_FFMPEG_BINARY").unwrap_or_else(|_| "ffmpeg".to_string());
+    let output_path = request
+        .work_dir
+        .join(format!("ocr-s{}-normalized.mks", request.stream_index));
+    let map_arg = format!("0:{}", request.stream_index);
+
+    info!(
+        "Retrying OCR subtitle stream {} via ffmpeg subtitle remux fallback",
+        request.stream_index
+    );
+    let output = Command::new(&ffmpeg)
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(request.input_path)
+        .arg("-map")
+        .arg(&map_arg)
+        .arg("-c")
+        .arg("copy")
+        .arg("-f")
+        .arg("matroska")
+        .arg(&output_path)
+        .output()
+        .with_context(|| {
+            format!(
+                "running ffmpeg subtitle remux fallback for stream {}",
+                request.stream_index
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!(
+                "ffmpeg subtitle remux fallback failed for stream {} with status {}",
+                request.stream_index,
+                output.status
+            );
+        }
         bail!(
-            "OCR produced no cues for bitmap subtitle stream {} ({}) despite reading {} subtitle packet(s); decoded_subtitles={}, decoded_rects={}, decoded_image_rects={}, video_dimensions={:?}. This usually means the bitmap subtitle decoder could not derive a valid canvas/rectangle layout.",
+            "ffmpeg subtitle remux fallback failed for stream {} with status {}: {}",
             request.stream_index,
-            codec_name(stream_codec_id),
-            subtitle_packet_count,
-            decoded_subtitle_count,
-            decoded_rect_count,
-            decoded_image_rect_count,
-            request.video_dimensions
+            output.status,
+            stderr
         );
     }
 
-    Ok(cues)
+    let metadata = fs::metadata(&output_path).with_context(|| {
+        format!(
+            "ffmpeg subtitle remux fallback did not create {}",
+            output_path.display()
+        )
+    })?;
+    if metadata.len() == 0 {
+        warn!(
+            "ffmpeg subtitle remux fallback produced an empty file for stream {}",
+            request.stream_index
+        );
+        return Ok(None);
+    }
+
+    Ok(Some(output_path))
 }
 
 pub(super) fn apply_bitmap_subtitle_canvas_fallback(
