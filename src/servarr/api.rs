@@ -2542,7 +2542,7 @@ mod tests {
             .create();
         let history = server
             .mock("GET", "/api/v3/history")
-            .match_query(Matcher::Any)
+            .match_query(Matcher::UrlEncoded("page".into(), "1".into()))
             .with_status(200)
             .with_body(
                 json!({
@@ -2555,6 +2555,12 @@ mod tests {
                 })
                 .to_string(),
             )
+            .create();
+        let history_empty = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::UrlEncoded("page".into(), "2".into()))
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
             .create();
         let episode = server
             .mock("GET", "/api/v3/episode/77")
@@ -2607,6 +2613,7 @@ mod tests {
         assert_eq!(summary.errors, 0);
         queue.assert();
         history.assert();
+        history_empty.assert();
         episode.assert();
         episode_file.assert();
     }
