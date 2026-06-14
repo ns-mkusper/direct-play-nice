@@ -1610,20 +1610,35 @@ fn release_audio_satisfies(
     }
     let langs = release_languages(release);
     if requirements.audio.iter().all(|lang| langs.contains(lang)) {
-        return true;
+        let needs_audio_hint = policy != ServarrLanguageCandidatePolicy::Strict
+            && requirements.audio.len() == 1
+            && requirements.audio.iter().any(|lang| lang == "eng");
+        return !needs_audio_hint
+            || release_has_audio_hint_for_policy(release, &requirements.audio, policy);
     }
     match policy {
         ServarrLanguageCandidatePolicy::Strict => false,
+        _ => release_has_audio_hint_for_policy(release, &requirements.audio, policy),
+    }
+}
+
+fn release_has_audio_hint_for_policy(
+    release: &Value,
+    required_audio: &[String],
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    match policy {
+        ServarrLanguageCandidatePolicy::Strict => true,
         ServarrLanguageCandidatePolicy::CustomFormat => {
-            custom_formats_indicate_audio(release, &requirements.audio)
+            custom_formats_indicate_audio(release, required_audio)
         }
         ServarrLanguageCandidatePolicy::CustomFormatOrTitle => {
-            custom_formats_indicate_audio(release, &requirements.audio)
-                || title_indicates_audio(release, &requirements.audio, false)
+            custom_formats_indicate_audio(release, required_audio)
+                || title_indicates_audio(release, required_audio, false)
         }
         ServarrLanguageCandidatePolicy::TitleGuess => {
-            custom_formats_indicate_audio(release, &requirements.audio)
-                || title_indicates_audio(release, &requirements.audio, true)
+            custom_formats_indicate_audio(release, required_audio)
+                || title_indicates_audio(release, required_audio, true)
         }
     }
 }
@@ -3487,6 +3502,73 @@ mod tests {
             Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormat
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn custom_format_or_title_policy_rejects_english_language_without_audio_hint() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![json!({
+            "title": "Anime S01E01 1080p WEB-DL",
+            "rejected": false,
+            "languages": [{"name": "English"}]
+        })];
+
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn custom_format_or_title_policy_accepts_english_language_with_title_dub_hint() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![json!({
+            "title": "Anime S01E01 1080p English Dub",
+            "rejected": false,
+            "languages": [{"name": "English"}]
+        })];
+
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn custom_format_or_title_policy_accepts_english_language_with_custom_format_dub_hint() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![json!({
+            "title": "Anime S01E01 1080p WEB-DL",
+            "rejected": false,
+            "languages": [{"name": "English"}],
+            "customFormats": [{"name": "English Dub"}]
+        })];
+
+        assert!(select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
         )
         .is_some());
     }
