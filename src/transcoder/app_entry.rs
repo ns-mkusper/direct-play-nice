@@ -706,8 +706,12 @@ fn run_conversion(
     }
 
     if conversion_result.is_ok() && output_ready && args.validate_output {
-        if let Err(err) = validate_output_file(output_file, target_video_codec, common_audio_codec)
-        {
+        if let Err(err) = validate_output_file(
+            input_file,
+            output_file,
+            target_video_codec,
+            common_audio_codec,
+        ) {
             conversion_result = Err(err);
         }
     }
