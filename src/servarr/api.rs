@@ -820,7 +820,7 @@ impl ApiClient {
                 continue;
             };
             let current_file_id = match self
-                .sonarr_episode_file_id_for_queue_item(&queue_item, episode_id)
+                .sonarr_episode_file_id_for_queue_item(queue_item, episode_id)
             {
                 Ok(Some(file_id)) => file_id,
                 Ok(None) => continue,
