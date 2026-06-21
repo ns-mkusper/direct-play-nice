@@ -74,6 +74,23 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_path_updates_source_quality_on_downscale() {
+        let base = PathBuf::from("Example Show - S01E02 - Example Episode WEBDL-2160p.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P480).unwrap();
+        assert_eq!(
+            resolved,
+            PathBuf::from("Example Show - S01E02 - Example Episode WEBDL-480p.fixed.mp4")
+        );
+    }
+
+    #[test]
+    fn resolve_output_path_does_not_relabel_upward() {
+        let base = PathBuf::from("Show.S01E01.480p.WEB-DL.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P2160).unwrap();
+        assert_eq!(resolved, PathBuf::from("Show.S01E01.480p.WEB-DL.fixed.mp4"));
+    }
+
+    #[test]
     fn resolve_media_path_uses_sonarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
