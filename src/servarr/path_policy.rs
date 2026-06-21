@@ -64,7 +64,10 @@ pub(super) fn resolve_output_path(
 fn update_filename_quality(stem: &str, desired_video_quality: VideoQuality) -> String {
     let target = match desired_video_quality {
         VideoQuality::MatchSource => return stem.to_string(),
-        quality => quality.to_string(),
+        quality => quality,
+    };
+    let Some(target_height) = quality_height(target) else {
+        return stem.to_string();
     };
 
     let mut replaced = String::with_capacity(stem.len());
@@ -85,8 +88,7 @@ fn update_filename_quality(stem: &str, desired_video_quality: VideoQuality) -> S
 
         if let Some(start) = digit_start {
             let digits = &stem[start..p_idx];
-            let is_known_quality =
-                matches!(digits, "360" | "480" | "720" | "1080" | "1440" | "2160");
+            let existing_height = known_quality_height(digits);
             let before_ok = stem[..start]
                 .chars()
                 .next_back()
@@ -96,21 +98,50 @@ fn update_filename_quality(stem: &str, desired_video_quality: VideoQuality) -> S
                 .next()
                 .is_none_or(|ch| !ch.is_ascii_alphanumeric());
 
-            if is_known_quality && before_ok && after_ok {
-                last_match = Some((start, p_idx + 1));
+            if let Some(existing_height) = existing_height {
+                if before_ok && after_ok {
+                    last_match = Some((start, p_idx + 1, existing_height));
+                }
             }
         }
 
         search_start = p_idx + 'p'.len_utf8();
     }
 
-    if let Some((start, end)) = last_match {
+    if let Some((start, end, existing_height)) = last_match {
+        if target_height > existing_height {
+            return stem.to_string();
+        }
         replaced.push_str(&stem[..start]);
-        replaced.push_str(&target);
+        replaced.push_str(&target.to_string());
         replaced.push_str(&stem[end..]);
         replaced
     } else {
         stem.to_string()
+    }
+}
+
+fn quality_height(quality: VideoQuality) -> Option<u16> {
+    match quality {
+        VideoQuality::MatchSource => None,
+        VideoQuality::P360 => Some(360),
+        VideoQuality::P480 => Some(480),
+        VideoQuality::P720 => Some(720),
+        VideoQuality::P1080 => Some(1080),
+        VideoQuality::P1440 => Some(1440),
+        VideoQuality::P2160 => Some(2160),
+    }
+}
+
+fn known_quality_height(digits: &str) -> Option<u16> {
+    match digits {
+        "360" => Some(360),
+        "480" => Some(480),
+        "720" => Some(720),
+        "1080" => Some(1080),
+        "1440" => Some(1440),
+        "2160" => Some(2160),
+        _ => None,
     }
 }
 

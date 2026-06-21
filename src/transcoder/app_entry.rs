@@ -260,7 +260,7 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         has_output: args.output_file.is_some(),
         desired_extension: &args.servarr_output_extension,
         desired_suffix: &args.servarr_output_suffix,
-        desired_video_quality: args.video_quality,
+        desired_video_quality: servarr_filename_video_quality(args),
         language_requirements: servarr::LanguageRequirements {
             enabled: args.servarr_language_check,
             audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
@@ -277,6 +277,56 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         },
     };
     servarr::prepare_from_env(servarr_view)
+}
+
+/// Computes the quality token Servarr replacement paths should use.
+///
+/// Explicit `--video-quality` values win; otherwise, mirror the effective
+/// device-cap quality so downscaled replacements do not keep a misleading
+/// source-resolution filename token.
+fn servarr_filename_video_quality(args: &Args) -> crate::transcoder::VideoQuality {
+    use crate::devices::Resolution;
+    use crate::transcoder::VideoQuality;
+
+    if args.video_quality != VideoQuality::MatchSource {
+        return args.video_quality;
+    }
+
+    let selections = args
+        .streaming_devices
+        .clone()
+        .unwrap_or_else(|| vec![StreamingDeviceSelection::All]);
+
+    let mut streaming_devices: Vec<&StreamingDevice> = if selections
+        .iter()
+        .any(|selection| matches!(selection, StreamingDeviceSelection::All))
+    {
+        devices::STREAMING_DEVICES.iter().collect()
+    } else {
+        selections
+            .into_iter()
+            .flat_map(|selection| match selection {
+                StreamingDeviceSelection::Model(device) => vec![device],
+                StreamingDeviceSelection::Family(family) => devices::devices_for_family(family),
+                StreamingDeviceSelection::All => Vec::new(),
+            })
+            .collect()
+    };
+
+    streaming_devices.sort_by_key(|device| device.model);
+    streaming_devices.dedup_by_key(|device| device.model);
+
+    let Ok(resolved_profile) = devices::resolve_target_profile(&streaming_devices) else {
+        return VideoQuality::MatchSource;
+    };
+
+    match resolved_profile.max_resolution {
+        Resolution::Resolution480p => VideoQuality::P480,
+        Resolution::Resolution720p => VideoQuality::P720,
+        Resolution::Resolution1080p => VideoQuality::P1080,
+        Resolution::Resolution1440p => VideoQuality::P1440,
+        Resolution::Resolution2160p => VideoQuality::P2160,
+    }
 }
 
 /// Logs Servarr-related environment context for replacement/batch runs.
@@ -820,6 +870,8 @@ fn ocr_multi_gpu_requested() -> bool {
 mod tests {
     use super::*;
     use crate::servarr::IntegrationKind;
+    use crate::transcoder::VideoQuality;
+    use clap::Parser;
     use std::ffi::CString;
     use std::path::PathBuf;
 
@@ -840,6 +892,24 @@ mod tests {
             temp_output_path,
             backup_path,
         }
+    }
+
+    #[test]
+    fn servarr_filename_video_quality_uses_all_device_cap_for_match_source() {
+        let mut args = Args::parse_from(["direct_play_nice"]);
+        args.video_quality = VideoQuality::MatchSource;
+        args.streaming_devices = Some(vec![StreamingDeviceSelection::All]);
+
+        assert_eq!(servarr_filename_video_quality(&args), VideoQuality::P480);
+    }
+
+    #[test]
+    fn servarr_filename_video_quality_prefers_explicit_video_quality() {
+        let mut args = Args::parse_from(["direct_play_nice"]);
+        args.video_quality = VideoQuality::P720;
+        args.streaming_devices = Some(vec![StreamingDeviceSelection::All]);
+
+        assert_eq!(servarr_filename_video_quality(&args), VideoQuality::P720);
     }
 
     #[test]

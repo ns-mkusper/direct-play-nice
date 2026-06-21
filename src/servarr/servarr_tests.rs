@@ -74,6 +74,23 @@ mod tests {
     }
 
     #[test]
+    fn resolve_output_path_updates_fallout_style_downscale_quality() {
+        let base = PathBuf::from("Fallout - S02E06 - The Other Player WEBDL-2160p.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P480).unwrap();
+        assert_eq!(
+            resolved,
+            PathBuf::from("Fallout - S02E06 - The Other Player WEBDL-480p.fixed.mp4")
+        );
+    }
+
+    #[test]
+    fn resolve_output_path_does_not_relabel_upward() {
+        let base = PathBuf::from("Show.S01E01.480p.WEB-DL.mkv");
+        let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P2160).unwrap();
+        assert_eq!(resolved, PathBuf::from("Show.S01E01.480p.WEB-DL.fixed.mp4"));
+    }
+
+    #[test]
     fn resolve_media_path_uses_sonarr_fallback() {
         let _guard = ENV_MUTEX.lock().unwrap();
         env::remove_var("sonarr_episodefile_path");
