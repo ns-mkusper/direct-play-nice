@@ -74,12 +74,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_output_path_updates_fallout_style_downscale_quality() {
-        let base = PathBuf::from("Fallout - S02E06 - The Other Player WEBDL-2160p.mkv");
+    fn resolve_output_path_updates_source_quality_on_downscale() {
+        let base = PathBuf::from("Example Show - S01E02 - Example Episode WEBDL-2160p.mkv");
         let resolved = resolve_output_path(&base, "mp4", ".fixed", VideoQuality::P480).unwrap();
         assert_eq!(
             resolved,
-            PathBuf::from("Fallout - S02E06 - The Other Player WEBDL-480p.fixed.mp4")
+            PathBuf::from("Example Show - S01E02 - Example Episode WEBDL-480p.fixed.mp4")
         );
     }
 
