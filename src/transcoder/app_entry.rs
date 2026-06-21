@@ -900,7 +900,7 @@ mod tests {
         args.video_quality = VideoQuality::MatchSource;
         args.streaming_devices = Some(vec![StreamingDeviceSelection::All]);
 
-        assert_eq!(servarr_filename_video_quality(&args), VideoQuality::P480);
+        assert_eq!(servarr_filename_video_quality(&args), VideoQuality::P720);
     }
 
     #[test]
