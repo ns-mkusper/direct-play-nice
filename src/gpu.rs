@@ -6,6 +6,10 @@ use rsmpeg::ffi::{self};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -201,6 +205,91 @@ const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])]
     ]
 }
 
+#[cfg(unix)]
+const HW_DEVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const HW_DEVICE_PROBE_TYPES: &[&str] = &[
+    "cuda",
+    "vaapi",
+    "qsv",
+    "videotoolbox",
+    "d3d11va",
+    "dxva2",
+    "opencl",
+    "vulkan",
+    "drm",
+    "mediacodec",
+];
+
+fn linked_ffmpeg_hw_device_type(device_name: &str) -> Option<ffi::AVHWDeviceType> {
+    unsafe {
+        let c_name = CString::new(device_name).ok()?;
+        let dev_type = ffi::av_hwdevice_find_type_by_name(c_name.as_ptr());
+        (dev_type != ffi::AV_HWDEVICE_TYPE_NONE).then_some(dev_type)
+    }
+}
+
+#[cfg(test)]
+fn linked_ffmpeg_has_hw_device(device_name: &str) -> bool {
+    linked_ffmpeg_hw_device_type(device_name).is_some()
+}
+
+#[cfg(unix)]
+fn probe_hw_device_in_child_process(device_name: &str) -> bool {
+    let Some(dev_type) = linked_ffmpeg_hw_device_type(device_name) else {
+        return false;
+    };
+
+    unsafe {
+        let pid = libc::fork();
+        if pid < 0 {
+            return false;
+        }
+        if pid == 0 {
+            let mut buf: *mut ffi::AVBufferRef = std::ptr::null_mut();
+            let ret = ffi::av_hwdevice_ctx_create(
+                &mut buf,
+                dev_type,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+            );
+            let ok = ret >= 0 && !buf.is_null();
+            if !buf.is_null() {
+                ffi::av_buffer_unref(&mut buf);
+            }
+            libc::_exit(if ok { 0 } else { 2 });
+        }
+
+        let deadline = Instant::now() + HW_DEVICE_PROBE_TIMEOUT;
+        loop {
+            let mut status = 0;
+            let wait = libc::waitpid(pid, &mut status, libc::WNOHANG);
+            if wait == pid {
+                return libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+            }
+            if wait < 0 {
+                return false;
+            }
+            if Instant::now() >= deadline {
+                let _ = libc::kill(pid, libc::SIGKILL);
+                let _ = libc::waitpid(pid, &mut status, 0);
+                return false;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn probe_hw_device_in_child_process(device_name: &str) -> bool {
+    if let Some(mut buf) = try_create_hw_device(device_name) {
+        unsafe { ffi::av_buffer_unref(&mut buf) };
+        true
+    } else {
+        false
+    }
+}
+
 /// Probes availability of common FFmpeg hardware-device backends.
 ///
 /// # Examples
@@ -210,26 +299,9 @@ const fn hevc_candidates() -> &'static [(&'static str, &'static [&'static str])]
 /// assert!(!devices.is_empty());
 /// ```
 pub fn probe_hw_devices() -> HashMap<&'static str, bool> {
-    let types: &[&str] = &[
-        "cuda",
-        "vaapi",
-        "qsv",
-        "videotoolbox",
-        "d3d11va",
-        "dxva2",
-        "opencl",
-        "vulkan",
-        "drm",
-        "mediacodec",
-    ];
     let mut map = HashMap::new();
-    for &t in types {
-        if let Some(mut buf) = try_create_hw_device(t) {
-            map.insert(t, true);
-            unsafe { ffi::av_buffer_unref(&mut buf) };
-        } else {
-            map.insert(t, false);
-        }
+    for &t in HW_DEVICE_PROBE_TYPES {
+        map.insert(t, probe_hw_device_in_child_process(t));
     }
     map
 }
@@ -640,6 +712,27 @@ pub fn gather_probe_json(
             hw_encoders: hw_encs,
             encoders,
             decoders,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_hw_device_is_not_reported_available() {
+        assert!(!linked_ffmpeg_has_hw_device("not-a-real-ffmpeg-hw-device"));
+        assert!(!probe_hw_device_in_child_process(
+            "not-a-real-ffmpeg-hw-device"
+        ));
+    }
+
+    #[test]
+    fn hw_probe_returns_all_known_device_keys() {
+        let devices = probe_hw_devices();
+        for key in HW_DEVICE_PROBE_TYPES {
+            assert!(devices.contains_key(key));
         }
     }
 }
