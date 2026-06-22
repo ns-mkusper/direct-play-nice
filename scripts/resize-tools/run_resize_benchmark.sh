@@ -32,6 +32,9 @@ ref="$work_dir/ref_360p.mp4"
 baseline="$work_dir/resize_fast_bilinear.mp4"
 report="$work_dir/resize_report.csv"
 
+# Keep the fixture audio-bearing and non-AAC so default output validation
+# exercises DPN's AAC audio transcode path instead of rejecting video-only outputs.
+
 if [ -n "$source_video" ]; then
   if [ ! -r "$source_video" ]; then
     echo "resize benchmark source is not readable: $source_video" >&2
@@ -44,19 +47,23 @@ if [ -n "$source_video" ]; then
   fi
 
   ffmpeg -hide_banner -y "${seek_args[@]}" -i "$source_video" \
+    -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+    -map 0:v:0 -map 1:a:0 \
     -vf "scale=1280:720:flags=lanczos,fps=$rate,format=yuv420p" \
-    -t "$duration" -an -c:v libx264 -preset veryfast -crf 12 "$source_high"
+    -t "$duration" -c:v libx264 -preset veryfast -crf 12 -c:a mp2 -b:a 192k -shortest "$source_high"
 else
   ffmpeg -hide_banner -y \
     -f lavfi -i "testsrc2=size=1280x720:rate=$rate:duration=$duration" \
     -f lavfi -i "testsrc=size=1280x720:rate=$rate:duration=$duration" \
-    -filter_complex "[0:v][1:v]blend=all_mode=overlay:all_opacity=0.25,format=yuv420p" \
-    -an -c:v libx264 -preset veryfast -crf 12 "$source_high"
+    -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+    -filter_complex "[0:v][1:v]blend=all_mode=overlay:all_opacity=0.25,format=yuv420p[v]" \
+    -map "[v]" -map 2:a:0 \
+    -c:v libx264 -preset veryfast -crf 12 -c:a mp2 -b:a 192k -shortest "$source_high"
 fi
 
 ffmpeg -hide_banner -y -i "$source_high" \
   -vf "scale=640:360:flags=lanczos,format=yuv420p" \
-  -c:v libx264 -preset veryfast -crf 16 -an "$ref"
+  -c:v libx264 -preset veryfast -crf 16 -c:a aac -b:a 128k "$ref"
 
 candidate_log_path() {
   local output="$1"
@@ -77,6 +84,8 @@ classify_failure_reason() {
     printf "linked_ffmpeg_scale_cuda_unavailable"
   elif grep -Eiq -- "--resize-backend=cuda unavailable" "$log_file" 2>/dev/null; then
     printf "cuda_resize_prerequisite_failed"
+  elif grep -Eiq "Output validation failed" "$log_file" 2>/dev/null; then
+    printf "output_validation_failed"
   elif grep -Eiq "CUDA hardware decode is inactive|requires CUDA decode" "$log_file" 2>/dev/null; then
     printf "cuda_hw_decode_unavailable"
   elif grep -Eiq "selected encoder is not NVENC|NVENC|nvenc" "$log_file" 2>/dev/null; then
