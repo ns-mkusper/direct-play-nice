@@ -23,6 +23,10 @@ use crate::types::{
 
 pub(crate) use crate::cli::progress::ProgressTracker;
 
+pub(crate) const DEFAULT_VISUAL_SCAN_FRAMES: usize = 120;
+pub(crate) const DEFAULT_VISUAL_SAMPLE_INTERVAL: usize = 15;
+pub(crate) const DEFAULT_VISUAL_FAILURE_RATIO: f64 = 0.60;
+
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -369,13 +373,69 @@ pub(crate) struct Args {
     )]
     pub(crate) skip_codec_check: bool,
 
-    /// Reopen the produced media file and verify expected stream codecs before reporting success.
+    /// Reopen and structurally validate the produced media file before reporting success (default: enabled).
     #[arg(
         long = "validate-output",
-        default_value_t = false,
+        default_value_t = true,
         id = "validate_output"
     )]
     pub(crate) validate_output: bool,
+
+    /// Disable post-conversion structural output validation.
+    #[arg(
+        long = "no-validate-output",
+        default_value_t = false,
+        id = "no_validate_output"
+    )]
+    pub(crate) no_validate_output: bool,
+
+    /// Decode sampled output frames and reject obvious visual corruption such as green/solid frames (default: enabled).
+    #[arg(
+        long = "visual-validate-output",
+        default_value_t = true,
+        id = "visual_validate_output"
+    )]
+    pub(crate) visual_validate_output: bool,
+
+    /// Disable sampled visual output validation.
+    #[arg(
+        long = "no-visual-validate-output",
+        default_value_t = false,
+        id = "no_visual_validate_output"
+    )]
+    pub(crate) no_visual_validate_output: bool,
+
+    /// Log sampled output-frame visual statistics for troubleshooting scaling/corruption issues.
+    #[arg(
+        long = "visual-quality-report",
+        default_value_t = false,
+        id = "visual_quality_report"
+    )]
+    pub(crate) visual_quality_report: bool,
+
+    /// Number of decoded video frames to scan during visual output validation.
+    #[arg(
+        long = "visual-scan-frames",
+        default_value_t = DEFAULT_VISUAL_SCAN_FRAMES,
+        id = "visual_scan_frames"
+    )]
+    pub(crate) visual_scan_frames: usize,
+
+    /// Decode interval for sampled visual checks; 15 inspects frames 0, 15, 30, etc.
+    #[arg(
+        long = "visual-sample-interval",
+        default_value_t = DEFAULT_VISUAL_SAMPLE_INTERVAL,
+        id = "visual_sample_interval"
+    )]
+    pub(crate) visual_sample_interval: usize,
+
+    /// Fraction of sampled frames that must look corrupt before visual validation fails.
+    #[arg(
+        long = "visual-failure-ratio",
+        default_value_t = DEFAULT_VISUAL_FAILURE_RATIO,
+        id = "visual_failure_ratio"
+    )]
+    pub(crate) visual_failure_ratio: f64,
 
     /// Delete the source file after a successful conversion for direct CLI runs.
     /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.

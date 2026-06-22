@@ -30,7 +30,7 @@ use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMi
 use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
 use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayConstraints};
 use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
-use crate::transcoder::verification::validate_output_file;
+use crate::transcoder::verification::{validate_output_file, OutputValidationOptions};
 use crate::transcoder::ConversionOutcome;
 use crate::types::{OcrFormat, OutputFormat};
 
@@ -761,6 +761,13 @@ fn run_conversion(
             output_file,
             target_video_codec,
             common_audio_codec,
+            OutputValidationOptions {
+                visual_validate: args.visual_validate_output,
+                visual_quality_report: args.visual_quality_report,
+                visual_scan_frames: args.visual_scan_frames,
+                visual_sample_interval: args.visual_sample_interval,
+                visual_failure_ratio: args.visual_failure_ratio,
+            },
         ) {
             conversion_result = Err(err);
         }

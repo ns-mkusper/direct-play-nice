@@ -55,6 +55,12 @@ pub struct Config {
     pub ocr_external_command: Option<String>,
     pub ocr_write_srt_sidecar: Option<bool>,
     pub skip_codec_check: Option<bool>,
+    pub validate_output: Option<bool>,
+    pub visual_validate_output: Option<bool>,
+    pub visual_quality_report: Option<bool>,
+    pub visual_scan_frames: Option<usize>,
+    pub visual_sample_interval: Option<usize>,
+    pub visual_failure_ratio: Option<f64>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
