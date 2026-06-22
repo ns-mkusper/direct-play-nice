@@ -14,20 +14,58 @@ use rsmpeg::avformat::{AVFormatContextInput, AVStreamRef};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 
-use crate::ffmpeg_utils::is_eagain_error;
+use crate::ffmpeg_utils::{
+    is_eagain_error, DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL,
+    DEFAULT_VISUAL_SCAN_FRAMES,
+};
 use crate::transcoder::helpers::{describe_codec, enable_strict_decode_failure};
 use crate::transcoder::pipeline_assessment::rational_to_f64;
 
 const MIN_SOURCE_FPS_FOR_COLLAPSE_CHECK: f64 = 10.0;
 const MIN_OUTPUT_DURATION_RATIO_FOR_COLLAPSE_CHECK: f64 = 0.90;
 const MIN_OUTPUT_FPS_RATIO: f64 = 0.80;
-const VISUAL_FRAMES_TO_SCAN: usize = 120;
-const VISUAL_SAMPLE_INTERVAL: usize = 15;
+const VISUAL_MIN_INSPECTED_FRAMES: usize = 3;
+const VISUAL_MIN_SUSPICIOUS_FRAMES: usize = 2;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct OutputValidationOptions {
     pub(crate) visual_validate: bool,
     pub(crate) visual_quality_report: bool,
+    pub(crate) visual_scan_frames: usize,
+    pub(crate) visual_sample_interval: usize,
+    pub(crate) visual_failure_ratio: f64,
+}
+
+impl Default for OutputValidationOptions {
+    fn default() -> Self {
+        Self {
+            visual_validate: false,
+            visual_quality_report: false,
+            visual_scan_frames: DEFAULT_VISUAL_SCAN_FRAMES,
+            visual_sample_interval: DEFAULT_VISUAL_SAMPLE_INTERVAL,
+            visual_failure_ratio: DEFAULT_VISUAL_FAILURE_RATIO,
+        }
+    }
+}
+
+impl OutputValidationOptions {
+    fn validate_visual_settings(self) -> Result<()> {
+        if self.visual_scan_frames == 0 {
+            bail!("Output visual validation failed: visual_scan_frames must be greater than 0");
+        }
+        if self.visual_sample_interval == 0 {
+            bail!("Output visual validation failed: visual_sample_interval must be greater than 0");
+        }
+        if !self.visual_failure_ratio.is_finite()
+            || self.visual_failure_ratio <= 0.0
+            || self.visual_failure_ratio > 1.0
+        {
+            bail!(
+                "Output visual validation failed: visual_failure_ratio must be greater than 0 and at most 1"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Reopens the completed output and verifies the minimum stream contract the
@@ -99,12 +137,8 @@ pub(crate) fn validate_output_file(
     validate_video_temporal_consistency(&input_ctx, &output_ctx)?;
 
     if options.visual_validate || options.visual_quality_report {
-        validate_visual_output(
-            &mut output_ctx,
-            output_file,
-            options.visual_validate,
-            options.visual_quality_report,
-        )?;
+        options.validate_visual_settings()?;
+        validate_visual_output(&mut output_ctx, output_file, options)?;
     }
 
     info!(
@@ -249,20 +283,22 @@ impl VisualInspectionReport {
         (self.inspected_frames > 0).then_some(self.luma_stddev_sum / self.inspected_frames as f64)
     }
 
-    fn green_failure_threshold(&self) -> usize {
-        ((self.inspected_frames as f64) * 0.60).ceil().max(2.0) as usize
+    fn green_failure_threshold(&self, failure_ratio: f64) -> usize {
+        ((self.inspected_frames as f64) * failure_ratio)
+            .ceil()
+            .max(VISUAL_MIN_SUSPICIOUS_FRAMES as f64) as usize
     }
 
-    fn green_failure(&self) -> bool {
-        self.inspected_frames >= 3 && self.suspicious_green_frames >= self.green_failure_threshold()
+    fn green_failure(&self, failure_ratio: f64) -> bool {
+        self.inspected_frames >= VISUAL_MIN_INSPECTED_FRAMES
+            && self.suspicious_green_frames >= self.green_failure_threshold(failure_ratio)
     }
 }
 
 fn validate_visual_output(
     output_ctx: &mut AVFormatContextInput,
     output_file: &CStr,
-    fail_on_corruption: bool,
-    force_report: bool,
+    options: OutputValidationOptions,
 ) -> Result<()> {
     let (video_stream_index, video_time_base, mut decode_ctx, decoder_name) = {
         let video_stream = output_ctx
@@ -298,7 +334,7 @@ fn validate_visual_output(
     let mut report = VisualInspectionReport::default();
     let mut video_packets_seen = 0usize;
 
-    while report.decoded_frames < VISUAL_FRAMES_TO_SCAN {
+    while report.decoded_frames < options.visual_scan_frames {
         let Some(mut packet) = output_ctx.read_packet()? else {
             break;
         };
@@ -314,7 +350,7 @@ fn validate_visual_output(
                 bail!("Output visual validation failed: decoder send_packet failed: {err}");
             }
         }
-        drain_visual_frames(&mut decode_ctx, &mut report)?;
+        drain_visual_frames(&mut decode_ctx, &mut report, options.visual_sample_interval)?;
     }
 
     match decode_ctx.send_packet(None) {
@@ -322,28 +358,36 @@ fn validate_visual_output(
         Err(err) if is_eagain_error(&err) => {}
         Err(err) => bail!("Output visual validation failed: decoder flush failed: {err}"),
     }
-    drain_visual_frames(&mut decode_ctx, &mut report)?;
+    drain_visual_frames(&mut decode_ctx, &mut report, options.visual_sample_interval)?;
 
     if report.decoded_frames == 0 && video_packets_seen > 0 {
         bail!("Output visual validation failed: no video frames decoded from output");
     }
 
-    if fail_on_corruption && report.green_failure() {
+    if options.visual_validate && report.green_failure(options.visual_failure_ratio) {
         bail!(
-            "Output visual validation failed: {} of {} sampled frames look like green-screen corruption in '{}'",
+            "Output visual validation failed: {} of {} sampled frames look like green-screen corruption in '{}' (threshold ratio {:.2})",
             report.suspicious_green_frames,
             report.inspected_frames,
-            output_file.to_string_lossy()
+            output_file.to_string_lossy(),
+            options.visual_failure_ratio
         );
     }
 
-    if force_report || report.suspicious_green_frames > 0 || report.near_solid_nonblack_frames > 0 {
+    if options.visual_quality_report
+        || report.suspicious_green_frames > 0
+        || report.near_solid_nonblack_frames > 0
+    {
         info!(
-            "Output visual quality report for '{}': decoder={}, decoded_frames={}, inspected_frames={}, suspicious_green_frames={}, near_solid_nonblack_frames={}, avg_luma_mean={}, avg_luma_stddev={}",
+            "Output visual quality report for '{}': decoder={}, decoded_frames={}, inspected_frames={}, scan_frames={}, sample_interval={}, failure_ratio={:.2}, suspicious_green_threshold={}, suspicious_green_frames={}, near_solid_nonblack_frames={}, avg_luma_mean={}, avg_luma_stddev={}",
             output_file.to_string_lossy(),
             decoder_name,
             report.decoded_frames,
             report.inspected_frames,
+            options.visual_scan_frames,
+            options.visual_sample_interval,
+            options.visual_failure_ratio,
+            report.green_failure_threshold(options.visual_failure_ratio),
             report.suspicious_green_frames,
             report.near_solid_nonblack_frames,
             format_optional_f64(report.average_luma_mean()),
@@ -351,11 +395,14 @@ fn validate_visual_output(
         );
     } else {
         debug!(
-            "Output visual validation passed for '{}' (decoder={}, decoded_frames={}, inspected_frames={}).",
+            "Output visual validation passed for '{}' (decoder={}, decoded_frames={}, inspected_frames={}, scan_frames={}, sample_interval={}, failure_ratio={:.2}).",
             output_file.to_string_lossy(),
             decoder_name,
             report.decoded_frames,
-            report.inspected_frames
+            report.inspected_frames,
+            options.visual_scan_frames,
+            options.visual_sample_interval,
+            options.visual_failure_ratio
         );
     }
 
@@ -373,13 +420,14 @@ fn validate_visual_output(
 fn drain_visual_frames(
     decode_ctx: &mut AVCodecContext,
     report: &mut VisualInspectionReport,
+    sample_interval: usize,
 ) -> Result<()> {
     loop {
         match decode_ctx.receive_frame() {
             Ok(frame) => {
                 let frame_index = report.decoded_frames;
                 report.record_decoded_frame();
-                if frame_index.is_multiple_of(VISUAL_SAMPLE_INTERVAL) {
+                if frame_index.is_multiple_of(sample_interval) {
                     if let Some(stats) = frame_visual_stats(&frame) {
                         report.record_stats(stats);
                     }
@@ -668,14 +716,62 @@ mod tests {
         report.record_stats(green);
         report.record_stats(normal);
 
-        assert!(report.green_failure());
+        assert!(report.green_failure(DEFAULT_VISUAL_FAILURE_RATIO));
 
         let mut mostly_normal = VisualInspectionReport::default();
         mostly_normal.record_stats(green);
         mostly_normal.record_stats(normal);
         mostly_normal.record_stats(normal);
 
-        assert!(!mostly_normal.green_failure());
+        assert!(!mostly_normal.green_failure(DEFAULT_VISUAL_FAILURE_RATIO));
+    }
+
+    #[test]
+    fn visual_failure_ratio_controls_green_failure_threshold() {
+        let mut report = VisualInspectionReport::default();
+        let green = FrameVisualStats {
+            luma_mean: 145.0,
+            luma_stddev: 4.0,
+            chroma_u_mean: Some(54.0),
+            chroma_v_mean: Some(34.0),
+        };
+        let normal = FrameVisualStats {
+            luma_mean: 110.0,
+            luma_stddev: 40.0,
+            chroma_u_mean: Some(128.0),
+            chroma_v_mean: Some(128.0),
+        };
+
+        report.record_stats(green);
+        report.record_stats(green);
+        report.record_stats(normal);
+        report.record_stats(normal);
+        report.record_stats(normal);
+
+        assert!(!report.green_failure(DEFAULT_VISUAL_FAILURE_RATIO));
+        assert!(report.green_failure(0.40));
+    }
+
+    #[test]
+    fn visual_options_reject_invalid_amounts_and_ratios() {
+        assert!(OutputValidationOptions {
+            visual_scan_frames: 0,
+            ..Default::default()
+        }
+        .validate_visual_settings()
+        .is_err());
+        assert!(OutputValidationOptions {
+            visual_sample_interval: 0,
+            ..Default::default()
+        }
+        .validate_visual_settings()
+        .is_err());
+        assert!(OutputValidationOptions {
+            visual_failure_ratio: 1.5,
+            ..Default::default()
+        }
+        .validate_visual_settings()
+        .is_err());
     }
 
     #[test]

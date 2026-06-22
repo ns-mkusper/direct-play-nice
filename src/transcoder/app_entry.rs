@@ -764,6 +764,9 @@ fn run_conversion(
             OutputValidationOptions {
                 visual_validate: args.visual_validate_output,
                 visual_quality_report: args.visual_quality_report,
+                visual_scan_frames: args.visual_scan_frames,
+                visual_sample_interval: args.visual_sample_interval,
+                visual_failure_ratio: args.visual_failure_ratio,
             },
         ) {
             conversion_result = Err(err);

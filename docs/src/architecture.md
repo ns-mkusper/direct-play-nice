@@ -22,6 +22,9 @@ packet loop.
    enabled by default: the final media file is reopened to verify expected
    stream codecs, stream hygiene, temporal consistency, and sampled visual
    statistics for obvious corruption such as repeated green-screen frames.
+   The visual layer exists because a file can decode cleanly and still look
+   dangerously wrong to users. Operators can tune how many frames are scanned,
+   how often samples are inspected, and what sampled corruption ratio fails.
 
 ## FFmpeg Boundaries
 

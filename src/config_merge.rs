@@ -293,6 +293,24 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "visual_scan_frames") {
+        if let Some(visual_scan_frames) = cfg.visual_scan_frames {
+            args.visual_scan_frames = visual_scan_frames;
+        }
+    }
+
+    if !cli_value_provided(matches, "visual_sample_interval") {
+        if let Some(visual_sample_interval) = cfg.visual_sample_interval {
+            args.visual_sample_interval = visual_sample_interval;
+        }
+    }
+
+    if !cli_value_provided(matches, "visual_failure_ratio") {
+        if let Some(visual_failure_ratio) = cfg.visual_failure_ratio {
+            args.visual_failure_ratio = visual_failure_ratio;
+        }
+    }
+
     if args.delete_source.is_none() {
         if let Some(delete_source) = cfg.delete_source {
             args.delete_source = Some(delete_source);
@@ -303,6 +321,9 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffmpeg_utils::{
+        DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL, DEFAULT_VISUAL_SCAN_FRAMES,
+    };
     use crate::transcoder::quality::VideoQuality;
     use crate::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
     use clap::{CommandFactory, FromArgMatches};
@@ -443,21 +464,30 @@ mod tests {
         assert!(args.validate_output);
         assert!(args.visual_validate_output);
         assert!(!args.visual_quality_report);
+        assert_eq!(args.visual_scan_frames, DEFAULT_VISUAL_SCAN_FRAMES);
+        assert_eq!(args.visual_sample_interval, DEFAULT_VISUAL_SAMPLE_INTERVAL);
+        assert_eq!(args.visual_failure_ratio, DEFAULT_VISUAL_FAILURE_RATIO);
     }
 
     #[test]
-    fn config_can_disable_default_output_validation_when_cli_is_absent() {
+    fn config_can_override_default_output_validation_when_cli_is_absent() {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
             validate_output: Some(false),
             visual_validate_output: Some(false),
             visual_quality_report: Some(true),
+            visual_scan_frames: Some(240),
+            visual_sample_interval: Some(10),
+            visual_failure_ratio: Some(0.40),
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert!(!args.validate_output);
         assert!(!args.visual_validate_output);
         assert!(args.visual_quality_report);
+        assert_eq!(args.visual_scan_frames, 240);
+        assert_eq!(args.visual_sample_interval, 10);
+        assert_eq!(args.visual_failure_ratio, 0.40);
     }
 
     #[test]
@@ -466,15 +496,27 @@ mod tests {
             "direct_play_nice",
             "--validate-output",
             "--visual-validate-output",
+            "--visual-scan-frames",
+            "180",
+            "--visual-sample-interval",
+            "12",
+            "--visual-failure-ratio",
+            "0.50",
         ]);
         let cfg = config::Config {
             validate_output: Some(false),
             visual_validate_output: Some(false),
+            visual_scan_frames: Some(240),
+            visual_sample_interval: Some(10),
+            visual_failure_ratio: Some(0.40),
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert!(args.validate_output);
         assert!(args.visual_validate_output);
+        assert_eq!(args.visual_scan_frames, 180);
+        assert_eq!(args.visual_sample_interval, 12);
+        assert_eq!(args.visual_failure_ratio, 0.50);
     }
 
     #[test]

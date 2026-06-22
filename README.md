@@ -94,6 +94,9 @@ skip_codec_check = false
 validate_output = true
 visual_validate_output = true
 visual_quality_report = false
+visual_scan_frames = 120
+visual_sample_interval = 15
+visual_failure_ratio = 0.60
 
 # Optional: require imported media to contain English audio.
 # Start with dry-run while tuning candidate policy and custom formats.

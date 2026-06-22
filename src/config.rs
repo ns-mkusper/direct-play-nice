@@ -58,6 +58,9 @@ pub struct Config {
     pub validate_output: Option<bool>,
     pub visual_validate_output: Option<bool>,
     pub visual_quality_report: Option<bool>,
+    pub visual_scan_frames: Option<usize>,
+    pub visual_sample_interval: Option<usize>,
+    pub visual_failure_ratio: Option<f64>,
     pub delete_source: Option<bool>,
     pub plex: Option<PlexSettings>,
 }

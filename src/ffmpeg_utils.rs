@@ -23,6 +23,10 @@ use crate::types::{
 
 pub(crate) use crate::cli::progress::ProgressTracker;
 
+pub(crate) const DEFAULT_VISUAL_SCAN_FRAMES: usize = 120;
+pub(crate) const DEFAULT_VISUAL_SAMPLE_INTERVAL: usize = 15;
+pub(crate) const DEFAULT_VISUAL_FAILURE_RATIO: f64 = 0.60;
+
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -408,6 +412,30 @@ pub(crate) struct Args {
         id = "visual_quality_report"
     )]
     pub(crate) visual_quality_report: bool,
+
+    /// Number of decoded video frames to scan during visual output validation.
+    #[arg(
+        long = "visual-scan-frames",
+        default_value_t = DEFAULT_VISUAL_SCAN_FRAMES,
+        id = "visual_scan_frames"
+    )]
+    pub(crate) visual_scan_frames: usize,
+
+    /// Decode interval for sampled visual checks; 15 inspects frames 0, 15, 30, etc.
+    #[arg(
+        long = "visual-sample-interval",
+        default_value_t = DEFAULT_VISUAL_SAMPLE_INTERVAL,
+        id = "visual_sample_interval"
+    )]
+    pub(crate) visual_sample_interval: usize,
+
+    /// Fraction of sampled frames that must look corrupt before visual validation fails.
+    #[arg(
+        long = "visual-failure-ratio",
+        default_value_t = DEFAULT_VISUAL_FAILURE_RATIO,
+        id = "visual_failure_ratio"
+    )]
+    pub(crate) visual_failure_ratio: f64,
 
     /// Delete the source file after a successful conversion for direct CLI runs.
     /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.

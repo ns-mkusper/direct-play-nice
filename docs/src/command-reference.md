@@ -37,6 +37,12 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
   structural validation enabled
 - `--visual-quality-report` log sampled luma/chroma statistics for
   troubleshooting scaling or visual-corruption issues
+- `--visual-scan-frames <N>` set how many decoded video frames visual
+  validation scans before deciding the output is safe enough to promote
+- `--visual-sample-interval <N>` inspect every Nth decoded frame during visual
+  validation; default is 15
+- `--visual-failure-ratio <R>` set the sampled-frame fraction that must look
+  corrupt before visual validation fails; default is 0.60
 
 ## Hardware controls
 
