@@ -385,7 +385,7 @@ fn drain_visual_frames(
                     }
                 }
             }
-            Err(RsmpegError::DecoderDrainError) => break,
+            Err(RsmpegError::DecoderDrainError | RsmpegError::DecoderFlushedError) => break,
             Err(err) if is_eagain_error(&err) => break,
             Err(err) => {
                 bail!("Output visual validation failed: decoder receive_frame failed: {err}")
