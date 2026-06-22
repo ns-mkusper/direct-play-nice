@@ -18,9 +18,10 @@ packet loop.
    muxed through separate stream-processing paths.
 6. Optional OCR post-processing handles bitmap subtitles and remuxes generated
    text subtitles into the final output.
-7. Post-write verification checks H.264 constraints, and `--validate-output`
-   can reopen the final media file to verify expected stream codecs and stream
-   hygiene.
+7. Post-write verification checks H.264 constraints. Output validation is
+   enabled by default: the final media file is reopened to verify expected stream
+   codecs, stream hygiene, temporal consistency, and sampled visual statistics
+   for obvious corruption such as repeated green-screen frames.
 
 ## FFmpeg Boundaries
 

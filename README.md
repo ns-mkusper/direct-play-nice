@@ -89,6 +89,11 @@ ocr_engine = "pp-ocr-v4"
 ocr_format = "srt"
 ocr_write_srt_sidecar = false
 skip_codec_check = false
+# Output validation is enabled by default; keep these explicit in Servarr mode
+# if you want config-visible safety settings.
+validate_output = true
+visual_validate_output = true
+visual_quality_report = false
 
 # Optional: require imported media to contain English audio.
 # Start with dry-run while tuning candidate policy and custom formats.

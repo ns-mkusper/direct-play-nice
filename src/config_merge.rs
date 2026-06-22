@@ -271,6 +271,28 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if cli_value_provided(matches, "no_validate_output") && args.no_validate_output {
+        args.validate_output = false;
+    } else if !cli_value_provided(matches, "validate_output") {
+        if let Some(validate_output) = cfg.validate_output {
+            args.validate_output = validate_output;
+        }
+    }
+
+    if cli_value_provided(matches, "no_visual_validate_output") && args.no_visual_validate_output {
+        args.visual_validate_output = false;
+    } else if !cli_value_provided(matches, "visual_validate_output") {
+        if let Some(visual_validate_output) = cfg.visual_validate_output {
+            args.visual_validate_output = visual_validate_output;
+        }
+    }
+
+    if !cli_value_provided(matches, "visual_quality_report") {
+        if let Some(visual_quality_report) = cfg.visual_quality_report {
+            args.visual_quality_report = visual_quality_report;
+        }
+    }
+
     if args.delete_source.is_none() {
         if let Some(delete_source) = cfg.delete_source {
             args.delete_source = Some(delete_source);
@@ -413,6 +435,63 @@ mod tests {
             args.subtitle_failure_policy,
             SubtitleFailurePolicy::SkipStream
         );
+    }
+
+    #[test]
+    fn validation_defaults_are_enabled() {
+        let (args, _matches) = parse_args(&["direct_play_nice"]);
+        assert!(args.validate_output);
+        assert!(args.visual_validate_output);
+        assert!(!args.visual_quality_report);
+    }
+
+    #[test]
+    fn config_can_disable_default_output_validation_when_cli_is_absent() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            validate_output: Some(false),
+            visual_validate_output: Some(false),
+            visual_quality_report: Some(true),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.validate_output);
+        assert!(!args.visual_validate_output);
+        assert!(args.visual_quality_report);
+    }
+
+    #[test]
+    fn cli_validation_flags_take_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--validate-output",
+            "--visual-validate-output",
+        ]);
+        let cfg = config::Config {
+            validate_output: Some(false),
+            visual_validate_output: Some(false),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.validate_output);
+        assert!(args.visual_validate_output);
+    }
+
+    #[test]
+    fn no_validation_flags_disable_default_validation() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--no-validate-output",
+            "--no-visual-validate-output",
+        ]);
+        let cfg = config::Config {
+            validate_output: Some(true),
+            visual_validate_output: Some(true),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.validate_output);
+        assert!(!args.visual_validate_output);
     }
 
     #[test]

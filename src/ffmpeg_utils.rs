@@ -369,13 +369,45 @@ pub(crate) struct Args {
     )]
     pub(crate) skip_codec_check: bool,
 
-    /// Reopen the produced media file and verify expected stream codecs before reporting success.
+    /// Reopen and structurally validate the produced media file before reporting success (default: enabled).
     #[arg(
         long = "validate-output",
-        default_value_t = false,
+        default_value_t = true,
         id = "validate_output"
     )]
     pub(crate) validate_output: bool,
+
+    /// Disable post-conversion structural output validation.
+    #[arg(
+        long = "no-validate-output",
+        default_value_t = false,
+        id = "no_validate_output"
+    )]
+    pub(crate) no_validate_output: bool,
+
+    /// Decode sampled output frames and reject obvious visual corruption such as green/solid frames (default: enabled).
+    #[arg(
+        long = "visual-validate-output",
+        default_value_t = true,
+        id = "visual_validate_output"
+    )]
+    pub(crate) visual_validate_output: bool,
+
+    /// Disable sampled visual output validation.
+    #[arg(
+        long = "no-visual-validate-output",
+        default_value_t = false,
+        id = "no_visual_validate_output"
+    )]
+    pub(crate) no_visual_validate_output: bool,
+
+    /// Log sampled output-frame visual statistics for troubleshooting scaling/corruption issues.
+    #[arg(
+        long = "visual-quality-report",
+        default_value_t = false,
+        id = "visual_quality_report"
+    )]
+    pub(crate) visual_quality_report: bool,
 
     /// Delete the source file after a successful conversion for direct CLI runs.
     /// In Sonarr/Radarr integration mode, successful replacement always removes the original while failures restore it.

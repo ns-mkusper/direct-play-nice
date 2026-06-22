@@ -29,7 +29,14 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--primary-video-criteria <primary_video_criteria>` `resolution|bitrate|fps`
 - `--skip-codec-check`
 - `--validate-output` reopen the completed output and fail if expected A/V
-  codecs or stream hygiene checks do not pass
+  codecs, stream hygiene, or temporal consistency checks do not pass (enabled by default)
+- `--no-validate-output` disable post-conversion output validation
+- `--visual-validate-output` decode sampled output frames and fail on obvious
+  visual corruption such as repeated green-screen frames (enabled by default)
+- `--no-visual-validate-output` disable sampled visual validation while keeping
+  structural validation enabled
+- `--visual-quality-report` log sampled luma/chroma statistics for troubleshooting
+  scaling or visual-corruption issues
 
 ## Hardware controls
 
