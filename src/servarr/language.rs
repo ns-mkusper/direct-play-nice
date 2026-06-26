@@ -16,7 +16,7 @@ use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanguageRequirements {
     pub enabled: bool,
     pub audio: Vec<String>,

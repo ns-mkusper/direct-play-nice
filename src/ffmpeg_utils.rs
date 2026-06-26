@@ -236,6 +236,14 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_audit_max_searches: usize,
 
+    /// Days to skip release-searching an item after a no-candidate audit result. Zero disables cooldown.
+    #[arg(
+        long = "servarr-language-audit-no-candidate-cooldown-days",
+        default_value_t = 0,
+        id = "servarr_language_audit_no_candidate_cooldown_days"
+    )]
+    pub(crate) servarr_language_audit_no_candidate_cooldown_days: u32,
+
     /// Optional comma-separated Sonarr episode IDs to audit instead of the full scope.
     #[arg(
         long = "servarr-language-audit-episode-ids",

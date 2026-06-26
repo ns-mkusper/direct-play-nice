@@ -84,6 +84,8 @@ servarr_language_audit = true
 servarr_language_audit_scope = "history"
 servarr_language_audit_lookback_days = 30
 servarr_language_audit_max_searches = 20
+# Optional: prevent persistent no-candidate items from consuming every audit run.
+servarr_language_audit_no_candidate_cooldown_days = 14
 # Optional: limit a Sonarr audit to specific episode IDs.
 # servarr_language_audit_episode_ids = "123,456"
 required_audio_languages = "eng"
@@ -182,6 +184,18 @@ up to `--servarr-language-audit-max-searches`. Use
 library inventory instead of only recent import history. Inventory scope walks
 series episode files, checks current media metadata, then uses each missing
 item's latest import history entry before any apply-mode grab/blocklist action.
+
+If early inventory items repeatedly return no approved replacement, set
+`--servarr-language-audit-no-candidate-cooldown-days` (or
+`servarr_language_audit_no_candidate_cooldown_days`) so those no-candidate items
+are not release-searched again until the cooldown expires. DPN stores this
+best-effort state in
+`$XDG_CACHE_HOME/direct-play-nice/servarr-language-no-candidate-cache.json` or
+`~/.cache/direct-play-nice/servarr-language-no-candidate-cache.json`; override it
+with `DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE`. This lets later inventory
+items get searched on subsequent capped audit runs instead of reprocessing the
+same no-candidate edge every day.
+
 For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
 comma-separated episode ID list.
 

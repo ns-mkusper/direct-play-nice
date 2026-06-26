@@ -37,6 +37,7 @@ pub struct Config {
     pub servarr_language_audit_scope: Option<ServarrLanguageAuditScope>,
     pub servarr_language_audit_lookback_days: Option<u32>,
     pub servarr_language_audit_max_searches: Option<usize>,
+    pub servarr_language_audit_no_candidate_cooldown_days: Option<u32>,
     pub servarr_language_audit_episode_ids: Option<String>,
     pub servarr_language_check: Option<bool>,
     pub required_audio_languages: Option<String>,
@@ -269,6 +270,7 @@ mod tests {
             servarr_language_audit_scope = "inventory"
             servarr_language_audit_lookback_days = 30
             servarr_language_audit_max_searches = 20
+            servarr_language_audit_no_candidate_cooldown_days = 14
             servarr_language_audit_episode_ids = "1,2,3"
             servarr_language_check = true
             required_audio_languages = "eng,jpn"
@@ -291,6 +293,10 @@ mod tests {
         );
         assert_eq!(cfg.servarr_language_audit_lookback_days, Some(30));
         assert_eq!(cfg.servarr_language_audit_max_searches, Some(20));
+        assert_eq!(
+            cfg.servarr_language_audit_no_candidate_cooldown_days,
+            Some(14)
+        );
         assert_eq!(
             cfg.servarr_language_audit_episode_ids.as_deref(),
             Some("1,2,3")

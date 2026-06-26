@@ -163,6 +163,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_audit_no_candidate_cooldown_days") {
+        if let Some(days) = cfg.servarr_language_audit_no_candidate_cooldown_days {
+            args.servarr_language_audit_no_candidate_cooldown_days = days;
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_audit_episode_ids") {
         if let Some(ids) = cfg.servarr_language_audit_episode_ids.as_ref() {
             args.servarr_language_audit_episode_ids = Some(ids.clone());
@@ -365,6 +371,7 @@ mod tests {
             servarr_language_audit_scope: Some(crate::ServarrLanguageAuditScope::Inventory),
             servarr_language_audit_lookback_days: Some(30),
             servarr_language_audit_max_searches: Some(20),
+            servarr_language_audit_no_candidate_cooldown_days: Some(14),
             servarr_language_audit_episode_ids: Some("77,88".to_string()),
             servarr_language_check: Some(true),
             required_audio_languages: Some("eng,jpn".to_string()),
@@ -387,6 +394,7 @@ mod tests {
         );
         assert_eq!(args.servarr_language_audit_lookback_days, 30);
         assert_eq!(args.servarr_language_audit_max_searches, 20);
+        assert_eq!(args.servarr_language_audit_no_candidate_cooldown_days, 14);
         assert_eq!(
             args.servarr_language_audit_episode_ids.as_deref(),
             Some("77,88")
