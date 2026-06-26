@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use ureq::{Agent, AgentBuilder};
 
@@ -877,7 +877,7 @@ impl ApiClient {
                     continue;
                 }
             };
-            let current_report = language_report_from_episode_file(&current_file, requirements);
+            let current_report = language_report_from_media_file(&current_file, requirements);
             if current_report.satisfied() {
                 continue;
             }
@@ -1398,6 +1398,31 @@ fn language_report_from_episode_file(
         .map(parse_language_tokens)
         .unwrap_or_default();
     report_from_present(audio, subtitles, requirements)
+}
+
+fn language_report_from_media_file(
+    media_file: &Value,
+    requirements: &LanguageRequirements,
+) -> LanguageCheckReport {
+    let sonarr_report = language_report_from_episode_file(media_file, requirements);
+    let Some(path) = media_file.get("path").and_then(Value::as_str) else {
+        return sonarr_report;
+    };
+    let path = Path::new(path);
+    if !path.exists() {
+        return sonarr_report;
+    }
+    match super::language::check_file(path, requirements) {
+        Ok(report) => report,
+        Err(err) => {
+            warn!(
+                "Could not inspect media file '{}' for actual stream languages; falling back to Arr metadata: {}",
+                path.display(),
+                err
+            );
+            sonarr_report
+        }
+    }
 }
 
 fn maybe_retag_audit_file(
