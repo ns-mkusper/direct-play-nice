@@ -70,7 +70,7 @@ pub fn no_candidate_cooldown_remaining_days(
                 None
             } else {
                 let remaining_secs = cooldown_secs - elapsed;
-                Some(((remaining_secs + 86_399) / 86_400) as u32)
+                Some(remaining_secs.div_ceil(86_400) as u32)
             }
         }))
 }
