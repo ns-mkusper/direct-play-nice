@@ -200,12 +200,18 @@ For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
 comma-separated episode ID list.
 
 DPN also checks completed pending imports that Sonarr/Radarr refused for quality
-hierarchy reasons. Sonarr auto-grabs are limited to releases that map back to the
-single requested episode; multi-episode and season-pack results are skipped even
-when their titles contain strong language hints. Keep dry-run enabled while
-reviewing reports; remove `--servarr-language-dry-run` only when you want DPN to
-grab selected language-upgrade candidates, blocklist the old history item, and
-force-import eligible pending replacements.
+hierarchy reasons. When deciding whether to force-import a pending language
+upgrade, DPN inspects the existing media file's actual stream metadata instead of
+trusting Arr's language label. This lets a lower-quality pending file replace a
+higher-quality current file only when the current file is missing a required
+language and the pending file satisfies the language policy.
+
+Sonarr auto-grabs are limited to releases that map back to the single requested
+episode; multi-episode and season-pack results are skipped even when their titles
+contain strong language hints. Keep dry-run enabled while reviewing reports;
+remove `--servarr-language-dry-run` only when you want DPN to grab selected
+language-upgrade candidates, blocklist the old history item, and force-import
+eligible pending replacements.
 
 This feature assumes DPN is the authority for language upgrades. To avoid Arr
 and DPN fighting each other, keep ordinary Arr quality-only upgrades conservative
@@ -268,7 +274,13 @@ observable batches. A safe operator workflow is:
    candidates may remain queued/downloading for a while, and failed alternates in
    history do not necessarily mean the current queued candidate failed.
 
-6. **Verify and repeat.** Re-run the same command with
+6. **Prioritize recent episodes when needed.** DPN can target a caller-supplied
+   list of Sonarr episode IDs. A wrapper can query Sonarr for the latest aired
+   episodes with files, sort by `airDateUtc` descending, take the newest 100, and
+   pass them with `--servarr-language-audit-episode-ids`. This creates a
+   recently-aired priority lane before the broader inventory backlog pass.
+
+7. **Verify and repeat.** Re-run the same command with
    `--servarr-language-dry-run`. Completed items should no longer be searched;
    remaining missing items should either show a queued candidate, no candidate,
    or a rejection reason to fix before another apply batch.
