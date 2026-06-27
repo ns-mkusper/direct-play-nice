@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use log::{info, warn};
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use ureq::{Agent, AgentBuilder};
 
@@ -45,6 +45,7 @@ pub struct AuditOptions {
     pub scope: ServarrLanguageAuditScope,
     pub lookback_days: u32,
     pub max_searches: usize,
+    pub no_candidate_cooldown_days: u32,
     pub episode_ids: Vec<i64>,
     pub untagged_retag: UntaggedRetagOptions,
 }
@@ -55,6 +56,7 @@ impl Default for AuditOptions {
             scope: ServarrLanguageAuditScope::History,
             lookback_days: 30,
             max_searches: 20,
+            no_candidate_cooldown_days: 0,
             episode_ids: Vec::new(),
             untagged_retag: UntaggedRetagOptions::default(),
         }
@@ -69,6 +71,7 @@ pub struct AuditSummary {
     pub grabbed: usize,
     pub dry_run: usize,
     pub no_candidate: usize,
+    pub skipped_no_candidate_cooldown: usize,
     pub errors: usize,
 }
 
@@ -80,6 +83,7 @@ impl AuditSummary {
         self.grabbed += other.grabbed;
         self.dry_run += other.dry_run;
         self.no_candidate += other.no_candidate;
+        self.skipped_no_candidate_cooldown += other.skipped_no_candidate_cooldown;
         self.errors += other.errors;
     }
 }
@@ -177,6 +181,7 @@ fn run_sonarr_history_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
+            audit_options.no_candidate_cooldown_days,
             &audit_options.untagged_retag,
             active_queue_episode_ids,
             &mut searched,
@@ -214,6 +219,7 @@ fn run_sonarr_inventory_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
+            audit_options.no_candidate_cooldown_days,
             &audit_options.untagged_retag,
             active_queue_episode_ids,
             &mut searched,
@@ -233,6 +239,7 @@ fn process_sonarr_language_audit_item(
     requirements: &LanguageRequirements,
     redownload_options: RedownloadOptions,
     max_searches: usize,
+    no_candidate_cooldown_days: u32,
     untagged_retag: &UntaggedRetagOptions,
     active_queue_episode_ids: &BTreeSet<i64>,
     searched: &mut usize,
@@ -267,6 +274,29 @@ fn process_sonarr_language_audit_item(
         );
         return;
     }
+    if no_candidate_cooldown_days > 0 {
+        match cache::no_candidate_cooldown_remaining_days(
+            client.kind,
+            "episode",
+            episode_id,
+            requirements,
+            no_candidate_cooldown_days,
+        ) {
+            Ok(Some(days_remaining)) => {
+                summary.skipped_no_candidate_cooldown += 1;
+                info!(
+                    "Sonarr language audit skipping release search for episode {} because a no-candidate result is cooling down for {} more day(s).",
+                    episode_id, days_remaining
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => warn!(
+                "Sonarr language audit could not read no-candidate cooldown cache for episode {}: {}",
+                episode_id, err
+            ),
+        }
+    }
     if *searched >= max_searches {
         return;
     }
@@ -294,6 +324,7 @@ fn process_sonarr_language_audit_item(
                 0,
                 requirements,
                 redownload_options,
+                no_candidate_cooldown_days,
                 summary,
             );
         } else {
@@ -311,6 +342,7 @@ fn process_sonarr_language_audit_item(
         history_id,
         requirements,
         redownload_options,
+        no_candidate_cooldown_days,
         summary,
     );
 }
@@ -360,6 +392,7 @@ pub fn run_radarr_language_audit(
             history_id,
             requirements,
             redownload_options,
+            audit_options.no_candidate_cooldown_days,
             &mut summary,
         );
     }
@@ -844,7 +877,7 @@ impl ApiClient {
                     continue;
                 }
             };
-            let current_report = language_report_from_episode_file(&current_file, requirements);
+            let current_report = language_report_from_media_file(&current_file, requirements);
             if current_report.satisfied() {
                 continue;
             }
@@ -1130,6 +1163,7 @@ impl ApiClient {
         history_id: i64,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
+        no_candidate_cooldown_days: u32,
         summary: &mut AuditSummary,
     ) {
         let label = self.kind.label();
@@ -1157,6 +1191,23 @@ impl ApiClient {
             }
             Ok(RedownloadOutcome::NoVerifiedRelease { reason }) => {
                 summary.no_candidate += 1;
+                if no_candidate_cooldown_days > 0 {
+                    if let Err(err) = cache::record_no_candidate(
+                        self.kind,
+                        target.noun(),
+                        target_id,
+                        requirements,
+                        &reason,
+                    ) {
+                        warn!(
+                            "{} language audit failed to update no-candidate cooldown cache for {} {}: {}",
+                            label,
+                            target.noun(),
+                            target_id,
+                            err
+                        );
+                    }
+                }
                 info!(
                     "{} language audit found no replacement for {} {}: {}",
                     label,
@@ -1349,6 +1400,31 @@ fn language_report_from_episode_file(
     report_from_present(audio, subtitles, requirements)
 }
 
+fn language_report_from_media_file(
+    media_file: &Value,
+    requirements: &LanguageRequirements,
+) -> LanguageCheckReport {
+    let sonarr_report = language_report_from_episode_file(media_file, requirements);
+    let Some(path) = media_file.get("path").and_then(Value::as_str) else {
+        return sonarr_report;
+    };
+    let path = Path::new(path);
+    if !path.exists() {
+        return sonarr_report;
+    }
+    match super::language::check_file(path, requirements) {
+        Ok(report) => report,
+        Err(err) => {
+            warn!(
+                "Could not inspect media file '{}' for actual stream languages; falling back to Arr metadata: {}",
+                path.display(),
+                err
+            );
+            sonarr_report
+        }
+    }
+}
+
 fn maybe_retag_audit_file(
     kind: IntegrationKind,
     media_file: &Value,
@@ -1426,7 +1502,7 @@ fn record_language_audit_assessment(
 
 fn log_audit_summary(label: &str, summary: &AuditSummary) {
     info!(
-        "{} language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, errors={}",
+        "{} language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, skipped_no_candidate_cooldown={}, errors={}",
         label,
         summary.checked,
         summary.missing,
@@ -1434,6 +1510,7 @@ fn log_audit_summary(label: &str, summary: &AuditSummary) {
         summary.dry_run,
         summary.grabbed,
         summary.no_candidate,
+        summary.skipped_no_candidate_cooldown,
         summary.errors
     );
 }
@@ -2248,6 +2325,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2354,6 +2432,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2446,6 +2525,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 1,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2518,6 +2598,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2613,6 +2694,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2687,6 +2769,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2750,6 +2833,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2847,6 +2931,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2937,6 +3022,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3012,6 +3098,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3084,6 +3171,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3171,6 +3259,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3246,6 +3335,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3299,6 +3389,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3349,6 +3440,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::History,
                 lookback_days: 30,
                 max_searches: 10,
+                no_candidate_cooldown_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
