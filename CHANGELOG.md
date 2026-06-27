@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.4] - 2026-06-27
+
+### Servarr Language Audit
+
+- Added a no-candidate cooldown for Servarr language audits so capped inventory
+  runs skip recent dead-end searches and continue deeper into the library.
+- Added audit summary reporting for items skipped by the no-candidate cooldown.
+- Fixed Sonarr pending language-upgrade force imports to inspect the current
+  media file's actual stream languages instead of trusting Sonarr's stored
+  language label.
+- Documented a latest-aired episode priority lane using targeted Sonarr episode
+  IDs before broad inventory backlog cleanup.
+
+### Documentation
+
+- Documented the no-candidate cache path and override environment variable.
+- Documented the quality-downgrade force-import safety check for pending
+  language upgrades.
+
 ## [1.1.0-beta.3] - 2026-06-08
 
 ### 🛠️ CUDA Resize Fixes
