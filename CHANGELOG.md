@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.5] - 2026-07-02
+
+### Language Audit Prioritization
+
+- Added Sonarr `latest-missing` language audit scope to prioritize newest aired
+  non-compliant episode files before older inventory backlog.
+- Documented the newest-missing audit runbook and command reference.
+
 ## [1.1.0-beta.4] - 2026-06-27
 
 ### Servarr Language Audit
