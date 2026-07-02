@@ -115,6 +115,8 @@ pub(crate) enum ServarrLanguageAuditScope {
     History,
     /// Inspect the current library inventory instead of only recently imported items.
     Inventory,
+    /// Inspect Sonarr inventory, then search the newest aired missing-language episodes first.
+    LatestMissing,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize, Default)]
