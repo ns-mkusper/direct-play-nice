@@ -259,6 +259,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "ocr_preprocess") {
+        if let Some(ocr_preprocess) = cfg.ocr_preprocess {
+            args.ocr_preprocess = ocr_preprocess;
+        }
+    }
+
     if !cli_value_provided(matches, "ocr_external_command") {
         if let Some(ocr_external_command) = cfg.ocr_external_command.as_ref() {
             args.ocr_external_command = Some(ocr_external_command.clone());
@@ -331,7 +337,7 @@ mod tests {
         DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL, DEFAULT_VISUAL_SCAN_FRAMES,
     };
     use crate::transcoder::quality::VideoQuality;
-    use crate::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
+    use crate::{OcrPreprocess, ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
     use clap::{CommandFactory, FromArgMatches};
 
     fn parse_args(argv: &[&str]) -> (Args, ArgMatches) {
@@ -361,6 +367,50 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.video_quality, VideoQuality::P1080);
+    }
+
+    #[test]
+    fn applies_ocr_preprocess_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            ocr_preprocess: Some(OcrPreprocess::OpenCvBasic),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCvBasic);
+    }
+
+    #[test]
+    fn cli_ocr_preprocess_takes_precedence_over_config() {
+        let (mut args, matches) =
+            parse_args(&["direct_play_nice", "--ocr-preprocess", "open-cv-subtitle"]);
+        let cfg = config::Config {
+            ocr_preprocess: Some(OcrPreprocess::OpenCvBasic),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCvSubtitle);
+    }
+
+    #[test]
+    fn parses_opencv5_cuda_ocr_preprocess_from_cli() {
+        let (args, _) = parse_args(&[
+            "direct_play_nice",
+            "--ocr-preprocess",
+            "open-cv5-cuda-basic",
+        ]);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCv5CudaBasic);
+    }
+
+    #[test]
+    fn applies_opencv5_cuda_ocr_preprocess_from_config() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            ocr_preprocess: Some(OcrPreprocess::OpenCv5CudaSubtitle),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.ocr_preprocess, OcrPreprocess::OpenCv5CudaSubtitle);
     }
 
     #[test]

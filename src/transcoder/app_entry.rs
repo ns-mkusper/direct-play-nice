@@ -741,6 +741,7 @@ fn run_conversion(
                 default_ocr_language: args.ocr_default_language.as_deref(),
                 ocr_engine: args.ocr_engine,
                 ocr_format: args.ocr_format,
+                ocr_preprocess: args.ocr_preprocess,
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
             })?;
