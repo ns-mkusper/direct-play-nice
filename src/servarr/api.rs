@@ -1539,7 +1539,7 @@ impl ApiClient {
             let Some(item) = manual_items.into_iter().find(|item| {
                 manual_import_item_satisfies(
                     item,
-                    &queue_item,
+                    queue_item,
                     requirements,
                     options.candidate_policy,
                 )
