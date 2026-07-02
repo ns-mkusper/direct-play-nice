@@ -75,6 +75,13 @@ pub struct AuditSummary {
     pub errors: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SonarrInventoryItem {
+    episode_id: i64,
+    episode_file: Value,
+    air_day: Option<i64>,
+}
+
 impl AuditSummary {
     fn merge(&mut self, other: Self) {
         self.checked += other.checked;
@@ -135,6 +142,13 @@ pub fn run_sonarr_language_audit(
             &active_queue_episode_ids,
         )?,
         ServarrLanguageAuditScope::Inventory => run_sonarr_inventory_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+            &active_queue_episode_ids,
+        )?,
+        ServarrLanguageAuditScope::LatestMissing => run_sonarr_latest_missing_language_audit(
             &client,
             requirements,
             redownload_options,
@@ -230,6 +244,71 @@ fn run_sonarr_inventory_language_audit(
     Ok(summary)
 }
 
+fn run_sonarr_latest_missing_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+    active_queue_episode_ids: &BTreeSet<i64>,
+) -> Result<AuditSummary> {
+    if !audit_options.episode_ids.is_empty() {
+        return run_sonarr_inventory_language_audit(
+            client,
+            requirements,
+            redownload_options,
+            audit_options,
+            active_queue_episode_ids,
+        );
+    }
+
+    let mut items = client.sonarr_inventory_episode_file_items()?;
+    let mut summary = AuditSummary::default();
+    let mut missing_items = Vec::new();
+
+    for item in items.drain(..) {
+        summary.checked += 1;
+        let report = assess_sonarr_language_audit_item(
+            client,
+            &item.episode_file,
+            requirements,
+            &audit_options.untagged_retag,
+        );
+        if report.satisfied() {
+            continue;
+        }
+        summary.missing += 1;
+        missing_items.push(item);
+    }
+
+    missing_items.sort_by(|left, right| {
+        right
+            .air_day
+            .cmp(&left.air_day)
+            .then_with(|| right.episode_id.cmp(&left.episode_id))
+    });
+
+    let mut searched = 0usize;
+    for item in missing_items {
+        if searched >= audit_options.max_searches {
+            break;
+        }
+        process_sonarr_missing_language_audit_item(
+            client,
+            item.episode_id,
+            None,
+            requirements,
+            redownload_options,
+            audit_options.max_searches,
+            audit_options.no_candidate_cooldown_days,
+            active_queue_episode_ids,
+            &mut searched,
+            &mut summary,
+        );
+    }
+
+    Ok(summary)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_sonarr_language_audit_item(
     client: &ApiClient,
@@ -246,11 +325,37 @@ fn process_sonarr_language_audit_item(
     summary: &mut AuditSummary,
 ) {
     summary.checked += 1;
-    let mut report = language_report_from_episode_file(&episode_file, requirements);
+    let report =
+        assess_sonarr_language_audit_item(client, &episode_file, requirements, untagged_retag);
+    if report.satisfied() {
+        return;
+    }
+    summary.missing += 1;
+    process_sonarr_missing_language_audit_item(
+        client,
+        episode_id,
+        history_id,
+        requirements,
+        redownload_options,
+        max_searches,
+        no_candidate_cooldown_days,
+        active_queue_episode_ids,
+        searched,
+        summary,
+    );
+}
+
+fn assess_sonarr_language_audit_item(
+    client: &ApiClient,
+    episode_file: &Value,
+    requirements: &LanguageRequirements,
+    untagged_retag: &UntaggedRetagOptions,
+) -> LanguageCheckReport {
+    let mut report = language_report_from_episode_file(episode_file, requirements);
     if !report.satisfied() && client.kind == IntegrationKind::Sonarr && untagged_retag.enabled() {
         report = maybe_retag_audit_file(
             IntegrationKind::Sonarr,
-            &episode_file,
+            episode_file,
             requirements,
             untagged_retag,
             report,
@@ -259,14 +364,26 @@ fn process_sonarr_language_audit_item(
     record_language_audit_assessment(
         IntegrationKind::Sonarr,
         "sonarr:episodefile",
-        &episode_file,
+        episode_file,
         requirements,
         &report,
     );
-    if report.satisfied() {
-        return;
-    }
-    summary.missing += 1;
+    report
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_sonarr_missing_language_audit_item(
+    client: &ApiClient,
+    episode_id: i64,
+    history_id: Option<i64>,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    max_searches: usize,
+    no_candidate_cooldown_days: u32,
+    active_queue_episode_ids: &BTreeSet<i64>,
+    searched: &mut usize,
+    summary: &mut AuditSummary,
+) {
     if active_queue_episode_ids.contains(&episode_id) {
         info!(
             "Sonarr language audit skipping redownload for episode {} because it already has an active queue item.",
@@ -632,6 +749,14 @@ impl ApiClient {
     }
 
     fn sonarr_inventory_episode_files(&self) -> Result<Vec<(i64, Value)>> {
+        Ok(self
+            .sonarr_inventory_episode_file_items()?
+            .into_iter()
+            .map(|item| (item.episode_id, item.episode_file))
+            .collect())
+    }
+
+    fn sonarr_inventory_episode_file_items(&self) -> Result<Vec<SonarrInventoryItem>> {
         let series = self
             .get(&format!("{}/api/v3/series", self.base_url))?
             .as_array()
@@ -661,12 +786,25 @@ impl ApiClient {
                 let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
                     continue;
                 };
+                let air_day = episode
+                    .get("airDateUtc")
+                    .or_else(|| episode.get("airDate"))
+                    .and_then(Value::as_str)
+                    .and_then(iso_day_number);
                 if let Some(file) = episode.get("episodeFile").filter(|file| file.is_object()) {
-                    out.push((episode_id, file.clone()));
+                    out.push(SonarrInventoryItem {
+                        episode_id,
+                        episode_file: file.clone(),
+                        air_day,
+                    });
                     continue;
                 }
                 match self.sonarr_episode_file(file_id) {
-                    Ok(file) => out.push((episode_id, file)),
+                    Ok(file) => out.push(SonarrInventoryItem {
+                        episode_id,
+                        episode_file: file,
+                        air_day,
+                    }),
                     Err(err) => warn!(
                         "Sonarr inventory language audit could not fetch episode file {} for episode {}: {}",
                         file_id, episode_id, err
@@ -2534,6 +2672,98 @@ mod tests {
 
         assert_eq!(summary.checked, 1);
         assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.no_candidate, 1);
+        queue.assert();
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
+    }
+
+    #[test]
+    fn sonarr_latest_missing_audit_searches_newest_missing_episode_first() {
+        let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([
+                    {
+                        "id": 77,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": "2026-01-01T00:00:00Z",
+                        "episodeFileId": 555,
+                        "episodeFile": {
+                            "id": 555,
+                            "path": "/media/old.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    },
+                    {
+                        "id": 78,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": "2026-02-01T00:00:00Z",
+                        "episodeFileId": 556,
+                        "episodeFile": {
+                            "id": 556,
+                            "path": "/media/new.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    }
+                ])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "78".into()))
+            .with_status(200)
+            .with_body(json!([]).to_string())
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::LatestMissing,
+                lookback_days: 30,
+                max_searches: 1,
+                no_candidate_cooldown_days: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 2);
+        assert_eq!(summary.missing, 2);
         assert_eq!(summary.searched, 1);
         assert_eq!(summary.no_candidate, 1);
         queue.assert();

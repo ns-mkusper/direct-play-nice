@@ -267,7 +267,7 @@ mod tests {
             tmp,
             r#"
             servarr_language_audit = true
-            servarr_language_audit_scope = "inventory"
+            servarr_language_audit_scope = "latest-missing"
             servarr_language_audit_lookback_days = 30
             servarr_language_audit_max_searches = 20
             servarr_language_audit_no_candidate_cooldown_days = 14
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(cfg.servarr_language_audit, Some(true));
         assert_eq!(
             cfg.servarr_language_audit_scope,
-            Some(ServarrLanguageAuditScope::Inventory)
+            Some(ServarrLanguageAuditScope::LatestMissing)
         );
         assert_eq!(cfg.servarr_language_audit_lookback_days, Some(30));
         assert_eq!(cfg.servarr_language_audit_max_searches, Some(20));

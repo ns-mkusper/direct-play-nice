@@ -184,6 +184,10 @@ up to `--servarr-language-audit-max-searches`. Use
 library inventory instead of only recent import history. Inventory scope walks
 series episode files, checks current media metadata, then uses each missing
 item's latest import history entry before any apply-mode grab/blocklist action.
+Use `--servarr-language-audit-scope latest-missing` with Sonarr to inspect
+inventory, keep only currently non-compliant episode files, sort those by newest
+air date first, and spend the search budget on recent delayed dubs/subs before
+older backlog.
 
 If early inventory items repeatedly return no approved replacement, set
 `--servarr-language-audit-no-candidate-cooldown-days` (or
@@ -236,7 +240,20 @@ observable batches. A safe operator workflow is:
      --servarr-language-dry-run
    ```
 
-2. **Use inventory dry-run for backlog discovery.** This is Sonarr-only and can
+2. **Use `latest-missing` dry-run for delayed dub/sub follow-up.** This is
+   Sonarr-only and prioritizes newest aired non-compliant episode files before
+   older backlog:
+
+   ```bash
+   /path/to/direct_play_nice \
+     --config-file /path/to/direct-play-nice-sonarr.toml \
+     --servarr-language-audit \
+     --servarr-language-audit-scope latest-missing \
+     --servarr-language-audit-max-searches 25 \
+     --servarr-language-dry-run
+   ```
+
+3. **Use inventory dry-run for backlog discovery.** This is Sonarr-only and can
    be slow on large libraries, so keep the search cap low while tuning:
 
    ```bash
@@ -248,14 +265,14 @@ observable batches. A safe operator workflow is:
      --servarr-language-dry-run
    ```
 
-3. **Review candidate evidence before apply mode.** Prefer candidates with
+4. **Review candidate evidence before apply mode.** Prefer candidates with
    explicit Arr language metadata or strong custom-format/title evidence such as
    `Anime-multi-audio`, `anime-multi-sub`, `Dual-Audio`, `Multi-Audio`, or
    `Multi-Subs`. Treat unrelated rejections such as blocked indexers, unknown
    series, or seed/availability failures as blockers. Do not add subtitle
    requirements unless missing subtitles should trigger redownloads.
 
-4. **Apply only a focused batch.** Use Sonarr episode IDs from the dry-run logs
+5. **Apply only a focused batch.** Use Sonarr episode IDs from the dry-run logs
    to constrain the destructive run. Keep `--servarr-language-audit-max-searches`
    at or below the number of intended items:
 
@@ -268,19 +285,18 @@ observable batches. A safe operator workflow is:
      --servarr-language-audit-max-searches 3
    ```
 
-5. **Watch Arr's queue and history.** A successful Sonarr language replacement
+6. **Watch Arr's queue and history.** A successful Sonarr language replacement
    usually goes `grabbed` → `downloadFolderImported`; the imported file should
    then show the required audio/subtitle languages in Arr media info. Some
    candidates may remain queued/downloading for a while, and failed alternates in
    history do not necessarily mean the current queued candidate failed.
 
-6. **Prioritize recent episodes when needed.** DPN can target a caller-supplied
-   list of Sonarr episode IDs. A wrapper can query Sonarr for the latest aired
-   episodes with files, sort by `airDateUtc` descending, take the newest 100, and
-   pass them with `--servarr-language-audit-episode-ids`. This creates a
-   recently-aired priority lane before the broader inventory backlog pass.
+7. **Prioritize recent episodes when needed.** Prefer `latest-missing` for a
+   built-in newest-missing priority lane. DPN can also target a caller-supplied
+   list of Sonarr episode IDs with `--servarr-language-audit-episode-ids` for
+   fully custom batches.
 
-7. **Verify and repeat.** Re-run the same command with
+8. **Verify and repeat.** Re-run the same command with
    `--servarr-language-dry-run`. Completed items should no longer be searched;
    remaining missing items should either show a queued candidate, no candidate,
    or a rejection reason to fix before another apply batch.

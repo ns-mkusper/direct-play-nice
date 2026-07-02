@@ -368,7 +368,7 @@ mod tests {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
             servarr_language_audit: Some(true),
-            servarr_language_audit_scope: Some(crate::ServarrLanguageAuditScope::Inventory),
+            servarr_language_audit_scope: Some(crate::ServarrLanguageAuditScope::LatestMissing),
             servarr_language_audit_lookback_days: Some(30),
             servarr_language_audit_max_searches: Some(20),
             servarr_language_audit_no_candidate_cooldown_days: Some(14),
@@ -390,7 +390,7 @@ mod tests {
         assert!(args.servarr_language_audit);
         assert_eq!(
             args.servarr_language_audit_scope,
-            crate::ServarrLanguageAuditScope::Inventory
+            crate::ServarrLanguageAuditScope::LatestMissing
         );
         assert_eq!(args.servarr_language_audit_lookback_days, 30);
         assert_eq!(args.servarr_language_audit_max_searches, 20);
