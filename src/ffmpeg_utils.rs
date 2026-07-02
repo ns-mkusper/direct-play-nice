@@ -211,7 +211,7 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_audit: bool,
 
-    /// Servarr audit source: recent import history, current library inventory, or newest missing-language Sonarr inventory items.
+    /// Servarr audit source: recent import history, current library inventory, or newest missing-language inventory items.
     #[arg(
         long = "servarr-language-audit-scope",
         value_enum,

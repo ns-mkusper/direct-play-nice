@@ -113,8 +113,8 @@ servarr_untagged_audio_language = "eng"
 
 To catch delayed dubs/subs that arrive after the first import, run the same
 binary periodically with `--servarr-language-audit`. Use
-`--servarr-language-audit-scope latest-missing` for a Sonarr pass that spends the
-search budget on the newest aired non-compliant episodes first, or
+`--servarr-language-audit-scope latest-missing` for a pass that spends the
+search budget on the newest aired/released non-compliant items first, or
 `--servarr-language-audit-scope inventory` for a full current-library sweep.
 Before applying broad language replacements, follow the
 [Safe language upgrade runbook](https://ns-mkusper.github.io/direct-play-nice/servarr.html#safe-language-upgrade-runbook)

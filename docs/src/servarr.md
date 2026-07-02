@@ -184,10 +184,9 @@ up to `--servarr-language-audit-max-searches`. Use
 library inventory instead of only recent import history. Inventory scope walks
 series episode files, checks current media metadata, then uses each missing
 item's latest import history entry before any apply-mode grab/blocklist action.
-Use `--servarr-language-audit-scope latest-missing` with Sonarr to inspect
-inventory, keep only currently non-compliant episode files, sort those by newest
-air date first, and spend the search budget on recent delayed dubs/subs before
-older backlog.
+Use `--servarr-language-audit-scope latest-missing` to inspect inventory, keep
+only currently non-compliant files, sort those by newest air/release date first,
+and spend the search budget on recent delayed dubs/subs before older backlog.
 
 If early inventory items repeatedly return no approved replacement, set
 `--servarr-language-audit-no-candidate-cooldown-days` (or
@@ -240,9 +239,8 @@ observable batches. A safe operator workflow is:
      --servarr-language-dry-run
    ```
 
-2. **Use `latest-missing` dry-run for delayed dub/sub follow-up.** This is
-   Sonarr-only and prioritizes newest aired non-compliant episode files before
-   older backlog:
+2. **Use `latest-missing` dry-run for delayed dub/sub follow-up.** This
+   prioritizes newest aired/released non-compliant files before older backlog:
 
    ```bash
    /path/to/direct_play_nice \
@@ -253,8 +251,8 @@ observable batches. A safe operator workflow is:
      --servarr-language-dry-run
    ```
 
-3. **Use inventory dry-run for backlog discovery.** This is Sonarr-only and can
-   be slow on large libraries, so keep the search cap low while tuning:
+3. **Use inventory dry-run for backlog discovery.** This can be slow on large
+   libraries, so keep the search cap low while tuning:
 
    ```bash
    /path/to/direct_play_nice \
@@ -291,10 +289,10 @@ observable batches. A safe operator workflow is:
    candidates may remain queued/downloading for a while, and failed alternates in
    history do not necessarily mean the current queued candidate failed.
 
-7. **Prioritize recent episodes when needed.** Prefer `latest-missing` for a
+7. **Prioritize recent items when needed.** Prefer `latest-missing` for a
    built-in newest-missing priority lane. DPN can also target a caller-supplied
    list of Sonarr episode IDs with `--servarr-language-audit-episode-ids` for
-   fully custom batches.
+   fully custom Sonarr batches.
 
 8. **Verify and repeat.** Re-run the same command with
    `--servarr-language-dry-run`. Completed items should no longer be searched;
