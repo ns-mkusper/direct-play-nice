@@ -82,6 +82,13 @@ struct SonarrInventoryItem {
     air_day: Option<i64>,
 }
 
+#[derive(Debug, Clone)]
+struct RadarrInventoryItem {
+    movie_id: i64,
+    movie_file: Value,
+    release_day: Option<i64>,
+}
+
 impl AuditSummary {
     fn merge(&mut self, other: Self) {
         self.checked += other.checked;
@@ -471,9 +478,51 @@ pub fn run_radarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
-    let mut summary =
-        client.radarr_force_import_pending_language_upgrades(requirements, redownload_options)?;
+    let queue_records = client.radarr_queue_records()?;
+    let active_queue_movie_ids = radarr_active_queue_movie_ids(&queue_records);
+    let mut summary = client.radarr_force_import_pending_language_upgrades(
+        &queue_records,
+        requirements,
+        redownload_options,
+    )?;
+    let audit_summary = match audit_options.scope {
+        ServarrLanguageAuditScope::History => run_radarr_history_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+            &active_queue_movie_ids,
+        )?,
+        ServarrLanguageAuditScope::Inventory => run_radarr_inventory_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+            &active_queue_movie_ids,
+        )?,
+        ServarrLanguageAuditScope::LatestMissing => run_radarr_latest_missing_language_audit(
+            &client,
+            requirements,
+            redownload_options,
+            audit_options,
+            &active_queue_movie_ids,
+        )?,
+    };
+    summary.merge(audit_summary);
+
+    log_audit_summary("Radarr", &summary);
+    Ok(summary)
+}
+
+fn run_radarr_history_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+    active_queue_movie_ids: &BTreeSet<i64>,
+) -> Result<AuditSummary> {
     let records = client.radarr_recent_import_history(audit_options.lookback_days)?;
+    let mut summary = AuditSummary::default();
     let mut searched = 0usize;
 
     for record in records {
@@ -486,36 +535,247 @@ pub fn run_radarr_language_audit(
         let Some(movie_file) = client.radarr_current_movie_file(movie_id, &mut summary) else {
             continue;
         };
-        summary.checked += 1;
-        let report = language_report_from_episode_file(&movie_file, requirements);
-        record_language_audit_assessment(
-            IntegrationKind::Radarr,
-            "radarr:moviefile",
-            &movie_file,
-            requirements,
-            &report,
-        );
-        if report.satisfied() {
-            continue;
-        }
-        summary.missing += 1;
-        if searched >= audit_options.max_searches {
-            continue;
-        }
-        searched += 1;
-        summary.searched += 1;
-        client.apply_audit_redownload_outcome(
-            Target::RadarrMovie { movie_id },
-            history_id,
+        process_radarr_language_audit_item(
+            client,
+            movie_id,
+            Some(history_id),
+            movie_file,
             requirements,
             redownload_options,
+            audit_options.max_searches,
             audit_options.no_candidate_cooldown_days,
+            active_queue_movie_ids,
+            &mut searched,
             &mut summary,
         );
     }
 
-    log_audit_summary("Radarr", &summary);
     Ok(summary)
+}
+
+fn run_radarr_inventory_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+    active_queue_movie_ids: &BTreeSet<i64>,
+) -> Result<AuditSummary> {
+    let items = client.radarr_inventory_movie_file_items()?;
+    let mut summary = AuditSummary::default();
+    let mut searched = 0usize;
+
+    for item in items {
+        if searched >= audit_options.max_searches {
+            break;
+        }
+        process_radarr_language_audit_item(
+            client,
+            item.movie_id,
+            None,
+            item.movie_file,
+            requirements,
+            redownload_options,
+            audit_options.max_searches,
+            audit_options.no_candidate_cooldown_days,
+            active_queue_movie_ids,
+            &mut searched,
+            &mut summary,
+        );
+    }
+
+    Ok(summary)
+}
+
+fn run_radarr_latest_missing_language_audit(
+    client: &ApiClient,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    audit_options: AuditOptions,
+    active_queue_movie_ids: &BTreeSet<i64>,
+) -> Result<AuditSummary> {
+    let mut items = client.radarr_inventory_movie_file_items()?;
+    let mut summary = AuditSummary::default();
+    let mut missing_items = Vec::new();
+
+    for item in items.drain(..) {
+        summary.checked += 1;
+        let report = assess_radarr_language_audit_item(&item.movie_file, requirements);
+        if report.satisfied() {
+            continue;
+        }
+        summary.missing += 1;
+        missing_items.push(item);
+    }
+
+    missing_items.sort_by(|left, right| {
+        right
+            .release_day
+            .cmp(&left.release_day)
+            .then_with(|| right.movie_id.cmp(&left.movie_id))
+    });
+
+    let mut searched = 0usize;
+    for item in missing_items {
+        if searched >= audit_options.max_searches {
+            break;
+        }
+        process_radarr_missing_language_audit_item(
+            client,
+            item.movie_id,
+            None,
+            requirements,
+            redownload_options,
+            audit_options.max_searches,
+            audit_options.no_candidate_cooldown_days,
+            active_queue_movie_ids,
+            &mut searched,
+            &mut summary,
+        );
+    }
+
+    Ok(summary)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_radarr_language_audit_item(
+    client: &ApiClient,
+    movie_id: i64,
+    history_id: Option<i64>,
+    movie_file: Value,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    max_searches: usize,
+    no_candidate_cooldown_days: u32,
+    active_queue_movie_ids: &BTreeSet<i64>,
+    searched: &mut usize,
+    summary: &mut AuditSummary,
+) {
+    summary.checked += 1;
+    let report = assess_radarr_language_audit_item(&movie_file, requirements);
+    if report.satisfied() {
+        return;
+    }
+    summary.missing += 1;
+    process_radarr_missing_language_audit_item(
+        client,
+        movie_id,
+        history_id,
+        requirements,
+        redownload_options,
+        max_searches,
+        no_candidate_cooldown_days,
+        active_queue_movie_ids,
+        searched,
+        summary,
+    );
+}
+
+fn assess_radarr_language_audit_item(
+    movie_file: &Value,
+    requirements: &LanguageRequirements,
+) -> LanguageCheckReport {
+    let report = language_report_from_episode_file(movie_file, requirements);
+    record_language_audit_assessment(
+        IntegrationKind::Radarr,
+        "radarr:moviefile",
+        movie_file,
+        requirements,
+        &report,
+    );
+    report
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_radarr_missing_language_audit_item(
+    client: &ApiClient,
+    movie_id: i64,
+    history_id: Option<i64>,
+    requirements: &LanguageRequirements,
+    redownload_options: RedownloadOptions,
+    max_searches: usize,
+    no_candidate_cooldown_days: u32,
+    active_queue_movie_ids: &BTreeSet<i64>,
+    searched: &mut usize,
+    summary: &mut AuditSummary,
+) {
+    if active_queue_movie_ids.contains(&movie_id) {
+        info!(
+            "Radarr language audit skipping redownload for movie {} because it already has an active queue item.",
+            movie_id
+        );
+        return;
+    }
+    if no_candidate_cooldown_days > 0 {
+        match cache::no_candidate_cooldown_remaining_days(
+            client.kind,
+            "movie",
+            movie_id,
+            requirements,
+            no_candidate_cooldown_days,
+        ) {
+            Ok(Some(days_remaining)) => {
+                summary.skipped_no_candidate_cooldown += 1;
+                info!(
+                    "Radarr language audit skipping release search for movie {} because a no-candidate result is cooling down for {} more day(s).",
+                    movie_id, days_remaining
+                );
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => warn!(
+                "Radarr language audit could not read no-candidate cooldown cache for movie {}: {}",
+                movie_id, err
+            ),
+        }
+    }
+    if *searched >= max_searches {
+        return;
+    }
+    *searched += 1;
+    summary.searched += 1;
+
+    let history_id = match history_id {
+        Some(id) => Some(id),
+        None => match client.radarr_latest_import_history_id(movie_id) {
+            Ok(id) => id,
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Radarr inventory language audit could not fetch import history for movie {}: {}",
+                    movie_id, err
+                );
+                return;
+            }
+        },
+    };
+    let Some(history_id) = history_id else {
+        if redownload_options.dry_run {
+            client.apply_audit_redownload_outcome(
+                Target::RadarrMovie { movie_id },
+                0,
+                requirements,
+                redownload_options,
+                no_candidate_cooldown_days,
+                summary,
+            );
+        } else {
+            summary.errors += 1;
+            warn!(
+                "Radarr inventory language audit could not identify import history for movie {}; refusing to grab replacement.",
+                movie_id
+            );
+        }
+        return;
+    };
+
+    client.apply_audit_redownload_outcome(
+        Target::RadarrMovie { movie_id },
+        history_id,
+        requirements,
+        redownload_options,
+        no_candidate_cooldown_days,
+        summary,
+    );
 }
 
 pub fn trigger_verified_redownload(
@@ -943,9 +1203,92 @@ impl ApiClient {
         Ok(out)
     }
 
+    fn radarr_inventory_movie_file_items(&self) -> Result<Vec<RadarrInventoryItem>> {
+        let movies = self
+            .get(&format!("{}/api/v3/movie", self.base_url))?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("Radarr movie endpoint did not return an array"))?;
+        let mut out = Vec::new();
+        for movie in movies {
+            if movie.get("hasFile").and_then(Value::as_bool) == Some(false) {
+                continue;
+            }
+            let Some(movie_id) = movie.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let release_day = movie
+                .get("digitalRelease")
+                .or_else(|| movie.get("physicalRelease"))
+                .or_else(|| movie.get("inCinemas"))
+                .and_then(Value::as_str)
+                .and_then(iso_day_number)
+                .or_else(|| {
+                    movie
+                        .get("year")
+                        .and_then(Value::as_i64)
+                        .map(|year| days_from_civil(year, 1, 1))
+                });
+            if let Some(file) = movie.get("movieFile").filter(|file| file.is_object()) {
+                out.push(RadarrInventoryItem {
+                    movie_id,
+                    movie_file: file.clone(),
+                    release_day,
+                });
+                continue;
+            }
+            let Some(file_id) = movie.get("movieFileId").and_then(Value::as_i64) else {
+                continue;
+            };
+            match self.radarr_movie_file(file_id) {
+                Ok(file) => out.push(RadarrInventoryItem {
+                    movie_id,
+                    movie_file: file,
+                    release_day,
+                }),
+                Err(err) => warn!(
+                    "Radarr inventory language audit could not fetch movie file {} for movie {}: {}",
+                    file_id, movie_id, err
+                ),
+            }
+        }
+        Ok(out)
+    }
+
+    fn radarr_latest_import_history_id(&self, movie_id: i64) -> Result<Option<i64>> {
+        let endpoint = format!(
+            "{}/api/v3/history?page=1&pageSize=20&sortKey=date&sortDirection=descending&movieId={}",
+            self.base_url, movie_id
+        );
+        let response = self.get(&endpoint)?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(records
+            .iter()
+            .find(|record| {
+                record.get("eventType").and_then(Value::as_str) == Some("downloadFolderImported")
+            })
+            .and_then(|record| record.get("id").and_then(Value::as_i64)))
+    }
+
     fn sonarr_queue_records(&self) -> Result<Vec<Value>> {
         let response = self.get(&format!(
             "{}/api/v3/queue?page=1&pageSize=100&includeSeries=true&includeEpisode=true",
+            self.base_url
+        ))?;
+        Ok(response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn radarr_queue_records(&self) -> Result<Vec<Value>> {
+        let response = self.get(&format!(
+            "{}/api/v3/queue?page=1&pageSize=100&includeMovie=true",
             self.base_url
         ))?;
         Ok(response
@@ -1145,19 +1488,11 @@ impl ApiClient {
 
     fn radarr_force_import_pending_language_upgrades(
         &self,
+        records: &[Value],
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
     ) -> Result<AuditSummary> {
         let mut summary = AuditSummary::default();
-        let response = self.get(&format!(
-            "{}/api/v3/queue?page=1&pageSize=100&includeMovie=true",
-            self.base_url
-        ))?;
-        let records = response
-            .get("records")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
         for queue_item in records {
             let state = queue_item
                 .get("trackedDownloadState")
@@ -1204,7 +1539,7 @@ impl ApiClient {
             let Some(item) = manual_items.into_iter().find(|item| {
                 manual_import_item_satisfies(
                     item,
-                    &queue_item,
+                    queue_item,
                     requirements,
                     options.candidate_policy,
                 )
@@ -1485,6 +1820,25 @@ fn sonarr_active_queue_episode_ids(records: &[Value]) -> BTreeSet<i64> {
     records
         .iter()
         .flat_map(sonarr_queue_item_episode_ids)
+        .collect()
+}
+
+fn radarr_queue_item_movie_id(queue_item: &Value) -> Option<i64> {
+    queue_item
+        .get("movieId")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            queue_item
+                .get("movie")
+                .and_then(|movie| movie.get("id"))
+                .and_then(Value::as_i64)
+        })
+}
+
+fn radarr_active_queue_movie_ids(records: &[Value]) -> BTreeSet<i64> {
+    records
+        .iter()
+        .filter_map(radarr_queue_item_movie_id)
         .collect()
 }
 
