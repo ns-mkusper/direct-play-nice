@@ -480,8 +480,11 @@ pub fn run_radarr_language_audit(
     let client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
     let queue_records = client.radarr_queue_records()?;
     let active_queue_movie_ids = radarr_active_queue_movie_ids(&queue_records);
-    let mut summary =
-        client.radarr_force_import_pending_language_upgrades(requirements, redownload_options)?;
+    let mut summary = client.radarr_force_import_pending_language_upgrades(
+        &queue_records,
+        requirements,
+        redownload_options,
+    )?;
     let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_radarr_history_language_audit(
             &client,
@@ -1485,19 +1488,11 @@ impl ApiClient {
 
     fn radarr_force_import_pending_language_upgrades(
         &self,
+        records: &[Value],
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
     ) -> Result<AuditSummary> {
         let mut summary = AuditSummary::default();
-        let response = self.get(&format!(
-            "{}/api/v3/queue?page=1&pageSize=100&includeMovie=true",
-            self.base_url
-        ))?;
-        let records = response
-            .get("records")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
         for queue_item in records {
             let state = queue_item
                 .get("trackedDownloadState")
