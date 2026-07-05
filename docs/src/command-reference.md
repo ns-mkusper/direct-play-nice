@@ -73,6 +73,8 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--servarr-language-audit-max-searches <N>` cap release searches per audit run
 - `--servarr-language-audit-no-candidate-cooldown-days <D>` skip items
   with a recent no-candidate audit result for `D` days; `0` disables this
+- `--servarr-language-audit-latest-missing-no-candidate-cooldown-days <D>`
+  override the no-candidate cooldown for `latest-missing` audits
 - `--servarr-language-audit-episode-ids <IDS>` comma-separated Sonarr episode
   IDs to audit instead of the full scope
 - `--servarr-language-check` enable pre-conversion language checks for Arr

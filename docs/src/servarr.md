@@ -191,8 +191,12 @@ and spend the search budget on recent delayed dubs/subs before older backlog.
 If early inventory items repeatedly return no approved replacement, set
 `--servarr-language-audit-no-candidate-cooldown-days` (or
 `servarr_language_audit_no_candidate_cooldown_days`) so those no-candidate items
-are not release-searched again until the cooldown expires. DPN stores this
-best-effort state in
+are not release-searched again until the cooldown expires. For weekly delayed
+sub/dub drops, use
+`--servarr-language-audit-latest-missing-no-candidate-cooldown-days` (or
+`servarr_language_audit_latest_missing_no_candidate_cooldown_days`) to give
+`latest-missing` a shorter retry window than broad backlog sweeps. DPN stores
+this best-effort state in
 `$XDG_CACHE_HOME/direct-play-nice/servarr-language-no-candidate-cache.json` or
 `~/.cache/direct-play-nice/servarr-language-no-candidate-cache.json`; override it
 with `DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE`. This lets later inventory
@@ -248,6 +252,7 @@ observable batches. A safe operator workflow is:
      --servarr-language-audit \
      --servarr-language-audit-scope latest-missing \
      --servarr-language-audit-max-searches 25 \
+     --servarr-language-audit-latest-missing-no-candidate-cooldown-days 2 \
      --servarr-language-dry-run
    ```
 

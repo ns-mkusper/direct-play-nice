@@ -46,6 +46,7 @@ pub struct AuditOptions {
     pub lookback_days: u32,
     pub max_searches: usize,
     pub no_candidate_cooldown_days: u32,
+    pub latest_missing_no_candidate_cooldown_days: Option<u32>,
     pub episode_ids: Vec<i64>,
     pub untagged_retag: UntaggedRetagOptions,
 }
@@ -57,6 +58,7 @@ impl Default for AuditOptions {
             lookback_days: 30,
             max_searches: 20,
             no_candidate_cooldown_days: 0,
+            latest_missing_no_candidate_cooldown_days: None,
             episode_ids: Vec::new(),
             untagged_retag: UntaggedRetagOptions::default(),
         }
@@ -294,6 +296,9 @@ fn run_sonarr_latest_missing_language_audit(
             .then_with(|| right.episode_id.cmp(&left.episode_id))
     });
 
+    let no_candidate_cooldown_days = audit_options
+        .latest_missing_no_candidate_cooldown_days
+        .unwrap_or(audit_options.no_candidate_cooldown_days);
     let mut searched = 0usize;
     for item in missing_items {
         if searched >= audit_options.max_searches {
@@ -306,7 +311,7 @@ fn run_sonarr_latest_missing_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
-            audit_options.no_candidate_cooldown_days,
+            no_candidate_cooldown_days,
             active_queue_episode_ids,
             &mut searched,
             &mut summary,
@@ -614,6 +619,9 @@ fn run_radarr_latest_missing_language_audit(
             .then_with(|| right.movie_id.cmp(&left.movie_id))
     });
 
+    let no_candidate_cooldown_days = audit_options
+        .latest_missing_no_candidate_cooldown_days
+        .unwrap_or(audit_options.no_candidate_cooldown_days);
     let mut searched = 0usize;
     for item in missing_items {
         if searched >= audit_options.max_searches {
@@ -626,7 +634,7 @@ fn run_radarr_latest_missing_language_audit(
             requirements,
             redownload_options,
             audit_options.max_searches,
-            audit_options.no_candidate_cooldown_days,
+            no_candidate_cooldown_days,
             active_queue_movie_ids,
             &mut searched,
             &mut summary,
@@ -2818,6 +2826,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -2925,6 +2934,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3018,6 +3028,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3110,6 +3121,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3183,6 +3195,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3279,6 +3292,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3354,6 +3368,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3418,6 +3433,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3516,6 +3532,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3607,6 +3624,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3683,6 +3701,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3756,6 +3775,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3844,6 +3864,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3920,6 +3941,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3974,6 +3996,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4025,6 +4048,7 @@ mod tests {
                 lookback_days: 30,
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },

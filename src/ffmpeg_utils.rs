@@ -244,6 +244,14 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_audit_no_candidate_cooldown_days: u32,
 
+    /// Override no-candidate cooldown days for latest-missing audits. Defaults to the general cooldown.
+    #[arg(
+        long = "servarr-language-audit-latest-missing-no-candidate-cooldown-days",
+        value_name = "DAYS",
+        id = "servarr_language_audit_latest_missing_no_candidate_cooldown_days"
+    )]
+    pub(crate) servarr_language_audit_latest_missing_no_candidate_cooldown_days: Option<u32>,
+
     /// Optional comma-separated Sonarr episode IDs to audit instead of the full scope.
     #[arg(
         long = "servarr-language-audit-episode-ids",
