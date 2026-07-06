@@ -136,6 +136,7 @@ pub fn run_sonarr_language_audit(
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
     let queue_records = client.sonarr_queue_records()?;
+    client.sonarr_remove_bad_queue_items(&queue_records, redownload_options)?;
     let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
     let mut summary = client.sonarr_force_import_pending_language_upgrades(
         &queue_records,
@@ -1478,11 +1479,52 @@ impl ApiClient {
     }
 
     fn sonarr_delete_queue_item(&self, queue_id: i64) -> Result<()> {
+        self.sonarr_delete_queue_item_with_options(queue_id, false, false)
+    }
+
+    fn sonarr_delete_queue_item_with_options(
+        &self,
+        queue_id: i64,
+        remove_from_client: bool,
+        blocklist: bool,
+    ) -> Result<()> {
         let endpoint = format!(
-            "{}/api/v3/queue/{}?removeFromClient=false&blocklist=false",
-            self.base_url, queue_id
+            "{}/api/v3/queue/{}?removeFromClient={}&blocklist={}",
+            self.base_url, queue_id, remove_from_client, blocklist
         );
         self.delete(&endpoint)?;
+        Ok(())
+    }
+
+    fn sonarr_remove_bad_queue_items(
+        &self,
+        records: &[Value],
+        options: RedownloadOptions,
+    ) -> Result<()> {
+        for queue_item in records {
+            let Some(reason) = sonarr_bad_queue_reason(queue_item) else {
+                continue;
+            };
+            let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let title = queue_item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("<queue item>");
+            if options.dry_run {
+                info!(
+                    "Sonarr language audit dry-run: would remove and blocklist bad queue item {} ('{}'): {}.",
+                    queue_id, title, reason
+                );
+                continue;
+            }
+            self.sonarr_delete_queue_item_with_options(queue_id, true, true)?;
+            info!(
+                "Sonarr language audit removed and blocklisted bad queue item {} ('{}'): {}.",
+                queue_id, title, reason
+            );
+        }
         Ok(())
     }
 
@@ -1829,6 +1871,56 @@ fn sonarr_active_queue_episode_ids(records: &[Value]) -> BTreeSet<i64> {
         .iter()
         .flat_map(sonarr_queue_item_episode_ids)
         .collect()
+}
+
+fn sonarr_bad_queue_reason(queue_item: &Value) -> Option<&'static str> {
+    let status = queue_item
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let tracked_status = queue_item
+        .get("trackedDownloadStatus")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if status != "completed" || tracked_status != "warning" {
+        return None;
+    }
+    let haystack = queue_status_message_text(queue_item);
+    if haystack.contains("invalid season or episode") {
+        return Some("invalid season or episode");
+    }
+    if haystack.contains("one or more episodes expected")
+        || haystack.contains("was not found in the grabbed release")
+        || haystack.contains("episode wasn't requested")
+        || haystack.contains("wrong episode")
+        || haystack.contains("wrong season")
+        || haystack.contains("full season pack")
+    {
+        return Some("episode mismatch or multi-episode pack");
+    }
+    None
+}
+
+fn queue_status_message_text(queue_item: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(message) = queue_item.get("errorMessage").and_then(Value::as_str) {
+        parts.push(message.to_ascii_lowercase());
+    }
+    if let Some(messages) = queue_item.get("statusMessages").and_then(Value::as_array) {
+        for item in messages {
+            if let Some(title) = item.get("title").and_then(Value::as_str) {
+                parts.push(title.to_ascii_lowercase());
+            }
+            if let Some(nested) = item.get("messages").and_then(Value::as_array) {
+                for message in nested {
+                    if let Some(message) = message.as_str() {
+                        parts.push(message.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    parts.join("\n")
 }
 
 fn radarr_queue_item_movie_id(queue_item: &Value) -> Option<i64> {
@@ -2621,6 +2713,45 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn sonarr_bad_queue_reason_detects_invalid_episode_and_mismatch() {
+        let invalid = json!({
+            "status": "completed",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{
+                "title": "bad file.mp4",
+                "messages": ["Invalid season or episode"]
+            }]
+        });
+        assert_eq!(
+            sonarr_bad_queue_reason(&invalid),
+            Some("invalid season or episode")
+        );
+
+        let mismatch = json!({
+            "status": "completed",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{
+                "title": "One or more episodes expected in this release were not imported or missing from the release",
+                "messages": ["Episode 2x05 was not found in the grabbed release"]
+            }]
+        });
+        assert_eq!(
+            sonarr_bad_queue_reason(&mismatch),
+            Some("episode mismatch or multi-episode pack")
+        );
+
+        let quality = json!({
+            "status": "completed",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{
+                "title": "candidate.mkv",
+                "messages": ["Not an upgrade for existing episode file(s). Existing quality: Bluray-1080p. New Quality Bluray-720p."]
+            }]
+        });
+        assert_eq!(sonarr_bad_queue_reason(&quality), None);
     }
 
     #[test]
