@@ -1512,6 +1512,7 @@ impl ApiClient {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sonarr_remove_bad_queue_items(
         &self,
         records: &[Value],
@@ -1786,6 +1787,7 @@ impl ApiClient {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_audit_redownload_outcome_with_preference(
         &self,
         target: Target,
