@@ -48,6 +48,7 @@ pub struct AuditOptions {
     pub no_candidate_cooldown_days: u32,
     pub latest_missing_no_candidate_cooldown_days: Option<u32>,
     pub stale_queue_days: u32,
+    pub stale_queue_max_removals: usize,
     pub episode_ids: Vec<i64>,
     pub untagged_retag: UntaggedRetagOptions,
 }
@@ -61,6 +62,7 @@ impl Default for AuditOptions {
             no_candidate_cooldown_days: 0,
             latest_missing_no_candidate_cooldown_days: None,
             stale_queue_days: 0,
+            stale_queue_max_removals: 0,
             episode_ids: Vec::new(),
             untagged_retag: UntaggedRetagOptions::default(),
         }
@@ -144,6 +146,7 @@ pub fn run_sonarr_language_audit(
         requirements,
         redownload_options,
         audit_options.stale_queue_days,
+        audit_options.stale_queue_max_removals,
         audit_options.no_candidate_cooldown_days,
         &mut summary,
     )?;
@@ -811,6 +814,7 @@ pub fn trigger_verified_redownload(
         target,
         requirements,
         options.candidate_policy,
+        false,
     ) else {
         return Ok(RedownloadOutcome::NoVerifiedRelease {
             reason: format!(
@@ -931,12 +935,24 @@ impl ApiClient {
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
     ) -> Result<RedownloadOutcome> {
+        self.redownload_for_target_with_preference(target, history_id, requirements, options, false)
+    }
+
+    fn redownload_for_target_with_preference(
+        &self,
+        target: Target,
+        history_id: i64,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+        prefer_non_torrent: bool,
+    ) -> Result<RedownloadOutcome> {
         let releases = self.search_releases(&target)?;
         let Some(release) = select_verified_release_for_target(
             &releases,
             target,
             requirements,
             options.candidate_policy,
+            prefer_non_torrent,
         ) else {
             return Ok(RedownloadOutcome::NoVerifiedRelease {
                 reason: format!(
@@ -1512,13 +1528,25 @@ impl ApiClient {
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         stale_queue_days: u32,
+        stale_queue_max_removals: usize,
         no_candidate_cooldown_days: u32,
         summary: &mut AuditSummary,
     ) -> Result<()> {
+        let mut stale_removals = 0usize;
         for queue_item in records {
             let Some(reason) = sonarr_bad_queue_reason(queue_item, stale_queue_days) else {
                 continue;
             };
+            if reason == "stale zero-size torrent queue item"
+                && stale_queue_max_removals > 0
+                && stale_removals >= stale_queue_max_removals
+            {
+                info!(
+                    "Sonarr language audit skipping stale zero-size queue cleanup because max removals ({}) was reached.",
+                    stale_queue_max_removals
+                );
+                continue;
+            }
             let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) else {
                 continue;
             };
@@ -1540,6 +1568,7 @@ impl ApiClient {
             }
 
             if reason == "stale zero-size torrent queue item" {
+                stale_removals += 1;
                 for episode_id in sonarr_queue_item_episode_ids(queue_item) {
                     self.sonarr_search_replacement_after_bad_queue_item(
                         episode_id,
@@ -1584,12 +1613,13 @@ impl ApiClient {
                 return;
             }
         };
-        self.apply_audit_redownload_outcome(
+        self.apply_audit_redownload_outcome_with_preference(
             Target::SonarrEpisode { episode_id },
             history_id,
             requirements,
             options,
             no_candidate_cooldown_days,
+            true,
             summary,
         );
     }
@@ -1755,9 +1785,36 @@ impl ApiClient {
         no_candidate_cooldown_days: u32,
         summary: &mut AuditSummary,
     ) {
+        self.apply_audit_redownload_outcome_with_preference(
+            target,
+            history_id,
+            requirements,
+            options,
+            no_candidate_cooldown_days,
+            false,
+            summary,
+        );
+    }
+
+    fn apply_audit_redownload_outcome_with_preference(
+        &self,
+        target: Target,
+        history_id: i64,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+        no_candidate_cooldown_days: u32,
+        prefer_non_torrent: bool,
+        summary: &mut AuditSummary,
+    ) {
         let label = self.kind.label();
         let target_id = target.id();
-        match self.redownload_for_target(target, history_id, requirements, options) {
+        match self.redownload_for_target_with_preference(
+            target,
+            history_id,
+            requirements,
+            options,
+            prefer_non_torrent,
+        ) {
             Ok(RedownloadOutcome::Grabbed { title }) => {
                 summary.grabbed += 1;
                 info!(
@@ -2287,13 +2344,33 @@ fn select_verified_release_for_target<'a>(
     target: Target,
     requirements: &LanguageRequirements,
     policy: ServarrLanguageCandidatePolicy,
+    prefer_non_torrent: bool,
 ) -> Option<&'a Value> {
     releases
         .iter()
         .filter(|release| release_matches_target(release, target))
         .filter(|release| release_can_be_language_upgrade_candidate(release))
         .filter(|release| release_satisfies_languages(release, requirements, policy))
-        .max_by_key(|release| release_score(release))
+        .max_by_key(|release| {
+            (
+                prefer_non_torrent && !release_is_torrent(release),
+                release_score(release),
+            )
+        })
+}
+
+fn release_is_torrent(release: &Value) -> bool {
+    release
+        .get("protocol")
+        .and_then(Value::as_str)
+        .map(|protocol| protocol.eq_ignore_ascii_case("torrent"))
+        .or_else(|| {
+            release
+                .get("protocol")
+                .and_then(Value::as_i64)
+                .map(|id| id == 2)
+        })
+        .unwrap_or(false)
 }
 
 fn release_matches_target(release: &Value, target: Target) -> bool {
@@ -3071,6 +3148,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3180,6 +3258,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3275,6 +3354,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3369,6 +3449,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3444,6 +3525,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3542,6 +3624,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3619,6 +3702,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3685,6 +3769,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3785,6 +3870,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3878,6 +3964,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3956,6 +4043,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4031,6 +4119,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4121,6 +4210,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4199,6 +4289,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4255,6 +4346,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4308,6 +4400,7 @@ mod tests {
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
                 stale_queue_days: 0,
+                stale_queue_max_removals: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4512,6 +4605,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -4539,6 +4633,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .is_none());
     }
@@ -4568,6 +4663,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .is_none());
     }
@@ -4596,7 +4692,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_some());
     }
@@ -4620,7 +4717,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_none());
     }
@@ -4689,7 +4787,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::CustomFormat
+            ServarrLanguageCandidatePolicy::CustomFormat,
+            false,
         )
         .is_some());
     }
@@ -4712,6 +4811,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_none());
     }
@@ -4734,6 +4834,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_some());
     }
@@ -4757,6 +4858,7 @@ mod tests {
             Target::SonarrEpisode { episode_id: 77 },
             &req,
             ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_some());
     }
@@ -4777,7 +4879,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::CustomFormatOrTitle
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
         )
         .is_some());
     }
@@ -4800,9 +4903,48 @@ mod tests {
             Target::RadarrMovie { movie_id: 1 },
             &req,
             ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .unwrap();
         assert_eq!(release_title(selected).as_deref(), Some("good"));
+    }
+
+    #[test]
+    fn prefer_non_torrent_selects_lower_scored_non_torrent_candidate() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let releases = vec![
+            json!({
+                "title":"torrent high score",
+                "protocol":"torrent",
+                "rejected": false,
+                "languages":[{"name":"English"}],
+                "customFormatScore": 1000
+            }),
+            json!({
+                "title":"usenet lower score",
+                "protocol":"usenet",
+                "rejected": false,
+                "languages":[{"name":"English"}],
+                "customFormatScore": 10
+            }),
+        ];
+
+        let selected = select_verified_release_for_target(
+            &releases,
+            Target::SonarrEpisode { episode_id: 77 },
+            &req,
+            ServarrLanguageCandidatePolicy::Strict,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            release_title(selected).as_deref(),
+            Some("usenet lower score")
+        );
     }
 
     #[test]
@@ -4817,7 +4959,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::Strict
+            ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .is_none());
     }
@@ -4838,7 +4981,8 @@ mod tests {
             &releases,
             Target::RadarrMovie { movie_id: 1 },
             &req,
-            ServarrLanguageCandidatePolicy::Strict
+            ServarrLanguageCandidatePolicy::Strict,
+            false,
         )
         .is_some());
     }

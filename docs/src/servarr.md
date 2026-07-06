@@ -221,7 +221,10 @@ multi-episode mappings are removed and blocklisted, while quality-only warnings
 are left for possible force-import. Set
 `--servarr-language-audit-stale-queue-days` to also remove and blocklist
 zero-size torrent queue items that have not acquired metadata after the given
-number of days. Keep dry-run enabled while reviewing reports; remove
+number of days. DPN immediately searches for a replacement after stale cleanup,
+preferring non-torrent candidates when possible; use
+`--servarr-language-audit-stale-queue-max-removals` to cap churn per run. Keep
+dry-run enabled while reviewing reports; remove
 `--servarr-language-dry-run` only when you want DPN to grab selected
 language-upgrade candidates, blocklist the old history item, force-import
 eligible pending replacements, and clean bad queue entries.
