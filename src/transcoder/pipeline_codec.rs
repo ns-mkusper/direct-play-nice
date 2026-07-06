@@ -365,7 +365,7 @@ pub(crate) fn set_subtitle_codec_par(
     encode_context: &mut AVCodecContext,
     _output_stream: &mut AVStreamMut,
 ) {
-    // Set subtitle encoder parameters based on the input subtitle stream
+    // Set subtitle encoder parameters based on the input subtitle stream.
     encode_context.set_time_base(decode_context.time_base);
 
     if decode_context.subtitle_header_size > 0 {
@@ -376,6 +376,7 @@ pub(crate) fn set_subtitle_codec_par(
                 decode_context.subtitle_header_size as usize,
             )
         });
+        sanitize_mov_text_subtitle_header(&mut new_subtitle_header);
 
         // SAFETY: FFmpeg expects subtitle_header to be allocated with av_malloc* and owned by
         // the codec context. We allocate exactly new_subtitle_header.len() bytes and copy from a
@@ -393,4 +394,64 @@ pub(crate) fn set_subtitle_codec_par(
     }
 
     // Codec parameters are extracted after the encoder is opened.
+}
+
+pub(crate) fn sanitize_mov_text_encode_context_header(encode_context: &mut AVCodecContext) {
+    if encode_context.subtitle_header_size <= 0 || encode_context.subtitle_header.is_null() {
+        return;
+    }
+    let header = unsafe {
+        std::slice::from_raw_parts_mut(
+            encode_context.subtitle_header,
+            encode_context.subtitle_header_size as usize,
+        )
+    };
+    sanitize_mov_text_subtitle_header(header);
+}
+
+pub(crate) fn sanitize_mov_text_stream_header(output_stream: &mut AVStreamMut) {
+    let codecpar = output_stream.codecpar_mut();
+    if codecpar.extradata_size <= 0 || codecpar.extradata.is_null() {
+        return;
+    }
+    let header = unsafe {
+        std::slice::from_raw_parts_mut(codecpar.extradata, codecpar.extradata_size as usize)
+    };
+    sanitize_mov_text_subtitle_header(header);
+}
+
+fn sanitize_mov_text_subtitle_header(header: &mut [u8]) {
+    // MOV_TEXT/tx3g stores the default style font size in the default style
+    // record. FFmpeg needs this header to open the MOV_TEXT encoder, but copying
+    // source values like 66 makes Plex stack that embedded size with the user's
+    // subtitle-size setting. Keep the required header and clamp the default font
+    // size to a neutral tx3g value.
+    const TX3G_DEFAULT_STYLE_FONT_SIZE_OFFSET: usize = 25;
+    const NEUTRAL_TX3G_FONT_SIZE: u8 = 12;
+    if let Some(font_size) = header.get_mut(TX3G_DEFAULT_STYLE_FONT_SIZE_OFFSET) {
+        if *font_size > 24 {
+            *font_size = NEUTRAL_TX3G_FONT_SIZE;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mov_text_header_sanitizer_clamps_large_default_font_size() {
+        let mut header = vec![0u8; 32];
+        header[25] = 66;
+        sanitize_mov_text_subtitle_header(&mut header);
+        assert_eq!(header[25], 12);
+    }
+
+    #[test]
+    fn mov_text_header_sanitizer_leaves_normal_default_font_size() {
+        let mut header = vec![0u8; 32];
+        header[25] = 18;
+        sanitize_mov_text_subtitle_header(&mut header);
+        assert_eq!(header[25], 18);
+    }
 }
