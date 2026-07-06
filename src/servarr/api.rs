@@ -47,6 +47,7 @@ pub struct AuditOptions {
     pub max_searches: usize,
     pub no_candidate_cooldown_days: u32,
     pub latest_missing_no_candidate_cooldown_days: Option<u32>,
+    pub stale_queue_days: u32,
     pub episode_ids: Vec<i64>,
     pub untagged_retag: UntaggedRetagOptions,
 }
@@ -59,6 +60,7 @@ impl Default for AuditOptions {
             max_searches: 20,
             no_candidate_cooldown_days: 0,
             latest_missing_no_candidate_cooldown_days: None,
+            stale_queue_days: 0,
             episode_ids: Vec::new(),
             untagged_retag: UntaggedRetagOptions::default(),
         }
@@ -136,7 +138,11 @@ pub fn run_sonarr_language_audit(
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
     let queue_records = client.sonarr_queue_records()?;
-    client.sonarr_remove_bad_queue_items(&queue_records, redownload_options)?;
+    client.sonarr_remove_bad_queue_items(
+        &queue_records,
+        redownload_options,
+        audit_options.stale_queue_days,
+    )?;
     let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
     let mut summary = client.sonarr_force_import_pending_language_upgrades(
         &queue_records,
@@ -1500,9 +1506,10 @@ impl ApiClient {
         &self,
         records: &[Value],
         options: RedownloadOptions,
+        stale_queue_days: u32,
     ) -> Result<()> {
         for queue_item in records {
-            let Some(reason) = sonarr_bad_queue_reason(queue_item) else {
+            let Some(reason) = sonarr_bad_queue_reason(queue_item, stale_queue_days) else {
                 continue;
             };
             let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) else {
@@ -1873,7 +1880,7 @@ fn sonarr_active_queue_episode_ids(records: &[Value]) -> BTreeSet<i64> {
         .collect()
 }
 
-fn sonarr_bad_queue_reason(queue_item: &Value) -> Option<&'static str> {
+fn sonarr_bad_queue_reason(queue_item: &Value, stale_queue_days: u32) -> Option<&'static str> {
     let status = queue_item
         .get("status")
         .and_then(Value::as_str)
@@ -1882,6 +1889,23 @@ fn sonarr_bad_queue_reason(queue_item: &Value) -> Option<&'static str> {
         .get("trackedDownloadStatus")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if status == "queued"
+        && queue_item
+            .get("trackedDownloadState")
+            .and_then(Value::as_str)
+            == Some("downloading")
+        && tracked_status == "ok"
+        && queue_item.get("protocol").and_then(Value::as_str) == Some("torrent")
+        && queue_item.get("size").and_then(Value::as_i64).unwrap_or(0) == 0
+        && queue_item
+            .get("sizeleft")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            == 0
+        && queue_item_is_stale(queue_item, stale_queue_days)
+    {
+        return Some("stale zero-size torrent queue item");
+    }
     if status != "completed" || tracked_status != "warning" {
         return None;
     }
@@ -1899,6 +1923,20 @@ fn sonarr_bad_queue_reason(queue_item: &Value) -> Option<&'static str> {
         return Some("episode mismatch or multi-episode pack");
     }
     None
+}
+
+fn queue_item_is_stale(queue_item: &Value, stale_queue_days: u32) -> bool {
+    if stale_queue_days == 0 {
+        return false;
+    }
+    let Some(added_day) = queue_item
+        .get("added")
+        .and_then(Value::as_str)
+        .and_then(iso_day_number)
+    else {
+        return false;
+    };
+    current_day_number().saturating_sub(added_day) >= stale_queue_days as i64
 }
 
 fn queue_status_message_text(queue_item: &Value) -> String {
@@ -2726,7 +2764,7 @@ mod tests {
             }]
         });
         assert_eq!(
-            sonarr_bad_queue_reason(&invalid),
+            sonarr_bad_queue_reason(&invalid, 0),
             Some("invalid season or episode")
         );
 
@@ -2739,7 +2777,7 @@ mod tests {
             }]
         });
         assert_eq!(
-            sonarr_bad_queue_reason(&mismatch),
+            sonarr_bad_queue_reason(&mismatch, 0),
             Some("episode mismatch or multi-episode pack")
         );
 
@@ -2751,7 +2789,22 @@ mod tests {
                 "messages": ["Not an upgrade for existing episode file(s). Existing quality: Bluray-1080p. New Quality Bluray-720p."]
             }]
         });
-        assert_eq!(sonarr_bad_queue_reason(&quality), None);
+        assert_eq!(sonarr_bad_queue_reason(&quality, 0), None);
+
+        let stale = json!({
+            "status": "queued",
+            "trackedDownloadStatus": "ok",
+            "trackedDownloadState": "downloading",
+            "protocol": "torrent",
+            "size": 0,
+            "sizeleft": 0,
+            "added": "2000-01-01T00:00:00Z"
+        });
+        assert_eq!(
+            sonarr_bad_queue_reason(&stale, 2),
+            Some("stale zero-size torrent queue item")
+        );
+        assert_eq!(sonarr_bad_queue_reason(&stale, 0), None);
     }
 
     #[test]
@@ -2958,6 +3011,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3066,6 +3120,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3160,6 +3215,7 @@ mod tests {
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3253,6 +3309,7 @@ mod tests {
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3327,6 +3384,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3424,6 +3482,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3500,6 +3559,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3565,6 +3625,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: vec![77],
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3664,6 +3725,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3756,6 +3818,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3833,6 +3896,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3907,6 +3971,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -3996,6 +4061,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4073,6 +4139,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4128,6 +4195,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },
@@ -4180,6 +4248,7 @@ mod tests {
                 max_searches: 10,
                 no_candidate_cooldown_days: 0,
                 latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
                 episode_ids: Vec::new(),
                 untagged_retag: UntaggedRetagOptions::default(),
             },

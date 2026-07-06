@@ -215,10 +215,16 @@ language and the pending file satisfies the language policy.
 
 Sonarr auto-grabs are limited to releases that map back to the single requested
 episode; multi-episode and season-pack results are skipped even when their titles
-contain strong language hints. Keep dry-run enabled while reviewing reports;
-remove `--servarr-language-dry-run` only when you want DPN to grab selected
-language-upgrade candidates, blocklist the old history item, and force-import
-eligible pending replacements.
+contain strong language hints. During audits, DPN can also clean up hopeless
+queue entries: completed warning items with invalid season/episode or wrong
+multi-episode mappings are removed and blocklisted, while quality-only warnings
+are left for possible force-import. Set
+`--servarr-language-audit-stale-queue-days` to also remove and blocklist
+zero-size torrent queue items that have not acquired metadata after the given
+number of days. Keep dry-run enabled while reviewing reports; remove
+`--servarr-language-dry-run` only when you want DPN to grab selected
+language-upgrade candidates, blocklist the old history item, force-import
+eligible pending replacements, and clean bad queue entries.
 
 This feature assumes DPN is the authority for language upgrades. To avoid Arr
 and DPN fighting each other, keep ordinary Arr quality-only upgrades conservative

@@ -246,6 +246,7 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
             no_candidate_cooldown_days: args.servarr_language_audit_no_candidate_cooldown_days,
             latest_missing_no_candidate_cooldown_days: args
                 .servarr_language_audit_latest_missing_no_candidate_cooldown_days,
+            stale_queue_days: args.servarr_language_audit_stale_queue_days,
             episode_ids: parse_optional_i64_list(
                 args.servarr_language_audit_episode_ids.as_deref(),
             )?,
