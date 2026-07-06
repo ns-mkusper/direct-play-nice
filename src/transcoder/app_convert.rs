@@ -659,8 +659,14 @@ pub(crate) fn convert_video_file(
                 return Err(err);
             }
         }
+        if media_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+            sanitize_mov_text_encode_context_header(&mut encode_context);
+        }
 
         output_stream.set_codecpar(encode_context.extract_codecpar());
+        if media_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+            sanitize_mov_text_stream_header(&mut output_stream);
+        }
 
         let stream_process_context = StreamProcessingContext {
             decode_context,

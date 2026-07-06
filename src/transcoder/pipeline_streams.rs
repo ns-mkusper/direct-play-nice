@@ -9,6 +9,7 @@ use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 use rsmpeg::swscale::SwsContext;
+use std::ffi::CStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::ffmpeg_utils::{
@@ -481,7 +482,8 @@ pub(crate) fn process_subtitle_stream(
         .decode_subtitle(Some(packet))
     {
         Ok(sub) => {
-            if let Some(subtitle) = sub {
+            if let Some(mut subtitle) = sub {
+                sanitize_text_subtitle_styles(&mut subtitle);
                 debug!(
                     "Subtitle stream {} raw packet pts={} dts={} duration={}",
                     stream_processing_context.input_stream_index,
@@ -489,7 +491,7 @@ pub(crate) fn process_subtitle_stream(
                     packet.dts,
                     packet.duration
                 );
-                let Some(encoded_subtitle) = (match encode_subtitle_to_vec(
+                let Some(mut encoded_subtitle) = (match encode_subtitle_to_vec(
                     &mut stream_processing_context.encode_context,
                     &subtitle,
                     stream_processing_context.input_stream_index.as_i32(),
@@ -504,6 +506,7 @@ pub(crate) fn process_subtitle_stream(
                 }) else {
                     return Ok(());
                 };
+                sanitize_mov_text_packet_text_and_strip_style_boxes(&mut encoded_subtitle);
 
                 // Create a new packet for the encoded subtitle
                 let mut encoded_packet = AVPacket::new();
@@ -632,6 +635,153 @@ fn handle_subtitle_stream_failure(
 /// directly so subtitle packets can preserve legitimate trailing zero bytes and
 /// oversized text events can retry with a larger buffer before the stream is
 /// skipped by policy.
+fn sanitize_text_subtitle_styles(subtitle: &mut rsmpeg::avcodec::AVSubtitle) -> bool {
+    if subtitle.num_rects == 0 || subtitle.rects.is_null() {
+        return false;
+    }
+
+    let mut changed = false;
+    for i in 0..subtitle.num_rects {
+        let rect_ptr = unsafe { *subtitle.rects.add(i as usize) };
+        if rect_ptr.is_null() {
+            continue;
+        }
+        let rect = unsafe { &mut *rect_ptr };
+        if rect.type_ == ffi::SUBTITLE_TEXT && !rect.text.is_null() {
+            changed |= sanitize_c_string_in_place(rect.text);
+        }
+        if rect.type_ == ffi::SUBTITLE_ASS && !rect.ass.is_null() {
+            changed |= sanitize_c_string_in_place(rect.ass);
+        }
+    }
+    changed
+}
+
+fn sanitize_c_string_in_place(ptr: *mut std::os::raw::c_char) -> bool {
+    let original = unsafe { CStr::from_ptr(ptr) };
+    let original_bytes = original.to_bytes();
+    let original_text = String::from_utf8_lossy(original_bytes);
+    let sanitized = sanitize_subtitle_style_text(&original_text);
+    if sanitized.as_bytes() == original_bytes || sanitized.len() > original_bytes.len() {
+        return false;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(sanitized.as_ptr(), ptr.cast::<u8>(), sanitized.len());
+        *ptr.add(sanitized.len()) = 0;
+    }
+    true
+}
+
+fn sanitize_subtitle_style_text(input: &str) -> String {
+    strip_empty_ass_override_blocks(&strip_ass_font_overrides(&strip_html_font_tags(input)))
+}
+
+fn strip_html_font_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after_start = &rest[start..];
+        let Some(end) = after_start.find('>') else {
+            out.push_str(after_start);
+            return out;
+        };
+        let tag = &after_start[1..end].trim_start();
+        let tag_lower = tag.to_ascii_lowercase();
+        let is_font_tag = tag_lower == "font"
+            || tag_lower == "/font"
+            || tag_lower.starts_with("font ")
+            || tag_lower.starts_with("font\t")
+            || tag_lower.starts_with("/font ")
+            || tag_lower.starts_with("/font\t");
+        if !is_font_tag {
+            out.push_str(&after_start[..=end]);
+        }
+        rest = &after_start[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_empty_ass_override_blocks(input: &str) -> String {
+    input.replace("{}", "")
+}
+
+fn strip_ass_font_overrides(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let mut lookahead = chars.clone();
+            let tag = match (lookahead.next(), lookahead.next(), lookahead.next()) {
+                (Some('f') | Some('F'), Some('s') | Some('S'), Some('c') | Some('C')) => {
+                    match lookahead.next() {
+                        Some('x') | Some('X') => Some(("fsc", 4)),
+                        Some('y') | Some('Y') => Some(("fsc", 4)),
+                        _ => None,
+                    }
+                }
+                (
+                    Some('f') | Some('F'),
+                    Some('s') | Some('S'),
+                    Some('0'..='9' | '.' | '+' | '-'),
+                ) => Some(("fs", 2)),
+                (Some('f') | Some('F'), Some('n') | Some('N'), _) => Some(("fn", 2)),
+                _ => None,
+            };
+            if let Some((tag, tag_len)) = tag {
+                for _ in 0..tag_len {
+                    chars.next();
+                }
+                if tag == "fs" || tag == "fsc" {
+                    while matches!(chars.peek(), Some('0'..='9' | '.' | '+' | '-')) {
+                        chars.next();
+                    }
+                    continue;
+                }
+                while let Some(next) = chars.peek().copied() {
+                    if next == '\\' || next == '}' || next == '{' {
+                        break;
+                    }
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn sanitize_mov_text_packet_text_and_strip_style_boxes(packet: &mut Vec<u8>) -> bool {
+    if packet.len() < 2 {
+        return false;
+    }
+    let text_len = u16::from_be_bytes([packet[0], packet[1]]) as usize;
+    let text_end = 2usize.saturating_add(text_len);
+    if text_end > packet.len() {
+        return false;
+    }
+
+    let original_text = String::from_utf8_lossy(&packet[2..text_end]);
+    let sanitized_text = sanitize_subtitle_style_text(&original_text);
+    if sanitized_text.len() > u16::MAX as usize {
+        return false;
+    }
+
+    let had_style_boxes = text_end < packet.len();
+    let text_changed = sanitized_text.as_bytes() != &packet[2..text_end];
+    if !had_style_boxes && !text_changed {
+        return false;
+    }
+
+    packet.clear();
+    packet.extend_from_slice(&(sanitized_text.len() as u16).to_be_bytes());
+    packet.extend_from_slice(sanitized_text.as_bytes());
+    true
+}
+
 fn encode_subtitle_to_vec(
     encode_context: &mut AVCodecContext,
     subtitle: &rsmpeg::avcodec::AVSubtitle,
@@ -733,6 +883,47 @@ pub(crate) fn load_encode_and_write(
 #[cfg(test)]
 mod resize_quality_tests {
     use super::*;
+
+    #[test]
+    fn subtitle_style_sanitizer_removes_html_font_tags() {
+        let input =
+            "<font face=\"Octarine\" size=\"66\"><b><font size=\"76\">What?!</font></b></font>";
+        assert_eq!(sanitize_subtitle_style_text(input), "<b>What?!</b>");
+    }
+
+    #[test]
+    fn subtitle_style_sanitizer_removes_ass_font_overrides() {
+        let input = "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8\\fs76\\fnOctarine\\fscx150\\fscy120}Hello";
+        assert_eq!(
+            sanitize_subtitle_style_text(input),
+            "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Hello"
+        );
+    }
+
+    #[test]
+    fn subtitle_style_sanitizer_preserves_non_font_tags() {
+        let input = "{\\fsp2\\bord3}<i>Hello</i>";
+        assert_eq!(sanitize_subtitle_style_text(input), input);
+    }
+
+    #[test]
+    fn subtitle_style_sanitizer_removes_empty_ass_blocks() {
+        assert_eq!(sanitize_subtitle_style_text("{}{}What?!"), "What?!");
+    }
+
+    #[test]
+    fn mov_text_packet_sanitizer_strips_text_style_and_trailing_boxes() {
+        let text = b"<font size=\"66\">Hello</font>";
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&(text.len() as u16).to_be_bytes());
+        packet.extend_from_slice(text);
+        packet.extend_from_slice(b"styl");
+
+        assert!(sanitize_mov_text_packet_text_and_strip_style_boxes(
+            &mut packet
+        ));
+        assert_eq!(packet, vec![0, 5, b'H', b'e', b'l', b'l', b'o']);
+    }
 
     #[test]
     fn same_size_transform_keeps_legacy_fast_scaler_path() {
