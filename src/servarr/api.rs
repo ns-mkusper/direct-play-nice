@@ -928,16 +928,6 @@ impl ApiClient {
         })
     }
 
-    fn redownload_for_target(
-        &self,
-        target: Target,
-        history_id: i64,
-        requirements: &LanguageRequirements,
-        options: RedownloadOptions,
-    ) -> Result<RedownloadOutcome> {
-        self.redownload_for_target_with_preference(target, history_id, requirements, options, false)
-    }
-
     fn redownload_for_target_with_preference(
         &self,
         target: Target,
