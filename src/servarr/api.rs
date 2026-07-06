@@ -138,17 +138,21 @@ pub fn run_sonarr_language_audit(
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
     let queue_records = client.sonarr_queue_records()?;
+    let mut summary = AuditSummary::default();
     client.sonarr_remove_bad_queue_items(
-        &queue_records,
-        redownload_options,
-        audit_options.stale_queue_days,
-    )?;
-    let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
-    let mut summary = client.sonarr_force_import_pending_language_upgrades(
         &queue_records,
         requirements,
         redownload_options,
+        audit_options.stale_queue_days,
+        audit_options.no_candidate_cooldown_days,
+        &mut summary,
     )?;
+    let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
+    summary.merge(client.sonarr_force_import_pending_language_upgrades(
+        &queue_records,
+        requirements,
+        redownload_options,
+    )?);
     let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_sonarr_history_language_audit(
             &client,
@@ -1505,8 +1509,11 @@ impl ApiClient {
     fn sonarr_remove_bad_queue_items(
         &self,
         records: &[Value],
+        requirements: &LanguageRequirements,
         options: RedownloadOptions,
         stale_queue_days: u32,
+        no_candidate_cooldown_days: u32,
+        summary: &mut AuditSummary,
     ) -> Result<()> {
         for queue_item in records {
             let Some(reason) = sonarr_bad_queue_reason(queue_item, stale_queue_days) else {
@@ -1524,15 +1531,67 @@ impl ApiClient {
                     "Sonarr language audit dry-run: would remove and blocklist bad queue item {} ('{}'): {}.",
                     queue_id, title, reason
                 );
-                continue;
+            } else {
+                self.sonarr_delete_queue_item_with_options(queue_id, true, true)?;
+                info!(
+                    "Sonarr language audit removed and blocklisted bad queue item {} ('{}'): {}.",
+                    queue_id, title, reason
+                );
             }
-            self.sonarr_delete_queue_item_with_options(queue_id, true, true)?;
-            info!(
-                "Sonarr language audit removed and blocklisted bad queue item {} ('{}'): {}.",
-                queue_id, title, reason
-            );
+
+            if reason == "stale zero-size torrent queue item" {
+                for episode_id in sonarr_queue_item_episode_ids(queue_item) {
+                    self.sonarr_search_replacement_after_bad_queue_item(
+                        episode_id,
+                        requirements,
+                        options,
+                        no_candidate_cooldown_days,
+                        summary,
+                    );
+                }
+            }
         }
         Ok(())
+    }
+
+    fn sonarr_search_replacement_after_bad_queue_item(
+        &self,
+        episode_id: i64,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+        no_candidate_cooldown_days: u32,
+        summary: &mut AuditSummary,
+    ) {
+        summary.missing += 1;
+        summary.searched += 1;
+        let history_id = match self.sonarr_latest_import_history_id(episode_id) {
+            Ok(Some(id)) => id,
+            Ok(None) if options.dry_run => 0,
+            Ok(None) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit removed stale queue item for episode {} but could not identify import history; refusing replacement search.",
+                    episode_id
+                );
+                return;
+            }
+            Err(err) => {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit removed stale queue item for episode {} but could not fetch import history: {}",
+                    episode_id, err
+                );
+                return;
+            }
+        };
+        self.apply_audit_redownload_outcome(
+            Target::SonarrEpisode { episode_id },
+            history_id,
+            requirements,
+            options,
+            no_candidate_cooldown_days,
+            summary,
+        );
     }
 
     fn radarr_movie(&self, movie_id: i64) -> Result<Value> {
