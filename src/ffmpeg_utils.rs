@@ -252,6 +252,22 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_audit_latest_missing_no_candidate_cooldown_days: Option<u32>,
 
+    /// Days before zero-size torrent queue items are considered stale and blocklisted. Zero disables cleanup.
+    #[arg(
+        long = "servarr-language-audit-stale-queue-days",
+        default_value_t = 0,
+        id = "servarr_language_audit_stale_queue_days"
+    )]
+    pub(crate) servarr_language_audit_stale_queue_days: u32,
+
+    /// Maximum stale zero-size queue items to remove per audit run. Zero means no cap.
+    #[arg(
+        long = "servarr-language-audit-stale-queue-max-removals",
+        default_value_t = 0,
+        id = "servarr_language_audit_stale_queue_max_removals"
+    )]
+    pub(crate) servarr_language_audit_stale_queue_max_removals: usize,
+
     /// Optional comma-separated Sonarr episode IDs to audit instead of the full scope.
     #[arg(
         long = "servarr-language-audit-episode-ids",

@@ -75,6 +75,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
   with a recent no-candidate audit result for `D` days; `0` disables this
 - `--servarr-language-audit-latest-missing-no-candidate-cooldown-days <D>`
   override the no-candidate cooldown for `latest-missing` audits
+- `--servarr-language-audit-stale-queue-days <D>` remove and blocklist zero-size
+  torrent queue items older than `D` days; `0` disables this
+- `--servarr-language-audit-stale-queue-max-removals <N>` cap stale queue
+  removals per audit run; `0` means no cap
 - `--servarr-language-audit-episode-ids <IDS>` comma-separated Sonarr episode
   IDs to audit instead of the full scope
 - `--servarr-language-check` enable pre-conversion language checks for Arr
