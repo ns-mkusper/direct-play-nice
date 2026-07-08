@@ -155,6 +155,7 @@ pub fn run_sonarr_language_audit(
         &queue_records,
         requirements,
         redownload_options,
+        &audit_options.episode_ids,
     )?);
     let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_sonarr_history_language_audit(
@@ -1328,6 +1329,7 @@ impl ApiClient {
         records: &[Value],
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
+        episode_ids_filter: &[i64],
     ) -> Result<AuditSummary> {
         let mut summary = AuditSummary::default();
         for queue_item in records {
@@ -1339,7 +1341,7 @@ impl ApiClient {
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if state != "importPending" || status != "completed" {
+            if status != "completed" || !matches!(state, "importPending" | "importBlocked") {
                 continue;
             }
             let Some(episode_id) =
@@ -1355,6 +1357,9 @@ impl ApiClient {
             else {
                 continue;
             };
+            if !episode_ids_filter.is_empty() && !episode_ids_filter.contains(&episode_id) {
+                continue;
+            }
             let Some(download_id) = queue_item.get("downloadId").and_then(Value::as_str) else {
                 continue;
             };
@@ -1387,7 +1392,17 @@ impl ApiClient {
             if current_report.satisfied() {
                 continue;
             }
-            let manual_items = self.sonarr_manual_import_items(download_id)?;
+            let manual_items = match self.sonarr_manual_import_items(download_id) {
+                Ok(items) => items,
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit could not list manual import items for {} episode {}: {}",
+                        state, episode_id, err
+                    );
+                    continue;
+                }
+            };
             let Some(item) = manual_items.into_iter().find(|item| {
                 sonarr_manual_import_item_matches_episode(item, episode_id)
                     && manual_import_item_satisfies(
@@ -1408,8 +1423,8 @@ impl ApiClient {
             if options.dry_run {
                 summary.dry_run += 1;
                 info!(
-                    "Sonarr language audit dry-run: would force-import pending episode {} from '{}'.",
-                    episode_id, title
+                    "Sonarr language audit dry-run: would force-import {} episode {} from '{}'.",
+                    state, episode_id, title
                 );
                 continue;
             }
@@ -1425,8 +1440,8 @@ impl ApiClient {
             }
             summary.grabbed += 1;
             info!(
-                "Sonarr language audit force-imported pending language upgrade for episode {} from '{}'.",
-                episode_id, title
+                "Sonarr language audit force-imported {} language upgrade for episode {} from '{}'.",
+                state, episode_id, title
             );
         }
         Ok(summary)
@@ -1524,10 +1539,19 @@ impl ApiClient {
         summary: &mut AuditSummary,
     ) -> Result<()> {
         let mut stale_removals = 0usize;
-        for queue_item in records {
-            let Some(reason) = sonarr_bad_queue_reason(queue_item, stale_queue_days) else {
-                continue;
-            };
+        let mut candidates: Vec<(&Value, &'static str)> = records
+            .iter()
+            .filter_map(|queue_item| {
+                sonarr_bad_queue_reason(queue_item, stale_queue_days)
+                    .map(|reason| (queue_item, reason))
+            })
+            .collect();
+        candidates.sort_by(|(left_item, left_reason), (right_item, right_reason)| {
+            sonarr_bad_queue_sort_key(left_item, left_reason)
+                .cmp(&sonarr_bad_queue_sort_key(right_item, right_reason))
+        });
+
+        for (queue_item, reason) in candidates {
             if reason == "stale zero-size torrent queue item"
                 && stale_queue_max_removals > 0
                 && stale_removals >= stale_queue_max_removals
@@ -2031,6 +2055,21 @@ fn sonarr_bad_queue_reason(queue_item: &Value, stale_queue_days: u32) -> Option<
         return Some("episode mismatch or multi-episode pack");
     }
     None
+}
+
+fn sonarr_bad_queue_sort_key(queue_item: &Value, reason: &str) -> (u8, i64, i64) {
+    let reason_priority = match reason {
+        "invalid season or episode" | "episode mismatch or multi-episode pack" => 0,
+        "stale zero-size torrent queue item" => 10,
+        _ => 20,
+    };
+    let added_day = queue_item
+        .get("added")
+        .and_then(Value::as_str)
+        .and_then(iso_day_number)
+        .unwrap_or(i64::MAX);
+    let queue_id = queue_item.get("id").and_then(Value::as_i64).unwrap_or(0);
+    (reason_priority, added_day, queue_id)
 }
 
 fn queue_item_is_stale(queue_item: &Value, stale_queue_days: u32) -> bool {
