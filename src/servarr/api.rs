@@ -81,6 +81,20 @@ pub struct AuditSummary {
     pub errors: usize,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct QueueHealthSummary {
+    total: usize,
+    completed_import_pending: usize,
+    completed_import_blocked: usize,
+    completed_warning: usize,
+    stale_zero_size_torrents: usize,
+    queued_zero_size_torrents: usize,
+    queued_nonzero_torrents: usize,
+    downloading_zero_size_torrents: usize,
+    downloading_nonzero_torrents: usize,
+    invalid_or_mismatch_warnings: usize,
+}
+
 #[derive(Debug, Clone)]
 struct SonarrInventoryItem {
     episode_id: i64,
@@ -139,9 +153,15 @@ pub fn run_sonarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
-    let queue_records = client.sonarr_queue_records()?;
+    let mut queue_records = client.sonarr_queue_records()?;
+    log_sonarr_queue_health(
+        "before cleanup",
+        &queue_records,
+        audit_options.stale_queue_days,
+    );
+
     let mut summary = AuditSummary::default();
-    client.sonarr_remove_bad_queue_items(
+    let removed_queue_items = client.sonarr_remove_bad_queue_items(
         &queue_records,
         requirements,
         redownload_options,
@@ -150,13 +170,34 @@ pub fn run_sonarr_language_audit(
         audit_options.no_candidate_cooldown_days,
         &mut summary,
     )?;
-    let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
-    summary.merge(client.sonarr_force_import_pending_language_upgrades(
+
+    if removed_queue_items > 0 {
+        queue_records = client.sonarr_queue_records()?;
+    }
+    log_sonarr_queue_health(
+        "after cleanup",
+        &queue_records,
+        audit_options.stale_queue_days,
+    );
+
+    let import_summary = client.sonarr_force_import_pending_language_upgrades(
         &queue_records,
         requirements,
         redownload_options,
         &audit_options.episode_ids,
-    )?);
+    )?;
+    let imported_queue_items = import_summary.grabbed;
+    summary.merge(import_summary);
+
+    if imported_queue_items > 0 {
+        queue_records = client.sonarr_queue_records()?;
+    }
+    log_sonarr_queue_health(
+        "after force-import",
+        &queue_records,
+        audit_options.stale_queue_days,
+    );
+    let active_queue_episode_ids = sonarr_active_queue_episode_ids(&queue_records);
     let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_sonarr_history_language_audit(
             &client,
@@ -1537,7 +1578,8 @@ impl ApiClient {
         stale_queue_max_removals: usize,
         no_candidate_cooldown_days: u32,
         summary: &mut AuditSummary,
-    ) -> Result<()> {
+    ) -> Result<usize> {
+        let mut removed_items = 0usize;
         let mut stale_removals = 0usize;
         let mut candidates: Vec<(&Value, &'static str)> = records
             .iter()
@@ -1576,6 +1618,7 @@ impl ApiClient {
                 );
             } else {
                 self.sonarr_delete_queue_item_with_options(queue_id, true, true)?;
+                removed_items += 1;
                 info!(
                     "Sonarr language audit removed and blocklisted bad queue item {} ('{}'): {}.",
                     queue_id, title, reason
@@ -1595,7 +1638,7 @@ impl ApiClient {
                 }
             }
         }
-        Ok(())
+        Ok(removed_items)
     }
 
     fn sonarr_search_replacement_after_bad_queue_item(
@@ -2070,6 +2113,83 @@ fn sonarr_bad_queue_sort_key(queue_item: &Value, reason: &str) -> (u8, i64, i64)
         .unwrap_or(i64::MAX);
     let queue_id = queue_item.get("id").and_then(Value::as_i64).unwrap_or(0);
     (reason_priority, added_day, queue_id)
+}
+
+fn log_sonarr_queue_health(label: &str, records: &[Value], stale_queue_days: u32) {
+    let health = sonarr_queue_health_summary(records, stale_queue_days);
+    info!(
+        "Sonarr queue health ({}): total={}, completed_import_pending={}, completed_import_blocked={}, completed_warning={}, stale_zero_size_torrents={}, queued_zero_size_torrents={}, queued_nonzero_torrents={}, downloading_zero_size_torrents={}, downloading_nonzero_torrents={}, invalid_or_mismatch_warnings={}",
+        label,
+        health.total,
+        health.completed_import_pending,
+        health.completed_import_blocked,
+        health.completed_warning,
+        health.stale_zero_size_torrents,
+        health.queued_zero_size_torrents,
+        health.queued_nonzero_torrents,
+        health.downloading_zero_size_torrents,
+        health.downloading_nonzero_torrents,
+        health.invalid_or_mismatch_warnings
+    );
+}
+
+fn sonarr_queue_health_summary(records: &[Value], stale_queue_days: u32) -> QueueHealthSummary {
+    let mut summary = QueueHealthSummary {
+        total: records.len(),
+        ..QueueHealthSummary::default()
+    };
+    for queue_item in records {
+        let status = queue_item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let state = queue_item
+            .get("trackedDownloadState")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let tracked_status = queue_item
+            .get("trackedDownloadStatus")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if status == "completed" && state == "importPending" {
+            summary.completed_import_pending += 1;
+        }
+        if status == "completed" && state == "importBlocked" {
+            summary.completed_import_blocked += 1;
+        }
+        if status == "completed" && tracked_status == "warning" {
+            summary.completed_warning += 1;
+        }
+        if matches!(
+            sonarr_bad_queue_reason(queue_item, stale_queue_days),
+            Some("invalid season or episode" | "episode mismatch or multi-episode pack")
+        ) {
+            summary.invalid_or_mismatch_warnings += 1;
+        }
+        if queue_item.get("protocol").and_then(Value::as_str) == Some("torrent") {
+            let zero_size = queue_item_zero_size(queue_item);
+            match (status, state, zero_size) {
+                ("queued", "downloading", true) => summary.queued_zero_size_torrents += 1,
+                ("queued", "downloading", false) => summary.queued_nonzero_torrents += 1,
+                ("downloading", "downloading", true) => summary.downloading_zero_size_torrents += 1,
+                ("downloading", "downloading", false) => summary.downloading_nonzero_torrents += 1,
+                _ => {}
+            }
+            if zero_size && queue_item_is_stale(queue_item, stale_queue_days) {
+                summary.stale_zero_size_torrents += 1;
+            }
+        }
+    }
+    summary
+}
+
+fn queue_item_zero_size(queue_item: &Value) -> bool {
+    queue_item.get("size").and_then(Value::as_i64).unwrap_or(0) == 0
+        && queue_item
+            .get("sizeleft")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            == 0
 }
 
 fn queue_item_is_stale(queue_item: &Value, stale_queue_days: u32) -> bool {
@@ -2972,6 +3092,82 @@ mod tests {
             Some("stale zero-size torrent queue item")
         );
         assert_eq!(sonarr_bad_queue_reason(&stale, 0), None);
+    }
+
+    #[test]
+    fn sonarr_queue_health_summary_counts_remediation_states() {
+        let records = vec![
+            json!({
+                "status": "completed",
+                "trackedDownloadState": "importPending",
+                "trackedDownloadStatus": "ok"
+            }),
+            json!({
+                "status": "completed",
+                "trackedDownloadState": "importBlocked",
+                "trackedDownloadStatus": "warning",
+                "statusMessages": [{"messages": ["Found matching series via grab history"]}]
+            }),
+            json!({
+                "status": "completed",
+                "trackedDownloadStatus": "warning",
+                "statusMessages": [{"messages": ["Wrong episode"]}]
+            }),
+            json!({
+                "id": 1,
+                "status": "queued",
+                "trackedDownloadState": "downloading",
+                "trackedDownloadStatus": "ok",
+                "protocol": "torrent",
+                "size": 0,
+                "sizeleft": 0,
+                "added": "2000-01-01T00:00:00Z"
+            }),
+            json!({
+                "id": 2,
+                "status": "queued",
+                "trackedDownloadState": "downloading",
+                "trackedDownloadStatus": "ok",
+                "protocol": "torrent",
+                "size": 1024,
+                "sizeleft": 512
+            }),
+            json!({
+                "id": 3,
+                "status": "downloading",
+                "trackedDownloadState": "downloading",
+                "trackedDownloadStatus": "ok",
+                "protocol": "torrent",
+                "size": 0,
+                "sizeleft": 0
+            }),
+            json!({
+                "id": 4,
+                "status": "downloading",
+                "trackedDownloadState": "downloading",
+                "trackedDownloadStatus": "ok",
+                "protocol": "torrent",
+                "size": 2048,
+                "sizeleft": 1024
+            }),
+        ];
+
+        let summary = sonarr_queue_health_summary(&records, 2);
+        assert_eq!(
+            summary,
+            QueueHealthSummary {
+                total: 7,
+                completed_import_pending: 1,
+                completed_import_blocked: 1,
+                completed_warning: 2,
+                stale_zero_size_torrents: 1,
+                queued_zero_size_torrents: 1,
+                queued_nonzero_torrents: 1,
+                downloading_zero_size_torrents: 1,
+                downloading_nonzero_torrents: 1,
+                invalid_or_mismatch_warnings: 1,
+            }
+        );
     }
 
     #[test]
@@ -3926,6 +4122,7 @@ mod tests {
             .match_query(Matcher::Any)
             .with_status(200)
             .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+            .expect(2)
             .create();
         let episode_file = server
             .mock("GET", "/api/v3/episodefile/555")
