@@ -165,7 +165,60 @@ The best-effort cache defaults to
 
 The Download-event hook only runs when Arr imports a file. To catch delayed dubs
 or subtitles that appear days later, run an audit from cron/systemd/launchd with
-no Arr custom-script environment variables:
+no Arr custom-script environment variables.
+
+### Language upgrade process
+
+The periodic audit is language-first. It treats queue remediation, delayed
+dub/sub searches, and conservative torrent cleanup as separate stages so a bad
+or blocked queue item does not permanently prevent a better language candidate
+from importing.
+
+```mermaid
+flowchart TD
+    A[Start periodic Servarr language audit] --> B[Fetch current Arr queue]
+    B --> C[Log Sonarr queue health before cleanup]
+    C --> D{Bad queue item?}
+    D -->|Invalid/wrong episode or multi-episode pack| E[Remove and blocklist]
+    D -->|Completed importPending/importBlocked language upgrade| F[Manual import if candidate satisfies language policy]
+    D -->|Stale zero-size torrent older than configured days| G{Within stale cleanup cap?}
+    G -->|Yes| H[Remove, blocklist, and search replacement]
+    G -->|No| I[Leave queued torrent for later run]
+    D -->|No| I
+    E --> J[Fetch queue again]
+    F --> J
+    H --> J
+    I --> J
+    J --> K[Log queue health after cleanup/import]
+    K --> L{Audit scope}
+    L -->|latest-missing| M[Scan inventory, filter non-compliant items, newest first]
+    L -->|inventory| N[Scan inventory backlog]
+    L -->|history| O[Scan recent import history]
+    M --> P{Required languages present?}
+    N --> P
+    O --> P
+    P -->|Yes| Q[Cache compliant language report]
+    P -->|No and cooldown active| R[Skip search this run]
+    P -->|No and cooldown expired| S[Search Arr releases]
+    S --> T{Verified language candidate?}
+    T -->|Yes| U[Grab replacement and blocklist old history item]
+    T -->|No| V[Record no-candidate cooldown]
+    U --> W[Next run imports or force-imports pending replacement]
+    Q --> X[Log audit summary]
+    R --> X
+    V --> X
+    W --> X
+```
+
+Queue health is logged at the start of Sonarr audits and after cleanup/import
+stages. The log includes total queue items, completed import-pending/import-blocked
+items, stale zero-size torrents, queued nonzero torrents, active downloads, and
+invalid/mismatch warning counts. Use those counters to distinguish genuine bad
+queue entries from a saturated torrent client. For example, many old zero-size
+queued torrents may indicate Deluge's active download queue is too small rather
+than a bad release.
+
+Run an audit with:
 
 ```bash
 /path/to/direct_play_nice \
