@@ -3,12 +3,17 @@
 use super::language::{LanguageCheckReport, LanguageRequirements};
 use super::IntegrationKind;
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static CACHE_WRITE_MUTEX: Mutex<()> = Mutex::new(());
 
 const CACHE_ENV_VAR: &str = "DIRECT_PLAY_NICE_LANGUAGE_CACHE";
 
@@ -85,43 +90,40 @@ pub fn record_no_candidate(
     let Some(cache_path) = resolve_no_candidate_cache_path() else {
         return Ok(());
     };
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "creating language no-candidate cache directory '{}'",
-                parent.display()
-            )
-        })?;
-    }
-
-    let key = no_candidate_key(kind, target_noun, target_id);
-    let mut records = read_no_candidate_records(&cache_path)?;
-    records.retain(|record| record.key != key);
-    records.push(NoCandidateRecord {
-        key,
-        kind: format!("{:?}", kind),
-        target_noun: target_noun.to_string(),
+    record_no_candidate_at_path(
+        &cache_path,
+        kind,
+        target_noun,
         target_id,
-        checked_at_unix: now_unix_secs(),
-        requirements: requirements.clone(),
-        reason: reason.to_string(),
-    });
-    records.sort_by(|a, b| a.key.cmp(&b.key));
-    let tmp_path = cache_path.with_extension("json.tmp");
-    fs::write(&tmp_path, serde_json::to_vec_pretty(&records)?).with_context(|| {
-        format!(
-            "writing language no-candidate cache '{}'",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, &cache_path).with_context(|| {
-        format!(
-            "renaming language no-candidate cache '{}' to '{}'",
-            tmp_path.display(),
-            cache_path.display()
-        )
-    })?;
-    Ok(())
+        requirements,
+        reason,
+    )
+}
+
+fn record_no_candidate_at_path(
+    cache_path: &Path,
+    kind: IntegrationKind,
+    target_noun: &str,
+    target_id: i64,
+    requirements: &LanguageRequirements,
+    reason: &str,
+) -> Result<()> {
+    with_cache_lock(cache_path, "language no-candidate cache", || {
+        let key = no_candidate_key(kind, target_noun, target_id);
+        let mut records = read_no_candidate_records(cache_path)?;
+        records.retain(|record| record.key != key);
+        records.push(NoCandidateRecord {
+            key,
+            kind: format!("{:?}", kind),
+            target_noun: target_noun.to_string(),
+            target_id,
+            checked_at_unix: now_unix_secs(),
+            requirements: requirements.clone(),
+            reason: reason.to_string(),
+        });
+        records.sort_by(|a, b| a.key.cmp(&b.key));
+        write_json_atomically(cache_path, "language no-candidate cache", &records)
+    })
 }
 
 fn record_assessment_at_path(
@@ -131,33 +133,20 @@ fn record_assessment_at_path(
     requirements: &LanguageRequirements,
     report: &LanguageCheckReport,
 ) -> Result<()> {
-    if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating language cache directory '{}'", parent.display()))?;
-    }
-
-    let mut records = read_records(cache_path)?;
-    let path_string = path.to_string_lossy().into_owned();
-    records.retain(|record| record.path != path_string);
-    records.push(CacheRecord {
-        path: path_string,
-        kind: format!("{:?}", kind),
-        checked_at_unix: now_unix_secs(),
-        requirements: requirements.clone(),
-        report: report.clone(),
-    });
-    records.sort_by(|a, b| a.path.cmp(&b.path));
-    let tmp_path = cache_path.with_extension("json.tmp");
-    fs::write(&tmp_path, serde_json::to_vec_pretty(&records)?)
-        .with_context(|| format!("writing language cache '{}'", tmp_path.display()))?;
-    fs::rename(&tmp_path, cache_path).with_context(|| {
-        format!(
-            "renaming language cache '{}' to '{}'",
-            tmp_path.display(),
-            cache_path.display()
-        )
-    })?;
-    Ok(())
+    with_cache_lock(cache_path, "language cache", || {
+        let mut records = read_records(cache_path)?;
+        let path_string = path.to_string_lossy().into_owned();
+        records.retain(|record| record.path != path_string);
+        records.push(CacheRecord {
+            path: path_string,
+            kind: format!("{:?}", kind),
+            checked_at_unix: now_unix_secs(),
+            requirements: requirements.clone(),
+            report: report.clone(),
+        });
+        records.sort_by(|a, b| a.path.cmp(&b.path));
+        write_json_atomically(cache_path, "language cache", &records)
+    })
 }
 
 fn read_records(path: &Path) -> Result<Vec<CacheRecord>> {
@@ -197,6 +186,58 @@ fn read_no_candidate_records(path: &Path) -> Result<Vec<NoCandidateRecord>> {
         Err(err) => Err(err)
             .with_context(|| format!("reading language no-candidate cache '{}'", path.display())),
     }
+}
+
+fn with_cache_lock<T>(cache_path: &Path, label: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating {label} directory '{}'", parent.display()))?;
+    }
+
+    let _process_guard = CACHE_WRITE_MUTEX
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let lock_path = cache_path.with_extension("json.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening {label} lock '{}'", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("locking {label} lock '{}'", lock_path.display()))?;
+
+    f()
+}
+
+fn write_json_atomically<T: Serialize>(cache_path: &Path, label: &str, value: &T) -> Result<()> {
+    let tmp_path = unique_tmp_path(cache_path);
+    fs::write(&tmp_path, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("writing {label} '{}'", tmp_path.display()))?;
+    fs::rename(&tmp_path, cache_path).with_context(|| {
+        let _ = fs::remove_file(&tmp_path);
+        format!(
+            "renaming {label} '{}' to '{}'",
+            tmp_path.display(),
+            cache_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn unique_tmp_path(cache_path: &Path) -> PathBuf {
+    let parent = cache_path.parent().unwrap_or_else(|| Path::new("."));
+    let filename = cache_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cache.json");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    parent.join(format!(".{filename}.{}.{}.tmp", std::process::id(), nanos))
 }
 
 fn resolve_no_candidate_cache_path() -> Option<PathBuf> {
@@ -302,6 +343,92 @@ mod tests {
         assert!(contents.contains("/media/show.mkv"));
         assert!(contents.contains("jpn"));
         assert!(contents.contains("eng"));
+    }
+
+    #[test]
+    fn concurrent_assessment_writes_keep_valid_json_and_all_records() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("cache.json");
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let report = LanguageCheckReport {
+            present_audio: vec!["eng".to_string()],
+            present_subtitles: Vec::new(),
+            missing_audio: Vec::new(),
+            missing_subtitles: Vec::new(),
+        };
+
+        std::thread::scope(|scope| {
+            for i in 0..32 {
+                let cache_path = cache_path.clone();
+                let requirements = requirements.clone();
+                let report = report.clone();
+                scope.spawn(move || {
+                    record_assessment_at_path(
+                        &cache_path,
+                        IntegrationKind::Sonarr,
+                        Path::new(&format!("/media/show-{i}.mkv")),
+                        &requirements,
+                        &report,
+                    )
+                    .unwrap();
+                });
+            }
+        });
+
+        let records = read_records(&cache_path).unwrap();
+        assert_eq!(records.len(), 32);
+        for i in 0..32 {
+            assert!(records
+                .iter()
+                .any(|record| record.path == format!("/media/show-{i}.mkv")));
+        }
+        assert!(fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
+    }
+
+    #[test]
+    fn concurrent_no_candidate_writes_keep_valid_json_and_all_records() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("no-candidates.json");
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+
+        std::thread::scope(|scope| {
+            for i in 0..32 {
+                let cache_path = cache_path.clone();
+                let requirements = requirements.clone();
+                scope.spawn(move || {
+                    record_no_candidate_at_path(
+                        &cache_path,
+                        IntegrationKind::Sonarr,
+                        "episode",
+                        i,
+                        &requirements,
+                        "no approved release",
+                    )
+                    .unwrap();
+                });
+            }
+        });
+
+        let records = read_no_candidate_records(&cache_path).unwrap();
+        assert_eq!(records.len(), 32);
+        for i in 0..32 {
+            assert!(records.iter().any(|record| record.target_id == i));
+        }
+        assert!(fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
     }
 
     #[test]
