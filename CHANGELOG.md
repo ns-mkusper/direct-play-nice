@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.6] - 2026-07-09
+
+### Servarr Language Upgrades
+
+- Added Radarr inventory and `latest-missing` language audit scopes so movie
+  libraries can use the same delayed dub/sub replacement flow as Sonarr.
+- Added a dedicated no-candidate cooldown override for `latest-missing` audits,
+  allowing new weekly dub/sub drops to be retried sooner than older backlog.
+- Added Sonarr queue remediation for language upgrades: invalid or mismatched
+  completed queue items are removed and blocklisted, completed `importPending`
+  and `importBlocked` replacements can be force-imported after language
+  verification, and stale zero-size torrent entries can be cleaned with a per-run
+  cap.
+- Sorted bad Sonarr queue cleanup candidates so parse/mismatch warnings are
+  handled before stale zero-size torrents, and stale torrent cleanup proceeds
+  oldest-first.
+- Added Sonarr queue-health logging around cleanup and force-import stages to
+  make import-pending, import-blocked, stale torrent, queued torrent, and active
+  download counts visible in audit logs.
+
+### Subtitle Handling
+
+- Sanitized text-subtitle font styling during MP4 `mov_text` output so embedded
+  font sizes and faces no longer override Plex/client subtitle-size settings.
+
+### Reliability and Documentation
+
+- Made Servarr language cache and no-candidate cache writes atomic and locked to
+  prevent corruption when Sonarr/Radarr audits overlap.
+- Documented the updated language-upgrade process with a Mermaid flowchart and
+  added operator guidance for interpreting queue-health metrics.
+
 ## [1.1.0-beta.5] - 2026-07-02
 
 ### Language Audit Prioritization
