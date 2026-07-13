@@ -1401,7 +1401,11 @@ impl ApiClient {
             if !episode_ids_filter.is_empty() && !episode_ids_filter.contains(&episode_id) {
                 continue;
             }
-            let Some(download_id) = queue_item.get("downloadId").and_then(Value::as_str) else {
+            let Some(download_id) = queue_item
+                .get("downloadId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
                 continue;
             };
             let current_file_id = match self
@@ -1433,7 +1437,7 @@ impl ApiClient {
             if current_report.satisfied() {
                 continue;
             }
-            let manual_items = match self.sonarr_manual_import_items(download_id) {
+            let manual_items = match self.sonarr_manual_import_items(&download_id) {
                 Ok(items) => items,
                 Err(err) => {
                     summary.errors += 1;
@@ -1697,7 +1701,8 @@ impl ApiClient {
         options: RedownloadOptions,
     ) -> Result<AuditSummary> {
         let mut summary = AuditSummary::default();
-        for queue_item in records {
+        for queue_item_ref in records {
+            let mut queue_item = queue_item_ref.clone();
             let state = queue_item
                 .get("trackedDownloadState")
                 .and_then(Value::as_str)
@@ -1709,6 +1714,13 @@ impl ApiClient {
             if state != "importPending" || status != "completed" {
                 continue;
             }
+            let Some(download_id) = queue_item
+                .get("downloadId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
             let Some(movie_id) = queue_item
                 .get("movieId")
                 .and_then(Value::as_i64)
@@ -1718,32 +1730,45 @@ impl ApiClient {
                         .and_then(|m| m.get("id"))
                         .and_then(Value::as_i64)
                 })
+                .or_else(|| {
+                    self.radarr_movie_id_for_download(&download_id)
+                        .ok()
+                        .flatten()
+                })
             else {
                 continue;
             };
-            let Some(download_id) = queue_item.get("downloadId").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(current_file_id) = queue_item
+            if queue_item.get("movie").and_then(|m| m.get("id")).is_none() {
+                match self.get(&format!("{}/api/v3/movie/{}", self.base_url, movie_id)) {
+                    Ok(movie) => {
+                        if let Value::Object(ref mut map) = queue_item {
+                            map.insert("movie".to_string(), movie);
+                        }
+                    }
+                    Err(err) => warn!(
+                        "Radarr language audit could not hydrate movie {} for pending import '{}': {}",
+                        movie_id, download_id, err
+                    ),
+                }
+            }
+            let current_file_id = queue_item
                 .get("movie")
                 .and_then(|m| m.get("movieFileId"))
                 .and_then(Value::as_i64)
-            else {
-                continue;
-            };
-            let Some(current_file) = queue_item.get("movie").and_then(|m| m.get("movieFile"))
-            else {
-                continue;
-            };
-            let current_report = language_report_from_episode_file(current_file, requirements);
+                .unwrap_or(0);
+            let current_report = queue_item
+                .get("movie")
+                .and_then(|m| m.get("movieFile"))
+                .map(|current_file| language_report_from_episode_file(current_file, requirements))
+                .unwrap_or_else(|| report_from_present(Vec::new(), Vec::new(), requirements));
             if current_report.satisfied() {
                 continue;
             }
-            let manual_items = self.radarr_manual_import_items(download_id, movie_id)?;
+            let manual_items = self.radarr_manual_import_items(&download_id, movie_id)?;
             let Some(item) = manual_items.into_iter().find(|item| {
                 manual_import_item_satisfies(
                     item,
-                    queue_item,
+                    &queue_item,
                     requirements,
                     options.candidate_policy,
                 )
@@ -1764,16 +1789,7 @@ impl ApiClient {
                 );
                 continue;
             }
-            self.radarr_delete_movie_file(current_file_id)?;
-            self.radarr_post_manual_import(item, movie_id)?;
-            if let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) {
-                if let Err(err) = self.radarr_delete_queue_item(queue_id) {
-                    warn!(
-                        "Radarr language audit force-imported movie {} but could not remove completed queue item {}: {}",
-                        movie_id, queue_id, err
-                    );
-                }
-            }
+            self.radarr_command_manual_import(item, movie_id, current_file_id, &queue_item)?;
             summary.grabbed += 1;
             info!(
                 "Radarr language audit force-imported pending language upgrade for movie {} from '{}'.",
@@ -1781,6 +1797,24 @@ impl ApiClient {
             );
         }
         Ok(summary)
+    }
+
+    fn radarr_movie_id_for_download(&self, download_id: &str) -> Result<Option<i64>> {
+        let endpoint = format!(
+            "{}/api/v3/history?page=1&pageSize=10&sortKey=date&sortDirection=descending&downloadId={}",
+            self.base_url,
+            url_encode(download_id)
+        );
+        let response = self.get(&endpoint)?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(records
+            .iter()
+            .filter_map(|record| record.get("movieId").and_then(Value::as_i64))
+            .next())
     }
 
     fn radarr_manual_import_items(&self, download_id: &str, movie_id: i64) -> Result<Vec<Value>> {
@@ -1796,27 +1830,83 @@ impl ApiClient {
             .ok_or_else(|| anyhow!("Radarr manual import did not return an array"))
     }
 
-    fn radarr_post_manual_import(&self, mut item: Value, movie_id: i64) -> Result<()> {
-        if let Value::Object(ref mut map) = item {
-            map.insert("movieId".to_string(), Value::from(movie_id));
+    fn radarr_command_manual_import(
+        &self,
+        mut item: Value,
+        movie_id: i64,
+        current_file_id: i64,
+        queue_item: &Value,
+    ) -> Result<()> {
+        if radarr_manual_import_item_has_unknown_movie_rejection(&item) {
+            if let Some(parseable_path) = radarr_create_parseable_import_copy(&item, queue_item)? {
+                warn!(
+                    "Radarr manual import item for movie {} had Unknown Movie rejection; retrying with parse-friendly path '{}'.",
+                    movie_id,
+                    parseable_path.display()
+                );
+                if let Value::Object(ref mut map) = item {
+                    map.insert(
+                        "path".to_string(),
+                        Value::from(parseable_path.to_string_lossy().to_string()),
+                    );
+                    if let Some(name) = parseable_path.file_name().and_then(|x| x.to_str()) {
+                        map.insert("relativePath".to_string(), Value::from(name.to_string()));
+                        map.insert(
+                            "name".to_string(),
+                            Value::from(
+                                parseable_path
+                                    .file_stem()
+                                    .and_then(|x| x.to_str())
+                                    .unwrap_or(name)
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                    map.insert("rejections".to_string(), Value::Array(Vec::new()));
+                }
+            }
         }
-        let endpoint = format!("{}/api/v3/manualimport", self.base_url);
-        self.post_json(&endpoint, &Value::Array(vec![item]))?;
-        Ok(())
-    }
 
-    fn radarr_delete_movie_file(&self, file_id: i64) -> Result<()> {
-        let endpoint = format!("{}/api/v3/moviefile/{}", self.base_url, file_id);
-        self.delete(&endpoint)?;
-        Ok(())
-    }
-
-    fn radarr_delete_queue_item(&self, queue_id: i64) -> Result<()> {
-        let endpoint = format!(
-            "{}/api/v3/queue/{}?removeFromClient=false&blocklist=false",
-            self.base_url, queue_id
+        let mut file = serde_json::Map::new();
+        file.insert(
+            "path".to_string(),
+            item.get("path").cloned().unwrap_or(Value::Null),
         );
-        self.delete(&endpoint)?;
+        file.insert("movieId".to_string(), Value::from(movie_id));
+        file.insert(
+            "quality".to_string(),
+            item.get("quality").cloned().unwrap_or(Value::Null),
+        );
+        file.insert(
+            "languages".to_string(),
+            item.get("languages")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        );
+        file.insert(
+            "releaseGroup".to_string(),
+            item.get("releaseGroup").cloned().unwrap_or(Value::Null),
+        );
+        file.insert(
+            "indexerFlags".to_string(),
+            item.get("indexerFlags")
+                .cloned()
+                .unwrap_or_else(|| Value::from(0)),
+        );
+        if let Some(download_id) = item.get("downloadId").cloned() {
+            file.insert("downloadId".to_string(), download_id);
+        }
+        if current_file_id > 0 {
+            file.insert("movieFileId".to_string(), Value::from(current_file_id));
+        }
+
+        let body = serde_json::json!({
+            "name": "ManualImport",
+            "files": [Value::Object(file)],
+            "importMode": "move",
+        });
+        let endpoint = format!("{}/api/v3/command", self.base_url);
+        self.post_json(&endpoint, &body)?;
         Ok(())
     }
 
@@ -2009,6 +2099,99 @@ fn read_json_response(response: ureq::Response) -> Result<Value> {
         return Ok(Value::Null);
     }
     serde_json::from_str(&text).context("parsing JSON response")
+}
+
+fn radarr_manual_import_item_has_unknown_movie_rejection(item: &Value) -> bool {
+    item.get("rejections")
+        .and_then(Value::as_array)
+        .map(|rejections| {
+            rejections.iter().any(|rejection| {
+                rejection
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(|reason| reason.eq_ignore_ascii_case("Unknown Movie"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn radarr_create_parseable_import_copy(
+    item: &Value,
+    queue_item: &Value,
+) -> Result<Option<PathBuf>> {
+    let Some(source) = item.get("path").and_then(Value::as_str).map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if !source.exists() || !source.is_file() {
+        return Ok(None);
+    }
+    let movie = queue_item.get("movie").unwrap_or(&Value::Null);
+    let title = movie
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Movie");
+    let year = movie
+        .get("year")
+        .and_then(Value::as_i64)
+        .map(|x| x.to_string())
+        .unwrap_or_else(|| "0000".to_string());
+    let ext = source.extension().and_then(|x| x.to_str()).unwrap_or("mkv");
+    let filename = format!(
+        "{} ({}) [DPN manual import].{}",
+        sanitize_filename_component(title),
+        year,
+        sanitize_filename_component(ext)
+    );
+    let target_dir = source
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("downloaded"))
+        .filter(|path| path.is_dir())
+        .or_else(|| source.parent().map(Path::to_path_buf));
+    let Some(target_dir) = target_dir else {
+        return Ok(None);
+    };
+    let target = target_dir.join(filename);
+    if target == source {
+        return Ok(None);
+    }
+    if target.exists() {
+        return Ok(Some(target));
+    }
+    if let Err(err) = std::fs::hard_link(&source, &target) {
+        warn!(
+            "Could not hardlink Radarr manual import fallback '{}' -> '{}': {}; copying instead.",
+            source.display(),
+            target.display(),
+            err
+        );
+        std::fs::copy(&source, &target).with_context(|| {
+            format!(
+                "copying Radarr manual import fallback '{}' to '{}'",
+                source.display(),
+                target.display()
+            )
+        })?;
+    }
+    Ok(Some(target))
+}
+
+fn sanitize_filename_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || ch.is_control() {
+            out.push('-');
+        } else {
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn history_episode_id(record: &Value) -> Option<i64> {
@@ -4476,20 +4659,9 @@ mod tests {
                 .to_string(),
             )
             .create();
-        let delete_file = server
-            .mock("DELETE", "/api/v3/moviefile/999")
-            .with_status(200)
-            .with_body("{}")
-            .create();
         let post_import = server
-            .mock("POST", "/api/v3/manualimport")
+            .mock("POST", "/api/v3/command")
             .match_header("content-type", "application/json")
-            .with_status(200)
-            .with_body("{}")
-            .create();
-        let delete_queue = server
-            .mock("DELETE", "/api/v3/queue/123")
-            .match_query(Matcher::Any)
             .with_status(200)
             .with_body("{}")
             .create();
@@ -4530,9 +4702,7 @@ mod tests {
         assert_eq!(summary.errors, 0);
         queue.assert();
         manual.assert();
-        delete_file.assert();
         post_import.assert();
-        delete_queue.assert();
         history.assert();
     }
 
