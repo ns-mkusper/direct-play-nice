@@ -76,3 +76,42 @@ pub(crate) fn enforce_monotonic_dts(
     }
     Some((current, adjusted))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsmpeg::avcodec::AVPacket;
+
+    #[test]
+    fn enforce_monotonic_dts_allows_increasing_packets() {
+        let mut packet = AVPacket::new();
+        packet.set_dts(11);
+        packet.set_pts(12);
+
+        assert_eq!(enforce_monotonic_dts(&mut packet, Some(10)), None);
+        assert_eq!(packet.dts, 11);
+        assert_eq!(packet.pts, 12);
+    }
+
+    #[test]
+    fn enforce_monotonic_dts_clamps_duplicate_dts_and_pts() {
+        let mut packet = AVPacket::new();
+        packet.set_dts(10);
+        packet.set_pts(10);
+
+        assert_eq!(enforce_monotonic_dts(&mut packet, Some(10)), Some((10, 11)));
+        assert_eq!(packet.dts, 11);
+        assert_eq!(packet.pts, 11);
+    }
+
+    #[test]
+    fn enforce_monotonic_dts_preserves_later_pts() {
+        let mut packet = AVPacket::new();
+        packet.set_dts(10);
+        packet.set_pts(15);
+
+        assert_eq!(enforce_monotonic_dts(&mut packet, Some(10)), Some((10, 11)));
+        assert_eq!(packet.dts, 11);
+        assert_eq!(packet.pts, 15);
+    }
+}

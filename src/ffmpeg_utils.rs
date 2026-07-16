@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
+use log::debug;
 use rsmpeg::avcodec::AVCodecContext;
 use rsmpeg::avformat::AVFormatContextOutput;
 use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
@@ -14,6 +15,7 @@ use std::sync::atomic::AtomicI64;
 
 use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
+use crate::transcoder::timestamp::enforce_monotonic_dts;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
     OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
@@ -770,6 +772,7 @@ pub(crate) fn encode_and_write_frame(
     output_format_context: &mut AVFormatContextOutput,
     stream_index: usize,
     frame: Option<AVFrame>,
+    last_written_dts: &mut Option<i64>,
 ) -> Result<()> {
     encode_context
         .send_frame(frame.as_ref())
@@ -797,6 +800,17 @@ pub(crate) fn encode_and_write_frame(
                 .context("Failed to get stream")?
                 .time_base,
         );
+
+        if let Some((packet_dts, adjusted)) = enforce_monotonic_dts(&mut packet, *last_written_dts)
+        {
+            debug!(
+                "Encoded stream {} adjusted DTS from {} to {}",
+                stream_index, packet_dts, adjusted
+            );
+        }
+        if packet.dts != ffi::AV_NOPTS_VALUE {
+            *last_written_dts = Some(packet.dts);
+        }
 
         output_format_context
             .write_frame(&mut packet)
