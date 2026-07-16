@@ -211,6 +211,7 @@ pub(crate) fn process_video_stream(
             output_format_context,
             stream_processing_context.output_stream_index.as_usize(),
             Some(new_frame),
+            &mut stream_processing_context.last_written_dts,
         )?;
     }
 
@@ -451,6 +452,7 @@ pub(crate) fn process_audio_stream(
                 &mut stream_processing_context.encode_context,
                 stream_processing_context.output_stream_index.as_i32(),
                 &mut stream_processing_context.pts,
+                &mut stream_processing_context.last_written_dts,
             )?;
         }
     }
@@ -845,6 +847,7 @@ pub(crate) fn load_encode_and_write(
     encode_context: &mut AVCodecContext,
     stream_index: i32,
     pts: &mut AtomicI64,
+    last_written_dts: &mut Option<i64>,
 ) -> Result<()> {
     let frame_size = preferred_audio_frame_size(encode_context, fifo.size()).min(fifo.size());
     if frame_size <= 0 {
@@ -875,6 +878,7 @@ pub(crate) fn load_encode_and_write(
         output_format_context,
         stream_index as usize,
         Some(frame),
+        last_written_dts,
     )
     .context("Error encoding audio frame!")?;
 

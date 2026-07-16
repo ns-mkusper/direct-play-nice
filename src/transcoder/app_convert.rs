@@ -917,6 +917,7 @@ fn flush_stream_contexts(
                     output_format_context,
                     context.output_stream_index.as_usize(),
                     None,
+                    &mut context.last_written_dts,
                 )
                 .context("Failed to flush video encoder.")?;
                 if let Some(dev) = context.hw_device_ctx {
@@ -932,6 +933,7 @@ fn flush_stream_contexts(
                             &mut context.encode_context,
                             context.output_stream_index.as_i32(),
                             &mut context.pts,
+                            &mut context.last_written_dts,
                         )
                         .context("Failed to drain buffered audio samples.")?;
                     }
@@ -941,6 +943,7 @@ fn flush_stream_contexts(
                     output_format_context,
                     context.output_stream_index.as_usize(),
                     None,
+                    &mut context.last_written_dts,
                 )
                 .context("Failed to flush audio encoder.")?;
             }
