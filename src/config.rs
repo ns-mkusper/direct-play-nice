@@ -2,9 +2,9 @@
 
 use crate::gpu::HwAccel;
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode, SubtitleFailurePolicy,
-    UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+    AudioQuality, OcrEngine, OcrFormat, OcrPreprocess, PrimaryVideoCriteria, ResizeBackend,
+    ResizeQuality, ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode,
+    SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -56,6 +56,7 @@ pub struct Config {
     pub ocr_default_language: Option<String>,
     pub ocr_engine: Option<OcrEngine>,
     pub ocr_format: Option<OcrFormat>,
+    pub ocr_preprocess: Option<OcrPreprocess>,
     pub ocr_external_command: Option<String>,
     pub ocr_write_srt_sidecar: Option<bool>,
     pub skip_codec_check: Option<bool>,
@@ -245,6 +246,7 @@ mod tests {
             ocr_default_language = "spa"
             ocr_engine = "external"
             ocr_format = "ass"
+            ocr_preprocess = "open-cv-subtitle"
             ocr_external_command = "python3 /opt/ocr/run.py"
             ocr_write_srt_sidecar = true
             "#
@@ -256,11 +258,27 @@ mod tests {
         assert_eq!(cfg.ocr_default_language.as_deref(), Some("spa"));
         assert_eq!(cfg.ocr_engine, Some(OcrEngine::External));
         assert_eq!(cfg.ocr_format, Some(OcrFormat::Ass));
+        assert_eq!(cfg.ocr_preprocess, Some(OcrPreprocess::OpenCvSubtitle));
         assert_eq!(
             cfg.ocr_external_command.as_deref(),
             Some("python3 /opt/ocr/run.py")
         );
         assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
+    }
+
+    #[test]
+    fn parses_opencv5_cuda_ocr_preprocess_setting() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            ocr_preprocess = "open-cv5-cuda-subtitle"
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.ocr_preprocess, Some(OcrPreprocess::OpenCv5CudaSubtitle));
     }
 
     #[test]

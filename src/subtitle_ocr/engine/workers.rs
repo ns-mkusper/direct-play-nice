@@ -13,6 +13,8 @@ use std::sync::{
 };
 use std::thread;
 
+use crate::OcrPreprocess;
+
 use super::detect_nvidia_gpu_indexes;
 use super::{
     create_ocr_engine, force_cpu_execution_providers, ocr_single_stream,
@@ -240,6 +242,7 @@ pub(in crate::subtitle_ocr) struct OcrParallelParams {
     pub(in crate::subtitle_ocr) input_path: String,
     pub(in crate::subtitle_ocr) work_dir: PathBuf,
     pub(in crate::subtitle_ocr) ocr_format: OcrFormat,
+    pub(in crate::subtitle_ocr) ocr_preprocess: OcrPreprocess,
     pub(in crate::subtitle_ocr) video_dimensions: Option<(u32, u32)>,
     pub(in crate::subtitle_ocr) resolved_engine: OcrEngine,
     pub(in crate::subtitle_ocr) ocr_external_command: Option<String>,
@@ -277,6 +280,7 @@ pub(in crate::subtitle_ocr) fn run_ocr_tasks_parallel(
         let assigned_device = batch.assigned_device;
         let worker_tasks = batch.tasks;
         let ocr_format = params.ocr_format;
+        let ocr_preprocess = params.ocr_preprocess;
         let video_dimensions = params.video_dimensions;
         let resolved_engine = params.resolved_engine;
         let total_tasks = params.total_tasks;
@@ -313,6 +317,7 @@ pub(in crate::subtitle_ocr) fn run_ocr_tasks_parallel(
                     language: &task.language,
                     work_dir: &work_dir,
                     ocr_format,
+                    ocr_preprocess,
                     video_dimensions,
                     ocr_engine: resolved_engine,
                 };

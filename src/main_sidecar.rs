@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{subtitle_ocr, OcrEngine, OcrFormat, SubMode};
+use crate::{subtitle_ocr, OcrEngine, OcrFormat, OcrPreprocess, SubMode};
 
 pub(super) struct OcrSidecarRequest<'a> {
     pub(super) input_file: &'a CStr,
@@ -18,6 +18,7 @@ pub(super) struct OcrSidecarRequest<'a> {
     pub(super) default_ocr_language: Option<&'a str>,
     pub(super) ocr_engine: OcrEngine,
     pub(super) ocr_format: OcrFormat,
+    pub(super) ocr_preprocess: OcrPreprocess,
     pub(super) ocr_external_command: Option<&'a str>,
     pub(super) ocr_write_srt_sidecar: bool,
 }
@@ -31,6 +32,7 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
         default_ocr_language,
         ocr_engine,
         ocr_format,
+        ocr_preprocess,
         ocr_external_command,
         ocr_write_srt_sidecar,
     } = request;
@@ -41,15 +43,16 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
 
     let ocr_work_dir = OcrWorkDir::create()?;
 
-    let tracks = subtitle_ocr::convert_bitmap_subtitles(
+    let tracks = subtitle_ocr::convert_bitmap_subtitles(subtitle_ocr::BitmapSubtitleOcrRequest {
         input_file,
-        ocr_work_dir.path(),
+        work_dir: ocr_work_dir.path(),
         sub_mode,
-        default_ocr_language,
+        default_language: default_ocr_language,
         ocr_engine,
         ocr_format,
+        ocr_preprocess,
         ocr_external_command,
-    )?;
+    })?;
     if tracks.is_empty() {
         info!("No bitmap subtitle tracks required OCR; no OCR mux output was produced.");
         return Ok(false);

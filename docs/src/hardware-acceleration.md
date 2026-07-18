@@ -46,10 +46,20 @@ legacy-NVIDIA logic in `auto` mode.
 - Windows DirectML and Apple CoreML provider paths are wired and can be used
   when runtimes are installed[^ort-cuda-ep][^ort-directml-ep][^ort-coreml-ep]
 - CPU fallback is available (or forced with `DPN_OCR_FORCE_CPU=1`)
+- Optional `--ocr-preprocess open-cv-basic|open-cv-subtitle` modes are CPU-side
+  bitmap preprocessing.
+- Optional `--ocr-preprocess open-cv5-cuda-*` modes use the OpenCV 5 CUDA
+  preprocess shim as an adaptive OCR rescue path: PP-OCR runs on the original
+  bitmap first, and CUDA denoise/binarization/morphology is tried only when
+  postprocessed output still has spacing/quality issues. They do not replace
+  ONNX Runtime CUDA/DirectML/CoreML inference.
 
 ### OCR workload guidance by hardware class
 
-- Older NVIDIA families (Maxwell/Pascal-era systems): prefer `--ocr-engine pp-ocr-v3`[^nvidia-cuda-gpus]
+- Older NVIDIA families (Maxwell/Pascal-era systems): prefer
+  `--ocr-engine pp-ocr-v3`[^nvidia-cuda-gpus] and keep OCR inference
+  acceleration through ONNX Runtime CUDA. If OpenCV 5 CUDA preprocessing is
+  used on Maxwell, build it with a CUDA 12.x toolchain and `CUDA_ARCH_BIN=5.2`.
 - Newer NVIDIA families (Turing/Ampere/Ada): start with `--ocr-engine pp-ocr-v4`
 - Non-NVIDIA GPUs: use `auto` and verify provider availability with probe logs;
   if providers are unavailable, OCR falls back to CPU/Tesseract path

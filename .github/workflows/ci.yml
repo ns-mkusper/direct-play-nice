@@ -58,7 +58,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
+          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool libopencv-dev libclang-dev pkg-config
+
+      - name: Export libclang path
+        run: |
+          set -euo pipefail
+          libclang_path="$(ldconfig -p | awk '/libclang\.so/{print $4; exit} /libclang-[0-9]+\.so/{print $4; exit}')"
+          if [ -z "$libclang_path" ]; then
+            echo "::error title=Missing libclang::libclang-dev did not install a discoverable shared library."
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'

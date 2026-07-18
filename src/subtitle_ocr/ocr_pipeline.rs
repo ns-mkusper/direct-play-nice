@@ -102,6 +102,7 @@ pub(super) struct OcrStreamRequest<'a> {
     pub(super) language: &'a str,
     pub(super) work_dir: &'a Path,
     pub(super) ocr_format: OcrFormat,
+    pub(super) ocr_preprocess: OcrPreprocess,
     pub(super) video_dimensions: Option<(u32, u32)>,
     pub(super) ocr_engine: OcrEngine,
 }
@@ -113,6 +114,7 @@ struct CueBuildParams<'a> {
     packet_seq: usize,
     work_dir: &'a Path,
     ocr_format: OcrFormat,
+    ocr_preprocess: OcrPreprocess,
     video_dimensions: Option<(u32, u32)>,
     ocr_engine: OcrEngine,
 }
@@ -283,6 +285,7 @@ fn ocr_single_stream_once(
                 packet_seq,
                 work_dir: request.work_dir,
                 ocr_format: request.ocr_format,
+                ocr_preprocess: request.ocr_preprocess,
                 video_dimensions: request.video_dimensions,
                 ocr_engine: request.ocr_engine,
             };
@@ -313,6 +316,7 @@ fn ocr_single_stream_once(
             packet_seq,
             work_dir: request.work_dir,
             ocr_format: request.ocr_format,
+            ocr_preprocess: request.ocr_preprocess,
             video_dimensions: request.video_dimensions,
             ocr_engine: request.ocr_engine,
         };
@@ -642,7 +646,7 @@ fn extract_subtitle_lines(
             continue;
         }
 
-        let Some((pgm, has_visible_pixels)) = rect_to_pgm(rect, ocr_engine) else {
+        let Some((mut pgm, has_visible_pixels)) = rect_to_pgm(rect, ocr_engine) else {
             continue;
         };
         had_imagery = had_imagery || has_visible_pixels;
@@ -650,8 +654,20 @@ fn extract_subtitle_lines(
             continue;
         }
 
+        if !matches!(
+            params.ocr_preprocess,
+            OcrPreprocess::OpenCv5CudaBasic | OcrPreprocess::OpenCv5CudaSubtitle
+        ) {
+            pgm = preprocess_ocr_pgm(&pgm, params.ocr_preprocess).with_context(|| {
+                format!(
+                    "preprocessing OCR frame for subtitle stream {} packet {} rect {}",
+                    params.stream_index, params.packet_seq, i
+                )
+            })?;
+        }
+
         let rect_color = dominant_color_from_rect(rect);
-        let pgm_path = params.work_dir.join(format!(
+        let mut pgm_path = params.work_dir.join(format!(
             "ocr-s{}-p{}-r{}.pgm",
             params.stream_index, params.packet_seq, i
         ));
@@ -670,17 +686,10 @@ fn extract_subtitle_lines(
                 i
             );
         }
-        let ppocr_text = lines_text_for_quality(&output.lines);
-        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
-        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
-        quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
-        let thresholds = quality_fallback_thresholds(quality_baseline);
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
             && !is_english_language(params.language)
             && language_uses_spaces(params.language);
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
-        let quality_fallback_requested =
-            ppocr_needs_quality_fallback(&output.lines, params.language);
         let raw_postprocess_quality = output_quality_after_postprocess(&output, params.language);
         let raw_postprocess_needs_spacing_fallback =
             output_needs_spacing_after_postprocess(&output, params.language);
@@ -721,16 +730,54 @@ fn extract_subtitle_lines(
                 }
             }
         }
-        let spacing_fallback_requested =
+        let mut spacing_fallback_requested =
             output_needs_spacing_after_postprocess(&output, params.language);
+        let postprocess_quality = output_quality_after_postprocess(&output, params.language);
+        let quality_rescue_requested = postprocess_quality < 0.60
+            && (ppocr_needs_quality_fallback(&output.lines, params.language)
+                || postprocessed_text_needs_quality_fallback(&output, params.language));
+        if (spacing_fallback_requested || quality_rescue_requested)
+            && matches!(
+                params.ocr_preprocess,
+                OcrPreprocess::OpenCv5CudaBasic | OcrPreprocess::OpenCv5CudaSubtitle
+            )
+        {
+            let rescue_reason = match (spacing_fallback_requested, quality_rescue_requested) {
+                (true, true) => "spacing+quality",
+                (true, false) => "spacing",
+                (false, true) => "quality",
+                (false, false) => "unknown",
+            };
+            if let Some(rescued) = try_opencv_cuda_ocr_rescue(
+                engine,
+                &pgm,
+                &pgm_path,
+                params.ocr_preprocess,
+                params.language,
+                ocr_engine,
+                params.stream_index,
+                params.packet_seq,
+                i,
+                rescue_reason,
+                &output,
+            )? {
+                output = rescued.output;
+                pgm_path = rescued.path;
+                spacing_fallback_requested =
+                    output_needs_spacing_after_postprocess(&output, params.language);
+            }
+        }
         let ppocr_text = lines_text_for_quality(&output.lines);
         let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
         let ppocr_postprocessed_text = postprocess_ocr_text(&ppocr_text, params.language);
         let ppocr_postprocessed_quality =
             ocr_text_quality_score(&ppocr_postprocessed_text, params.language);
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
-        let residual_quality_fallback_requested = quality_fallback_requested
-            || postprocessed_text_needs_quality_fallback(&output, params.language);
+        quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
+        let thresholds = quality_fallback_thresholds(quality_baseline);
+        let residual_quality_fallback_requested =
+            ppocr_needs_quality_fallback(&output.lines, params.language)
+                || postprocessed_text_needs_quality_fallback(&output, params.language);
         let should_try_quality_fallback = if spacing_fallback_requested {
             // Severe PP-OCR glue can be consistent for an entire subtitle track,
             // so a dynamic baseline trained on the same bad output will not catch
@@ -1199,6 +1246,140 @@ fn postprocessed_text_needs_quality_fallback(output: &OcrOutput, language: &str)
     suspicious > 0
 }
 
+struct OcrPreprocessRescue {
+    output: OcrOutput,
+    path: PathBuf,
+}
+
+fn try_opencv_cuda_ocr_rescue(
+    engine: &mut dyn SubtitleConverter,
+    original_pgm: &[u8],
+    original_pgm_path: &Path,
+    mode: OcrPreprocess,
+    language: &str,
+    ocr_engine: OcrEngine,
+    stream_index: i32,
+    packet_seq: usize,
+    rect_index: u32,
+    rescue_reason: &str,
+    baseline: &OcrOutput,
+) -> Result<Option<OcrPreprocessRescue>> {
+    debug_assert!(matches!(
+        mode,
+        OcrPreprocess::OpenCv5CudaBasic | OcrPreprocess::OpenCv5CudaSubtitle
+    ));
+
+    let baseline_quality = output_quality_after_postprocess(baseline, language);
+    let baseline_spacing_bad = output_needs_spacing_after_postprocess(baseline, language);
+    let processed_pgm = preprocess_ocr_pgm(original_pgm, mode).with_context(|| {
+        format!(
+            "running OpenCV 5 CUDA OCR rescue for subtitle stream {stream_index} packet {packet_seq} rect {rect_index}"
+        )
+    })?;
+    let rescue_path = opencv_cuda_rescue_path(original_pgm_path);
+    fs::write(&rescue_path, &processed_pgm).with_context(|| {
+        format!(
+            "writing OpenCV 5 CUDA OCR rescue frame {}",
+            rescue_path.display()
+        )
+    })?;
+
+    let mut candidate = engine.extract_lines(&rescue_path, language)?;
+    let discarded = prune_impossible_geometry(&mut candidate.lines, language);
+    if discarded > 0 {
+        debug!(
+            "{} OpenCV 5 CUDA rescue geometry pruning: discarded {} impossible OCR boxes for subtitle stream {} packet {} rect {}",
+            ppocr_engine_label(ocr_engine),
+            discarded,
+            stream_index,
+            packet_seq,
+            rect_index
+        );
+    }
+
+    let candidate_quality = output_quality_after_postprocess(&candidate, language);
+    let candidate_spacing_bad = output_needs_spacing_after_postprocess(&candidate, language);
+    let candidate_empty = candidate
+        .lines
+        .iter()
+        .map(|line| postprocess_ocr_text(&line.text, language))
+        .all(|text| text.trim().is_empty());
+    let candidate_confidence = ppocr_average_confidence(&candidate.lines).unwrap_or(0.0);
+    let use_candidate = should_use_opencv_cuda_rescue(
+        baseline_quality,
+        baseline_spacing_bad,
+        candidate_quality,
+        candidate_spacing_bad,
+        candidate_empty,
+    );
+
+    if use_candidate {
+        info!(
+            "{} OpenCV 5 CUDA rescue: using preprocessed OCR for subtitle stream {} packet {} rect {} (reason={}, candidate_score={:.2}, baseline_score={:.2}, candidate_conf={:.2})",
+            ppocr_engine_label(ocr_engine),
+            stream_index,
+            packet_seq,
+            rect_index,
+            rescue_reason,
+            candidate_quality,
+            baseline_quality,
+            candidate_confidence
+        );
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(original_pgm_path);
+        }
+        Ok(Some(OcrPreprocessRescue {
+            output: candidate,
+            path: rescue_path,
+        }))
+    } else {
+        info!(
+            "{} OpenCV 5 CUDA rescue rejected for subtitle stream {} packet {} rect {} (reason={}, candidate_score={:.2}, baseline_score={:.2}, candidate_spacing_bad={}, baseline_spacing_bad={}, candidate_conf={:.2})",
+            ppocr_engine_label(ocr_engine),
+            stream_index,
+            packet_seq,
+            rect_index,
+            rescue_reason,
+            candidate_quality,
+            baseline_quality,
+            candidate_spacing_bad,
+            baseline_spacing_bad,
+            candidate_confidence
+        );
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&rescue_path);
+        }
+        Ok(None)
+    }
+}
+
+fn opencv_cuda_rescue_path(original_pgm_path: &Path) -> PathBuf {
+    let stem = original_pgm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("ocr");
+    original_pgm_path.with_file_name(format!("{stem}-opencv5-cuda.pgm"))
+}
+
+fn should_use_opencv_cuda_rescue(
+    baseline_quality: f32,
+    baseline_spacing_bad: bool,
+    candidate_quality: f32,
+    candidate_spacing_bad: bool,
+    candidate_empty: bool,
+) -> bool {
+    if candidate_empty || !baseline_quality.is_finite() || !candidate_quality.is_finite() {
+        return false;
+    }
+    if baseline_spacing_bad
+        && !candidate_spacing_bad
+        && candidate_quality + 0.03 >= baseline_quality
+    {
+        return true;
+    }
+    candidate_quality >= baseline_quality + 0.08
+}
+
 fn try_ppocr_word_segmentation_recovery(
     engine: &mut dyn SubtitleConverter,
     pgm: &[u8],
@@ -1331,4 +1512,36 @@ pub(super) fn quality_fallback_thresholds(
         quality: dynamic_quality.clamp(0.0, 1.0),
         confidence: dynamic_confidence.clamp(0.0, 1.0),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencv_cuda_rescue_accepts_spacing_fix_without_quality_loss() {
+        assert!(should_use_opencv_cuda_rescue(
+            0.82, true, 0.80, false, false
+        ));
+    }
+
+    #[test]
+    fn opencv_cuda_rescue_rejects_empty_or_worse_candidate() {
+        assert!(!should_use_opencv_cuda_rescue(
+            0.82, true, 0.79, false, true
+        ));
+        assert!(!should_use_opencv_cuda_rescue(
+            0.82, true, 0.78, false, false
+        ));
+        assert!(!should_use_opencv_cuda_rescue(
+            0.82, false, 0.86, true, false
+        ));
+    }
+
+    #[test]
+    fn opencv_cuda_rescue_accepts_large_quality_gain() {
+        assert!(should_use_opencv_cuda_rescue(
+            0.70, false, 0.78, true, false
+        ));
+    }
 }

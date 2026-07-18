@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      ocr_preprocess_profiles:
+        description: Comma-separated OCR preprocess profiles to benchmark
+        required: false
+        default: none,open-cv-basic,open-cv-subtitle,open-cv5-cuda-basic,open-cv5-cuda-subtitle
+      ocr_max_source_seconds:
+        description: Max source seconds for each OCR benchmark profile
+        required: false
+        default: "600"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -269,6 +278,8 @@ jobs:
       HOME: /tmp/direct-play-nice-gha-home
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
+      OCR_PREPROCESS_PROFILES_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.ocr_preprocess_profiles || 'none' }}
+      OCR_MAX_SOURCE_SECONDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.ocr_max_source_seconds || '600' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -291,12 +302,401 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake nvidia-smi; do
+          for tool in ffmpeg ffprobe nasm autoconf automake libtool zip unzip tar cmake pkg-config nvidia-smi; do
             command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
           done
           if [[ "${#missing[@]}" -ne 0 ]]; then
             echo "::error title=Missing benchmark dependencies::Runner image is missing ${missing[*]}."
             exit 1
+          fi
+          profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+          needs_cpu_opencv=0
+          needs_cuda_opencv=0
+          if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+            needs_cpu_opencv=1
+          fi
+          if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+            needs_cuda_opencv=1
+          fi
+          if [[ "$needs_cpu_opencv" == "1" ]] && ! pkg-config --exists opencv4; then
+            if command -v apt-get >/dev/null 2>&1; then
+              apt_cmd=(apt-get)
+              if command -v sudo >/dev/null 2>&1; then
+                apt_cmd=(sudo apt-get)
+              fi
+              "${apt_cmd[@]}" update -y
+              "${apt_cmd[@]}" --assume-yes install libopencv-dev libclang-dev pkg-config
+            fi
+          fi
+          if [[ "$needs_cpu_opencv" == "1" ]] && ! pkg-config --exists opencv4; then
+            echo "::error title=Missing OpenCV CPU development package::CPU OpenCV preprocess profiles require pkg-config opencv4 (for example libopencv-dev)."
+            echo "sudo: $(command -v sudo || true)"
+            echo "apt-get: $(command -v apt-get || true)"
+            exit 1
+          fi
+          if [[ "$needs_cuda_opencv" == "1" ]]; then
+            opencv5_cuda_prefix="${DPN_OPENCV5_CUDA_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-opencv5-cuda}"
+            if [[ -z "${DPN_OPENCV5_CUDA_PREFIX:-}" && -f /opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so ]]; then
+              opencv5_cuda_prefix=/opt/direct-play-nice/opencv5-cuda
+            fi
+            shim="$opencv5_cuda_prefix/lib/libdpn_opencv5_cuda_preprocess.so"
+            echo "OpenCV 5 CUDA preprocess requested; shim path: $shim"
+            if [[ ! -f "$shim" ]]; then
+              use_nvcc() {
+                local cuda_bin="$1"
+                if [[ ! -x "$cuda_bin/nvcc" ]] || ! "$cuda_bin/nvcc" --version | grep -q 'release 12\.'; then
+                  return 1
+                fi
+                echo "PATH=$cuda_bin:$PATH" >> "$GITHUB_ENV"
+                export PATH="$cuda_bin:$PATH"
+                echo "CUDA_HOME=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
+                echo "CUDA_PATH=$(dirname "$cuda_bin")" >> "$GITHUB_ENV"
+                export CUDA_HOME="$(dirname "$cuda_bin")"
+                export CUDA_PATH="$CUDA_HOME"
+                if [[ -d "$CUDA_HOME/lib64" || -d "$CUDA_HOME/lib" ]]; then
+                  echo "LD_LIBRARY_PATH=$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                  export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/lib:${LD_LIBRARY_PATH:-}"
+                fi
+                return 0
+              }
+              find_nvcc() {
+                local cuda_bin nvcc_path
+                for cuda_bin in /usr/local/cuda-12*/bin /usr/local/cuda/bin /opt/cuda/bin /opt/direct-play-nice/cuda12-toolkit/bin; do
+                  use_nvcc "$cuda_bin" && return 0
+                done
+                if nvcc_path="$(command -v nvcc 2>/dev/null)"; then
+                  use_nvcc "$(dirname "$nvcc_path")" && return 0
+                fi
+                return 1
+              }
+              fetch_url() {
+                local url="$1" dest="$2"
+                if command -v curl >/dev/null 2>&1; then
+                  curl --fail --location --retry 3 --retry-delay 5 --output "$dest" "$url"
+                elif command -v wget >/dev/null 2>&1; then
+                  wget --tries=3 --waitretry=5 --output-document "$dest" "$url"
+                else
+                  return 1
+                fi
+              }
+              use_cuda_host_compiler() {
+                local cxx="$1" cc="${2:-}"
+                if [[ ! -x "$cxx" ]]; then
+                  cxx="$(command -v "$cxx" 2>/dev/null || true)"
+                fi
+                [[ -n "$cxx" && -x "$cxx" ]] || return 1
+                if [[ -z "$cc" ]]; then
+                  case "$(basename "$cxx")" in
+                    g++*) cc="$(dirname "$cxx")/$(basename "$cxx" | sed 's/g++/gcc/')" ;;
+                    *-g++) cc="${cxx%-g++}-gcc" ;;
+                  esac
+                fi
+                if [[ -n "$cc" && ! -x "$cc" ]]; then
+                  cc="$(command -v "$cc" 2>/dev/null || true)"
+                fi
+                export DPN_OPENCV5_CUDA_HOST_CXX="$cxx"
+                echo "Using CUDA host C++ compiler: $DPN_OPENCV5_CUDA_HOST_CXX ($("$cxx" -dumpfullversion -dumpversion 2>/dev/null | head -n 1 || true))"
+                if [[ -n "$cc" && -x "$cc" ]]; then
+                  export DPN_OPENCV5_CUDA_HOST_CC="$cc"
+                  echo "Using CUDA host C compiler: $DPN_OPENCV5_CUDA_HOST_CC"
+                fi
+                return 0
+              }
+              cuda_host_compiler_works() {
+                local cxx="$1" smoke_dir smoke_cu smoke_o smoke_log
+                if ! command -v nvcc >/dev/null 2>&1; then
+                  return 0
+                fi
+                smoke_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/dpn-cuda-host-smoke.XXXXXX")"
+                smoke_cu="$smoke_dir/smoke.cu"
+                smoke_o="$smoke_dir/smoke.o"
+                smoke_log="$smoke_dir/nvcc.log"
+                printf '%s\n' \
+                  '#include <cuda_runtime.h>' \
+                  '#include <cmath>' \
+                  '__global__ void dpn_smoke_kernel(float *out) { out[0] = std::cos(0.0f); }' \
+                  > "$smoke_cu"
+                if nvcc -ccbin "$cxx" --allow-unsupported-compiler -std=c++17 -arch=sm_52 -c "$smoke_cu" -o "$smoke_o" >"$smoke_log" 2>&1; then
+                  rm -rf "$smoke_dir"
+                  return 0
+                fi
+                echo "CUDA host compiler smoke test failed for $cxx:"
+                sed -n '1,120p' "$smoke_log"
+                rm -rf "$smoke_dir"
+                return 1
+              }
+              find_compatible_cuda_host_compiler() {
+                local candidate version major
+                for candidate in \
+                  "${DPN_OPENCV5_CUDA_HOST_CXX:-}" \
+                  "${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13/env/bin/x86_64-conda-linux-gnu-g++" \
+                  g++-13 g++-12 g++-11 g++-10 \
+                  /usr/bin/g++-13 /usr/bin/g++-12 /usr/bin/g++-11 /usr/bin/g++-10; do
+                  [[ -n "$candidate" ]] || continue
+                  if [[ ! -x "$candidate" ]]; then
+                    candidate="$(command -v "$candidate" 2>/dev/null || true)"
+                  fi
+                  [[ -n "$candidate" && -x "$candidate" ]] || continue
+                  version="$("$candidate" -dumpfullversion -dumpversion 2>/dev/null | head -n 1 || true)"
+                  major="${version%%.*}"
+                  if [[ "$major" =~ ^[0-9]+$ && "$major" -le 13 ]] && cuda_host_compiler_works "$candidate"; then
+                    use_cuda_host_compiler "$candidate" && return 0
+                  fi
+                done
+                return 1
+              }
+              install_conda_gcc13() {
+                local mamba_root mamba_archive mamba env cxx
+                case "$(uname -m)" in
+                  x86_64) ;;
+                  *)
+                    echo "Conda GCC 13 bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                mamba_root="${RUNNER_TEMP:-/tmp}/direct-play-nice-gcc13"
+                mamba="$mamba_root/bin/micromamba"
+                env="$mamba_root/env"
+                cxx="$env/bin/x86_64-conda-linux-gnu-g++"
+                if [[ -x "$cxx" ]]; then
+                  cuda_host_compiler_works "$cxx" && use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc" && return 0
+                fi
+                mkdir -p "$mamba_root"
+                if [[ ! -x "$mamba" ]]; then
+                  mamba_archive="$mamba_root/micromamba.tar.bz2"
+                  echo "Downloading micromamba for CUDA-compatible GCC 13 bootstrap."
+                  fetch_url "https://micro.mamba.pm/api/micromamba/linux-64/latest" "$mamba_archive" || return 1
+                  tar -xjf "$mamba_archive" -C "$mamba_root" bin/micromamba || return 1
+                fi
+                echo "Installing GCC/G++ 13 locally for CUDA 12 nvcc."
+                MAMBA_ROOT_PREFIX="$mamba_root/root" "$mamba" create --yes --prefix "$env" --channel conda-forge gcc_linux-64=13 gxx_linux-64=13 || return 1
+                if [[ -d "$env/lib" ]]; then
+                  echo "LD_LIBRARY_PATH=$env/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                  export LD_LIBRARY_PATH="$env/lib:${LD_LIBRARY_PATH:-}"
+                fi
+                cuda_host_compiler_works "$cxx" && use_cuda_host_compiler "$cxx" "$env/bin/x86_64-conda-linux-gnu-gcc"
+              }
+              configure_cuda_host_compiler() {
+                if find_compatible_cuda_host_compiler; then
+                  return 0
+                fi
+                echo "No GCC/G++ <=13 host compiler found for CUDA 12; attempting local conda GCC 13 bootstrap."
+                install_conda_gcc13 || {
+                  echo "CUDA host compiler bootstrap failed; OpenCV CUDA build will try the runner default compiler."
+                  return 1
+                }
+              }
+              ensure_runfile_libxml2() {
+                if ldconfig -p 2>/dev/null | grep -q 'libxml2[.]so[.]2'; then
+                  return 0
+                fi
+                if [[ -e /usr/lib/x86_64-linux-gnu/libxml2.so.2 || -e /usr/lib64/libxml2.so.2 || -e /usr/lib/libxml2.so.2 ]]; then
+                  return 0
+                fi
+                if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-deb >/dev/null 2>&1; then
+                  echo "Cannot bootstrap libxml2 for CUDA runfile: apt-get or dpkg-deb is unavailable."
+                  return 1
+                fi
+                local deps_prefix deps_work deb lib_dir
+                deps_prefix="${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda-runfile-deps"
+                deps_work="$deps_prefix/download"
+                mkdir -p "$deps_work" "$deps_prefix/root"
+                if ! find "$deps_prefix/root" -name 'libxml2.so.2*' -print -quit | grep -q .; then
+                  echo "Downloading libxml2 locally for the CUDA runfile installer."
+                  (cd "$deps_work" && apt-get download libxml2)
+                  deb="$(find "$deps_work" -maxdepth 1 -name 'libxml2*.deb' | head -n 1)"
+                  [[ -n "$deb" ]]
+                  dpkg-deb -x "$deb" "$deps_prefix/root"
+                fi
+                lib_dir="$(dirname "$(find "$deps_prefix/root" -name 'libxml2.so.2*' | head -n 1)")"
+                if [[ -z "$lib_dir" || ! -d "$lib_dir" ]]; then
+                  echo "Unable to locate locally extracted libxml2.so.2."
+                  return 1
+                fi
+                echo "LD_LIBRARY_PATH=$lib_dir:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+                export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
+              }
+              install_redist_cuda_toolkit() {
+                local cuda_prefix redist_base redist_cache redist_work arch component archive rel sha archive_path extract_root
+                cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
+                if use_nvcc "$cuda_prefix/bin"; then
+                  echo "Using existing CUDA 12 redist toolkit at $cuda_prefix."
+                  return 0
+                fi
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  *)
+                    echo "CUDA redist bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                redist_base="${DPN_OPENCV5_CUDA_REDIST_BASE_URL:-https://developer.download.nvidia.com/compute/cuda/redist}"
+                redist_cache="${DPN_OPENCV5_CUDA_REDIST_CACHE:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-redist-cache}"
+                redist_work="${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-redist-work"
+                rm -rf "$cuda_prefix" "$redist_work"
+                mkdir -p "$cuda_prefix" "$redist_cache" "$redist_work"
+                local packages=(
+                  'cuda_cccl|cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.6.77-archive.tar.xz|9c3145ef01f73e50c0f5fcf923f0899c847f487c529817daa8f8b1a3ecf20925'
+                  'cuda_cudart|cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.6.77-archive.tar.xz|f74689258a60fd9c5bdfa7679458527a55e22442691ba678dcfaeffbf4391ef9'
+                  'cuda_nvcc|cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.6.85-archive.tar.xz|840deff234d9bef20d6856439c49881cb4f29423b214f9ecd2fa59b7ac323817'
+                  'cuda_nvrtc|cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.6.85-archive.tar.xz|a4289ba86f0deeccf4e1d94c58559eae4c8184fcb6eaade8fcab45584e6cf402'
+                  'cuda_nvtx|cuda_nvtx/linux-x86_64/cuda_nvtx-linux-x86_64-12.6.77-archive.tar.xz|d97dd4f3bbc23e57302990c1573f737bea55f3174b2c8e3d19067d9b189a446b'
+                  'libcublas|libcublas/linux-x86_64/libcublas-linux-x86_64-12.6.4.1-archive.tar.xz|ec682bac6387f9cdfd0c20b25a16cd6ed0b8b3b7ff42be9eaeb41828e3a72572'
+                  'libcufft|libcufft/linux-x86_64/libcufft-linux-x86_64-11.3.0.4-archive.tar.xz|63a046d51a45388e10612c3fd423bb7fa5127496aa9bb3951a609e8b9d996852'
+                  'libnpp|libnpp/linux-x86_64/libnpp-linux-x86_64-12.3.1.54-archive.tar.xz|0a7f5bb81e65e60775f831990a567394682a209694b396a4e9233a6c91db65e3'
+                  'libnvjitlink|libnvjitlink/linux-x86_64/libnvjitlink-linux-x86_64-12.6.85-archive.tar.xz|1055077ce594fad6fd86d23604c60c64b673cdc8dd01fae7e0cbec633c35930d'
+                )
+                for component in "${packages[@]}"; do
+                  IFS='|' read -r component rel sha <<< "$component"
+                  archive="$(basename "$rel")"
+                  archive_path="$redist_cache/$archive"
+                  if [[ ! -s "$archive_path" ]]; then
+                    echo "Downloading CUDA 12 redist component $component."
+                    fetch_url "$redist_base/$rel" "$archive_path" || return 1
+                  else
+                    echo "Using cached CUDA 12 redist component $component."
+                  fi
+                  if command -v sha256sum >/dev/null 2>&1; then
+                    echo "$sha  $archive_path" | sha256sum --check --status || return 1
+                  fi
+                  rm -rf "$redist_work/$component"
+                  mkdir -p "$redist_work/$component"
+                  tar -xJf "$archive_path" -C "$redist_work/$component"
+                  extract_root="$(find "$redist_work/$component" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+                  [[ -n "$extract_root" ]]
+                  cp -a "$extract_root"/. "$cuda_prefix"/
+                done
+                if [[ ! -e "$cuda_prefix/lib64" && -d "$cuda_prefix/lib" ]]; then
+                  ln -s lib "$cuda_prefix/lib64"
+                fi
+                use_nvcc "$cuda_prefix/bin"
+              }
+              install_runfile_cuda_toolkit() {
+                local cuda_prefix runfile_url runfile_tmp arch
+                cuda_prefix="${DPN_OPENCV5_CUDA_TOOLKIT_PREFIX:-${RUNNER_TEMP:-/tmp}/direct-play-nice-cuda12-toolkit}"
+                if use_nvcc "$cuda_prefix/bin"; then
+                  echo "Using existing CUDA 12 runfile toolkit at $cuda_prefix."
+                  return 0
+                fi
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  *)
+                    echo "CUDA runfile bootstrap supports x86_64 runners only; detected $(uname -m)."
+                    return 1
+                    ;;
+                esac
+                runfile_url="${DPN_OPENCV5_CUDA_RUNFILE_URL:-https://developer.download.nvidia.com/compute/cuda/12.6.3/local_installers/cuda_12.6.3_560.35.05_linux.run}"
+                runfile_tmp="${DPN_OPENCV5_CUDA_RUNFILE_PATH:-${RUNNER_TEMP:-/tmp}/$(basename "$runfile_url")}"
+                mkdir -p "$(dirname "$runfile_tmp")"
+                if [[ ! -s "$runfile_tmp" ]]; then
+                  echo "Downloading CUDA 12 toolkit runfile for $arch from $runfile_url."
+                  fetch_url "$runfile_url" "$runfile_tmp" || return 1
+                else
+                  echo "Using cached CUDA 12 toolkit runfile at $runfile_tmp."
+                fi
+                chmod +x "$runfile_tmp"
+                ensure_runfile_libxml2 || return 1
+                rm -rf "$cuda_prefix"
+                mkdir -p "$cuda_prefix"
+                echo "Installing CUDA 12 toolkit from runfile into $cuda_prefix without sudo."
+                sh "$runfile_tmp" --silent --toolkit --toolkitpath="$cuda_prefix" --override
+                use_nvcc "$cuda_prefix/bin"
+              }
+              install_cuda_toolkit() {
+                echo "Searching for CUDA 12 nvcc."
+                if find_nvcc; then
+                  echo "Found CUDA 12 nvcc at $(command -v nvcc)."
+                  return 0
+                fi
+                if [[ "${DPN_OPENCV5_CUDA_INSTALL_TOOLKIT:-1}" != "1" ]]; then
+                  echo "CUDA toolkit bootstrap is disabled by DPN_OPENCV5_CUDA_INSTALL_TOOLKIT."
+                  return 1
+                fi
+                echo "Attempting NVIDIA CUDA 12 runfile toolkit bootstrap."
+                install_runfile_cuda_toolkit && return 0
+                echo "NVIDIA CUDA 12 runfile toolkit bootstrap did not provide nvcc."
+                echo "Attempting NVIDIA CUDA 12 redist toolkit bootstrap."
+                install_redist_cuda_toolkit && return 0
+                echo "NVIDIA CUDA 12 redist toolkit bootstrap did not provide nvcc."
+                if ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
+                  echo "Passwordless sudo apt fallback is unavailable."
+                  return 1
+                fi
+                if [[ -r /etc/os-release ]]; then
+                  . /etc/os-release
+                fi
+                if [[ "${ID:-}" != "ubuntu" ]]; then
+                  return 1
+                fi
+                local arch repo_id keyring_url keyring_tmp fetch_status package installed
+                case "$(uname -m)" in
+                  x86_64) arch=x86_64 ;;
+                  aarch64) arch=sbsa ;;
+                  *) return 1 ;;
+                esac
+                repo_id="ubuntu${VERSION_ID//./}"
+                keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/${repo_id}/${arch}/cuda-keyring_1.1-1_all.deb"
+                keyring_tmp="$(mktemp)"
+                fetch_status=1
+                if command -v curl >/dev/null 2>&1; then
+                  curl -fsSL "$keyring_url" -o "$keyring_tmp" && fetch_status=0
+                elif command -v wget >/dev/null 2>&1; then
+                  wget -qO "$keyring_tmp" "$keyring_url" && fetch_status=0
+                fi
+                if [[ "$fetch_status" -eq 0 ]]; then
+                  sudo dpkg -i "$keyring_tmp"
+                fi
+                rm -f "$keyring_tmp"
+                sudo apt-get update -y
+                installed=0
+                for package in ${DPN_OPENCV5_CUDA_TOOLKIT_PACKAGE:-cuda-toolkit-12-6} cuda-toolkit-12-5 cuda-toolkit-12-4 cuda-toolkit-12-3 cuda-toolkit-12-2; do
+                  if sudo DEBIAN_FRONTEND=noninteractive apt-get --assume-yes install --no-install-recommends "$package"; then
+                    installed=1
+                    break
+                  fi
+                done
+                [[ "$installed" -eq 1 ]] && find_nvcc
+              }
+              install_cuda_toolkit || echo "CUDA toolkit provisioning did not provide CUDA 12 nvcc."
+              configure_cuda_host_compiler || true
+              missing_cuda_build=()
+              for tool in git cmake nvcc; do
+                command -v "$tool" >/dev/null 2>&1 || missing_cuda_build+=("$tool")
+              done
+              if [[ -z "${DPN_OPENCV5_CUDA_HOST_CXX:-}" ]] && ! command -v c++ >/dev/null 2>&1; then
+                missing_cuda_build+=("c++")
+              fi
+              if [[ "${#missing_cuda_build[@]}" -ne 0 ]]; then
+                echo "::error title=Missing OpenCV 5 CUDA build dependencies::Runner image is missing ${missing_cuda_build[*]}. Install CUDA 12.x toolkit/nvcc, set DPN_OPENCV5_CUDA_RUNFILE_URL to a CUDA 12 runfile, or provide curl/wget so the workflow can install a CUDA 12 runfile or redist toolkit without sudo."
+                exit 1
+              fi
+              if [[ -n "${DPN_OPENCV5_CUDA_HOST_CXX:-}" ]]; then
+                echo "DPN_OPENCV5_CUDA_HOST_CXX=$DPN_OPENCV5_CUDA_HOST_CXX" >> "$GITHUB_ENV"
+              fi
+              if [[ -n "${DPN_OPENCV5_CUDA_HOST_CC:-}" ]]; then
+                echo "DPN_OPENCV5_CUDA_HOST_CC=$DPN_OPENCV5_CUDA_HOST_CC" >> "$GITHUB_ENV"
+              fi
+              nvcc --version
+              echo "OpenCV 5 CUDA preprocess shim missing; provisioning $shim."
+              build_cmd=(scripts/opencv-tools/build_opencv5_cuda.sh --prefix "$opencv5_cuda_prefix" --cuda-arch 5.2 --jobs "${DPN_OPENCV5_CUDA_BUILD_JOBS:-2}")
+              if [[ -w "$opencv5_cuda_prefix" || ( ! -e "$opencv5_cuda_prefix" && -w "$(dirname "$opencv5_cuda_prefix")" ) ]]; then
+                "${build_cmd[@]}"
+              elif command -v sudo >/dev/null 2>&1; then
+                sudo env "PATH=$PATH" "CUDA_HOME=${CUDA_HOME:-}" "CUDA_PATH=${CUDA_PATH:-}" "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}" "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}" "${build_cmd[@]}"
+              else
+                echo "::error title=Cannot provision OpenCV 5 CUDA::No write access to $opencv5_cuda_prefix and sudo is unavailable."
+                exit 1
+              fi
+            fi
+            if [[ ! -f "$shim" ]]; then
+              echo "::error title=Missing OpenCV 5 CUDA preprocess shim::CUDA OpenCV preprocess profiles require $shim after provisioning."
+              exit 1
+            fi
+            echo "DPN_OPENCV5_CUDA_PREPROCESS_LIB=$shim" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=$opencv5_cuda_prefix/lib:$opencv5_cuda_prefix/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+            if ! PKG_CONFIG_PATH="$opencv5_cuda_prefix/lib/pkgconfig:$opencv5_cuda_prefix/lib64/pkgconfig:${PKG_CONFIG_PATH:-}" pkg-config --exists opencv5; then
+              echo "::warning title=Missing opencv5 pkg-config::The runtime shim exists, but pkg-config opencv5 was not found under $opencv5_cuda_prefix. Build can continue because the Rust CUDA path loads the shim dynamically."
+            fi
           fi
           ffmpeg -hide_banner -encoders | grep -q 'h264_nvenc'
 
@@ -388,6 +788,7 @@ jobs:
           lib_paths+=(/usr/lib)
           joined_paths="$(IFS=:; echo "${lib_paths[*]}")"
           echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so" >> "$GITHUB_ENV"
 
       - name: Validate VCPKG FFmpeg CUDA resize support
         if: steps.cached-bin.outputs.missing == 'true'
@@ -421,7 +822,7 @@ jobs:
           echo "Validated vcpkg FFmpeg scale_cuda support in $VCPKG_ROOT."
 
       - name: Export LIBCLANG_PATH
-        if: steps.cached-bin.outputs.missing == 'true'
+        if: steps.cached-bin.outputs.missing == 'true' || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-basic') || contains(env.OCR_PREPROCESS_PROFILES_INPUT, 'open-cv-subtitle')
         shell: bash
         run: |
           set -euo pipefail
@@ -457,7 +858,22 @@ jobs:
           fi
           cargo "${cargo_toolchain[@]}" --version
           rustc "${cargo_toolchain[@]}" --version
-          cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
+          features=()
+          profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+          if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+            features+=(opencv-preprocess)
+          fi
+          if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+            features+=(opencv-cuda-preprocess)
+            export DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+            export LD_LIBRARY_PATH="/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:${LD_LIBRARY_PATH:-}"
+          fi
+          build_features=()
+          if [[ "${#features[@]}" -gt 0 ]]; then
+            feature_csv="$(IFS=,; echo "${features[*]}")"
+            build_features=(--features "$feature_csv")
+          fi
+          cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           test -x target/release/direct_play_nice
 
       - name: Validate benchmark source file
@@ -488,7 +904,22 @@ jobs:
             if cargo +stable --version >/dev/null 2>&1; then
               cargo_toolchain=(+stable)
             fi
-            cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice --verbose
+            features=()
+            profiles=",${OCR_PREPROCESS_PROFILES_INPUT:-none},"
+            if [[ "$profiles" == *",open-cv-basic,"* || "$profiles" == *",open-cv-subtitle,"* ]]; then
+              features+=(opencv-preprocess)
+            fi
+            if [[ "$profiles" == *",open-cv5-cuda-basic,"* || "$profiles" == *",open-cv5-cuda-subtitle,"* ]]; then
+              features+=(opencv-cuda-preprocess)
+              export DPN_OPENCV5_CUDA_PREPROCESS_LIB=/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so
+              export LD_LIBRARY_PATH="/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:${LD_LIBRARY_PATH:-}"
+            fi
+            build_features=()
+            if [[ "${#features[@]}" -gt 0 ]]; then
+              feature_csv="$(IFS=,; echo "${features[*]}")"
+              build_features=(--features "$feature_csv")
+            fi
+            cargo "${cargo_toolchain[@]}" build --release --bin direct_play_nice "${build_features[@]}" --verbose
           fi
           if [[ ! -x "$bin" ]]; then
             echo "::error title=Missing benchmark binary::Binary is not executable: $bin"
@@ -525,6 +956,8 @@ jobs:
         run: |
           set -euo pipefail
           cuda_runtime_paths=(
+            /opt/direct-play-nice/opencv5-cuda/lib
+            /opt/direct-play-nice/opencv5-cuda/lib64
             /opt/direct-play-nice/cudnn8-runtime/usr/lib
             /opt/direct-play-nice/cudnn9-runtime/lib
             /opt/direct-play-nice/nvrtc12-runtime/lib
@@ -538,49 +971,101 @@ jobs:
           echo "DPN_BENCH_CUDA_LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$joined_paths:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
 
-      - name: Run OCR benchmark (GPU attempt)
+      - name: Run OCR benchmark matrix (GPU attempt)
         id: ocr_gpu
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           bin="${{ steps.cached-bin.outputs.bin_path }}"
-          bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
-            --bin "$bin" \
-            --source "${{ steps.source.outputs.path }}" \
-            --run-dir benchmark_artifacts/ocr_gpu \
-            --output-name ocr.mp4 \
-            --ocr-engine pp-ocr-v3 \
-            --sub-mode force \
-            --max-source-seconds 600 \
-            --sample-ms "200" \
-            --ocr-max-jobs 2 \
-            --jobs-per-gpu 1 \
-            --cuda-devices 0,1 \
-            --require-gpu \
-            --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
-            --env "DPN_OCR_SKIP_CLS=1" \
-            --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
-            --env "DPN_OCR_FORCE_CPU=0" \
-            --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=0" \
-            --env "DPN_OCR_CUDA_CONV_ALGO=heuristic"
+          profiles_raw="${OCR_PREPROCESS_PROFILES_INPUT:-none}"
+          max_source_seconds="${OCR_MAX_SOURCE_SECONDS_INPUT:-600}"
+          mkdir -p benchmark_artifacts/ocr_profiles
+          matrix_summary="benchmark_artifacts/OCR_PREPROCESS_MATRIX.md"
+          {
+            echo "# OCR Preprocess GPU Matrix"
+            echo
+            echo "- Profiles: \`${profiles_raw}\`"
+            echo "- Max source seconds: \`${max_source_seconds}\`"
+            echo
+          } > "$matrix_summary"
+
+          IFS=',' read -r -a profiles <<< "$profiles_raw"
+          failures=0
+          for raw_profile in "${profiles[@]}"; do
+            profile="$(echo "$raw_profile" | xargs)"
+            [[ -n "$profile" ]] || continue
+            safe_profile="${profile//[^A-Za-z0-9_.-]/_}"
+            run_dir="benchmark_artifacts/ocr_profiles/${safe_profile}"
+            mkdir -p "$run_dir"
+            set +e
+            bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
+              --bin "$bin" \
+              --source "${{ steps.source.outputs.path }}" \
+              --run-dir "$run_dir" \
+              --output-name "ocr-${safe_profile}.mp4" \
+              --ocr-engine pp-ocr-v3 \
+              --ocr-preprocess "$profile" \
+              --sub-mode force \
+              --max-source-seconds "$max_source_seconds" \
+              --sample-ms "200" \
+              --ocr-max-jobs 2 \
+              --jobs-per-gpu 1 \
+              --cuda-devices 0,1 \
+              --require-gpu \
+              --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
+              --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+              --env "DPN_OCR_SKIP_CLS=1" \
+              --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
+              --env "DPN_OCR_FORCE_CPU=0" \
+              --env "DPN_OCR_DISABLE_CUDA_SAFETY_BRAKES=0" \
+              --env "DPN_OCR_CUDA_CONV_ALGO=heuristic" \
+              --env "DPN_OPENCV5_CUDA_PREPROCESS_LIB=${DPN_OPENCV5_CUDA_PREPROCESS_LIB:-/opt/direct-play-nice/opencv5-cuda/lib/libdpn_opencv5_cuda_preprocess.so}"
+            status=$?
+            set -e
+            worker_plan="$(grep -E 'OCR worker plan:' "$run_dir/run.log" | tail -n 1 || true)"
+            elapsed="$(grep '^ELAPSED_SEC=' "$run_dir/meta.txt" 2>/dev/null | cut -d= -f2- || true)"
+            gpu_ok=false
+            if [[ "$worker_plan" == *"gpu_available=true"* ]]; then
+              gpu_ok=true
+            fi
+            if [[ "$status" -ne 0 || "$gpu_ok" != true ]]; then
+              failures=$((failures + 1))
+            fi
+            {
+              echo "## ${profile}"
+              echo "- Exit status: \`${status}\`"
+              echo "- GPU available: \`${gpu_ok}\`"
+              echo "- Elapsed seconds: \`${elapsed:-unknown}\`"
+              echo "- Worker plan: \`${worker_plan}\`"
+              echo "- Run dir: \`${run_dir}\`"
+              echo
+            } >> "$matrix_summary"
+          done
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "::error title=OCR preprocess GPU matrix failed::${failures} profile(s) failed or did not report gpu_available=true."
+            exit 1
+          fi
 
       - name: Validate OCR benchmark used GPU
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if ! grep -q "OCR worker plan:.*gpu_available=true" benchmark_artifacts/ocr_gpu/run.log; then
-            echo "::warning title=OCR GPU attempt did not report gpu_available=true::Inspect benchmark_artifacts/ocr_gpu/run.log."
-          fi
+          shopt -s nullglob
+          for log in benchmark_artifacts/ocr_profiles/*/run.log; do
+            if ! grep -q "OCR worker plan:.*gpu_available=true" "$log"; then
+              echo "::warning title=OCR GPU profile did not report gpu_available=true::Inspect $log."
+            fi
+          done
 
       - name: Run OCR benchmark (CPU fallback)
         if: steps.ocr_gpu.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
-          echo "::warning title=GPU OCR failed::Falling back to CPU OCR benchmark for this run."
+          echo "::warning title=GPU OCR matrix failed::Falling back to CPU OCR benchmark for this run."
           bin="${{ steps.cached-bin.outputs.bin_path }}"
           bash scripts/ocr-tools/run_ocr_stress_benchmark.sh \
             --bin "$bin" \
@@ -588,14 +1073,15 @@ jobs:
             --run-dir benchmark_artifacts/ocr \
             --output-name ocr.mp4 \
             --ocr-engine pp-ocr-v3 \
+            --ocr-preprocess none \
             --sub-mode force \
-            --max-source-seconds 600 \
+            --max-source-seconds "${OCR_MAX_SOURCE_SECONDS_INPUT:-600}" \
             --sample-ms "200" \
             --ocr-max-jobs 2 \
             --jobs-per-gpu 1 \
             --cuda-devices 0,1 \
             --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_SKIP_CLS=1" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_FORCE_CPU=1"
@@ -605,8 +1091,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf benchmark_artifacts/ocr
-          cp -a benchmark_artifacts/ocr_gpu benchmark_artifacts/ocr
+          rm -rf benchmark_artifacts/ocr benchmark_artifacts/ocr_gpu
+          if [[ -d benchmark_artifacts/ocr_profiles/none ]]; then
+            cp -a benchmark_artifacts/ocr_profiles/none benchmark_artifacts/ocr
+          else
+            first_profile="$(find benchmark_artifacts/ocr_profiles -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)"
+            test -n "$first_profile"
+            cp -a "$first_profile" benchmark_artifacts/ocr
+          fi
+          cp -a benchmark_artifacts/ocr benchmark_artifacts/ocr_gpu
 
       - name: Run OCR spacing regression benchmark
         shell: bash
@@ -624,15 +1117,16 @@ jobs:
             --run-dir benchmark_artifacts/ocr_spacing \
             --output-name ocr-spacing.mp4 \
             --ocr-engine pp-ocr-v3 \
+            --ocr-preprocess none \
             --sub-mode force \
-            --max-source-seconds 600 \
+            --max-source-seconds "${OCR_MAX_SOURCE_SECONDS_INPUT:-600}" \
             --sample-ms "200" \
             --ocr-max-jobs 2 \
             --jobs-per-gpu 1 \
             --cuda-devices 0,1 \
             --min-ocr-space-rate 0.10 \
             --ort-lib /opt/direct-play-nice/ort116-runtime/lib \
-            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
+            --env "LD_LIBRARY_PATH=/opt/direct-play-nice/opencv5-cuda/lib:/opt/direct-play-nice/opencv5-cuda/lib64:/opt/direct-play-nice/cudnn8-runtime/usr/lib:/opt/direct-play-nice/cudnn9-runtime/lib:/opt/direct-play-nice/nvrtc12-runtime/lib:/opt/direct-play-nice/cuda12-runtime/lib:/opt/direct-play-nice/ort116-runtime/lib:/opt/direct-play-nice/ort122-runtime/lib:/opt/cuda/lib64:/usr/lib:${LD_LIBRARY_PATH:-}" \
             --env "DPN_OCR_SKIP_CLS=1" \
             --env "DPN_OCR_ALLOW_LEGACY_CUDA=1" \
             --env "DPN_OCR_FORCE_CPU=1"
@@ -700,6 +1194,9 @@ jobs:
           [[ -f benchmark_artifacts/ocr_spacing/run.log ]] && cp -f benchmark_artifacts/ocr_spacing/run.log benchmark_artifacts/OCR_SPACING_BENCHMARK.log || true
           [[ -f benchmark_artifacts/ocr_gpu/run.log ]] && cp -f benchmark_artifacts/ocr_gpu/run.log benchmark_artifacts/OCR_GPU_ATTEMPT.log || true
           [[ -f benchmark_artifacts/ocr_gpu/benchmark_summary.md ]] && cp -f benchmark_artifacts/ocr_gpu/benchmark_summary.md benchmark_artifacts/OCR_GPU_ATTEMPT.md || true
+          if [[ -d benchmark_artifacts/ocr_profiles ]]; then
+            tar -czf benchmark_artifacts/OCR_PREPROCESS_PROFILES.tar.gz -C benchmark_artifacts ocr_profiles
+          fi
 
       - name: Publish benchmark summary in run UI
         if: always()
@@ -731,6 +1228,12 @@ jobs:
               echo "## Resize Benchmark"
               echo
               echo "_No resize benchmark CSV produced._"
+              echo
+            fi
+            if [[ -f benchmark_artifacts/OCR_PREPROCESS_MATRIX.md ]]; then
+              echo "## OCR Preprocess Matrix"
+              echo
+              cat benchmark_artifacts/OCR_PREPROCESS_MATRIX.md
               echo
             fi
             if [[ -f benchmark_artifacts/OCR_SPACING_BENCHMARK.md ]]; then
@@ -774,6 +1277,8 @@ jobs:
             benchmark_artifacts/OCR_SPACING_BENCHMARK.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.log
             benchmark_artifacts/OCR_GPU_ATTEMPT.md
+            benchmark_artifacts/OCR_PREPROCESS_MATRIX.md
+            benchmark_artifacts/OCR_PREPROCESS_PROFILES.tar.gz
 
       - name: Cleanup local benchmark outputs
         if: always()
