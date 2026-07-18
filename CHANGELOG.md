@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.7] - 2026-07-18
+
+### OCR Reliability
+
+- Made PP-OCR/Tesseract fallback conservative for PP-OCR-routed languages so
+  high-confidence PP-OCR output is no longer replaced by worse Tesseract text.
+- Added outlined VobSub OCR fixtures covering glued and fragmented bitmap
+  subtitle artifacts.
+- Fixed non-monotonic encoded packet DTS handling before MP4 muxing for audio
+  and video packets.
+
+### Servarr Imports
+
+- Fixed Radarr pending-language manual imports by hydrating movie IDs, using the
+  command API path, and keeping fallback import paths parse-friendly.
+
 ## [1.1.0-beta.6] - 2026-07-09
 
 ### Servarr Language Upgrades
