@@ -725,6 +725,9 @@ fn extract_subtitle_lines(
             output_needs_spacing_after_postprocess(&output, params.language);
         let ppocr_text = lines_text_for_quality(&output.lines);
         let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
+        let ppocr_postprocessed_text = postprocess_ocr_text(&ppocr_text, params.language);
+        let ppocr_postprocessed_quality =
+            ocr_text_quality_score(&ppocr_postprocessed_text, params.language);
         let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
         let residual_quality_fallback_requested = quality_fallback_requested
             || postprocessed_text_needs_quality_fallback(&output, params.language);
@@ -744,28 +747,35 @@ fn extract_subtitle_lines(
         if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
-            && (force_tesseract_non_english || should_try_quality_fallback)
+            && (force_tesseract_non_english
+                || (should_try_quality_fallback && ppocr_confidence < 0.30))
         {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
                 match run_tesseract_best_effort(&pgm_path, &fallback_language) {
                     Ok(candidate) if !candidate.text.is_empty() => {
-                        // For non-English streams, prefer language-specific Tesseract
-                        // because the bundled PP-OCR recognizer is English-focused.
+                        // PP-OCR has language/profile routing for English, Latin,
+                        // CJK, Japanese, Korean, and multilingual recognizers. Keep
+                        // Tesseract as a low-confidence rescue path instead of
+                        // replacing high-confidence PP-OCR output by language.
                         let candidate_has_spaces = candidate.text.split_whitespace().count() > 1;
+                        let postprocess_repaired_spacing = ppocr_postprocessed_text != ppocr_text
+                            && ppocr_postprocessed_text.split_whitespace().count() > 1;
                         let should_replace_with_tesseract = if force_tesseract_non_english {
                             true
-                        } else if spacing_fallback_requested && candidate_has_spaces {
-                            // Prefer a spaced Tesseract result when PP-OCR glues a
-                            // space-using subtitle line into one long token. The
-                            // generic quality score intentionally penalizes glue
-                            // lightly for proper nouns, so do not require the
-                            // normal min-gain threshold here.
-                            candidate.quality + 0.10 >= ppocr_quality
+                        } else if postprocess_repaired_spacing || spacing_fallback_requested {
+                            // For glued subtitle text, keep PP-OCR and let DPN's word
+                            // segmentation/post-processing repair spacing. VobSub
+                            // outlines can make Tesseract confidently emit worse text
+                            // (e.g. "That was" -> "The wes"), so do not replace on
+                            // spacing failures alone.
+                            false
                         } else {
+                            // Prefer Tesseract only when it beats PP-OCR after DPN's
+                            // own post-processing.
                             let min_gain = tesseract_quality_fallback_min_gain();
-                            candidate.quality >= ppocr_quality + min_gain
-                                || (ppocr_confidence < 0.70
-                                    && candidate.quality + 0.03 >= ppocr_quality)
+                            candidate_has_spaces
+                                && ppocr_confidence < 0.30
+                                && candidate.quality >= ppocr_postprocessed_quality + min_gain
                         };
                         if should_replace_with_tesseract {
                             let bbox: Option<OcrBoundingBox> = output
