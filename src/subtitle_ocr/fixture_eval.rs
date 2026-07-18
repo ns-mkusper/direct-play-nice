@@ -293,6 +293,9 @@ pub(super) fn evaluate_fixture(
     let _ = prune_impossible_geometry(&mut output.lines, &spec.language);
     let ppocr_text = lines_text_for_quality(&output.lines);
     let ppocr_quality = ocr_text_quality_score(&ppocr_text, &spec.language);
+    let ppocr_postprocessed_text = postprocess_ocr_text(&ppocr_text, &spec.language);
+    let ppocr_postprocessed_quality =
+        ocr_text_quality_score(&ppocr_postprocessed_text, &spec.language);
     let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
 
     let mut actual_text = ppocr_text.clone();
@@ -301,16 +304,22 @@ pub(super) fn evaluate_fixture(
 
     if let Some(min_gain) = mode.min_gain() {
         let should_try_fallback = language_uses_spaces(&spec.language)
-            && ppocr_needs_quality_fallback(&output.lines, &spec.language);
+            && ppocr_needs_quality_fallback(&output.lines, &spec.language)
+            && ppocr_confidence < 0.30;
         if should_try_fallback {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(&spec.language) {
                 if let Ok(candidate) =
                     run_tesseract_best_effort(&spec.image_path, &fallback_language)
                 {
                     if !candidate.text.is_empty() {
-                        let replace = candidate.quality >= ppocr_quality + min_gain
-                            || (ppocr_confidence < 0.70
-                                && candidate.quality + 0.03 >= ppocr_quality);
+                        let postprocess_repaired_spacing = ppocr_postprocessed_text != ppocr_text
+                            && ppocr_postprocessed_text.split_whitespace().count() > 1;
+                        let spacing_fallback_requested =
+                            ppocr_spacing_needs_fallback(&output.lines);
+                        let replace = !postprocess_repaired_spacing
+                            && !spacing_fallback_requested
+                            && ppocr_confidence < 0.30
+                            && candidate.quality >= ppocr_postprocessed_quality + min_gain;
                         tesseract_quality = Some(candidate.quality);
                         if replace {
                             actual_text = normalize_utf8_text(&candidate.text);

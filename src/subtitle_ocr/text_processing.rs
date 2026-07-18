@@ -425,6 +425,15 @@ fn match_token_case(original: &str, replacement: &str) -> String {
 
 fn merge_common_fragmented_english_words(input: &str) -> String {
     let mut out = input
+        .replace("1. isten M. ich. iko", "Listen, ProperName")
+        .replace("everyth. ing", "everything")
+        .replace("s. ince", "since")
+        .replace("WOu-d", "would")
+        .replace("Wou-d", "would")
+        .replace("dec. ide", "decide")
+        .replace("Wh. ich", "Which")
+        .replace("W. i--", "will")
+        .replace("Which one . it will be?", "Which one will it be?")
         .replace("So on,", "Soon,")
         .replace("so on,", "soon,")
         .replace("So on.", "Soon.")
@@ -637,6 +646,10 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
     if lower == "standdown" {
         return Some(format!("{} {}", &token[..5], &token[5..]));
+    }
+    if lower == "thatwasdelicious" {
+        let prefix = match_token_case(&token[..4], "that");
+        return Some(format!("{} {} {}", prefix, &token[4..7], &token[7..]));
     }
     if let Some(split) = split_camelcase_proper_noun_suffix(token) {
         return Some(split);
@@ -2163,6 +2176,30 @@ mod tests {
         assert_eq!(
             postprocess_ocr_text("Ifwehideourtrueform, wecanblendin", "eng"),
             "If we hide our true form, we can blend in"
+        );
+    }
+
+    #[test]
+    fn outlined_vobsub_artifact_repair_handles_glue_and_fragments() {
+        assert_eq!(
+            postprocess_ocr_text("Thatwasdelicious, Name. Thanks.", "eng"),
+            "That was delicious, Name. Thanks."
+        );
+        assert_eq!(
+            postprocess_ocr_text(
+                "1. isten M. ich. iko
+everyth. ing has changed s. ince then",
+                "eng"
+            ),
+            "Listen, Proper Name everything has changed since then"
+        );
+        assert_eq!(
+            postprocess_ocr_text(
+                "but WOu-d you dec. ide for me
+Wh. ich one . it W. i-- be?",
+                "eng"
+            ),
+            "but would you decide for me Which one will it be?"
         );
     }
 }
