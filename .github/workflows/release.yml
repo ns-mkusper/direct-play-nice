@@ -89,6 +89,10 @@ jobs:
             echo "publishing=true"
           } >> "$GITHUB_OUTPUT"
       - name: Install cargo-dist
+        # The installer's default Axo artifact host can return HTTP 429. Use
+        # the same pinned binary published with the installer on GitHub.
+        env:
+          INSTALLER_DOWNLOAD_URL: https://github.com/axodotdev/cargo-dist/releases/download/v0.22.0
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
