@@ -36,3 +36,6 @@ tmp_*/
 *.local
 *.log
 *-custom-script.png
+
+# Disposable kind E2E diagnostics (includes transient kubeconfig).
+/artifacts/servarr-e2e/
