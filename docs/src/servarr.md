@@ -8,11 +8,43 @@
 2. Custom script invokes `direct_play_nice`.
 3. Successful conversion output replaces source according to configured behavior.
 
+## Hook setup and verification
+
+In `Settings -> Connect -> Custom Script`, enable both `On Import` (called
+`On Download` in some versions) and `On Upgrade`. The first subscription covers
+initial imports; the second covers replacements. With only the first enabled,
+Arr can replace a converted movie or episode with a large download without
+invoking DPN again.
+
+Check the saved notification in the UI or read `/api/v3/notification`: the DPN
+Custom Script should have `onDownload=true` and `onUpgrade=true`. This is a
+notification setting, not the quality profile's permission to download upgrades.
+Keep quality-only upgrades conservative when DPN controls output quality;
+otherwise Arr may repeatedly replace a smaller converted file with a higher
+quality release.
+
+Use a disposable test item to check the initial import and a subsequent upgrade.
+The upgrade should invoke DPN with `*_eventtype=Download` and `*_isupgrade=True`.
+After a successful conversion, check that the final output is playable, the
+replaced library original and `.direct-play-nice.bak` are gone, and Arr recognizes
+the output after scanning. A failed conversion must leave the source available.
+The custom script's `Test` button only checks the non-converting Test event; it
+does not prove that upgrade notifications are enabled.
+
+Enabling the hook is not retroactive. Existing unconverted media needs a
+separate, deliberate conversion pass. Language audits are not a general
+compression pass either. Do not delete an existing remux just because another
+movie has a `.fixed.mp4`: verify a successful replacement for that exact file.
+Servarr finalization replaces the imported library file; it does not recursively
+delete the download client's staging or seeding directories.
+
 ## Event behavior
 
 The binary auto-detects Sonarr/Radarr custom-script invocations:
 
 - `sonarr_eventtype=Download` and `radarr_eventtype=Download` trigger conversion.
+- Upgrades use the same `Download` event, with `sonarr_isupgrade=True` or
+  `radarr_isupgrade=True`; there is no separate `Upgrade` event to configure in DPN.
 - Non-download events (for example `Test`, `Grab`, `Rename`) exit cleanly.
 
 ## Naming and replacement notes

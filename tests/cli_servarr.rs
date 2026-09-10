@@ -434,6 +434,118 @@ fn radarr_download_with_match_input_extension_replaces_in_place(
     Ok(())
 }
 
+// Use an explicit config and isolated environment: these tests must never pick
+// up a real service's Plex token, language policy, or imported media paths.
+fn radarr_upgrade_command(tmp: &TempDir, input: &Path) -> Command {
+    let config = tmp.path().join("upgrade.toml");
+    fs::write(
+        &config,
+        r#"streaming_devices = "all"
+hw_accel = "none"
+video_quality = "480p"
+max_video_bitrate = "1M"
+servarr_output_extension = "mp4"
+servarr_output_suffix = ".fixed"
+delete_source = true
+"#,
+    )
+    .unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy().to_ascii_lowercase();
+        if name.starts_with("sonarr_")
+            || name.starts_with("radarr_")
+            || name.starts_with("direct_play_nice_")
+            || matches!(name.as_str(), "plex_url" | "plex_token")
+        {
+            cmd.env_remove(key);
+        }
+    }
+    cmd.env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("XDG_CACHE_HOME", tmp.path())
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path().join("locks"))
+        .env("radarr_eventtype", "Download")
+        .env("radarr_isupgrade", "True")
+        .env("radarr_moviefile_path", input)
+        .env("radarr_movie_title", "Synthetic upgrade")
+        .args(["--config-file", config.to_str().unwrap()]);
+    cmd
+}
+
+#[test]
+fn radarr_upgrade_download_converts_and_removes_library_source(
+) -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, duration) = common::gen_problem_input(&tmp);
+    let output = tmp.path().join("input.fixed.mp4");
+    let backup = append_suffix(&input, ".direct-play-nice.bak");
+    let temp = append_suffix(&output, ".direct-play-nice.tmp");
+    // A separate download-client copy must not be removed by library replacement.
+    let download = tmp.path().join("download.mkv");
+    fs::copy(&input, &download)?;
+    let download_bytes = fs::read(&download)?;
+    let mut cmd = radarr_upgrade_command(&tmp, &input);
+    cmd.env("radarr_moviefile_sourcepath", &download);
+    common::assert_cli_success(cmd);
+
+    assert!(output.is_file(), "upgrade output should be promoted");
+    assert!(!input.exists(), "replaced library original must be removed");
+    assert!(!backup.exists(), "original backup must be removed");
+    assert!(!temp.exists(), "conversion temp file must be promoted");
+    assert_eq!(fs::read(&download)?, download_bytes);
+    assert!(common::probe_duration_ms(&output).abs_diff(duration) <= 100);
+    // Decode the complete short synthetic output, not just its container header.
+    assert!(Command::new("ffmpeg")
+        .args(["-v", "error", "-xerror", "-i"])
+        .arg(&output)
+        .args(["-f", "null", "-"])
+        .status()?
+        .success());
+    Ok(())
+}
+
+#[test]
+fn radarr_upgrade_invalid_input_preserves_source() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("input.mkv");
+    let bytes = b"not a media file";
+    fs::write(&input, bytes)?;
+    let output = tmp.path().join("input.fixed.mp4");
+    let result = radarr_upgrade_command(&tmp, &input).output()?;
+    assert!(!result.status.success(), "invalid input must not succeed");
+    assert_eq!(fs::read(&input)?, bytes);
+    assert!(!output.exists());
+    assert!(!append_suffix(&input, ".direct-play-nice.bak").exists());
+    assert!(!append_suffix(&output, ".direct-play-nice.tmp").exists());
+    Ok(())
+}
+
+#[test]
+fn radarr_upgrade_promotion_failure_restores_source() -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = common::gen_problem_input(&tmp);
+    let original_bytes = fs::read(&input)?;
+    let output = tmp.path().join("input.fixed.mp4");
+    // Make promotion fail after conversion without relying on Unix permissions.
+    fs::create_dir(&output)?;
+    let sentinel = output.join("keep.txt");
+    fs::write(&sentinel, b"untouched")?;
+    let result = radarr_upgrade_command(&tmp, &input).output()?;
+    assert!(!result.status.success(), "blocked promotion must fail");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("could not promote"),
+        "must exercise promotion rollback, not an earlier failure: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read(&input)?, original_bytes);
+    assert_eq!(fs::read(&sentinel)?, b"untouched");
+    assert!(!append_suffix(&input, ".direct-play-nice.bak").exists());
+    Ok(())
+}
+
 #[test]
 fn radarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;

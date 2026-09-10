@@ -64,11 +64,21 @@ Project-specific behavior:
 Official compatibility and architecture references are collected in the manual:
 [Hardware Acceleration](https://ns-mkusper.github.io/direct-play-nice/hardware-acceleration.html).
 
-## Sonarr Download Hook Example
+## Sonarr/Radarr Import and Upgrade Hook Example
 
-Use Sonarr `Settings -> Connect -> Custom Script` and enable the script on the
-`On Download` event. Point it to the `direct_play_nice` binary with a config
-file:
+Use `Settings -> Connect -> Custom Script` in Sonarr or Radarr. Enable both
+`On Import` (called `On Download` in some versions) and `On Upgrade` so new files
+and replacements both run DPN. Both subscriptions send a `Download` event;
+upgrades also set `sonarr_isupgrade` or `radarr_isupgrade` to `True`.
+
+Enabling only the initial-import hook lets upgrades replace converted media
+without running DPN again. This hook setting is separate from allowing quality
+upgrades in a quality profile. See the manual's
+[hook setup and verification](https://ns-mkusper.github.io/direct-play-nice/servarr.html#hook-setup-and-verification)
+for checks and existing-library limitations.
+
+Point the script to the `direct_play_nice` binary with a service-specific config
+file (Sonarr shown here; use the Radarr config for Radarr):
 
 ```bash
 /path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
