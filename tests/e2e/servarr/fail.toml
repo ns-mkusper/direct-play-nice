@@ -1,0 +1,2 @@
+# Deliberately invalid TOML for the real DPN failure-path E2E case.
+invalid = [

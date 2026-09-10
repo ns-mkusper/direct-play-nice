@@ -1,0 +1,15 @@
+**
+!Cargo.toml
+!build.rs
+!.cargo
+!.cargo/**
+!src
+!src/**
+!benches
+!benches/**
+!config
+!config/**
+!tests
+!tests/e2e
+!tests/e2e/servarr
+!tests/e2e/servarr/**

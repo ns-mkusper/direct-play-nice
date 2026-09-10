@@ -1,0 +1,46 @@
+name: Servarr kind E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: servarr-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind:
+    name: Real Sonarr and Radarr imports
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kind
+        env:
+          KIND_VERSION: v0.31.0
+        run: |
+          curl --fail --location --retry 3 -o kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl --fail --location --retry 3 -o kind.sha256 "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64.sha256sum"
+          sed 's/kind-linux-amd64/kind/' kind.sha256 | sha256sum --check
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+          rm kind.sha256
+      - name: Check harness utilities
+        run: python3 -m unittest discover -s tests/e2e/servarr -p 'test_*.py' -v
+      - name: Build PR binary and test real Arr hooks in kind
+        run: bash tests/e2e/servarr/run.sh
+      - name: Upload synthetic test results and service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: servarr-kind-e2e
+          path: |
+            artifacts/servarr-e2e
+            !artifacts/servarr-e2e/kubeconfig
+          retention-days: 7
+          if-no-files-found: warn

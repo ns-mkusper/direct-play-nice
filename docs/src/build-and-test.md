@@ -53,6 +53,18 @@ Run integration tests requiring ffmpeg CLI:
 VCPKG_ROOT=/opt/vcpkg cargo test --features ffmpeg-cli-tests
 ```
 
+## Real Sonarr/Radarr imports in kind
+
+The Servarr end-to-end suite in `tests/e2e/servarr`
+uses pinned Arr containers and a PR-built DPN binary in a disposable kind cluster.
+It tests real import and upgrade notifications, disabled-hook controls, source
+safety, hardlinks, and file tracking after rescans without live media or indexers.
+Run it with Docker, kind, kubectl, and Python installed:
+
+```bash
+bash tests/e2e/servarr/run.sh
+```
+
 ## Optional NVENC regression suite
 
 ```bash
