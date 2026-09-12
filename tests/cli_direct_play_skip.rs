@@ -5,6 +5,7 @@
 use assert_cmd::prelude::*;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str;
+use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -64,6 +65,27 @@ fn new_temp_mp4(path: &std::path::Path) {
     );
 }
 
+fn probe_stream_counts(path: &std::path::Path) -> (usize, usize, usize) {
+    let ictx = AVFormatContextInput::open(
+        std::ffi::CString::new(path.to_string_lossy().to_string())
+            .unwrap()
+            .as_c_str(),
+    )
+    .expect("open media for probe");
+    let mut video = 0;
+    let mut audio = 0;
+    let mut subtitles = 0;
+    for st in ictx.streams() {
+        match st.codecpar().codec_type {
+            t if t == ffi::AVMEDIA_TYPE_VIDEO => video += 1,
+            t if t == ffi::AVMEDIA_TYPE_AUDIO => audio += 1,
+            t if t == ffi::AVMEDIA_TYPE_SUBTITLE => subtitles += 1,
+            _ => {}
+        }
+    }
+    (video, audio, subtitles)
+}
+
 fn probe_audio_codec(path: &std::path::Path) -> ffi::AVCodecID {
     let ictx = AVFormatContextInput::open(
         std::ffi::CString::new(path.to_string_lossy().to_string())
@@ -103,6 +125,103 @@ fn cli_skips_when_input_already_direct_play() -> Result<(), Box<dyn std::error::
         !output.exists(),
         "skip path should not create an output file"
     );
+
+    Ok(())
+}
+
+#[test]
+fn cli_remuxes_track_bloated_direct_play_file() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("bloated.mp4");
+    let output = tmp.path().join("clean.mp4");
+
+    let mut subtitle_paths = Vec::new();
+    for index in 0..9 {
+        let path = tmp.path().join(format!("sub-{index}.srt"));
+        fs::write(&path, "1\n00:00:00,000 --> 00:00:01,000\nhello\n")?;
+        subtitle_paths.push(path);
+    }
+
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-y".to_string(),
+        "-f".to_string(),
+        "lavfi".to_string(),
+        "-i".to_string(),
+        "testsrc=size=640x360:rate=30:duration=2".to_string(),
+    ];
+    for freq in [440, 550, 660, 770, 880] {
+        args.extend([
+            "-f".to_string(),
+            "lavfi".to_string(),
+            "-i".to_string(),
+            format!("sine=frequency={freq}:sample_rate=48000:duration=2"),
+        ]);
+    }
+    for path in &subtitle_paths {
+        args.extend(["-i".to_string(), path.to_string_lossy().to_string()]);
+    }
+    args.extend([
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "1:a:0".to_string(),
+        "-map".to_string(),
+        "2:a:0".to_string(),
+        "-map".to_string(),
+        "3:a:0".to_string(),
+        "-map".to_string(),
+        "4:a:0".to_string(),
+        "-map".to_string(),
+        "5:a:0".to_string(),
+    ]);
+    for idx in 6..15 {
+        args.extend(["-map".to_string(), format!("{idx}:s:0")]);
+    }
+    args.extend([
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-b:v".to_string(),
+        "700k".to_string(),
+        "-profile:v".to_string(),
+        "high".to_string(),
+        "-level:v".to_string(),
+        "4.1".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "96k".to_string(),
+        "-c:s".to_string(),
+        "mov_text".to_string(),
+        "-metadata:s:a:0".to_string(),
+        "language=jpn".to_string(),
+        "-metadata:s:a:1".to_string(),
+        "language=eng".to_string(),
+        "-metadata:s:s:0".to_string(),
+        "language=eng".to_string(),
+        input.to_string_lossy().to_string(),
+    ]);
+    assert!(
+        Command::new("ffmpeg").args(args).status()?.success(),
+        "ffmpeg failed to generate bloated direct-play sample"
+    );
+    assert_eq!(probe_stream_counts(&input), (1, 5, 9));
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.arg("-s")
+        .arg("chromecast_1st_gen,chromecast_2nd_gen,chromecast_ultra")
+        .arg(&input)
+        .arg(&output);
+
+    cmd.assert()
+        .success()
+        .stderr(str::contains("bloated audio/subtitle track layout"));
+    assert_eq!(probe_stream_counts(&output), (1, 2, 1));
 
     Ok(())
 }
