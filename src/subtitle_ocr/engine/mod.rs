@@ -10,7 +10,7 @@ use super::ocr_pipeline::{
     discover_candidates, ocr_single_stream, probe_video_dimensions, OcrStreamRequest,
 };
 use super::text_render::{write_ass, write_srt};
-use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
+use super::{OcrEngine, OcrFormat, OcrPreprocess, OcrSubtitleTrack, SubMode};
 
 mod converters;
 mod factory;
@@ -30,19 +30,34 @@ pub(super) use runtime::*;
 pub(super) use types::*;
 pub(super) use workers::*;
 
+pub(crate) struct BitmapSubtitleOcrRequest<'a> {
+    pub(crate) input_file: &'a CStr,
+    pub(crate) work_dir: &'a Path,
+    pub(crate) sub_mode: SubMode,
+    pub(crate) default_language: Option<&'a str>,
+    pub(crate) ocr_engine: OcrEngine,
+    pub(crate) ocr_format: OcrFormat,
+    pub(crate) ocr_preprocess: OcrPreprocess,
+    pub(crate) ocr_external_command: Option<&'a str>,
+}
+
 /// Converts bitmap subtitle streams into OCR subtitle tracks.
 ///
 /// The function performs stream discovery, language resolution, engine selection,
 /// optional parallelization, and final subtitle serialization (`.srt`/`.ass`).
-pub fn convert_bitmap_subtitles(
-    input_file: &CStr,
-    work_dir: &Path,
-    sub_mode: SubMode,
-    default_language: Option<&str>,
-    ocr_engine: OcrEngine,
-    ocr_format: OcrFormat,
-    ocr_external_command: Option<&str>,
+pub(crate) fn convert_bitmap_subtitles(
+    request: BitmapSubtitleOcrRequest<'_>,
 ) -> Result<Vec<OcrSubtitleTrack>> {
+    let BitmapSubtitleOcrRequest {
+        input_file,
+        work_dir,
+        sub_mode,
+        default_language,
+        ocr_engine,
+        ocr_format,
+        ocr_preprocess,
+        ocr_external_command,
+    } = request;
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(Vec::new());
     }
@@ -106,6 +121,7 @@ pub fn convert_bitmap_subtitles(
                 language: &task.language,
                 work_dir,
                 ocr_format,
+                ocr_preprocess,
                 video_dimensions,
                 ocr_engine: resolved_engine,
             };
@@ -127,6 +143,7 @@ pub fn convert_bitmap_subtitles(
             input_path: input_path.clone(),
             work_dir: work_dir.to_path_buf(),
             ocr_format,
+            ocr_preprocess,
             video_dimensions,
             resolved_engine,
             ocr_external_command: ocr_external_command.map(str::to_string),

@@ -51,6 +51,22 @@ pub(crate) enum OcrFormat {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Optional extra preprocessing applied to rendered OCR subtitle bitmaps before OCR inference.
+pub(crate) enum OcrPreprocess {
+    /// Preserve the existing renderer output exactly.
+    None,
+    /// Apply conservative OpenCV grayscale denoise plus Otsu binarization.
+    OpenCvBasic,
+    /// Apply OpenCV adaptive thresholding and light morphology tuned for subtitle glyphs.
+    OpenCvSubtitle,
+    /// Try OpenCV 5 CUDA denoise and binarization as an adaptive OCR rescue path.
+    OpenCv5CudaBasic,
+    /// Try OpenCV 5 CUDA denoise, binarization, and morphology as an adaptive OCR rescue path.
+    OpenCv5CudaSubtitle,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 /// Ranking key used when auto-selecting the primary video stream.
 pub(crate) enum PrimaryVideoCriteria {

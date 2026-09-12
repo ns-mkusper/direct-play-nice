@@ -11,6 +11,7 @@ Usage:
     [--output-name output.mp4] \
     [--ort-lib /path/to/onnxruntime/lib] \
     [--ocr-engine pp-ocr-v3] \
+    [--ocr-preprocess none|open-cv-basic|open-cv-subtitle|open-cv5-cuda-basic|open-cv5-cuda-subtitle] \
     [--sub-mode force] \
     [--max-source-seconds 600] \
     [--sample-ms 200] \
@@ -40,6 +41,7 @@ RUN_DIR=""
 OUTPUT_NAME="output.mp4"
 ORT_LIB=""
 OCR_ENGINE="pp-ocr-v3"
+OCR_PREPROCESS="none"
 SUB_MODE="force"
 MAX_SOURCE_SECONDS=""
 SAMPLE_MS="200"
@@ -64,6 +66,8 @@ while [[ $# -gt 0 ]]; do
       ORT_LIB="$2"; shift 2 ;;
     --ocr-engine)
       OCR_ENGINE="$2"; shift 2 ;;
+    --ocr-preprocess)
+      OCR_PREPROCESS="$2"; shift 2 ;;
     --sub-mode)
       SUB_MODE="$2"; shift 2 ;;
     --max-source-seconds)
@@ -135,6 +139,11 @@ SUMMARY_JSON="$RUN_DIR/benchmark_summary.json"
 SUMMARY_MD="$RUN_DIR/benchmark_summary.md"
 TRIMMED_SOURCE="$RUN_DIR/source_trimmed.mkv"
 
+OCR_PREPROCESS_ARGS=()
+if [[ -n "$OCR_PREPROCESS" ]]; then
+  OCR_PREPROCESS_ARGS=(--ocr-preprocess "$OCR_PREPROCESS")
+fi
+
 BENCH_SOURCE="$SOURCE"
 if [[ -n "$MAX_SOURCE_SECONDS" ]]; then
   ffmpeg -hide_banner -loglevel error -y \
@@ -147,6 +156,7 @@ fi
 printf '%q ' \
   "$BIN" \
   --ocr-engine "$OCR_ENGINE" \
+  "${OCR_PREPROCESS_ARGS[@]}" \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
@@ -160,6 +170,7 @@ printf '\n' >>"$CMD_TXT"
   echo "OUT=$OUT"
   echo "ORT_LIB=$ORT_LIB"
   echo "OCR_ENGINE=$OCR_ENGINE"
+  echo "OCR_PREPROCESS=${OCR_PREPROCESS:-}"
   echo "SUB_MODE=$SUB_MODE"
   echo "OCR_MAX_JOBS=${OCR_MAX_JOBS:-}"
   echo "JOBS_PER_GPU=${JOBS_PER_GPU:-}"
@@ -244,6 +255,7 @@ TESS_FALLBACK_MIN_GAIN="$(resolve_effective_env_value "DPN_OCR_TESS_FALLBACK_MIN
 env "${ENV_VARS[@]}" \
   "$BIN" \
   --ocr-engine "$OCR_ENGINE" \
+  "${OCR_PREPROCESS_ARGS[@]}" \
   --sub-mode "$SUB_MODE" \
   --skip-codec-check \
   --delete-source=false \
@@ -594,6 +606,7 @@ lines.append(f"- Output size: `{out_bytes} bytes`")
 lines.append(f"- Output duration: `{out_duration:.3f}s`")
 lines.append(f"- Video packets: `{video_packets}`")
 lines.append(f"- OCR engine: `{meta.get('OCR_ENGINE', '')}`")
+lines.append(f"- OCR preprocess: `{meta.get('OCR_PREPROCESS', '') or 'none'}`")
 lines.append(f"- Subtitle mode: `{meta.get('SUB_MODE', '')}`")
 lines.append(f"- Requested CUDA devices: `{meta.get('CUDA_DEVICES', '') or 'auto'}`")
 lines.append(f"- OCR max jobs: `{meta.get('OCR_MAX_JOBS', '') or 'default'}`")
