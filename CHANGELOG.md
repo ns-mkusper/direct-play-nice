@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.8] - 2026-09-12
+
+### Servarr
+
+- Added Radarr replacement-safety regression tests covering remux output
+  replacement during imports.
+- Added a containerized Servarr end-to-end test harness and documented
+  Servarr upgrade hooks.
+
 ## [1.1.0-beta.7] - 2026-07-18
 
 ### OCR Reliability
