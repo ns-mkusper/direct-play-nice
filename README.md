@@ -21,6 +21,39 @@ Official references:
 
 ## Quick Install
 
+### Docker
+
+```bash
+docker run --rm -v /path/to/media:/media \
+  ghcr.io/ns-mkusper/direct-play-nice:latest /media/input.mkv /media/output.mp4
+```
+
+Add `--gpus all` for NVENC (requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html))
+or `--device /dev/dri` for VA-API. OCR models download on first use; mount
+`-v dpn-config:/config` to persist them.
+
+### Pre-built binaries
+
+Installer script (Linux x86_64/aarch64, macOS):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ns-mkusper/direct-play-nice/releases/latest/download/direct_play_nice-installer.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/ns-mkusper/direct-play-nice/releases/latest/download/direct_play_nice-installer.ps1 | iex"
+```
+
+Or download an archive from [GitHub Releases](https://github.com/ns-mkusper/direct-play-nice/releases)
+and drop the binary into `/usr/local/bin`. Subtitle OCR needs the ONNX Runtime
+shared library at runtime — see [the OCR docs](https://ns-mkusper.github.io/direct-play-nice/subtitle-ocr.html).
+
+### From crates.io (developers)
+
+Requires a Rust toolchain; FFmpeg is built and statically linked via vcpkg.
+
 ```bash
 cargo install direct_play_nice
 ```

@@ -1,0 +1,12 @@
+.git
+.github
+target
+media
+notes
+tmp_crates
+tmp_ort_src
+docs/book
+*.pem
+.env
+list
+Dockerfile
