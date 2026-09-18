@@ -17,11 +17,19 @@ fn main() {
         }
     }
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        // vcpkg ffmpeg[vaapi] references libva, which rusty_ffmpeg does not emit.
-        // link-arg (not link-lib) so the static archives land after FFmpeg's
-        // in link order; va last since va-drm depends on it.
-        for lib in ["va-drm", "va"] {
+    println!("cargo:rerun-if-env-changed=FFMPEG_PKG_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed=FFMPEG_LIBS_DIR");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && std::env::var_os("FFMPEG_PKG_CONFIG_PATH").is_none()
+        && std::env::var_os("FFMPEG_LIBS_DIR").is_none()
+    {
+        // Only repair the default vcpkg path, not externally supplied FFmpeg.
+        // vcpkg emits freetype before fontconfig and z before png16. Repeat
+        // these archives after their consumers, in dependency order.
+        // link-arg (not link-lib) keeps them after FFmpeg's native libraries.
+        // vcpkg ffmpeg[vaapi] also needs shared libva, omitted by rusty_ffmpeg;
+        // va follows va-drm because va-drm depends on it.
+        for lib in ["freetype", "png16", "z", "va-drm", "va"] {
             println!("cargo:rustc-link-arg=-l{lib}");
         }
     }
