@@ -91,7 +91,7 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
@@ -106,6 +106,7 @@ aarch64-apple-darwin = "macos-15"
 x86_64-apple-darwin = "macos-15-intel"
 x86_64-pc-windows-msvc = "windows-2022"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
 
 [package.metadata.vcpkg]
 dependencies = [
@@ -118,6 +119,20 @@ dependencies = [
 # rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
 git = "https://github.com/microsoft/vcpkg.git"
 rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
+
+[package.metadata.vcpkg.target.x86_64-unknown-linux-gnu]
+triplet = "x64-linux"
+dependencies = [
+  "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d,vaapi]",
+  "x264[asm,core]",
+]
+
+[package.metadata.vcpkg.target.aarch64-unknown-linux-gnu]
+triplet = "arm64-linux"
+dependencies = [
+  "ffmpeg[x264,vpx,freetype,fontconfig,dav1d,vaapi]",
+  "x264[asm,core]",
+]
 
 [package.metadata.vcpkg.target.x86_64-pc-windows-msvc]
 triplet = "x64-windows-static"

@@ -1,5 +1,5 @@
 - name: Install vcpkg build dependencies
-  run: sudo apt-get --assume-yes install nasm
+  run: sudo apt-get --assume-yes install nasm libdrm-dev
 
 - name: Cache cargo-vcpkg binary
   id: cargo-vcpkg-cache
