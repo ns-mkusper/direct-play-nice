@@ -159,7 +159,7 @@ jobs:
           submodules: recursive
       - name: "Install vcpkg build dependencies (Linux)"
         if: runner.os == 'Linux'
-        run: "sudo apt-get update -y && sudo apt-get --assume-yes install nasm autoconf autoconf-archive automake libtool"
+        run: "sudo apt-get update -y && sudo apt-get --assume-yes install nasm autoconf autoconf-archive automake libtool libdrm-dev"
       - name: "Install vcpkg build dependencies (macOS)"
         if: runner.os == 'macOS'
         run: "brew install nasm autoconf autoconf-archive automake libtool pkg-config"

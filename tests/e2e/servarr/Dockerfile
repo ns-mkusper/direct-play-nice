@@ -2,7 +2,7 @@
 # Build against the same musl/FFmpeg major version as the pinned Arr images.
 ARG APP_IMAGE
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS build
-RUN apk add --no-cache rust cargo build-base clang-dev pkgconf ffmpeg-dev git ca-certificates
+RUN apk add --no-cache rust cargo build-base clang-dev pkgconf ffmpeg-dev libva-dev git ca-certificates
 WORKDIR /src
 COPY Cargo.toml build.rs ./
 COPY .cargo .cargo

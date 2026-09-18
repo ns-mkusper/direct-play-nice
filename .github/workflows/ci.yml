@@ -58,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool
+          sudo apt-get --assume-yes install ffmpeg nasm autoconf autoconf-archive automake libtool libdrm-dev
 
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
@@ -741,7 +741,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get --assume-yes install nasm ffmpeg autoconf autoconf-archive automake libtool
+          sudo apt-get --assume-yes install nasm ffmpeg autoconf autoconf-archive automake libtool libdrm-dev
       - name: Install cargo-vcpkg
         run: cargo install cargo-vcpkg --locked
       - name: Build vcpkg dependencies

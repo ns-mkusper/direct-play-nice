@@ -14,8 +14,9 @@ RUN cargo install cargo-vcpkg
 WORKDIR /src
 
 # Build vcpkg dependencies against a stub crate first so the expensive FFmpeg
-# build layer is cached until Cargo.toml/Cargo.lock change.
-COPY Cargo.toml Cargo.lock build.rs ./
+# build layer is cached until Cargo.toml changes. Cargo.lock is not tracked;
+# Cargo resolves it inside the image, just as it does in release CI.
+COPY Cargo.toml build.rs ./
 RUN mkdir -p src benches \
     && echo 'fn main() {}' > src/main.rs \
     && echo 'fn main() {}' > benches/ocr_benchmark.rs \
@@ -26,8 +27,7 @@ RUN cargo vcpkg --verbose build
 
 COPY . .
 # The stub layer above may leave stale fingerprints; touch real sources.
-# No --locked: the repo's Cargo.lock lags the release-plz version bumps,
-# matching how release CI builds.
+# No --locked: Cargo.lock is generated during the build, not tracked in Git.
 RUN touch src/main.rs && cargo build --profile dist
 
 # Runtime stage: VA-API drivers, ONNX Runtime, CA certs for model downloads.
