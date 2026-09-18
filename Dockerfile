@@ -2,6 +2,7 @@
 
 # Build stage: statically links FFmpeg (vcpkg, same as release CI).
 FROM rust:1-bookworm AS builder
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build nasm curl git pkg-config python3 \
@@ -28,7 +29,19 @@ RUN cargo vcpkg --verbose build
 COPY . .
 # The stub layer above may leave stale fingerprints; touch real sources.
 # No --locked: Cargo.lock is generated during the build, not tracked in Git.
-RUN touch src/main.rs && cargo build --profile dist
+# vcpkg-rs does not infer the Linux ARM64 triplet. Use the same triplet
+# for Rust linking and for the shared VA libraries shipped in the image.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) export VCPKGRS_TRIPLET=x64-linux ;; \
+      arm64) export VCPKGRS_TRIPLET=arm64-linux ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    touch src/main.rs; \
+    cargo build --profile dist; \
+    mkdir -p /opt/libva/lib; \
+    cp -a target/vcpkg/installed/${VCPKGRS_TRIPLET}/lib/libva.so* \
+          target/vcpkg/installed/${VCPKGRS_TRIPLET}/lib/libva-drm.so* /opt/libva/lib/
 
 # Runtime stage: VA-API drivers, ONNX Runtime, CA certs for model downloads.
 FROM debian:trixie-slim AS runtime
@@ -51,12 +64,16 @@ RUN set -eux; \
     mv "/opt/onnxruntime-linux-${ort_arch}-${ORT_VERSION}" /opt/onnxruntime
 
 COPY --from=builder /src/target/dist/direct_play_nice /usr/local/bin/direct_play_nice
+COPY --from=builder /opt/libva /opt/libva
 
 ENV ORT_DYLIB_PATH=/opt/onnxruntime/lib/libonnxruntime.so \
-    LD_LIBRARY_PATH=/opt/onnxruntime/lib \
+    LD_LIBRARY_PATH=/opt/libva/lib:/opt/onnxruntime/lib \
     DPN_OCR_MODEL_DIR=/config/models \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+
+# Resolve even lazily bound symbols so incompatible shared libraries fail here.
+RUN LD_BIND_NOW=1 direct_play_nice --version
 
 VOLUME ["/config"]
 

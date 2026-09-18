@@ -42,7 +42,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get --assume-yes install \
-            nasm ffmpeg autoconf autoconf-archive automake libtool
+            nasm ffmpeg autoconf autoconf-archive automake libtool libdrm-dev
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache

@@ -9,6 +9,10 @@ on:
       - Dockerfile
       - .dockerignore
       - .github/workflows/docker.yml
+      - Cargo.toml
+      - build.rs
+      - .cargo/**
+      - src/**
   workflow_dispatch:
 
 env:
