@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
   CUDA, OpenVINO (Intel GPUs), DirectML, and CoreML providers are linked, and
   `--ai-upscale-tile` fits small-VRAM GPUs. A benchmark script scores
   PSNR/SSIM/VMAF against 1080p references.
+- Fixed an abort at process exit on macOS with ONNX Runtime 1.21 and newer
+  (OCR and AI upscaling) by disabling ONNX Runtime telemetry and skipping its
+  exit-time teardown once all output has been promoted.
 
 ### Safety
 
