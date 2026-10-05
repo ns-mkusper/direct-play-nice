@@ -7,7 +7,7 @@
 #
 # Usage:
 #   scripts/upscale-tools/run_upscale_benchmark.sh --clip NAME=lowres.mkv:ref_1080p.mkv [--clip ...] \
-#     [--bin target/release/direct_play_nice] [--work-dir DIR] [--models realesr-animevideov3,realesr-general-x4v3] \
+#     [--bin target/release/direct_play_nice] [--work-dir DIR] [--models realesr-animevideov3,custom:NAME=/path/model.onnx] \
 #     [--device auto|cuda|cpu] [--tile N] [--hw-accel auto|none|nvenc] [--frames N] [--env KEY=VALUE]...
 #
 # The low-res clip must carry an audio stream (DPN validates AAC audio in the output).
@@ -117,7 +117,15 @@ run_ffmpeg_baseline() {
 }
 
 run_dpn() {
-  local clip="$1" src="$2" ref="$3" model="$4"
+  local clip="$1" src="$2" ref="$3" model_spec="$4"
+  # A model entry is either a built-in name or custom:NAME=/path/to/model.onnx.
+  local model="$model_spec" model_flag="$model_spec" model_path_args=()
+  if [[ "$model_spec" == custom:* ]]; then
+    local custom="${model_spec#custom:}"
+    model="${custom%%=*}"
+    model_flag="custom"
+    model_path_args=(--ai-upscale-model-path "${custom#*=}")
+  fi
   local out="$work_dir/${clip}_dpn_${model}.mp4"
   local log="$work_dir/${clip}_dpn_${model}.log"
   local started ended elapsed nframes rate fps realtime size metrics dims status
@@ -128,7 +136,7 @@ run_dpn() {
       --video-quality 1080p \
       --hw-accel "$hw_accel" \
       --sub-mode skip \
-      --ai-upscale-model "$model" \
+      --ai-upscale-model "$model_flag" "${model_path_args[@]}" \
       --ai-upscale-device "$device" \
       --ai-upscale-tile "$tile" \
       --delete-source=false \
