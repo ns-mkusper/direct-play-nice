@@ -183,8 +183,12 @@ servarr_api_url = "http://127.0.0.1:8989"
 servarr_api_key = "..."
 
 # Recommended while tuning rules. Logs the selected candidate but does not grab
-# or blocklist anything.
+# or blocklist anything. The global dry_run below implies this setting.
 servarr_language_dry_run = true
+
+# Optional: print the full replacement plan and exit without writing anything.
+# Useful on a first run against a real library; remove once the paths look right.
+# dry_run = true
 
 # strict only trusts explicit Arr language/subtitle metadata. custom-format-or-title
 # also trusts matching custom formats and strong tokens like Dual-Audio/Multi-Subs.

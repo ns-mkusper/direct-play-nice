@@ -83,6 +83,22 @@ direct_play_nice --probe-streams input.mkv
 direct_play_nice --probe-streams --output json input.mkv
 ```
 
+## File safety
+
+The input file is only ever read. What happens to the output depends on mode:
+
+- **Direct conversion** writes straight to the output path. An MKV output is
+  first built as `<output stem>.conv.mp4` next to it, remuxed into the final
+  file, and the intermediate is removed. A failed or interrupted run leaves the
+  input untouched but can leave a partial output (and the `.conv.mp4`
+  intermediate if the process was killed); delete those and rerun.
+  `--delete-source` removes the input only after output validation passes.
+- **Sonarr/Radarr mode** stages through a temporary file, parks the original
+  under a `.bak` name, promotes by rename, then deletes the backup. See the
+  [replacement policy](./servarr.html#replacement-policy).
+- Inputs that already satisfy the target devices are left alone and no output
+  is produced.
+
 ## See the plan without writing anything
 
 ```bash
