@@ -7,6 +7,19 @@
 `direct-play-nice` is a cross-platform CLI tool that converts video files
 to profiles more likely to Direct Play across common streaming devices.
 
+The overall goal is to fill in common gaps between existing FOSS media server
+software to give a fully automated, performant, and reliable hands-free
+streaming server for both admins and users.
+
+```mermaid
+flowchart LR
+    DL[Download client] --> ARR[Sonarr / Radarr import]
+    ARR -- "Download event<br/>(custom script)" --> DPN[direct-play-nice]
+    DPN -- "replaces file with a<br/>Direct Play profile" --> LIB[(Media library)]
+    LIB --> SRV[Plex / Jellyfin / Emby]
+    SRV -- "Direct Play,<br/>no server transcode" --> DEV[Chromecast, Roku,<br/>Apple TV, Fire TV]
+```
+
 ## What Is Direct Play?
 
 Direct Play means the client can play the original media file as-is, without
@@ -78,6 +91,12 @@ Probe local hardware/codec capabilities:
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
+The input is never modified. Every output is written to a
+`.direct-play-nice.tmp` file next to its final path and promoted by rename, so
+a failed or killed run leaves the original in place and never a half-written
+output. Add `--dry-run` to print the plan without writing anything. Details:
+[File safety](https://ns-mkusper.github.io/direct-play-nice/getting-started.html#file-safety).
+
 ## GPU Acceleration
 
 `direct_play_nice` supports GPU acceleration in two places:
@@ -97,71 +116,14 @@ Project-specific behavior:
 Official compatibility and architecture references are collected in the manual:
 [Hardware Acceleration](https://ns-mkusper.github.io/direct-play-nice/hardware-acceleration.html).
 
-## Sonarr/Radarr Import and Upgrade Hook Example
+## Sonarr/Radarr Hook
 
-Use `Settings -> Connect -> Custom Script` in Sonarr or Radarr. Enable both
-`On Import` (called `On Download` in some versions) and `On Upgrade` so new files
-and replacements both run DPN. Both subscriptions send a `Download` event;
-upgrades also set `sonarr_isupgrade` or `radarr_isupgrade` to `True`.
-
-Enabling only the initial-import hook lets upgrades replace converted media
-without running DPN again. This hook setting is separate from allowing quality
-upgrades in a quality profile. See the manual's
-[hook setup and verification](https://ns-mkusper.github.io/direct-play-nice/servarr.html#hook-setup-and-verification)
-for checks and existing-library limitations.
-
-Point the script to the `direct_play_nice` binary with a service-specific config
-file (Sonarr shown here; use the Radarr config for Radarr):
-
-```bash
-/path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml
-```
-
-Example `direct-play-nice-sonarr.toml`:
-
-```toml
-streaming_devices = "all"
-servarr_output_extension = "mp4"
-servarr_output_suffix = ".fixed"
-video_codec = "h264"
-video_quality = "1080p"
-audio_quality = "192k"
-hw_accel = "auto"
-sub_mode = "auto"
-ocr_engine = "pp-ocr-v4"
-ocr_format = "srt"
-ocr_write_srt_sidecar = false
-skip_codec_check = false
-# Output validation is enabled by default; keep these explicit in Servarr mode
-# if you want config-visible safety settings.
-validate_output = true
-visual_validate_output = true
-visual_quality_report = false
-visual_scan_frames = 120
-visual_sample_interval = 15
-visual_failure_ratio = 0.60
-
-# Optional: require imported media to contain English audio.
-# Start with dry-run while tuning candidate policy and custom formats.
-servarr_language_check = true
-servarr_language_dry_run = true
-servarr_language_candidate_policy = "custom-format-or-title"
-required_audio_languages = "eng"
-# Leave subtitle requirements empty unless subtitle completeness is a goal.
-required_subtitle_languages = ""
-# Optional: for trusted English-native libraries, retag untagged audio before
-# deciding the file is missing English audio.
-servarr_untagged_audio_language = "eng"
-```
-
-To catch delayed dubs/subs that arrive after the first import, run the same
-binary periodically with `--servarr-language-audit`. Use
-`--servarr-language-audit-scope latest-missing` for a pass that spends the
-search budget on the newest aired/released non-compliant items first, or
-`--servarr-language-audit-scope inventory` for a full current-library sweep.
-Before applying broad language replacements, follow the
-[Safe language upgrade runbook](https://ns-mkusper.github.io/direct-play-nice/servarr.html#safe-language-upgrade-runbook)
-in the Sonarr/Radarr manual.
+Add `direct_play_nice --config-file /path/to/config.toml` as a Custom Script
+in Sonarr or Radarr with `On Import` and `On Upgrade` enabled. Each import is
+converted and swapped in atomically; failures leave the original untouched.
+Start with `dry_run = true` to see the planned paths. Setup, config example,
+language checks, and the replacement policy are in the
+[Sonarr/Radarr manual](https://ns-mkusper.github.io/direct-play-nice/servarr.html).
 
 ![Running as a custom script in Sonarr][sonarr-script-img]
 

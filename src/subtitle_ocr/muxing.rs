@@ -58,21 +58,7 @@ impl SubtitleMuxer {
 // destination. Windows cannot rename over an existing file, so remove it
 // explicitly there before moving the temp file into place.
 fn replace_output_file(tmp_out: &Path, output_path: &Path, context: &str) -> Result<()> {
-    #[cfg(windows)]
-    if output_path.exists() {
-        fs::remove_file(output_path).with_context(|| {
-            format!(
-                "removing existing '{}' before {}",
-                output_path.display(),
-                context
-            )
-        })?;
-    }
-
-    fs::rename(tmp_out, output_path)
-        .with_context(|| format!("replacing '{}' after {}", output_path.display(), context))?;
-
-    Ok(())
+    crate::staging::promote(tmp_out, output_path, context)
 }
 
 pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
@@ -83,15 +69,7 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
     let is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
-    let stem = output_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let tmp_out = if output_extension.is_empty() {
-        output_path.with_extension("ocr.tmp")
-    } else {
-        output_path.with_file_name(format!("{stem}.ocr.tmp.{output_extension}"))
-    };
+    let tmp_out = crate::staging::path_for(&output_path, "ocr");
 
     let mut input_ctx = AVFormatContextInput::open(input_file)?;
     let tmp_cstr = CString::new(tmp_out.to_string_lossy().to_string())
@@ -159,15 +137,7 @@ pub fn mux_text_tracks_from(
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
         .unwrap_or_default();
-    let stem = output_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let tmp_out = if output_extension.is_empty() {
-        output_path.with_extension("ocr.tmp")
-    } else {
-        output_path.with_file_name(format!("{stem}.ocr.tmp.{output_extension}"))
-    };
+    let tmp_out = crate::staging::path_for(&output_path, "ocr");
 
     let is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
     let is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");

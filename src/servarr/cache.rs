@@ -10,6 +10,7 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,12 +38,27 @@ struct NoCandidateRecord {
     reason: String,
 }
 
+/// Process-wide switch that turns every cache write into a no-op. Set once by `--dry-run`.
+static WRITES_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Stops this process from writing the language cache. Reads keep working.
+pub fn disable_writes() {
+    WRITES_DISABLED.store(true, Ordering::SeqCst);
+}
+
+fn writes_disabled() -> bool {
+    WRITES_DISABLED.load(Ordering::SeqCst)
+}
+
 pub fn record_assessment(
     kind: IntegrationKind,
     path: &Path,
     requirements: &LanguageRequirements,
     report: &LanguageCheckReport,
 ) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
     let Some(cache_path) = resolve_cache_path() else {
         return Ok(());
     };
@@ -87,6 +103,9 @@ pub fn record_no_candidate(
     requirements: &LanguageRequirements,
     reason: &str,
 ) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
     let Some(cache_path) = resolve_no_candidate_cache_path() else {
         return Ok(());
     };
@@ -216,28 +235,15 @@ fn write_json_atomically<T: Serialize>(cache_path: &Path, label: &str, value: &T
     let tmp_path = unique_tmp_path(cache_path);
     fs::write(&tmp_path, serde_json::to_vec_pretty(value)?)
         .with_context(|| format!("writing {label} '{}'", tmp_path.display()))?;
-    fs::rename(&tmp_path, cache_path).with_context(|| {
-        let _ = fs::remove_file(&tmp_path);
-        format!(
-            "renaming {label} '{}' to '{}'",
-            tmp_path.display(),
-            cache_path.display()
-        )
-    })?;
+    if let Err(error) = crate::staging::promote(&tmp_path, cache_path, label) {
+        crate::staging::discard(&tmp_path);
+        return Err(error);
+    }
     Ok(())
 }
 
 fn unique_tmp_path(cache_path: &Path) -> PathBuf {
-    let parent = cache_path.parent().unwrap_or_else(|| Path::new("."));
-    let filename = cache_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("cache.json");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    parent.join(format!(".{filename}.{}.{}.tmp", std::process::id(), nanos))
+    crate::staging::unique_path(cache_path)
 }
 
 fn resolve_no_candidate_cache_path() -> Option<PathBuf> {

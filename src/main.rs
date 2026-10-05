@@ -18,6 +18,7 @@ mod main_sidecar;
 mod main_tests;
 mod plex;
 mod servarr;
+mod staging;
 mod subtitle_ocr;
 mod throttle;
 mod transcoder;

@@ -338,6 +338,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "dry_run") {
+        if let Some(dry_run) = cfg.dry_run {
+            args.dry_run = dry_run;
+        }
+    }
+
     if args.delete_source.is_none() {
         if let Some(delete_source) = cfg.delete_source {
             args.delete_source = Some(delete_source);
@@ -605,6 +611,28 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.resize_backend, ResizeBackend::Cuda);
+    }
+
+    #[test]
+    fn applies_dry_run_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            dry_run: Some(true),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.dry_run);
+    }
+
+    #[test]
+    fn cli_dry_run_is_kept_when_config_omits_it() {
+        let (mut args, matches) = parse_args(&["direct_play_nice", "--dry-run"]);
+        let cfg = config::Config {
+            dry_run: None,
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.dry_run);
     }
 
     #[test]

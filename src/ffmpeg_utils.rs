@@ -483,6 +483,10 @@ pub(crate) struct Args {
     )]
     pub(crate) delete_source: Option<bool>,
 
+    /// Report what would be converted or replaced and exit without writing, renaming, or deleting any file
+    #[arg(long = "dry-run", default_value_t = false, id = "dry_run")]
+    pub(crate) dry_run: bool,
+
     /// Trigger a Plex library refresh for the output directory after a successful conversion
     #[arg(long = "plex-refresh", default_value_t = false)]
     pub(crate) plex_refresh: bool,

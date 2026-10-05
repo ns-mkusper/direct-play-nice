@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Safety
+
+- Added a global `--dry-run` flag and `dry_run` config key that report the
+  planned conversion or Servarr replacement (paths, action, reasons) and exit
+  before any file is written, renamed, or deleted. It also implies
+  `servarr_language_dry_run` and makes the language cache read-only.
+- Documented the file replacement policy (temporary files, atomic promotion,
+  and what a failed or killed run leaves behind) in the README and the
+  Sonarr/Radarr manual.
+- Direct CLI conversion now stages its output through the same
+  `.direct-play-nice.tmp` file Servarr replacement uses and promotes it by
+  rename, so a failed run no longer leaves a partial file at the output path.
+
 ## [1.1.0-beta.8] - 2026-09-12
 
 ### Servarr

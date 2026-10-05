@@ -82,3 +82,34 @@ built-in device definitions.
 direct_play_nice --probe-streams input.mkv
 direct_play_nice --probe-streams --output json input.mkv
 ```
+
+## File safety
+
+The input file is only ever read. What happens to the output depends on mode:
+
+- **Direct conversion** writes to `<output>.direct-play-nice.tmp.<ext>` next
+  to the output path and renames it into place once conversion and output
+  validation pass. An MKV output is additionally built as
+  `<output>.direct-play-nice.conv.mp4` beside the final path, remuxed, and the
+  intermediate removed.
+  A failed run removes the staged file; a killed run can leave the staged file
+  (and the intermediate) behind, never a partial file at the output path.
+  `--delete-source` removes the input only after the output is promoted.
+- **Sonarr/Radarr mode** uses the same staged file, parks the original under a
+  `.bak` name, promotes by rename, then deletes the backup. See the
+  [replacement policy](./servarr.html#replacement-policy).
+- Inputs that already satisfy the target devices are left alone and no output
+  is produced.
+
+## See the plan without writing anything
+
+```bash
+direct_play_nice --dry-run input.mkv output.mp4
+direct_play_nice --dry-run --output json input.mkv output.mp4
+```
+
+The report names the action (skip, transcode, or remux with OCR subtitles),
+the reasons, every path the real run would create, and what happens to the
+source. Nothing is written, renamed, or deleted. The same flag works inside a
+Sonarr/Radarr `Download` event; see
+[Sonarr/Radarr Integration](./servarr.html#dry-run).

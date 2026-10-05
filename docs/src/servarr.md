@@ -52,8 +52,63 @@ The binary auto-detects Sonarr/Radarr custom-script invocations:
 - Use `--servarr-output-extension` and `--servarr-output-suffix` to control
   output naming.
 - `--delete-source` applies to direct CLI usage.
-- In Sonarr/Radarr mode, replacement/rollback logic is handled by integration flow.
 - `--servarr-output-extension match-input` keeps the source container.
+
+### Replacement policy
+
+For each imported file DPN resolves three paths from the original
+(`<input>` below is the full original filename, `<final>` the resolved
+output name):
+
+| Path | Purpose |
+| --- | --- |
+| `<final>.direct-play-nice.tmp.<ext>` | Where the transcode writes. Created next to the final path. |
+| `<input>.direct-play-nice.bak.<ext>` | Where the original is parked during promotion. |
+| `<final>` | The file Sonarr/Radarr ends up with. |
+
+The sequence on success is: transcode into the temporary file, validate it,
+rename the original to the backup path, rename the temporary file to the final
+path, delete the backup. Both renames stay on the same filesystem, so the final
+path never holds a partial file. Direct CLI conversion stages through the same
+`.direct-play-nice.tmp` file and promotes it by rename; only the backup step is
+Servarr-specific.
+
+On a transcode or validation failure the temporary file is removed and the
+original is left where it was. If the process is killed mid-transcode the
+original is untouched and the temporary file is left behind for you to delete.
+If the process dies between the two renames, the original is still complete
+under the `.bak` name; rename it back by hand.
+
+Already-compatible inputs produce no output and are left in place.
+
+### Dry run
+
+`--dry-run` (or `dry_run = true` in the config file) prints the plan for each
+file in the event and exits before any write, rename, or delete. It is the
+quickest way to confirm the resolved paths on a new install:
+
+```bash
+sonarr_eventtype=Download sonarr_episodefile_path=/tv/Show/S01E01.mkv \
+  /path/to/direct_play_nice --config-file /path/to/direct-play-nice-sonarr.toml --dry-run
+```
+
+```text
+Dry run: no file will be written, renamed, or deleted.
+  Mode:            Sonarr Download event
+  Input:           /tv/Show/S01E01.mkv
+  Action:          transcode
+                   - video codec hevc is not compatible with required H.264
+  Output:          /tv/Show/S01E01.fixed.mp4
+  Temp output:     /tv/Show/S01E01.fixed.direct-play-nice.tmp.mp4
+  Backup:          /tv/Show/S01E01.direct-play-nice.bak.mkv
+  Source:          moved to the backup path, then removed once the output is promoted
+  ...
+```
+
+`--dry-run` also forces `servarr_language_dry_run` on and stops DPN from
+updating its language cache, so a dry run of a language-checked import or a
+`--servarr-language-audit` pass grabs nothing, blocklists nothing, and writes
+nothing. `--output json` switches the report to JSON.
 
 Example command in Sonarr custom script:
 
@@ -130,8 +185,12 @@ servarr_api_url = "http://127.0.0.1:8989"
 servarr_api_key = "..."
 
 # Recommended while tuning rules. Logs the selected candidate but does not grab
-# or blocklist anything.
+# or blocklist anything. The global dry_run below implies this setting.
 servarr_language_dry_run = true
+
+# Optional: print the full replacement plan and exit without writing anything.
+# Useful on a first run against a real library; remove once the paths look right.
+# dry_run = true
 
 # strict only trusts explicit Arr language/subtitle metadata. custom-format-or-title
 # also trusts matching custom formats and strong tokens like Dual-Audio/Multi-Subs.

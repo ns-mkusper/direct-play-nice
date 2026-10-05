@@ -15,6 +15,7 @@ mod media_paths;
 mod path_policy;
 
 pub use api::{run_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
+pub use cache::disable_writes as disable_cache_writes;
 pub use language::{parse_language_list, LanguageRequirements, UntaggedRetagOptions};
 
 #[cfg(test)]
@@ -142,9 +143,17 @@ impl ReplacePlan {
         }
 
         // Promote the converted temp file into place; restore backup on failure.
-        if let Err(promote_err) = fs::rename(&self.temp_output_path, &self.final_output_path) {
+        if let Err(promote_err) = crate::staging::promote(
+            &self.temp_output_path,
+            &self.final_output_path,
+            "Servarr replacement",
+        ) {
             if had_original && self.backup_path.exists() && !self.input_path.exists() {
-                if let Err(restore_err) = fs::rename(&self.backup_path, &self.input_path) {
+                if let Err(restore_err) = crate::staging::promote(
+                    &self.backup_path,
+                    &self.input_path,
+                    "Servarr backup restoration",
+                ) {
                     return Err(promote_err).with_context(|| {
                         format!(
                             "{} integration could not promote '{}' to '{}' and failed to restore backup '{}': {}",
@@ -445,7 +454,7 @@ fn prepare_download(
             effective_suffix,
             view.desired_video_quality,
         )?;
-        let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
+        let temp_output_path = staging_path_for(&final_output_path);
         let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
 
         let input_cstring = path_to_cstring(&input_path)?;
@@ -490,6 +499,16 @@ fn resolve_output_path(
 
 fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     path_policy::append_suffix(path, suffix)
+}
+
+/// Path the conversion writes to before promotion.
+pub fn staging_path_for(final_path: &Path) -> PathBuf {
+    crate::staging::path_for(final_path, "tmp")
+}
+
+/// Promotes a staged output using the shared replacement policy.
+pub fn promote_staged_output(staged: &Path, final_path: &Path) -> Result<()> {
+    crate::staging::promote(staged, final_path, "staged output")
 }
 
 fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>> {
