@@ -676,9 +676,14 @@ fn run_conversion(
     }
 
     let temp_output_cstring = if needs_conversion && output_is_mkv {
-        let base_output = direct_staging
+        let base_output = plan
             .as_ref()
-            .map(|staging| staging.final_path.as_path())
+            .map(|plan| plan.final_output_path.as_path())
+            .or_else(|| {
+                direct_staging
+                    .as_ref()
+                    .map(|staging| staging.final_path.as_path())
+            })
             .unwrap_or(&output_path);
         let tmp_path = crate::staging::path_for(base_output, "conv").with_extension("mp4");
         Some(path_to_cstring(&tmp_path)?)
