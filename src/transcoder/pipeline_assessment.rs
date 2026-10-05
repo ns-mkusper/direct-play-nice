@@ -324,6 +324,17 @@ pub(crate) fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
     }
 }
 
+/// The tightest active resolution cap: device limit narrowed by the quality preset.
+pub(crate) fn effective_resolution_cap(
+    device_cap: (u32, u32),
+    quality_cap: Option<(u32, u32)>,
+) -> (u32, u32) {
+    match quality_cap {
+        Some((w, h)) => (device_cap.0.min(w.max(2)), device_cap.1.min(h.max(2))),
+        None => device_cap,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,16 +359,5 @@ mod tests {
     fn demuxer_container_mapping_rejects_unknown_formats() {
         assert_eq!(container_from_detected_input("mpegts", ""), None);
         assert_eq!(container_from_detected_input("", ""), None);
-    }
-}
-
-/// The tightest active resolution cap: device limit narrowed by the quality preset.
-pub(crate) fn effective_resolution_cap(
-    device_cap: (u32, u32),
-    quality_cap: Option<(u32, u32)>,
-) -> (u32, u32) {
-    match quality_cap {
-        Some((w, h)) => (device_cap.0.min(w.max(2)), device_cap.1.min(h.max(2))),
-        None => device_cap,
     }
 }

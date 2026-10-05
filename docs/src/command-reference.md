@@ -56,6 +56,23 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 - `--hw-accel <hw_accel>` `auto|none|nvenc|vaapi|qsv|videotoolbox|amf`
 
+## AI upscaling (opt-in)
+
+Separate from the deterministic `--resize-quality` kernels. Off by default.
+See [AI Upscaling](./ai-upscaling.html) for model choices, hardware support,
+and benchmark results.
+
+- `--ai-upscale-model <MODEL>` `off|realesr-animevideov3|realesr-general-x4v3|custom`
+  run an ONNX super-resolution model on sources below the active resolution
+  cap (`--video-quality` narrowed by the device limit), then fit the result to
+  the cap deterministically
+- `--ai-upscale-model-path <FILE>` ONNX file for `custom` (one float NCHW RGB
+  input in `[0,1]`, one output; the scale factor is probed at load)
+- `--ai-upscale-device <DEVICE>` `auto|cuda|cpu`; `auto` uses a GPU provider
+  or fails with instructions, `cpu` is the explicit slow fallback
+- `--ai-upscale-tile <PIXELS>` tile edge in source pixels; `0` runs whole
+  frames, `256`-`512` fits 2-4 GB GPUs
+
 ## Probe modes
 
 - `--probe-streams`

@@ -343,6 +343,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_ai_upscale_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            ai_upscale_model = "realesr-animevideov3"
+            ai_upscale_model_path = "/models/custom.onnx"
+            ai_upscale_device = "cpu"
+            ai_upscale_tile = 256
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.ai_upscale_model,
+            Some(AiUpscaleModel::RealesrAnimevideov3)
+        );
+        assert_eq!(
+            cfg.ai_upscale_model_path.as_deref(),
+            Some(Path::new("/models/custom.onnx"))
+        );
+        assert_eq!(cfg.ai_upscale_device, Some(AiUpscaleDevice::Cpu));
+        assert_eq!(cfg.ai_upscale_tile, Some(256));
+    }
+
+    #[test]
     fn parses_dry_run_setting() {
         let mut tmp = NamedTempFile::new().unwrap();
         writeln!(tmp, "dry_run = true").unwrap();

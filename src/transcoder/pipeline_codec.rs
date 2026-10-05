@@ -443,27 +443,6 @@ fn sanitize_mov_text_subtitle_header(header: &mut [u8]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mov_text_header_sanitizer_clamps_large_default_font_size() {
-        let mut header = vec![0u8; 32];
-        header[25] = 66;
-        sanitize_mov_text_subtitle_header(&mut header);
-        assert_eq!(header[25], 12);
-    }
-
-    #[test]
-    fn mov_text_header_sanitizer_leaves_normal_default_font_size() {
-        let mut header = vec![0u8; 32];
-        header[25] = 18;
-        sanitize_mov_text_subtitle_header(&mut header);
-        assert_eq!(header[25], 18);
-    }
-}
-
 /// Output dimensions for the video stream: the deterministic clamp, or an
 /// enlargement to the effective cap when AI upscaling is active and the source
 /// is smaller than that cap.
@@ -485,5 +464,26 @@ fn target_dimensions(
         enlarged
     } else {
         clamped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mov_text_header_sanitizer_clamps_large_default_font_size() {
+        let mut header = vec![0u8; 32];
+        header[25] = 66;
+        sanitize_mov_text_subtitle_header(&mut header);
+        assert_eq!(header[25], 12);
+    }
+
+    #[test]
+    fn mov_text_header_sanitizer_leaves_normal_default_font_size() {
+        let mut header = vec![0u8; 32];
+        header[25] = 18;
+        sanitize_mov_text_subtitle_header(&mut header);
+        assert_eq!(header[25], 18);
     }
 }

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AI Upscaling
+
+- Added an opt-in AI super-resolution path (`--ai-upscale-model`, config
+  `ai_upscale_model`) that enlarges sources below the resolution cap with an
+  ONNX model (built-in Real-ESRGAN compact models or a custom file) before the
+  deterministic fit. GPU is required unless `--ai-upscale-device cpu` is set;
+  `--ai-upscale-tile` fits small-VRAM GPUs. A benchmark script scores
+  PSNR/SSIM/VMAF against 1080p references.
+
 ### Safety
 
 - Added a global `--dry-run` flag and `dry_run` config key that report the

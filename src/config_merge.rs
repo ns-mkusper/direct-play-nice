@@ -638,6 +638,55 @@ mod tests {
     }
 
     #[test]
+    fn applies_ai_upscale_settings_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            ai_upscale_model: Some(crate::upscale::AiUpscaleModel::RealesrGeneralX4v3),
+            ai_upscale_model_path: Some(std::path::PathBuf::from("/m.onnx")),
+            ai_upscale_device: Some(crate::upscale::AiUpscaleDevice::Cuda),
+            ai_upscale_tile: Some(512),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(
+            args.ai_upscale_model,
+            crate::upscale::AiUpscaleModel::RealesrGeneralX4v3
+        );
+        assert_eq!(
+            args.ai_upscale_model_path.as_deref(),
+            Some(std::path::Path::new("/m.onnx"))
+        );
+        assert_eq!(
+            args.ai_upscale_device,
+            crate::upscale::AiUpscaleDevice::Cuda
+        );
+        assert_eq!(args.ai_upscale_tile, 512);
+    }
+
+    #[test]
+    fn cli_ai_upscale_settings_take_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--ai-upscale-model",
+            "off",
+            "--ai-upscale-device",
+            "cpu",
+            "--ai-upscale-tile",
+            "128",
+        ]);
+        let cfg = config::Config {
+            ai_upscale_model: Some(crate::upscale::AiUpscaleModel::RealesrGeneralX4v3),
+            ai_upscale_device: Some(crate::upscale::AiUpscaleDevice::Cuda),
+            ai_upscale_tile: Some(512),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.ai_upscale_model, crate::upscale::AiUpscaleModel::Off);
+        assert_eq!(args.ai_upscale_device, crate::upscale::AiUpscaleDevice::Cpu);
+        assert_eq!(args.ai_upscale_tile, 128);
+    }
+
+    #[test]
     fn applies_dry_run_from_config_when_not_set_in_cli() {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         let cfg = config::Config {
