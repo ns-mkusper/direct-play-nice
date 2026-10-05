@@ -7,9 +7,9 @@
 `direct-play-nice` is a cross-platform CLI tool that converts video files
 to profiles more likely to Direct Play across common streaming devices.
 
-It also automates common tasks around a Sonarr/Radarr plus Plex, Jellyfin, or
-Emby setup: refetching media when dubbed or subbed releases appear,
-GPU-accelerated OCR of bitmap subtitles, and Plex library refreshes.
+The overall goal is to fill in common gaps between existing FOSS media server
+software to give a fully automated, performant, and reliable hands-free
+streaming server for both admins and users.
 
 ```mermaid
 flowchart LR
