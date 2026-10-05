@@ -136,13 +136,14 @@ run_dpn() {
   local log="$work_dir/${clip}_dpn_${model}.log"
   local started ended elapsed nframes rate fps realtime size metrics dims status
   started="$(now)"
-  if env "${extra_env[@]}" "$bin" \
+  # The `[@]+` form keeps bash 3.2 (macOS) happy with empty arrays under set -u.
+  if env ${extra_env[@]+"${extra_env[@]}"} "$bin" \
       --config-file "$config_file" \
       --device roku \
       --video-quality 1080p \
       --hw-accel "$hw_accel" \
       --sub-mode skip \
-      --ai-upscale-model "$model_flag" "${model_path_args[@]}" \
+      --ai-upscale-model "$model_flag" ${model_path_args[@]+"${model_path_args[@]}"} \
       --ai-upscale-device "$device" \
       --ai-upscale-tile "$tile" \
       --delete-source=false \
