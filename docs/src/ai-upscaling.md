@@ -99,6 +99,7 @@ or stops before writing anything, with a message naming the CPU flag.
 | Laptop | NVIDIA RTX PRO 5000 Blackwell, 24 GB | 1.22, CUDA 12 / cuDNN 9 | CUDA | 39 ms/frame (26 fps) | 10 fps, 0.42x realtime |
 | Laptop | same, `--ai-upscale-tile 256` | 1.22 | CUDA | 61 ms/frame (16 fps) | identical output |
 | Laptop | same, CPU path | 1.22 | CPU | 1072 ms/frame (0.9 fps) | 0.9 fps, 0.04x |
+| Laptop | Intel Arrow Lake Xe iGPU (shared memory) | 1.24 OpenVINO build | OpenVINO `GPU.0` | 216 ms/frame (4.6 fps) | 3.7 fps, 0.15x |
 | Media server | 2x NVIDIA GTX 960 Maxwell, 2 GB | 1.16, CUDA 12 / cuDNN 8 | CUDA | 269 ms/frame (3.7 fps) | 3.1 fps, 0.13x |
 | Media server | same | 1.22, CUDA 12 / cuDNN 9 | CUDA | fails fast (no sm_52 kernels) | no output written |
 | Media server | same, CPU path | 1.16 | CPU | 3.4 s/frame (0.3 fps) | 0.3 fps, 0.01x |

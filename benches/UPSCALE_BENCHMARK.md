@@ -109,6 +109,19 @@ DPN run, including a DPN run without AI upscaling.
 | live_silence | dpn-span-x2-ch48 | 24.8 | 19.1 | 0.80x | 20.2 | 37.37 | 0.9684 | 87.79 |
 | live_silence | dpn-span-x4-ch48 | 48.3 | 9.8 | 0.41x | 20.2 | 37.60 | 0.9685 | 87.63 |
 
+### Laptop, Intel Arrow Lake Xe iGPU, OpenVINO provider (onnxruntime-openvino 1.24), NVENC encode
+
+| Clip | Method | Elapsed s | FPS | Realtime | Output MB | PSNR | SSIM | VMAF |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| anime_mary | ffmpeg-lanczos | 1.7 | 138.7 | 5.78x | 8.2 | 34.95 | 0.9661 | 76.09 |
+| anime_mary | ffmpeg-spline | 1.8 | 133.8 | 5.58x | 8.1 | 34.97 | 0.9663 | 75.19 |
+| anime_mary | dpn-realesr-animevideov3 | 128.9 | 3.7 | 0.15x | 20.5 | 33.22 | 0.9625 | 82.96 |
+| anime_mary | dpn-realesr-general-x4v3 | 214.1 | 2.2 | 0.09x | 20.2 | 32.87 | 0.9575 | 83.84 |
+| live_silence | ffmpeg-lanczos | 1.4 | 170.7 | 7.12x | 5.7 | 36.48 | 0.9656 | 81.58 |
+| live_silence | ffmpeg-spline | 1.4 | 166.1 | 6.93x | 5.6 | 36.47 | 0.9657 | 80.48 |
+| live_silence | dpn-realesr-animevideov3 | 126.1 | 3.8 | 0.16x | 20.4 | 36.01 | 0.9630 | 81.33 |
+| live_silence | dpn-realesr-general-x4v3 | 199.5 | 2.4 | 0.10x | 20.2 | 35.40 | 0.9550 | 85.43 |
+
 ### Laptop, CUDA provider with `--ai-upscale-tile 256`, 3-second clip
 
 | Clip | Method | Elapsed s | FPS | Realtime | Output MB | PSNR | SSIM | VMAF |
