@@ -7,6 +7,12 @@
 `direct-play-nice` is a cross-platform CLI tool that converts video files
 to profiles more likely to Direct Play across common streaming devices.
 
+It fills the gap in the usual Sonarr/Radarr plus Plex, Jellyfin, or Emby
+setup: the Arr apps fetch media and the server plays it, but nothing in
+between makes sure every file plays on every device without a server-side
+transcode. Hooked into the Arr import pipeline, `direct-play-nice` closes that
+gap, so the library stays fully automated and playback stays fast.
+
 ## What Is Direct Play?
 
 Direct Play means the client can play the original media file as-is, without
