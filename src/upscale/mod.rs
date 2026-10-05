@@ -184,7 +184,9 @@ impl Upscaler {
     fn load_inner(settings: &UpscaleSettings) -> Result<Self> {
         let model_path = resolve_model_path(settings)?;
         let (providers, provider) = execution_providers(settings.device)?;
-        match ort::init().commit() {
+        // Telemetry off: ONNX Runtime 1.21+ on macOS otherwise aborts at process
+        // exit when its telemetry thread touches an already destroyed mutex.
+        match ort::init().with_telemetry(false).commit() {
             Ok(_) => {}
             Err(err) => bail!("Failed to initialize ONNX Runtime for AI upscaling: {err}"),
         }
