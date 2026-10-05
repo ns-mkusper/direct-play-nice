@@ -281,9 +281,9 @@ impl Upscaler {
         Ok((dims[3] as u32, dims[2] as u32, data.to_vec()))
     }
 
-    /// Enlarges a software frame by the model's scale factor. The result is a
-    /// planar float GBR frame (`AV_PIX_FMT_GBRPF32LE`) the resize step can
-    /// convert and fit to the target dimensions.
+    /// Enlarges a software frame by the model's scale factor. The result is an
+    /// 8-bit planar GBR frame (`AV_PIX_FMT_GBRP`) the resize step converts and
+    /// fits to the target dimensions.
     pub(crate) fn upscale_frame(&mut self, frame: &AVFrame) -> Result<AVFrame> {
         self.upscale_frame_inner(frame)
             .map_err(|err| anyhow::Error::new(UpscaleError(err)))
@@ -506,6 +506,9 @@ fn platform_gpu_provider() -> Option<(ExecutionProviderDispatch, &'static str)> 
 }
 
 /// Converts any software frame to planar RGB float in [0,1], NCHW order.
+///
+/// The colour conversion goes through 8-bit planar GBR, which libswscale has
+/// fast paths for; the float planar formats only have a slow generic path.
 fn frame_to_rgb_planar(frame: &AVFrame) -> Result<Vec<f32>> {
     let width = frame.width;
     let height = frame.height;
@@ -515,16 +518,16 @@ fn frame_to_rgb_planar(frame: &AVFrame) -> Result<Vec<f32>> {
     let mut gbr = AVFrame::new();
     gbr.set_width(width);
     gbr.set_height(height);
-    gbr.set_format(ffi::AV_PIX_FMT_GBRPF32LE);
+    gbr.set_format(ffi::AV_PIX_FMT_GBRP);
     gbr.alloc_buffer()
-        .context("allocating float RGB frame for AI upscale")?;
+        .context("allocating RGB frame for AI upscale")?;
     let mut sws = SwsContext::get_context(
         width,
         height,
         frame.format as ffi::AVPixelFormat,
         width,
         height,
-        ffi::AV_PIX_FMT_GBRPF32LE,
+        ffi::AV_PIX_FMT_GBRP,
         ffi::SWS_POINT,
         None,
         None,
@@ -532,8 +535,28 @@ fn frame_to_rgb_planar(frame: &AVFrame) -> Result<Vec<f32>> {
     )
     .context("creating swscale context for AI upscale input")?;
     sws.scale_frame(frame, 0, height, &mut gbr)
-        .context("converting frame to float RGB for AI upscale")?;
-    Ok(read_gbrpf32_planes(&gbr))
+        .context("converting frame to RGB for AI upscale")?;
+    let w = width as usize;
+    let h = height as usize;
+    let mut rgb = vec![0f32; 3 * w * h];
+    // RGB channel order reads GBRP planes 2, 0, 1; one thread per plane.
+    let planes =
+        [2usize, 0, 1].map(|plane| (gbr.data[plane] as usize, gbr.linesize[plane] as usize));
+    std::thread::scope(|scope| {
+        for ((ptr, stride), dst) in planes.into_iter().zip(rgb.chunks_mut(w * h)) {
+            scope.spawn(move || {
+                for y in 0..h {
+                    let row = unsafe {
+                        std::slice::from_raw_parts((ptr as *const u8).add(y * stride), w)
+                    };
+                    for (d, s) in dst[y * w..(y + 1) * w].iter_mut().zip(row) {
+                        *d = *s as f32 * (1.0 / 255.0);
+                    }
+                }
+            });
+        }
+    });
+    Ok(rgb)
 }
 
 /// Reads a `GBRPF32LE` frame into NCHW RGB order (plane 0 = G, 1 = B, 2 = R).
@@ -552,7 +575,9 @@ fn read_gbrpf32_planes(gbr: &AVFrame) -> Vec<f32> {
     rgb
 }
 
-/// Packs planar RGB float output into a `GBRPF32LE` frame carrying the source's timing.
+/// Packs planar RGB float output into an 8-bit `GBRP` frame carrying the
+/// source's timing. The encoder target is 8-bit YUV420P, so quantizing here
+/// loses nothing visible and keeps the final libswscale fit on its fast path.
 fn rgb_planar_to_frame(rgb: &[f32], width: u32, height: u32, source: &AVFrame) -> Result<AVFrame> {
     let w = width as usize;
     let h = height as usize;
@@ -568,22 +593,33 @@ fn rgb_planar_to_frame(rgb: &[f32], width: u32, height: u32, source: &AVFrame) -
     let mut out = AVFrame::new();
     out.set_width(width as i32);
     out.set_height(height as i32);
-    out.set_format(ffi::AV_PIX_FMT_GBRPF32LE);
+    out.set_format(ffi::AV_PIX_FMT_GBRP);
     out.alloc_buffer()
         .context("allocating AI upscale output frame")?;
-    for (channel, plane) in [(0usize, 2usize), (1, 0), (2, 1)] {
-        let base = out.data[plane] as *mut f32;
-        let stride = out.linesize[plane] as usize / std::mem::size_of::<f32>();
-        for y in 0..h {
-            let row = unsafe { std::slice::from_raw_parts_mut(base.add(y * stride), w) };
-            for (dst, src) in row
-                .iter_mut()
-                .zip(&rgb[(channel * h + y) * w..(channel * h + y + 1) * w])
-            {
-                *dst = src.clamp(0.0, 1.0);
-            }
+    // Channel order R, G, B maps onto GBRP planes 2, 0, 1. Each plane is
+    // quantized on its own thread; the output is tens of millions of samples.
+    let planes = [(2usize, 0usize), (0, 1), (1, 2)].map(|(plane, channel)| {
+        (
+            out.data[plane] as usize,
+            out.linesize[plane] as usize,
+            channel,
+        )
+    });
+    std::thread::scope(|scope| {
+        for (ptr, stride, channel) in planes {
+            let src_plane = &rgb[channel * w * h..(channel + 1) * w * h];
+            scope.spawn(move || {
+                for y in 0..h {
+                    let row = unsafe {
+                        std::slice::from_raw_parts_mut((ptr as *mut u8).add(y * stride), w)
+                    };
+                    for (dst, src) in row.iter_mut().zip(&src_plane[y * w..(y + 1) * w]) {
+                        *dst = (src.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    }
+                }
+            });
         }
-    }
+    });
     out.set_pts(source.pts);
     out.set_time_base(source.time_base);
     unsafe {
@@ -715,10 +751,11 @@ mod tests {
         source.set_format(ffi::AV_PIX_FMT_GBRPF32LE);
         source.alloc_buffer().unwrap();
         let frame = rgb_planar_to_frame(&rgb, w, h, &source).unwrap();
+        assert_eq!(frame.format, ffi::AV_PIX_FMT_GBRP);
         let back = frame_to_rgb_planar(&frame).unwrap();
         assert_eq!(back.len(), rgb.len());
         for (a, b) in back.iter().zip(&rgb) {
-            assert!((a - b).abs() < 1e-6, "{a} != {b}");
+            assert!((a - b).abs() <= 0.5 / 255.0 + 1e-6, "{a} != {b}");
         }
     }
 }
