@@ -13,6 +13,15 @@ between makes sure every file plays on every device without a server-side
 transcode. Hooked into the Arr import pipeline, `direct-play-nice` closes that
 gap, so the library stays fully automated and playback stays fast.
 
+```mermaid
+flowchart LR
+    DL[Download client] --> ARR[Sonarr / Radarr import]
+    ARR -- "Download event<br/>(custom script)" --> DPN[direct-play-nice]
+    DPN -- "replaces file with a<br/>Direct Play profile" --> LIB[(Media library)]
+    LIB --> SRV[Plex / Jellyfin / Emby]
+    SRV -- "Direct Play,<br/>no server transcode" --> DEV[Chromecast, Roku,<br/>Apple TV, Fire TV]
+```
+
 ## What Is Direct Play?
 
 Direct Play means the client can play the original media file as-is, without
