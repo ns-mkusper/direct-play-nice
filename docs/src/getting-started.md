@@ -89,8 +89,9 @@ The input file is only ever read. What happens to the output depends on mode:
 
 - **Direct conversion** writes to `<output>.direct-play-nice.tmp.<ext>` next
   to the output path and renames it into place once conversion and output
-  validation pass. An MKV output is additionally built as a `.conv.mp4`
-  intermediate beside the staged file, remuxed, and the intermediate removed.
+  validation pass. An MKV output is additionally built as
+  `<output>.direct-play-nice.conv.mp4` beside the final path, remuxed, and the
+  intermediate removed.
   A failed run removes the staged file; a killed run can leave the staged file
   (and the intermediate) behind, never a partial file at the output path.
   `--delete-source` removes the input only after the output is promoted.

@@ -162,7 +162,7 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         temps.len(),
         2,
-        "direct MKV output stages through the promoted temp file plus the MP4 intermediate"
+        "direct MKV output stages through the promoted temp file plus the MP4 intermediate beside the final path"
     );
     assert_eq!(
         temps[0],
@@ -174,7 +174,7 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         temps[1],
         tmp.path()
-            .join("out.direct-play-nice.tmp.conv.mp4")
+            .join("out.direct-play-nice.conv.mp4")
             .to_string_lossy()
             .as_ref()
     );
