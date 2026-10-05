@@ -235,28 +235,15 @@ fn write_json_atomically<T: Serialize>(cache_path: &Path, label: &str, value: &T
     let tmp_path = unique_tmp_path(cache_path);
     fs::write(&tmp_path, serde_json::to_vec_pretty(value)?)
         .with_context(|| format!("writing {label} '{}'", tmp_path.display()))?;
-    fs::rename(&tmp_path, cache_path).with_context(|| {
-        let _ = fs::remove_file(&tmp_path);
-        format!(
-            "renaming {label} '{}' to '{}'",
-            tmp_path.display(),
-            cache_path.display()
-        )
-    })?;
+    if let Err(error) = crate::staging::promote(&tmp_path, cache_path, label) {
+        crate::staging::discard(&tmp_path);
+        return Err(error);
+    }
     Ok(())
 }
 
 fn unique_tmp_path(cache_path: &Path) -> PathBuf {
-    let parent = cache_path.parent().unwrap_or_else(|| Path::new("."));
-    let filename = cache_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("cache.json");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    parent.join(format!(".{filename}.{}.{}.tmp", std::process::id(), nanos))
+    crate::staging::unique_path(cache_path)
 }
 
 fn resolve_no_candidate_cache_path() -> Option<PathBuf> {

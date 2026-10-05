@@ -687,11 +687,16 @@ fn run_conversion(
     }
 
     let temp_output_cstring = if needs_conversion && output_is_mkv {
-        let stem = output_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        let tmp_path = output_path.with_file_name(format!("{stem}.conv.mp4"));
+        let base_output = plan
+            .as_ref()
+            .map(|plan| plan.final_output_path.as_path())
+            .or_else(|| {
+                direct_staging
+                    .as_ref()
+                    .map(|staging| staging.final_path.as_path())
+            })
+            .unwrap_or(&output_path);
+        let tmp_path = crate::staging::path_for(base_output, "conv").with_extension("mp4");
         Some(path_to_cstring(&tmp_path)?)
     } else {
         None
