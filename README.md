@@ -78,6 +78,66 @@ Probe local hardware/codec capabilities:
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
+## How Files Are Replaced
+
+`direct_play_nice` never writes into the input file. Every mode reads the
+source, writes a new file, and only then decides what happens to the source.
+
+**Direct conversion** (`direct_play_nice input.mkv output.mp4`):
+
+- The output is written straight to the output path. An MKV output is first
+  built as `<output stem>.conv.mp4` next to it, then remuxed into the final
+  file, and the intermediate is removed.
+- A failed or interrupted run leaves the input untouched. It can leave a
+  partial file at the output path, plus the `.conv.mp4` intermediate if the
+  process was killed. Delete those and rerun.
+- `--delete-source` removes the input only after the output exists and passes
+  output validation.
+
+**Sonarr/Radarr mode** (custom-script `Download` events):
+
+- The converted file is written to a temporary path next to the final one:
+  `<final>.direct-play-nice.tmp.<ext>`. The original is not touched while the
+  transcode runs.
+- On success the original is renamed to `<input>.direct-play-nice.bak.<ext>`,
+  the temporary file is renamed to the final path, and the backup is deleted.
+  Both steps are renames on the same filesystem, so the final path only ever
+  holds a complete file.
+- On a transcode or validation failure the temporary file is removed and the
+  original stays in place.
+- If the process is killed mid-transcode, the original stays in place and the
+  temporary file is left behind. Delete it. If the process dies between the
+  two renames, the original is still present under the `.bak` name; rename it
+  back by hand.
+- Inputs that already satisfy the target devices are left alone and no output
+  is produced.
+
+**Dry run.** Pass `--dry-run` (or set `dry_run = true` in the config file) to
+see the plan for a file without writing, renaming, or deleting anything. It
+works for direct conversion, Sonarr/Radarr `Download` events, and the language
+audit, where it also turns on `servarr_language_dry_run`:
+
+```bash
+direct_play_nice --dry-run input.mkv output.mp4
+```
+
+```text
+Dry run: no file will be written, renamed, or deleted.
+  Mode:            direct conversion
+  Input:           /media/input.mkv
+  Action:          transcode
+                   - video codec mpeg4 is not compatible with required H.264
+                   - no audio stream with compatible codec AAC found
+  Output:          /media/output.mp4
+  Source:          left untouched
+  Target devices:  Chromecast (1st gen), Roku Ultra
+  Codecs:          video H.264, audio AAC, container mp4
+  Subtitle OCR:    enabled
+```
+
+In Sonarr/Radarr mode the report also lists the temporary and backup paths.
+Add `--output json` for a machine-readable report.
+
 ## GPU Acceleration
 
 `direct_play_nice` supports GPU acceleration in two places:
@@ -141,8 +201,13 @@ visual_scan_frames = 120
 visual_sample_interval = 15
 visual_failure_ratio = 0.60
 
+# Optional: print the replacement plan and exit without writing anything.
+# Useful on a first run against a real library; remove once the paths look right.
+# dry_run = true
+
 # Optional: require imported media to contain English audio.
 # Start with dry-run while tuning candidate policy and custom formats.
+# dry_run = true above also implies this setting.
 servarr_language_check = true
 servarr_language_dry_run = true
 servarr_language_candidate_policy = "custom-format-or-title"

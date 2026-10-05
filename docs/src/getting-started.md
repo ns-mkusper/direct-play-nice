@@ -82,3 +82,16 @@ built-in device definitions.
 direct_play_nice --probe-streams input.mkv
 direct_play_nice --probe-streams --output json input.mkv
 ```
+
+## See the plan without writing anything
+
+```bash
+direct_play_nice --dry-run input.mkv output.mp4
+direct_play_nice --dry-run --output json input.mkv output.mp4
+```
+
+The report names the action (skip, transcode, or remux with OCR subtitles),
+the reasons, every path the real run would create, and what happens to the
+source. Nothing is written, renamed, or deleted. The same flag works inside a
+Sonarr/Radarr `Download` event; see
+[Sonarr/Radarr Integration](./servarr.html#dry-run).

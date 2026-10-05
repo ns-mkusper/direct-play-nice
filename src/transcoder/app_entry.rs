@@ -26,6 +26,7 @@ use crate::subtitle_ocr;
 use crate::throttle::acquire_slot;
 use crate::transcoder::app::app_convert::ConversionParams;
 use crate::transcoder::convert_video_file;
+use crate::transcoder::dry_run::{DryRunAction, DryRunReport, SourceHandling};
 use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMismatch};
 use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
 use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayConstraints};
@@ -36,6 +37,9 @@ use crate::types::{OcrFormat, OutputFormat};
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let plex_refresher = prepare_runtime_configuration(&mut args, &matches_snapshot)?;
+    if args.dry_run {
+        enable_dry_run(&mut args);
+    }
     if maybe_handle_probe_modes(&args)? {
         return Ok(());
     }
@@ -52,6 +56,15 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
 
     let base_args = args.clone();
     run_batch(base_args, servarr_preparation, plex_refresher)
+}
+
+/// Turns every write path off for this process: Servarr language actions run in
+/// their own dry-run mode, DPN's language cache is read-only, and conversion
+/// stops after planning (see `run_conversion`).
+fn enable_dry_run(args: &mut Args) {
+    args.servarr_language_dry_run = true;
+    servarr::disable_cache_writes();
+    info!("Dry run enabled: no file will be written, renamed, or deleted.");
 }
 
 /// Loads optional file config, applies precedence merge, and creates Plex side-effect policy.
@@ -588,6 +601,8 @@ fn run_conversion(
     let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
 
     let mut needs_conversion = true;
+    let mut dry_run_action = DryRunAction::Transcode;
+    let mut dry_run_reasons = Vec::new();
     match assess_direct_play_compatibility(
         input_file,
         DirectPlayConstraints {
@@ -610,18 +625,23 @@ fn run_conversion(
                     info!(
                         "Input is already direct-play compatible for the requested devices; skipping conversion."
                     );
-                    return Ok(());
+                    if !args.dry_run {
+                        return Ok(());
+                    }
+                    dry_run_action = DryRunAction::Skip;
                 } else {
                     info!(
                         "Input is direct-play compatible for the requested devices; skipping video/audio transcode but OCR is requested."
                     );
                     needs_conversion = false;
+                    dry_run_action = DryRunAction::RemuxSubtitles;
                 }
             } else {
                 info!("Transcoding required to satisfy requested device constraints.");
-                for reason in assessment.reasons {
+                for reason in &assessment.reasons {
                     info!("  - {}", reason);
                 }
+                dry_run_reasons = assessment.reasons;
             }
         }
         Err(err) => {
@@ -629,6 +649,9 @@ fn run_conversion(
                 "Unable to determine direct-play compatibility automatically; proceeding with conversion: {}",
                 err
             );
+            dry_run_reasons.push(format!(
+                "compatibility could not be determined ({err}); conversion would be attempted"
+            ));
         }
     }
 
@@ -643,6 +666,26 @@ fn run_conversion(
         None
     };
     let conversion_output_file = temp_output_cstring.as_deref().unwrap_or(output_file);
+
+    if args.dry_run {
+        let report = build_dry_run_report(DryRunInputs {
+            args: &args,
+            plan: plan.as_ref(),
+            action: dry_run_action,
+            reasons: dry_run_reasons,
+            input_file,
+            output_path: &output_path,
+            conversion_temp: temp_output_cstring.as_deref().map(cstr_to_path_buf),
+            device_names: &device_names,
+            target_video_codec,
+            common_audio_codec,
+            container: requested_container,
+            should_ocr,
+        });
+        println!("{}", report.render(args.output));
+        return Ok(());
+    }
+
     let conversion_params = ConversionParams {
         sub_mode: args.sub_mode,
         target_video_codec,
@@ -864,6 +907,79 @@ fn run_conversion(
             Ok(())
         }
         (None, Err(err)) => Err(err),
+    }
+}
+
+struct DryRunInputs<'a> {
+    args: &'a Args,
+    plan: Option<&'a ReplacePlan>,
+    action: DryRunAction,
+    reasons: Vec<String>,
+    input_file: &'a std::ffi::CStr,
+    output_path: &'a std::path::Path,
+    conversion_temp: Option<std::path::PathBuf>,
+    device_names: &'a [&'a str],
+    target_video_codec: ffi::AVCodecID,
+    common_audio_codec: ffi::AVCodecID,
+    container: ContainerFormat,
+    should_ocr: bool,
+}
+
+/// Assembles the paths and decisions a real run would act on, without acting on them.
+fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
+    use crate::transcoder::helpers::describe_codec;
+
+    let DryRunInputs {
+        args,
+        plan,
+        action,
+        reasons,
+        input_file,
+        output_path,
+        conversion_temp,
+        device_names,
+        target_video_codec,
+        common_audio_codec,
+        container,
+        should_ocr,
+    } = inputs;
+
+    let mut temp_outputs = Vec::new();
+    let (output, backup) = match plan {
+        Some(plan) => {
+            temp_outputs.push(plan.temp_output_path.clone());
+            (
+                plan.final_output_path.clone(),
+                Some(plan.backup_path.clone()),
+            )
+        }
+        None => (output_path.to_path_buf(), None),
+    };
+    if let Some(temp) = conversion_temp {
+        temp_outputs.push(temp);
+    }
+
+    let source_handling = match (action, plan) {
+        (DryRunAction::Skip, _) => SourceHandling::Keep,
+        (_, Some(_)) => SourceHandling::ReplaceViaBackup,
+        (_, None) if args.delete_source.unwrap_or(false) => SourceHandling::DeleteAfterVerify,
+        (_, None) => SourceHandling::Keep,
+    };
+
+    DryRunReport {
+        mode: DryRunReport::mode_for(plan),
+        action,
+        input: cstr_to_path_buf(input_file),
+        output,
+        temp_outputs,
+        backup,
+        source_handling,
+        reasons,
+        target_devices: device_names.iter().map(|name| name.to_string()).collect(),
+        video_codec: describe_codec(target_video_codec).to_string(),
+        audio_codec: describe_codec(common_audio_codec).to_string(),
+        container: container.as_str().to_string(),
+        subtitle_ocr_pass: should_ocr,
     }
 }
 

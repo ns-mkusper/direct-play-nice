@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cuda_resize;
+pub mod dry_run;
 pub mod ffmpeg_diagnostics;
 pub mod ffmpeg_ext;
 pub mod h264;

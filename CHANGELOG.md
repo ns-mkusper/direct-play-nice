@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Safety
+
+- Added a global `--dry-run` flag and `dry_run` config key that report the
+  planned conversion or Servarr replacement (paths, action, reasons) and exit
+  before any file is written, renamed, or deleted. It also implies
+  `servarr_language_dry_run` and makes the language cache read-only.
+- Documented the file replacement policy (temporary files, atomic promotion,
+  and what a failed or killed run leaves behind) in the README and the
+  Sonarr/Radarr manual.
+
 ## [1.1.0-beta.8] - 2026-09-12
 
 ### Servarr

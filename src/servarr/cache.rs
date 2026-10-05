@@ -10,6 +10,7 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,12 +38,27 @@ struct NoCandidateRecord {
     reason: String,
 }
 
+/// Process-wide switch that turns every cache write into a no-op. Set once by `--dry-run`.
+static WRITES_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Stops this process from writing the language cache. Reads keep working.
+pub fn disable_writes() {
+    WRITES_DISABLED.store(true, Ordering::SeqCst);
+}
+
+fn writes_disabled() -> bool {
+    WRITES_DISABLED.load(Ordering::SeqCst)
+}
+
 pub fn record_assessment(
     kind: IntegrationKind,
     path: &Path,
     requirements: &LanguageRequirements,
     report: &LanguageCheckReport,
 ) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
     let Some(cache_path) = resolve_cache_path() else {
         return Ok(());
     };
@@ -87,6 +103,9 @@ pub fn record_no_candidate(
     requirements: &LanguageRequirements,
     reason: &str,
 ) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
     let Some(cache_path) = resolve_no_candidate_cache_path() else {
         return Ok(());
     };

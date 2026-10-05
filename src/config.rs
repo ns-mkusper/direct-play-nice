@@ -66,6 +66,7 @@ pub struct Config {
     pub visual_sample_interval: Option<usize>,
     pub visual_failure_ratio: Option<f64>,
     pub delete_source: Option<bool>,
+    pub dry_run: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
 
@@ -334,6 +335,15 @@ mod tests {
             cfg.servarr_language_candidate_policy,
             Some(ServarrLanguageCandidatePolicy::CustomFormatOrTitle)
         );
+    }
+
+    #[test]
+    fn parses_dry_run_setting() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "dry_run = true").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.dry_run, Some(true));
     }
 
     #[test]

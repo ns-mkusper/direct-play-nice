@@ -15,6 +15,7 @@ mod media_paths;
 mod path_policy;
 
 pub use api::{run_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
+pub use cache::disable_writes as disable_cache_writes;
 pub use language::{parse_language_list, LanguageRequirements, UntaggedRetagOptions};
 
 #[cfg(test)]

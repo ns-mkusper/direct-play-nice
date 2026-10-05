@@ -22,6 +22,14 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--resize-quality <resize_quality>` `fast-bilinear|bilinear|bicubic|lanczos|spline`
 - `--resize-backend <resize_backend>` `auto|software|cuda`
 
+## Safety controls
+
+- `--dry-run` print what would be converted or replaced (paths, action,
+  reasons) and exit without writing, renaming, or deleting any file; applies to
+  direct conversion, Sonarr/Radarr events, and the language audit, and implies
+  `--servarr-language-dry-run`
+- `--output json` with `--dry-run` prints the report as JSON
+
 ## Stream and compatibility controls
 
 - `--unsupported-video-policy <unsupported_video_policy>` `convert|ignore|fail`
@@ -91,7 +99,7 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
   checks
 - `--servarr-api-key <KEY>` Sonarr/Radarr API key for mismatch replacement checks
 - `--servarr-language-dry-run` evaluate candidates without grabbing or
-  blocklisting
+  blocklisting; `--dry-run` turns this on as well
 - `--servarr-untagged-audio-language <LANG>` opt-in language tag to apply to
   untagged audio streams before redownload decisions
 - `--servarr-untagged-subtitle-language <LANG>` opt-in language tag to apply to
