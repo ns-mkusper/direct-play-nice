@@ -59,6 +59,14 @@ fallback:
   (`intel-opencl-icd` and `libze-intel-gpu1` on Ubuntu). On hosts with more
   than one GPU, `DPN_UPSCALE_OPENVINO_DEVICE=GPU.0` picks the Intel one.
 - `cpu`: run on the CPU. Expect about one frame per second at 480p.
+- On macOS, `auto` uses CoreML. It needs ONNX Runtime 1.21 or newer (the
+  CoreML options the binary passes do not exist in older releases; 1.20
+  reports "Unknown provider name"). Those releases abort inside their own
+  teardown at process exit on macOS, so the binary leaves through `_exit`
+  after all files are promoted and cleaned up; exit codes are unaffected.
+  `DPN_UPSCALE_COREML_UNITS` (`all`, `cpu-gpu`, `cpu-ane`, `cpu`) and
+  `DPN_UPSCALE_COREML_FORMAT` (`mlprogram`, `neuralnetwork`) exist for
+  experiments; none of them changed throughput on an M4 Pro.
 
 `--ai-upscale-tile <PIXELS>` splits each frame into overlapping tiles so large
 frames fit in small GPU memory; `256` to `512` works for 2 to 4 GB cards.
