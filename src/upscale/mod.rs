@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum;
-use log::{debug, info, warn};
+use log::info;
 use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -470,6 +470,7 @@ fn execution_providers(
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn cuda_provider() -> Result<Option<ExecutionProviderDispatch>> {
+    use log::{debug, warn};
     use ort::execution_providers::cuda::CUDAExecutionProvider;
     use ort::execution_providers::ExecutionProvider;
 
@@ -503,6 +504,7 @@ fn cuda_provider() -> Result<Option<ExecutionProviderDispatch>> {
 /// device string (default `GPU`; use `GPU.0` or `GPU.1` on multi-GPU hosts).
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn openvino_provider() -> Option<ExecutionProviderDispatch> {
+    use log::{debug, warn};
     use ort::execution_providers::ExecutionProvider;
     use ort::execution_providers::OpenVINOExecutionProvider;
 
@@ -534,11 +536,38 @@ fn platform_gpu_provider() -> Option<(ExecutionProviderDispatch, &'static str)> 
     matches!(ep.is_available(), Ok(true)).then(|| (ep.build().error_on_failure(), "directml"))
 }
 
+/// CoreML on Apple hardware. Defaults to the ML Program model format, which
+/// covers more operators than the legacy NeuralNetwork format.
+/// `DPN_UPSCALE_COREML_UNITS` selects `all` (default), `cpu-gpu`, `cpu-ane`,
+/// or `cpu`; `DPN_UPSCALE_COREML_FORMAT` selects `mlprogram` (default) or
+/// `neuralnetwork`.
 #[cfg(target_vendor = "apple")]
 fn platform_gpu_provider() -> Option<(ExecutionProviderDispatch, &'static str)> {
+    use ort::execution_providers::coreml::{CoreMLComputeUnits, CoreMLModelFormat};
     use ort::execution_providers::CoreMLExecutionProvider;
     use ort::execution_providers::ExecutionProvider;
-    let ep = CoreMLExecutionProvider::default();
+
+    let units = match env::var("DPN_UPSCALE_COREML_UNITS")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "cpu-gpu" => CoreMLComputeUnits::CPUAndGPU,
+        "cpu-ane" => CoreMLComputeUnits::CPUAndNeuralEngine,
+        "cpu" => CoreMLComputeUnits::CPUOnly,
+        _ => CoreMLComputeUnits::All,
+    };
+    let format = match env::var("DPN_UPSCALE_COREML_FORMAT")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "neuralnetwork" => CoreMLModelFormat::NeuralNetwork,
+        _ => CoreMLModelFormat::MLProgram,
+    };
+    let ep = CoreMLExecutionProvider::default()
+        .with_model_format(format)
+        .with_compute_units(units);
     matches!(ep.is_available(), Ok(true)).then(|| (ep.build().error_on_failure(), "coreml"))
 }
 

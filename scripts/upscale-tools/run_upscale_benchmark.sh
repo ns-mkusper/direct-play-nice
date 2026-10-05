@@ -45,7 +45,11 @@ if [ "${#clips[@]}" -eq 0 ]; then
   echo "at least one --clip NAME=lowres.mkv:ref_1080p.mkv is required" >&2
   exit 2
 fi
-for cmd in ffmpeg ffprobe awk; do
+# Portable wall clock and core count (macOS date has no %N and no nproc).
+now() { python3 -c 'import time; print(f"{time.time():.3f}")'; }
+cores() { getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4; }
+
+for cmd in ffmpeg ffprobe awk python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "missing required command: $cmd" >&2; exit 1; }
 done
 [ -x "$bin" ] || { echo "direct_play_nice binary not found: $bin" >&2; exit 1; }
@@ -86,7 +90,7 @@ score() {
   if [ "$have_vmaf" = "1" ]; then
     local log="$work_dir/vmaf_${tag}.json"
     ffmpeg -hide_banner -loglevel error -i "$out" -i "$ref" -frames:v "$frames" \
-      -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=$log:n_threads=$(nproc)" -f null - || true
+      -lavfi "[0:v][1:v]libvmaf=log_fmt=json:log_path=$log:n_threads=$(cores)" -f null - || true
     if [ -s "$log" ]; then
       vmaf_mean="$(python3 -c "import json,sys; print(round(json.load(open(sys.argv[1]))['pooled_metrics']['vmaf']['mean'],2))" "$log" 2>/dev/null || true)"
       vmaf_harm="$(python3 -c "import json,sys; print(round(json.load(open(sys.argv[1]))['pooled_metrics']['vmaf']['harmonic_mean'],2))" "$log" 2>/dev/null || true)"
@@ -104,10 +108,10 @@ run_ffmpeg_baseline() {
   local clip="$1" src="$2" ref="$3" flags="$4"
   local out="$work_dir/${clip}_ffmpeg_${flags}.mp4"
   local started ended elapsed nframes rate fps realtime size metrics dims
-  started="$(date +%s.%N)"
+  started="$(now)"
   ffmpeg -hide_banner -loglevel error -y -i "$src" -frames:v "$frames" \
     -vf "scale=1920:1080:flags=${flags},format=yuv420p" -c:v libx264 -preset fast -crf 18 -an "$out"
-  ended="$(date +%s.%N)"
+  ended="$(now)"
   elapsed="$(awk -v s="$started" -v e="$ended" 'BEGIN { printf "%.3f", e - s }')"
   nframes="$(probe_frames "$out")"; rate="$(probe_rate "$src")"
   fps="$(awk -v n="$nframes" -v t="$elapsed" 'BEGIN { printf "%.2f", n / t }')"
@@ -131,7 +135,7 @@ run_dpn() {
   local out="$work_dir/${clip}_dpn_${model}.mp4"
   local log="$work_dir/${clip}_dpn_${model}.log"
   local started ended elapsed nframes rate fps realtime size metrics dims status
-  started="$(date +%s.%N)"
+  started="$(now)"
   if env "${extra_env[@]}" "$bin" \
       --config-file "$config_file" \
       --device roku \
@@ -151,7 +155,7 @@ run_dpn() {
     row "$clip" "dpn-${model}" "$status" "" "" "" "" ",,," ","
     return 0
   fi
-  ended="$(date +%s.%N)"
+  ended="$(now)"
   elapsed="$(awk -v s="$started" -v e="$ended" 'BEGIN { printf "%.3f", e - s }')"
   nframes="$(probe_frames "$out")"; rate="$(probe_rate "$src")"
   fps="$(awk -v n="$nframes" -v t="$elapsed" 'BEGIN { printf "%.2f", n / t }')"
