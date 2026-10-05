@@ -155,6 +155,29 @@ DPN run, including a DPN run without AI upscaling.
 | live_silence | dpn-span-x2-ch48 | 143.7 | 3.3 | 0.14x | 20.2 | 37.36 | 0.9681 | 87.85 |
 | live_silence | dpn-span-x4-ch48 | 173.7 | 2.7 | 0.11x | 20.2 | 37.59 | 0.9681 | 87.64 |
 
+### Mac mini, Apple M4 Pro, CoreML provider (ONNX Runtime 1.22 macOS arm64), VideoToolbox encode
+
+| Clip | Method | Elapsed s | FPS | Realtime | Output MB | PSNR | SSIM | VMAF |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| anime_mary | ffmpeg-lanczos | 1.5 | 165.3 | 6.89x | 8.2 | 34.82 | 0.9658 | 75.77 |
+| anime_mary | ffmpeg-spline | 1.4 | 165.8 | 6.91x | 8.1 | 34.83 | 0.9660 | 74.88 |
+| anime_mary | dpn-realesr-animevideov3 | 149.2 | 3.2 | 0.13x | 9.9 | 32.60 | 0.9606 | 82.31 |
+| anime_mary | dpn-realesr-general-x4v3 | 274.5 | 1.7 | 0.07x | 11.8 | 32.35 | 0.9562 | 83.25 |
+| anime_mary | dpn-span-x2-ch48 | 214.9 | 2.2 | 0.09x | 10.7 | 34.17 | 0.9639 | 80.13 |
+| live_silence | ffmpeg-lanczos | 1.1 | 208.7 | 8.70x | 5.7 | 36.48 | 0.9655 | 81.32 |
+| live_silence | ffmpeg-spline | 1.2 | 202.0 | 8.43x | 5.6 | 36.47 | 0.9656 | 80.38 |
+| live_silence | dpn-realesr-animevideov3 | 151.1 | 3.2 | 0.13x | 11.9 | 36.42 | 0.9614 | 80.04 |
+| live_silence | dpn-realesr-general-x4v3 | 272.0 | 1.8 | 0.07x | 12.1 | 35.12 | 0.9535 | 84.12 |
+| live_silence | dpn-span-x2-ch48 | 215.4 | 2.2 | 0.09x | 14.1 | 37.10 | 0.9669 | 85.82 |
+
+### Mac mini, Apple M4 Pro, CPU provider, 3-second clip
+
+| Clip | Method | Elapsed s | FPS | Realtime | Output MB | PSNR | SSIM | VMAF |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| anime3s | ffmpeg-lanczos | 0.6 | 121.6 | 5.07x | 2.6 | 32.46 | 0.9419 | 70.22 |
+| anime3s | ffmpeg-spline | 0.6 | 119.6 | 4.99x | 2.5 | 32.47 | 0.9421 | 69.53 |
+| anime3s | dpn-realesr-animevideov3 | 53.0 | 1.4 | 0.06x | 1.9 | 30.16 | 0.9318 | 68.97 |
+
 ## Reading the numbers
 
 - On clean downscales the deterministic kernels already sit near the fidelity

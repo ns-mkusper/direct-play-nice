@@ -92,7 +92,7 @@ CPU-path only on Linux.
 | NVIDIA Kepler and older (GTX 6xx/7xx) | none | CPU path only | No ONNX Runtime CUDA build targets these parts. |
 | Intel iGPU and QuickSync boxes (N100, Celeron, Core UHD/Iris), Intel Arc | OpenVINO (Linux and Windows), DirectML on Windows | supported with an OpenVINO runtime | Needs an ONNX Runtime build with OpenVINO and the Intel GPU compute runtime; see `--ai-upscale-device openvino`. Validated on an Arrow Lake Xe iGPU at 4.5 fps model time for 480p 4x, about the same as a GTX 960. Entry-level iGPUs (N100, older UHD) will be slower. DirectML on Windows is compiled, not validated. |
 | AMD Radeon and Ryzen APUs | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no ROCm provider. DirectML on Windows is compiled, not validated. |
-| Apple Silicon and Intel Macs | CoreML | compiled, not validated | The CoreML provider is linked and both macOS CI jobs pass; no hardware run yet. |
+| Apple Silicon and Intel Macs | CoreML | supported, validated on Apple Silicon | Needs ONNX Runtime 1.21 or newer (CoreML options). Measured on an M4 Pro Mac mini at 3.3 fps model time for 480p 4x, about twice the Apple CPU path and on par with a GTX 960; compute-unit and model-format options made no difference. Intel Macs compile and pass CI, not measured. |
 | x86 CPU only (NAS such as Synology, QNAP, Unraid boxes; servers without a GPU) | CPU | works, impractical | `--ai-upscale-device cpu` is required to opt in. Measured 0.3 to 0.9 fps at 480p. Fine for a short clip, not for a library. |
 | ARM SBCs (Raspberry Pi 4/5, Rockchip) via the aarch64 build | CPU | works in principle, not recommended | Same CPU path with far less compute; expect well under 0.3 fps. |
 | Docker image (`ghcr.io/ns-mkusper/direct-play-nice`) | CPU as shipped | CPU path only | The image bundles the CPU-only ONNX Runtime 1.16.3 tarball. For CUDA, mount an ONNX Runtime GPU build, point `ORT_DYLIB_PATH` at it, and run with `--gpus all`. Not validated. |
@@ -108,6 +108,8 @@ or stops before writing anything, with a message naming the CPU flag.
 | Laptop | same, `--ai-upscale-tile 256` | 1.22 | CUDA | 61 ms/frame (16 fps) | identical output |
 | Laptop | same, CPU path | 1.22 | CPU | 1072 ms/frame (0.9 fps) | 0.9 fps, 0.04x |
 | Laptop | Intel Arrow Lake Xe iGPU (shared memory) | 1.24 OpenVINO build | OpenVINO `GPU.0` | 216 ms/frame (4.6 fps) | 3.7 fps, 0.15x |
+| Mac mini | Apple M4 Pro (CoreML, VideoToolbox encode) | 1.22 macOS arm64 | CoreML | 298 ms/frame (3.4 fps) | 3.2 fps, 0.13x |
+| Mac mini | same, CPU path | 1.22 | CPU | 713 ms/frame (1.4 fps) | 1.4 fps, 0.06x |
 | Media server | 2x NVIDIA GTX 960 Maxwell, 2 GB | 1.16, CUDA 12 / cuDNN 8 | CUDA | 269 ms/frame (3.7 fps) | 3.1 fps, 0.13x |
 | Media server | same | 1.22, CUDA 12 / cuDNN 9 | CUDA | fails fast (no sm_52 kernels) | no output written |
 | Media server | same, CPU path | 1.16 | CPU | 3.4 s/frame (0.3 fps) | 0.3 fps, 0.01x |
