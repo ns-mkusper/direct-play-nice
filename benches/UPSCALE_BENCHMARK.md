@@ -1,7 +1,8 @@
 # AI Upscale Benchmark
 
 Companion to the [AI Upscaling](../docs/src/ai-upscaling.md) chapter and issue #111.
-Two 20-second clips (animation and live action) were cut from library media, downscaled to 854x480 with
+Two 20-second clips (animation and live action) were cut from library
+media, downscaled to 854x480 with
 lanczos, and upscaled back to 1920x1080 by every candidate. Scores compare the
 upscaled output with the original 1080p frames. The clean downscale is the
 kindest case for deterministic kernels; the crf 30 variants add the compression
