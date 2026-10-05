@@ -62,25 +62,39 @@ model works on software frames.
 
 ## Hardware compatibility
 
-Measured on the two hosts below with the Real-ESRGAN compact models at
-854x480 to 1920x1080. "Model time" is inference only; "end to end" includes
-decode, colour conversion, the deterministic fit, and NVENC encoding.
+Measured with the built-in models at 854x480 to 1920x1080. "Model time" is
+inference only for `realesr-animevideov3`; "end to end" includes decode,
+colour conversion, the deterministic fit, NVENC encoding where available, and
+output validation, over a 20-second clip. Full tables are in the benchmark
+report linked below.
 
-| Host | GPU | ONNX Runtime | CUDA / cuDNN | Provider | Model time (anime 4x) | End to end | Status |
+| Host | GPU | ONNX Runtime | CUDA / cuDNN | Provider | Model time | End to end | Status |
 | --- | --- | --- | --- | --- | ---: | ---: | --- |
-| zbook | NVIDIA RTX PRO 5000 Blackwell (24 GB) | 1.22 | 12 / 9 | CUDA | TBD | TBD | works |
-| zbook | same | 1.22 | n/a | CPU | TBD | TBD | works, slow |
-| plexserver | 2x NVIDIA GTX 960 Maxwell (2 GB) | 1.16 | 12 / 8 | CUDA | TBD | TBD | works whole frame |
-| plexserver | same | 1.22 | 12 / 9 | CUDA | n/a | n/a | provider load fails (see note) |
-| plexserver | same | 1.16 | n/a | CPU | TBD | TBD | works, slow |
-| Windows | any DirectML device | build default | n/a | DirectML | untested | untested | compiled, untested |
-| macOS | Apple Silicon | build default | n/a | CoreML | untested | untested | compiled, untested |
+| Laptop | NVIDIA RTX PRO 5000 Blackwell, 24 GB | 1.22 | 12 / 9 | CUDA | 39 ms/frame (26 fps) | 10 fps, 0.42x realtime | works, whole frame |
+| Laptop | same | 1.22 | 12 / 9 | CUDA, `--ai-upscale-tile 256` | 61 ms/frame (16 fps) | 6.7 fps on a 3 s clip | works, same output |
+| Laptop | same (CPU path) | 1.22 | n/a | CPU | 1072 ms/frame (0.9 fps) | 0.9 fps, 0.04x | works, slow |
+| Media server | 2x NVIDIA GTX 960 Maxwell, 2 GB | 1.16 | 12 / 8 | CUDA | 269 ms/frame (3.7 fps) | 3.1 fps, 0.13x | works, whole frame fits 2 GB |
+| Media server | same | 1.22 | 12 / 9 | CUDA | n/a | n/a | fails fast: `cudaErrorNoKernelImageForDevice` (1.22 kernels drop sm_52) |
+| Media server | same (CPU path) | 1.16 | n/a | CPU | 3.4 s/frame (0.3 fps) | 0.3 fps, 0.01x | works, slow |
+| Windows | any DirectML adapter | build default | n/a | DirectML | untested | untested | compiles in CI, not exercised |
+| macOS | Apple Silicon | build default | n/a | CoreML | untested | untested | compiles in CI, not exercised |
 
-TBD cells are filled from the benchmark report below.
+Notes:
+
+- The 2x SPAN model (`custom`) reaches 19 fps end to end on the laptop
+  (0.80x realtime) because the deterministic fit from a 2x output is far
+  cheaper than from a 4x output. It is also the best live-action model in the
+  benchmark. Export it with `scripts/upscale-tools/export_sr_onnx.py` from the
+  Apache-2.0 `spanx2_ch48` weights.
+- Maxwell cards need an ONNX Runtime build that still ships sm_5x CUDA kernels
+  (1.16 with cuDNN 8 is what the media server uses). The failure is reported
+  before any output is written.
+- Without a usable GPU provider, `auto` stops with a message naming
+  `--ai-upscale-device cpu`; nothing is written or renamed.
 
 ## Benchmark results
 
-See [UPSCALE_BENCHMARK.md](https://github.com/ns-mkusper/direct-play-nice/blob/main/benches/UPSCALE_BENCHMARK.md)
+See [UPSCALE_BENCHMARK.md](https://github.com/ns-mkusper/direct-play-nice/tree/main/benches)
 for the full tables. The short version:
 
 - Fidelity metrics (PSNR, SSIM) against a clean 1080p reference do not favour
@@ -92,6 +106,10 @@ for the full tables. The short version:
   for the general model. On compression-degraded sources the gap widens.
 - Throughput is far below the deterministic scalers. Treat this as a batch
   feature for sub-HD libraries, not something to run on every import.
+- Picks: `realesr-animevideov3` for anime and for speed,
+  `realesr-general-x4v3` for live action among the built-ins, and the 2x SPAN
+  model through `custom` when you can export it (best live-action VMAF and the
+  fastest end to end).
 
 ## Reproducing the benchmark
 
@@ -110,7 +128,7 @@ PSNR, SSIM, and VMAF when the local ffmpeg has `libvmaf`.
 
 | Family | Why not built in |
 | --- | --- |
-| Official SPAN x2/x4 (Apache-2.0) | Best fidelity of the set and fast, but needs an ONNX export of the authors' `.pth`; no hosted ONNX with a stable checksum yet. Supported through `custom`. |
+| Official SPAN x2/x4 (Apache-2.0) | Best fidelity and best live-action VMAF of the set, and the 2x variant is the fastest end to end. No hosted ONNX with a stable checksum yet, so it ships as a `custom` recipe (`scripts/upscale-tools/export_sr_onnx.py`) until the file can be attached to a release. |
 | EfRLFN (MIT, real-time SR paper 2026) | Fast, but scored below lanczos on VMAF for both clips. |
 | RealPLKSR (MIT) | 20x slower than the compact models; fixed 512 or 256 pixel input. |
 | NanoVSR (MIT, video-aware) | Needs a 15-frame window per pass; 9 fps at 480p on a laptop GPU and no VMAF gain over single-image models in this test. Worth revisiting for temporal stability. |
