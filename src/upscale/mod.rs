@@ -133,6 +133,18 @@ const REALESR_GENERAL_X4V3: ModelSpec = ModelSpec {
 /// Overlap kept around every tile so the model sees context across seams.
 const TILE_PAD: u32 = 8;
 
+/// Set once any ONNX Runtime environment has been created in this process.
+/// `main` consults it on macOS to skip ONNX Runtime's exit-time teardown.
+static ORT_INITIALISED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn mark_ort_initialised() {
+    ORT_INITIALISED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn ort_initialised() -> bool {
+    ORT_INITIALISED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Error raised while loading or running the AI upscale model. Conversion
 /// callers treat it as final: retrying with another video encoder cannot fix it.
 #[derive(Debug)]
@@ -187,7 +199,7 @@ impl Upscaler {
         // Telemetry off: ONNX Runtime 1.21+ on macOS otherwise aborts at process
         // exit when its telemetry thread touches an already destroyed mutex.
         match ort::init().with_telemetry(false).commit() {
-            Ok(_) => {}
+            Ok(_) => mark_ort_initialised(),
             Err(err) => bail!("Failed to initialize ONNX Runtime for AI upscaling: {err}"),
         }
         let session = Session::builder()

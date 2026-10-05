@@ -103,6 +103,7 @@ pub(in crate::subtitle_ocr) fn init_ort_environment() -> Result<bool> {
     }
     let _ = ORT_ENV_INIT.set(());
     let _ = ORT_ENV_GPU_AVAILABLE.set(selection.gpu_available);
+    crate::upscale::mark_ort_initialised();
     Ok(selection.gpu_available)
 }
 

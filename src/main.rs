@@ -52,5 +52,29 @@ fn main() -> Result<()> {
     let matches_snapshot = matches.clone();
     let args = Args::from_arg_matches_mut(&mut matches).context("Failed to parse CLI arguments")?;
 
-    transcoder::run(args, matches_snapshot)
+    let outcome = transcoder::run(args, matches_snapshot);
+    finish(outcome)
+}
+
+/// Reports the outcome and exits. On macOS, ONNX Runtime 1.21 and newer abort
+/// inside their own static destructors at process exit (libc++ "mutex lock
+/// failed: Invalid argument"), after all of our work is done. When an ONNX
+/// Runtime environment was created, leave through `_exit` so that teardown
+/// never runs; every file promotion and cleanup has already happened by then.
+fn finish(outcome: Result<()>) -> Result<()> {
+    if !(cfg!(target_os = "macos") && upscale::ort_initialised()) {
+        return outcome;
+    }
+    use std::io::Write;
+    let code = match &outcome {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("Error: {err:?}");
+            1
+        }
+    };
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    log::logger().flush();
+    unsafe { libc::_exit(code) }
 }
