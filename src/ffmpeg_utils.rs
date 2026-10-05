@@ -506,7 +506,7 @@ pub(crate) struct Args {
     )]
     pub(crate) ai_upscale_model_path: Option<PathBuf>,
 
-    /// Where the AI upscale model runs: auto (GPU or fail) | cuda | cpu (explicit slow fallback)
+    /// Where the AI upscale model runs: auto (GPU or fail) | cuda | openvino (Intel GPU) | cpu (explicit slow fallback)
     #[arg(
         long = "ai-upscale-device",
         value_enum,

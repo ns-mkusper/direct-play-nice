@@ -68,8 +68,10 @@ and benchmark results.
   the cap deterministically
 - `--ai-upscale-model-path <FILE>` ONNX file for `custom` (one float NCHW RGB
   input in `[0,1]`, one output; the scale factor is probed at load)
-- `--ai-upscale-device <DEVICE>` `auto|cuda|cpu`; `auto` uses a GPU provider
-  or fails with instructions, `cpu` is the explicit slow fallback
+- `--ai-upscale-device <DEVICE>` `auto|cuda|openvino|cpu`; `auto` uses a GPU
+  provider (CUDA, then OpenVINO, then DirectML or CoreML) or fails with
+  instructions, `openvino` targets an Intel GPU through an ONNX Runtime build
+  with OpenVINO, `cpu` is the explicit slow fallback
 - `--ai-upscale-tile <PIXELS>` tile edge in source pixels; `0` runs whole
   frames, `256`-`512` fits 2-4 GB GPUs
 

@@ -78,6 +78,8 @@ pub(crate) enum AiUpscaleDevice {
     Auto,
     /// Require the ONNX Runtime CUDA execution provider.
     Cuda,
+    /// Require the OpenVINO execution provider on an Intel GPU (needs an ONNX Runtime build with OpenVINO).
+    Openvino,
     /// Run on the CPU. Expect roughly one frame per second at 480p.
     Cpu,
 }
@@ -87,6 +89,7 @@ impl std::fmt::Display for AiUpscaleDevice {
         f.write_str(match self {
             AiUpscaleDevice::Auto => "auto",
             AiUpscaleDevice::Cuda => "cuda",
+            AiUpscaleDevice::Openvino => "openvino",
             AiUpscaleDevice::Cpu => "cpu",
         })
     }
@@ -432,22 +435,34 @@ fn execution_providers(
 ) -> Result<(Vec<ExecutionProviderDispatch>, &'static str)> {
     match device {
         AiUpscaleDevice::Cpu => Ok((vec![CPUExecutionProvider::default().build()], "cpu")),
+        AiUpscaleDevice::Openvino => match openvino_provider() {
+            Some(provider) => Ok((vec![provider], "openvino")),
+            None => bail!(
+                "--ai-upscale-device openvino requested but the OpenVINO execution provider is not available. \
+                 Point ORT_DYLIB_PATH at an ONNX Runtime build with OpenVINO (for example the onnxruntime-openvino package) \
+                 and install the Intel GPU compute runtime."
+            ),
+        },
         AiUpscaleDevice::Cuda | AiUpscaleDevice::Auto => {
             if let Some(provider) = cuda_provider()? {
                 return Ok((vec![provider], "cuda"));
             }
+            if matches!(device, AiUpscaleDevice::Cuda) {
+                bail!(
+                    "--ai-upscale-device cuda requested but the ONNX Runtime CUDA execution provider is not available"
+                );
+            }
+            if let Some(provider) = openvino_provider() {
+                return Ok((vec![provider], "openvino"));
+            }
             if let Some((provider, name)) = platform_gpu_provider() {
-                if matches!(device, AiUpscaleDevice::Cuda) {
-                    bail!(
-                        "--ai-upscale-device cuda requested but the ONNX Runtime CUDA execution provider is not available (found {name} instead)"
-                    );
-                }
                 return Ok((vec![provider], name));
             }
             bail!(
                 "AI upscaling needs a GPU execution provider and none is available. \
-                 Install the ONNX Runtime CUDA provider plus matching CUDA/cuDNN runtime libraries, \
-                 or pass --ai-upscale-device cpu to accept roughly one frame per second."
+                 Install the ONNX Runtime CUDA provider plus matching CUDA/cuDNN runtime libraries \
+                 (or an OpenVINO build for Intel GPUs), or pass --ai-upscale-device cpu to accept \
+                 roughly one frame per second."
             )
         }
     }
@@ -482,6 +497,33 @@ fn cuda_provider() -> Result<Option<ExecutionProviderDispatch>> {
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn cuda_provider() -> Result<Option<ExecutionProviderDispatch>> {
     Ok(None)
+}
+
+/// OpenVINO on an Intel GPU. `DPN_UPSCALE_OPENVINO_DEVICE` picks the OpenVINO
+/// device string (default `GPU`; use `GPU.0` or `GPU.1` on multi-GPU hosts).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn openvino_provider() -> Option<ExecutionProviderDispatch> {
+    use ort::execution_providers::ExecutionProvider;
+    use ort::execution_providers::OpenVINOExecutionProvider;
+
+    let device_type = env::var("DPN_UPSCALE_OPENVINO_DEVICE").unwrap_or_else(|_| "GPU".to_string());
+    let ep = OpenVINOExecutionProvider::default().with_device_type(device_type);
+    match ep.is_available() {
+        Ok(true) => Some(ep.build().error_on_failure()),
+        Ok(false) => {
+            debug!("ONNX Runtime OpenVINO execution provider is not available for AI upscaling");
+            None
+        }
+        Err(err) => {
+            warn!("Failed to query the OpenVINO execution provider: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn openvino_provider() -> Option<ExecutionProviderDispatch> {
+    None
 }
 
 #[cfg(target_os = "windows")]

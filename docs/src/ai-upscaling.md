@@ -47,10 +47,17 @@ decoded.
 `--ai-upscale-device` controls where the model runs. There is no silent CPU
 fallback:
 
-- `auto` (default): the ONNX Runtime CUDA provider, or DirectML on Windows and
-  CoreML on macOS when those builds are used. If none is available the run
-  fails before any output is written and the message names the CPU flag.
+- `auto` (default): the ONNX Runtime CUDA provider, then OpenVINO on an Intel
+  GPU, then DirectML on Windows or CoreML on macOS when those builds are used.
+  If none is available the run fails before any output is written and the
+  message names the CPU flag.
 - `cuda`: require the CUDA provider.
+- `openvino`: require the OpenVINO provider on an Intel GPU. This needs an
+  ONNX Runtime build that includes OpenVINO (the `onnxruntime-openvino`
+  package ships one; point `ORT_DYLIB_PATH` at its `libonnxruntime.so` and put
+  its directory on the library path) plus the Intel GPU compute runtime
+  (`intel-opencl-icd` and `libze-intel-gpu1` on Ubuntu). On hosts with more
+  than one GPU, `DPN_UPSCALE_OPENVINO_DEVICE=GPU.0` picks the Intel one.
 - `cpu`: run on the CPU. Expect about one frame per second at 480p.
 
 `--ai-upscale-tile <PIXELS>` splits each frame into overlapping tiles so large
@@ -63,10 +70,11 @@ model works on software frames.
 ## Hardware compatibility
 
 By platform class, for the hardware media servers usually run on. The
-execution provider column is what the shipped builds link: CUDA on Linux and
-Windows, DirectML on Windows, CoreML on macOS, CPU everywhere. There is no
-OpenVINO or ROCm provider in these builds, so Intel and AMD GPUs are CPU-path
-only on Linux.
+execution provider column is what the shipped builds link: CUDA and OpenVINO
+on Linux and Windows, DirectML on Windows, CoreML on macOS, CPU everywhere.
+OpenVINO only becomes usable when the ONNX Runtime library `ORT_DYLIB_PATH`
+points at was built with it. There is no ROCm provider, so AMD GPUs are
+CPU-path only on Linux.
 
 | Platform | Provider | AI upscale | Requirements and notes |
 | --- | --- | --- | --- |
@@ -74,8 +82,8 @@ only on Linux.
 | NVIDIA Pascal (GTX 10xx, Quadro P, P2000/P4000) | CUDA | supported, not validated | Needs an ONNX Runtime CUDA 12 build (1.17 to 1.26). The CUDA 13 builds that start at 1.27 drop compute capability below 7.5. |
 | NVIDIA Maxwell (GTX 750/9xx, Quadro M) | CUDA | supported with old runtimes | Only ONNX Runtime builds that still carry sm_5x kernels work; 1.16 with CUDA 12 and cuDNN 8 is validated on a GTX 960. Newer builds fail fast with `cudaErrorNoKernelImageForDevice`. |
 | NVIDIA Kepler and older (GTX 6xx/7xx) | none | CPU path only | No ONNX Runtime CUDA build targets these parts. |
-| Intel iGPU and QuickSync boxes (N100, Celeron, Core UHD/Iris), Intel Arc | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no OpenVINO provider. On Windows the DirectML provider is linked and CI builds it, but it has not been exercised on hardware. |
-| AMD Radeon and Ryzen APUs | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no ROCm provider. Same Windows status as Intel. |
+| Intel iGPU and QuickSync boxes (N100, Celeron, Core UHD/Iris), Intel Arc | OpenVINO (Linux and Windows), DirectML on Windows | supported with an OpenVINO runtime | Needs an ONNX Runtime build with OpenVINO and the Intel GPU compute runtime; see `--ai-upscale-device openvino`. Validated on an Arrow Lake Xe iGPU at 4.5 fps model time for 480p 4x, about the same as a GTX 960. Entry-level iGPUs (N100, older UHD) will be slower. DirectML on Windows is compiled, not validated. |
+| AMD Radeon and Ryzen APUs | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no ROCm provider. DirectML on Windows is compiled, not validated. |
 | Apple Silicon and Intel Macs | CoreML | compiled, not validated | The CoreML provider is linked and both macOS CI jobs pass; no hardware run yet. |
 | x86 CPU only (NAS such as Synology, QNAP, Unraid boxes; servers without a GPU) | CPU | works, impractical | `--ai-upscale-device cpu` is required to opt in. Measured 0.3 to 0.9 fps at 480p. Fine for a short clip, not for a library. |
 | ARM SBCs (Raspberry Pi 4/5, Rockchip) via the aarch64 build | CPU | works in principle, not recommended | Same CPU path with far less compute; expect well under 0.3 fps. |

@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
   `ai_upscale_model`) that enlarges sources below the resolution cap with an
   ONNX model (built-in Real-ESRGAN compact models or a custom file) before the
   deterministic fit. GPU is required unless `--ai-upscale-device cpu` is set;
+  CUDA, OpenVINO (Intel GPUs), DirectML, and CoreML providers are linked, and
   `--ai-upscale-tile` fits small-VRAM GPUs. A benchmark script scores
   PSNR/SSIM/VMAF against 1080p references.
 
