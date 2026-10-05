@@ -31,9 +31,9 @@ pub(crate) enum AiUpscaleModel {
     /// Deterministic resize only (default).
     #[default]
     Off,
-    /// Real-ESRGAN `realesr-animevideov3` (SRVGGNetCompact, 4x, BSD-3-Clause). Fastest built-in; tuned for anime and cartoons.
-    #[value(name = "realesr-animevideov3", alias = "anime")]
-    #[serde(rename = "realesr-animevideov3", alias = "anime")]
+    /// Real-ESRGAN `realesr-animevideov3` (SRVGGNetCompact, 4x, BSD-3-Clause). Fastest built-in; tuned for animation.
+    #[value(name = "realesr-animevideov3", alias = "animation")]
+    #[serde(rename = "realesr-animevideov3", alias = "animation")]
     RealesrAnimevideov3,
     /// Real-ESRGAN `realesr-general-x4v3` (SRVGGNetCompact, 4x, BSD-3-Clause). Twice the depth; tuned for live action and photos.
     #[value(name = "realesr-general-x4v3", alias = "general")]

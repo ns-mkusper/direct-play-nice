@@ -130,7 +130,7 @@ for the full tables. The short version:
   downscales, because perceptual models trade exact pixel agreement for
   sharpness.
 - VMAF, which tracks perceived quality, favours the compact Real-ESRGAN models
-  by several points on anime and holds even or slightly ahead on live action
+  by several points on animation and holds even or slightly ahead on live action
   for the general model. On compression-degraded sources the gap widens.
 - Throughput is far below the deterministic scalers. Treat this as a batch
   feature for sub-HD libraries, not something to run on every import.
@@ -143,7 +143,7 @@ for the full tables. The short version:
 
 ```bash
 scripts/upscale-tools/run_upscale_benchmark.sh \
-  --clip anime=clip_480p.mkv:clip_1080p.mkv \
+  --clip animation=clip_480p.mkv:clip_1080p.mkv \
   --models realesr-animevideov3,realesr-general-x4v3,custom:span-x2=/path/span_x2.onnx \
   --device cuda --hw-accel auto
 ```
@@ -160,5 +160,5 @@ PSNR, SSIM, and VMAF when the local ffmpeg has `libvmaf`.
 | EfRLFN (MIT, real-time SR paper 2026) | Fast, but scored below lanczos on VMAF for both clips. |
 | RealPLKSR (MIT) | 20x slower than the compact models; fixed 512 or 256 pixel input. |
 | NanoVSR (MIT, video-aware) | Needs a 15-frame window per pass; 9 fps at 480p on a laptop GPU and no VMAF gain over single-image models in this test. Worth revisiting for temporal stability. |
-| AnimeJaNai, LiveAction SPAN | CC-BY-NC-SA licensed; usable through `custom` for personal libraries, not redistributed. |
+| Community 2x Compact (HD series) and LiveAction SPAN models | CC-BY-NC-SA licensed; usable through `custom` for personal libraries, not redistributed. |
 | Diffusion video SR (SeedVR, STAR, Upscale-A-Video) | Seconds per frame; not viable for a transcoder. |
