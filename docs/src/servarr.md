@@ -69,7 +69,9 @@ output name):
 The sequence on success is: transcode into the temporary file, validate it,
 rename the original to the backup path, rename the temporary file to the final
 path, delete the backup. Both renames stay on the same filesystem, so the final
-path never holds a partial file.
+path never holds a partial file. Direct CLI conversion stages through the same
+`.direct-play-nice.tmp` file and promotes it by rename; only the backup step is
+Servarr-specific.
 
 On a transcode or validation failure the temporary file is removed and the
 original is left where it was. If the process is killed mid-transcode the

@@ -159,10 +159,24 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
     let temps = report["temp_outputs"]
         .as_array()
         .expect("temp_outputs array");
-    assert_eq!(temps.len(), 1, "MKV output stages through one intermediate");
+    assert_eq!(
+        temps.len(),
+        2,
+        "direct MKV output stages through the promoted temp file plus the MP4 intermediate"
+    );
     assert_eq!(
         temps[0],
-        tmp.path().join("out.conv.mp4").to_string_lossy().as_ref()
+        tmp.path()
+            .join("out.direct-play-nice.tmp.mkv")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        temps[1],
+        tmp.path()
+            .join("out.direct-play-nice.tmp.conv.mp4")
+            .to_string_lossy()
+            .as_ref()
     );
     assert!(!report["reasons"].as_array().unwrap().is_empty());
     Ok(())
@@ -240,5 +254,41 @@ fn dry_run_from_config_file_is_honored() -> Result<(), Box<dyn Error>> {
     assert_unchanged(&before, &after);
     assert!(!output.exists(), "config dry_run=true must prevent output");
     assert!(stdout.starts_with("Dry run:"), "{stdout}");
+    Ok(())
+}
+
+#[test]
+fn direct_conversion_promotes_staged_output_and_leaves_no_temp() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = gen_problem_input(&tmp);
+    let output = tmp.path().join("out.mp4");
+    let staged = tmp.path().join("out.direct-play-nice.tmp.mp4");
+
+    let mut cmd = isolated_cmd(&tmp);
+    cmd.arg("-s")
+        .arg("chromecast_1st_gen")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg("--audio-quality")
+        .arg("192k")
+        .arg(&input)
+        .arg(&output);
+    let out = cmd.output()?;
+    assert!(
+        out.status.success(),
+        "conversion failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(output.exists(), "final output must be promoted into place");
+    assert!(
+        !staged.exists(),
+        "staged temp file must not remain after promotion"
+    );
+    assert!(
+        input.exists(),
+        "input stays untouched without --delete-source"
+    );
     Ok(())
 }

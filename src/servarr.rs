@@ -446,7 +446,7 @@ fn prepare_download(
             effective_suffix,
             view.desired_video_quality,
         )?;
-        let temp_output_path = append_suffix(&final_output_path, ".direct-play-nice.tmp");
+        let temp_output_path = staging_path_for(&final_output_path);
         let backup_path = append_suffix(&input_path, ".direct-play-nice.bak");
 
         let input_cstring = path_to_cstring(&input_path)?;
@@ -491,6 +491,38 @@ fn resolve_output_path(
 
 fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     path_policy::append_suffix(path, suffix)
+}
+
+/// Suffix inserted before the extension of every staged output DPN writes.
+pub const STAGING_SUFFIX: &str = ".direct-play-nice.tmp";
+
+/// Path the conversion writes to before the result is promoted to `final_path`
+/// by rename. Shared by direct conversion and Servarr replacement so both modes
+/// leave the same artifacts behind on failure.
+pub fn staging_path_for(final_path: &Path) -> PathBuf {
+    append_suffix(final_path, STAGING_SUFFIX)
+}
+
+/// Promotes a staged output into place. Windows cannot rename over an existing
+/// file, so the destination is removed first there.
+pub fn promote_staged_output(staged: &Path, final_path: &Path) -> Result<()> {
+    use std::fs;
+    #[cfg(windows)]
+    if final_path.exists() {
+        fs::remove_file(final_path).with_context(|| {
+            format!(
+                "removing existing '{}' before promoting staged output",
+                final_path.display()
+            )
+        })?;
+    }
+    fs::rename(staged, final_path).with_context(|| {
+        format!(
+            "promoting staged output '{}' to '{}'",
+            staged.display(),
+            final_path.display()
+        )
+    })
 }
 
 fn resolve_media_paths(kind: IntegrationKind) -> Result<Vec<PathBuf>> {

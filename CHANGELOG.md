@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 - Documented the file replacement policy (temporary files, atomic promotion,
   and what a failed or killed run leaves behind) in the README and the
   Sonarr/Radarr manual.
+- Direct CLI conversion now stages its output through the same
+  `.direct-play-nice.tmp` file Servarr replacement uses and promotes it by
+  rename, so a failed run no longer leaves a partial file at the output path.
 
 ## [1.1.0-beta.8] - 2026-09-12
 

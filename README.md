@@ -91,9 +91,10 @@ Probe local hardware/codec capabilities:
 direct_play_nice --probe-hw --probe-codecs --only-video --only-hw --probe-json
 ```
 
-The input is never modified. Sonarr/Radarr replacements go through a temp file
-and an atomic rename, so a failed or killed run leaves the original in place.
-Add `--dry-run` to print the plan without writing anything. Details:
+The input is never modified. Every output is written to a
+`.direct-play-nice.tmp` file next to its final path and promoted by rename, so
+a failed or killed run leaves the original in place and never a half-written
+output. Add `--dry-run` to print the plan without writing anything. Details:
 [File safety](https://ns-mkusper.github.io/direct-play-nice/getting-started.html#file-safety).
 
 ## GPU Acceleration

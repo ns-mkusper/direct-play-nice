@@ -600,6 +600,26 @@ fn run_conversion(
     let output_is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
     let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
 
+    // Direct conversion stages its output the same way Servarr replacement does:
+    // write to `<output>.direct-play-nice.tmp.<ext>`, promote by rename on
+    // success, remove on failure. Servarr plans already hand us their staging
+    // path as the output, so only the direct path needs a stage here.
+    let direct_staging = if plan.is_none() {
+        Some(DirectStaging {
+            final_path: output_path.clone(),
+            staged_cstring: path_to_cstring(&servarr::staging_path_for(&output_path))?,
+        })
+    } else {
+        None
+    };
+    let (output_file, output_path) = match direct_staging.as_ref() {
+        Some(staging) => (
+            staging.staged_cstring.as_c_str(),
+            cstr_to_path_buf(&staging.staged_cstring),
+        ),
+        None => (output_file, output_path),
+    };
+
     let mut needs_conversion = true;
     let mut dry_run_action = DryRunAction::Transcode;
     let mut dry_run_reasons = Vec::new();
@@ -676,6 +696,7 @@ fn run_conversion(
             input_file,
             output_path: &output_path,
             conversion_temp: temp_output_cstring.as_deref().map(cstr_to_path_buf),
+            direct_staging: direct_staging.as_ref(),
             device_names: &device_names,
             target_video_codec,
             common_audio_codec,
@@ -861,16 +882,25 @@ fn run_conversion(
             Err(err)
         }
         (None, Ok(outcome)) => {
+            let final_output_path = match direct_staging.as_ref() {
+                Some(staging) => {
+                    if output_ready {
+                        servarr::promote_staged_output(&output_path, &staging.final_path)?;
+                    } else {
+                        let _ = fs::remove_file(&output_path);
+                    }
+                    staging.final_path.clone()
+                }
+                None => output_path.clone(),
+            };
             if args.delete_source.unwrap_or(false) && output_ready {
                 if !outcome.profile_verified() {
                     warn!(
                         "Skipping --delete-source because profile/level verification did not confirm expected constraints"
                     );
-                } else if let (Some(input_cstr), Some(output_cstr)) =
-                    (args.input_file.as_ref(), args.output_file.as_ref())
-                {
+                } else if let Some(input_cstr) = args.input_file.as_ref() {
                     let input_path = cstr_to_path_buf(input_cstr);
-                    let output_path = cstr_to_path_buf(output_cstr);
+                    let output_path = final_output_path.clone();
                     if input_path != output_path {
                         match fs::remove_file(&input_path) {
                             Ok(_) => info!(
@@ -892,22 +922,31 @@ fn run_conversion(
             }
             if output_ready {
                 if let Some(ref refresher) = plex_refresher {
-                    if let Some(output_cstr) = args.output_file.as_ref() {
-                        let output_path = cstr_to_path_buf(output_cstr);
-                        if let Err(err) = refresher.refresh_path(&output_path) {
-                            warn!(
-                                "Plex refresh failed for '{}': {}",
-                                output_path.display(),
-                                err
-                            );
-                        }
+                    if let Err(err) = refresher.refresh_path(&final_output_path) {
+                        warn!(
+                            "Plex refresh failed for '{}': {}",
+                            final_output_path.display(),
+                            err
+                        );
                     }
                 }
             }
             Ok(())
         }
-        (None, Err(err)) => Err(err),
+        (None, Err(err)) => {
+            if direct_staging.is_some() {
+                cleanup_partial_output(output_file);
+            }
+            Err(err)
+        }
     }
+}
+
+/// Staging bookkeeping for direct conversion: the user-facing output path and
+/// the temporary path the pipeline actually writes to.
+struct DirectStaging {
+    final_path: std::path::PathBuf,
+    staged_cstring: std::ffi::CString,
 }
 
 struct DryRunInputs<'a> {
@@ -918,6 +957,7 @@ struct DryRunInputs<'a> {
     input_file: &'a std::ffi::CStr,
     output_path: &'a std::path::Path,
     conversion_temp: Option<std::path::PathBuf>,
+    direct_staging: Option<&'a DirectStaging>,
     device_names: &'a [&'a str],
     target_video_codec: ffi::AVCodecID,
     common_audio_codec: ffi::AVCodecID,
@@ -937,6 +977,7 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
         input_file,
         output_path,
         conversion_temp,
+        direct_staging,
         device_names,
         target_video_codec,
         common_audio_codec,
@@ -945,15 +986,19 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
     } = inputs;
 
     let mut temp_outputs = Vec::new();
-    let (output, backup) = match plan {
-        Some(plan) => {
+    let (output, backup) = match (plan, direct_staging) {
+        (Some(plan), _) => {
             temp_outputs.push(plan.temp_output_path.clone());
             (
                 plan.final_output_path.clone(),
                 Some(plan.backup_path.clone()),
             )
         }
-        None => (output_path.to_path_buf(), None),
+        (None, Some(staging)) => {
+            temp_outputs.push(output_path.to_path_buf());
+            (staging.final_path.clone(), None)
+        }
+        (None, None) => (output_path.to_path_buf(), None),
     };
     if let Some(temp) = conversion_temp {
         temp_outputs.push(temp);
