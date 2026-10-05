@@ -338,6 +338,30 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "ai_upscale_model") {
+        if let Some(model) = cfg.ai_upscale_model {
+            args.ai_upscale_model = model;
+        }
+    }
+
+    if !cli_value_provided(matches, "ai_upscale_model_path") {
+        if let Some(path) = cfg.ai_upscale_model_path.as_ref() {
+            args.ai_upscale_model_path = Some(path.clone());
+        }
+    }
+
+    if !cli_value_provided(matches, "ai_upscale_device") {
+        if let Some(device) = cfg.ai_upscale_device {
+            args.ai_upscale_device = device;
+        }
+    }
+
+    if !cli_value_provided(matches, "ai_upscale_tile") {
+        if let Some(tile) = cfg.ai_upscale_tile {
+            args.ai_upscale_tile = tile;
+        }
+    }
+
     if !cli_value_provided(matches, "dry_run") {
         if let Some(dry_run) = cfg.dry_run {
             args.dry_run = dry_run;

@@ -22,6 +22,7 @@ mod subtitle_ocr;
 mod throttle;
 mod transcoder;
 mod types;
+mod upscale;
 
 pub(crate) use ffmpeg_utils::Args;
 pub(crate) use transcoder::{

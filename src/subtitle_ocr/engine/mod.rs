@@ -25,6 +25,7 @@ pub(in crate::subtitle_ocr) use converters::rec_profile_for_language_with_test_c
 pub(in crate::subtitle_ocr) use converters::{rec_profile_for_language, OcrRecProfile};
 pub(super) use factory::*;
 pub(super) use models::*;
+pub(crate) use models::{ensure_model_file, resolve_model_dir, ModelSpec};
 pub(super) use providers::*;
 pub(super) use runtime::*;
 pub(super) use types::*;

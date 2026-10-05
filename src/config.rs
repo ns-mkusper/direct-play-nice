@@ -1,6 +1,7 @@
 //! Configuration subsystem for resolving config sources and deserializing TOML into runtime settings.
 
 use crate::gpu::HwAccel;
+use crate::upscale::{AiUpscaleDevice, AiUpscaleModel};
 use crate::{
     AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
     ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode, SubtitleFailurePolicy,
@@ -67,6 +68,10 @@ pub struct Config {
     pub visual_failure_ratio: Option<f64>,
     pub delete_source: Option<bool>,
     pub dry_run: Option<bool>,
+    pub ai_upscale_model: Option<AiUpscaleModel>,
+    pub ai_upscale_model_path: Option<PathBuf>,
+    pub ai_upscale_device: Option<AiUpscaleDevice>,
+    pub ai_upscale_tile: Option<u32>,
     pub plex: Option<PlexSettings>,
 }
 
