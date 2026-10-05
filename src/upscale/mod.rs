@@ -130,6 +130,19 @@ const REALESR_GENERAL_X4V3: ModelSpec = ModelSpec {
 /// Overlap kept around every tile so the model sees context across seams.
 const TILE_PAD: u32 = 8;
 
+/// Error raised while loading or running the AI upscale model. Conversion
+/// callers treat it as final: retrying with another video encoder cannot fix it.
+#[derive(Debug)]
+pub(crate) struct UpscaleError(pub(crate) anyhow::Error);
+
+impl std::fmt::Display for UpscaleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AI upscale: {:#}", self.0)
+    }
+}
+
+impl std::error::Error for UpscaleError {}
+
 /// A loaded ONNX super-resolution session plus the facts probed from it.
 pub(crate) struct Upscaler {
     session: Session,
@@ -146,6 +159,26 @@ impl Upscaler {
     /// Resolves the model file, builds the session on the requested device, and
     /// runs a tiny probe to learn the scale factor and prove the provider works.
     pub(crate) fn load(settings: &UpscaleSettings) -> Result<Self> {
+        // ONNX Runtime panics when its shared library cannot be loaded. Turn
+        // that into an ordinary error so staged output is still cleaned up.
+        let loaded =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::load_inner(settings)));
+        match loaded {
+            Ok(result) => result.map_err(|err| anyhow::Error::new(UpscaleError(err))),
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                Err(anyhow::Error::new(UpscaleError(anyhow!(
+                    "ONNX Runtime failed to start: {message}. Set ORT_DYLIB_PATH to a libonnxruntime shared library that matches this build."
+                ))))
+            }
+        }
+    }
+
+    fn load_inner(settings: &UpscaleSettings) -> Result<Self> {
         let model_path = resolve_model_path(settings)?;
         let (providers, provider) = execution_providers(settings.device)?;
         match ort::init().commit() {
@@ -252,6 +285,11 @@ impl Upscaler {
     /// planar float GBR frame (`AV_PIX_FMT_GBRPF32LE`) the resize step can
     /// convert and fit to the target dimensions.
     pub(crate) fn upscale_frame(&mut self, frame: &AVFrame) -> Result<AVFrame> {
+        self.upscale_frame_inner(frame)
+            .map_err(|err| anyhow::Error::new(UpscaleError(err)))
+    }
+
+    fn upscale_frame_inner(&mut self, frame: &AVFrame) -> Result<AVFrame> {
         let width = frame.width as u32;
         let height = frame.height as u32;
         let rgb = frame_to_rgb_planar(frame)?;

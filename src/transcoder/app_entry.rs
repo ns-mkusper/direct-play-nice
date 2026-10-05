@@ -765,7 +765,10 @@ fn run_conversion(
 
     if needs_conversion {
         if let Err(err0) = conversion_result {
-            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            if err0.is::<crate::upscale::UpscaleError>() {
+                // Model load or inference failures are final; no encoder retry can fix them.
+                conversion_result = Err(err0);
+            } else if target_video_codec == ffi::AV_CODEC_ID_H264 {
                 conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                     Ok(mismatch) => handle_hw_profile_mismatch(
                         mismatch,

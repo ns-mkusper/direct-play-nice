@@ -288,9 +288,7 @@ fn resize_software_frame(
             if frame.width < stream_processing_context.encode_context.width
                 || frame.height < stream_processing_context.encode_context.height =>
         {
-            upscaler
-                .upscale_frame(&frame)
-                .context("AI upscale failed for decoded frame")?
+            upscaler.upscale_frame(&frame)?
         }
         _ => frame,
     };
