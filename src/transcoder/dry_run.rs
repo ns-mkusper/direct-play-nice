@@ -71,6 +71,8 @@ pub(crate) struct DryRunReport {
     pub audio_codec: String,
     pub container: String,
     pub subtitle_ocr_pass: bool,
+    /// AI upscale model description when the opt-in path is enabled.
+    pub ai_upscale: Option<String>,
 }
 
 impl DryRunReport {
@@ -134,6 +136,9 @@ impl DryRunReport {
                 "disabled"
             }
         ));
+        if let Some(model) = &self.ai_upscale {
+            out.push_str(&format!("  AI upscale:      {model}\n"));
+        }
         out
     }
 }
@@ -157,6 +162,7 @@ mod tests {
             audio_codec: "aac".to_string(),
             container: "mp4".to_string(),
             subtitle_ocr_pass: true,
+            ai_upscale: None,
         }
     }
 

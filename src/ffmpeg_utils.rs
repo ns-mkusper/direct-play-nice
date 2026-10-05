@@ -22,6 +22,7 @@ use crate::types::{
     ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter, SubMode,
     SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
+use crate::upscale::{AiUpscaleDevice, AiUpscaleModel};
 
 pub(crate) use crate::cli::progress::ProgressTracker;
 
@@ -487,6 +488,42 @@ pub(crate) struct Args {
     #[arg(long = "dry-run", default_value_t = false, id = "dry_run")]
     pub(crate) dry_run: bool,
 
+    /// Opt-in AI super-resolution for sources below the resolution cap: off|realesr-animevideov3|realesr-general-x4v3|custom
+    #[arg(
+        long = "ai-upscale-model",
+        value_enum,
+        default_value_t = AiUpscaleModel::Off,
+        id = "ai_upscale_model"
+    )]
+    pub(crate) ai_upscale_model: AiUpscaleModel,
+
+    /// ONNX file for --ai-upscale-model custom (single float NCHW RGB input in [0,1])
+    #[arg(
+        long = "ai-upscale-model-path",
+        value_name = "FILE",
+        value_parser = value_parser!(PathBuf),
+        id = "ai_upscale_model_path"
+    )]
+    pub(crate) ai_upscale_model_path: Option<PathBuf>,
+
+    /// Where the AI upscale model runs: auto (GPU or fail) | cuda | openvino (Intel GPU) | cpu (explicit slow fallback)
+    #[arg(
+        long = "ai-upscale-device",
+        value_enum,
+        default_value_t = AiUpscaleDevice::Auto,
+        id = "ai_upscale_device"
+    )]
+    pub(crate) ai_upscale_device: AiUpscaleDevice,
+
+    /// Tile edge in source pixels for AI upscaling (0 = whole frame); use 256-512 on GPUs with 2-4 GB
+    #[arg(
+        long = "ai-upscale-tile",
+        value_name = "PIXELS",
+        default_value_t = 0,
+        id = "ai_upscale_tile"
+    )]
+    pub(crate) ai_upscale_tile: u32,
+
     /// Trigger a Plex library refresh for the output directory after a successful conversion
     #[arg(long = "plex-refresh", default_value_t = false)]
     pub(crate) plex_refresh: bool,
@@ -704,6 +741,8 @@ pub(crate) struct StreamProcessingContext {
     pub(crate) resize_quality: ResizeQuality,
     pub(crate) resize_backend: ResizeBackend,
     pub(crate) cuda_resize_filter: Option<crate::transcoder::cuda_resize::CudaResizeFilter>,
+    /// Loaded AI super-resolution model, present only when the video stream is enlarged.
+    pub(crate) upscaler: Option<crate::upscale::Upscaler>,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {

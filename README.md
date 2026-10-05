@@ -103,6 +103,8 @@ output. Add `--dry-run` to print the plan without writing anything. Details:
 
 - Bitmap subtitle OCR (PGS/VobSub/DVD) via ONNX Runtime providers
 - H.264/HEVC hardware transcoding via FFmpeg hardware encoders
+- Opt-in AI upscaling of sub-HD sources (`--ai-upscale-model`) via ONNX
+  Runtime; see [AI Upscaling](https://ns-mkusper.github.io/direct-play-nice/ai-upscaling.html)
 
 Project-specific behavior:
 

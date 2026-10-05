@@ -50,6 +50,7 @@ mod text_render;
 
 pub(crate) use engine::convert_bitmap_subtitles;
 use engine::*;
+pub(crate) use engine::{ensure_model_file, resolve_model_dir, ModelSpec};
 pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
 use language::*;
 pub(crate) use muxing::{mux_text_tracks_from, remux_copy_streams};

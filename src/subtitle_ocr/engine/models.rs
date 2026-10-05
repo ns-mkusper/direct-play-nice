@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use super::PpOcrVariant;
 
-pub(in crate::subtitle_ocr) struct ModelSpec {
-    pub(in crate::subtitle_ocr) filename: &'static str,
-    pub(in crate::subtitle_ocr) url: &'static str,
-    pub(in crate::subtitle_ocr) sha256: &'static str,
+pub(crate) struct ModelSpec {
+    pub(crate) filename: &'static str,
+    pub(crate) url: &'static str,
+    pub(crate) sha256: &'static str,
 }
 
 pub(in crate::subtitle_ocr) const PPOCR_V4_DET_MODEL: ModelSpec = ModelSpec {
@@ -92,7 +92,7 @@ pub(in crate::subtitle_ocr) struct PpOcrModels {
     pub(in crate::subtitle_ocr) rec: PathBuf,
 }
 
-pub(in crate::subtitle_ocr) fn resolve_model_dir() -> Result<PathBuf> {
+pub(crate) fn resolve_model_dir() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("DPN_OCR_MODEL_DIR") {
         let path = PathBuf::from(dir);
         fs::create_dir_all(&path)
@@ -434,10 +434,7 @@ pub(in crate::subtitle_ocr) fn resolve_optional_rec_model_with_candidates(
     }
 }
 
-pub(in crate::subtitle_ocr) fn ensure_model_file(
-    model_dir: &Path,
-    spec: &ModelSpec,
-) -> Result<PathBuf> {
+pub(crate) fn ensure_model_file(model_dir: &Path, spec: &ModelSpec) -> Result<PathBuf> {
     let path = model_dir.join(spec.filename);
     if path.exists() {
         if let Ok(hash) = sha256_file(&path) {
