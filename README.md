@@ -4,17 +4,12 @@
 [![docs.rs](https://docs.rs/direct_play_nice/badge.svg)](https://docs.rs/direct_play_nice)
 [![CI](https://github.com/ns-mkusper/direct-play-nice/actions/workflows/ci.yml/badge.svg)](https://github.com/ns-mkusper/direct-play-nice/actions/workflows/ci.yml)
 
-`direct-play-nice` turns a Sonarr/Radarr plus Plex, Jellyfin, or Emby setup
-into a hands-free streaming service: media arrives, gets converted once, and
-plays instantly on every device in the house with no server-side transcode and
-no manual fix-ups.
+`direct-play-nice` is a cross-platform CLI tool that converts video files
+to profiles more likely to Direct Play across common streaming devices.
 
-The Arr apps fetch media and the server plays it, but nothing in between makes
-sure every file will Direct Play on every device. `direct-play-nice` fills that
-gap. Hooked into the Arr import pipeline, it converts each new file to a
-profile the target devices can play natively, replaces it in place, and leaves
-already-compatible files alone. It also runs as a standalone cross-platform CLI
-for one-off conversions.
+It also automates common tasks around a Sonarr/Radarr plus Plex, Jellyfin, or
+Emby setup: refetching media when dubbed or subbed releases appear,
+GPU-accelerated OCR of bitmap subtitles, and Plex library refreshes.
 
 ```mermaid
 flowchart LR
