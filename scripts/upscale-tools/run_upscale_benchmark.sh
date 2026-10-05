@@ -54,8 +54,10 @@ mkdir -p "$work_dir"
 report="$work_dir/upscale_report.csv"
 config_file="$work_dir/empty-config.toml"
 touch "$config_file"
+# Capture first: under pipefail, `grep -q` closing the pipe early would mark ffmpeg as failed.
+filter_list="$(ffmpeg -hide_banner -filters 2>/dev/null || true)"
 have_vmaf=0
-if ffmpeg -hide_banner -filters 2>/dev/null | grep -q " libvmaf "; then
+if printf '%s' "$filter_list" | grep -q " libvmaf "; then
   have_vmaf=1
 fi
 
