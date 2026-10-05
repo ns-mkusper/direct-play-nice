@@ -62,35 +62,44 @@ model works on software frames.
 
 ## Hardware compatibility
 
-Measured with the built-in models at 854x480 to 1920x1080. "Model time" is
-inference only for `realesr-animevideov3`; "end to end" includes decode,
-colour conversion, the deterministic fit, NVENC encoding where available, and
-output validation, over a 20-second clip. Full tables are in the benchmark
-report linked below.
+By platform class, for the hardware media servers usually run on. The
+execution provider column is what the shipped builds link: CUDA on Linux and
+Windows, DirectML on Windows, CoreML on macOS, CPU everywhere. There is no
+OpenVINO or ROCm provider in these builds, so Intel and AMD GPUs are CPU-path
+only on Linux.
 
-| Host | GPU | ONNX Runtime | CUDA / cuDNN | Provider | Model time | End to end | Status |
-| --- | --- | --- | --- | --- | ---: | ---: | --- |
-| Laptop | NVIDIA RTX PRO 5000 Blackwell, 24 GB | 1.22 | 12 / 9 | CUDA | 39 ms/frame (26 fps) | 10 fps, 0.42x realtime | works, whole frame |
-| Laptop | same | 1.22 | 12 / 9 | CUDA, `--ai-upscale-tile 256` | 61 ms/frame (16 fps) | 6.7 fps on a 3 s clip | works, same output |
-| Laptop | same (CPU path) | 1.22 | n/a | CPU | 1072 ms/frame (0.9 fps) | 0.9 fps, 0.04x | works, slow |
-| Media server | 2x NVIDIA GTX 960 Maxwell, 2 GB | 1.16 | 12 / 8 | CUDA | 269 ms/frame (3.7 fps) | 3.1 fps, 0.13x | works, whole frame fits 2 GB |
-| Media server | same | 1.22 | 12 / 9 | CUDA | n/a | n/a | fails fast: `cudaErrorNoKernelImageForDevice` (1.22 kernels drop sm_52) |
-| Media server | same (CPU path) | 1.16 | n/a | CPU | 3.4 s/frame (0.3 fps) | 0.3 fps, 0.01x | works, slow |
-| Windows | any DirectML adapter | build default | n/a | DirectML | untested | untested | compiles in CI, not exercised |
-| macOS | Apple Silicon | build default | n/a | CoreML | untested | untested | compiles in CI, not exercised |
+| Platform | Provider | AI upscale | Requirements and notes |
+| --- | --- | --- | --- |
+| NVIDIA Turing and newer (GTX 16xx, RTX 20/30/40/50) | CUDA | supported | Any ONNX Runtime CUDA build (1.16 to current) with matching CUDA and cuDNN libraries on the path. 2 GB of VRAM runs 480p whole frame; use `--ai-upscale-tile 256` for 720p sources on 2 to 4 GB cards. Validated on a Blackwell laptop GPU. |
+| NVIDIA Pascal (GTX 10xx, Quadro P, P2000/P4000) | CUDA | supported, not validated | Needs an ONNX Runtime CUDA 12 build (1.17 to 1.26). The CUDA 13 builds that start at 1.27 drop compute capability below 7.5. |
+| NVIDIA Maxwell (GTX 750/9xx, Quadro M) | CUDA | supported with old runtimes | Only ONNX Runtime builds that still carry sm_5x kernels work; 1.16 with CUDA 12 and cuDNN 8 is validated on a GTX 960. Newer builds fail fast with `cudaErrorNoKernelImageForDevice`. |
+| NVIDIA Kepler and older (GTX 6xx/7xx) | none | CPU path only | No ONNX Runtime CUDA build targets these parts. |
+| Intel iGPU and QuickSync boxes (N100, Celeron, Core UHD/Iris), Intel Arc | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no OpenVINO provider. On Windows the DirectML provider is linked and CI builds it, but it has not been exercised on hardware. |
+| AMD Radeon and Ryzen APUs | CPU on Linux, DirectML on Windows | CPU path on Linux; DirectML compiled, not validated | The Linux build has no ROCm provider. Same Windows status as Intel. |
+| Apple Silicon and Intel Macs | CoreML | compiled, not validated | The CoreML provider is linked and both macOS CI jobs pass; no hardware run yet. |
+| x86 CPU only (NAS such as Synology, QNAP, Unraid boxes; servers without a GPU) | CPU | works, impractical | `--ai-upscale-device cpu` is required to opt in. Measured 0.3 to 0.9 fps at 480p. Fine for a short clip, not for a library. |
+| ARM SBCs (Raspberry Pi 4/5, Rockchip) via the aarch64 build | CPU | works in principle, not recommended | Same CPU path with far less compute; expect well under 0.3 fps. |
+| Docker image (`ghcr.io/ns-mkusper/direct-play-nice`) | CPU as shipped | CPU path only | The image bundles the CPU-only ONNX Runtime 1.16.3 tarball. For CUDA, mount an ONNX Runtime GPU build, point `ORT_DYLIB_PATH` at it, and run with `--gpus all`. Not validated. |
 
-Notes:
+Whatever the platform, `--ai-upscale-device auto` either finds a GPU provider
+or stops before writing anything, with a message naming the CPU flag.
 
-- The 2x SPAN model (`custom`) reaches 19 fps end to end on the laptop
-  (0.80x realtime) because the deterministic fit from a 2x output is far
-  cheaper than from a 4x output. It is also the best live-action model in the
-  benchmark. Export it with `scripts/upscale-tools/export_sr_onnx.py` from the
-  Apache-2.0 `spanx2_ch48` weights.
-- Maxwell cards need an ONNX Runtime build that still ships sm_5x CUDA kernels
-  (1.16 with cuDNN 8 is what the media server uses). The failure is reported
-  before any output is written.
-- Without a usable GPU provider, `auto` stops with a message naming
-  `--ai-upscale-device cpu`; nothing is written or renamed.
+### Validation runs
+
+| Host | GPU | ONNX Runtime | Provider | Model time, 480p 4x | End to end |
+| --- | --- | --- | --- | ---: | ---: |
+| Laptop | NVIDIA RTX PRO 5000 Blackwell, 24 GB | 1.22, CUDA 12 / cuDNN 9 | CUDA | 39 ms/frame (26 fps) | 10 fps, 0.42x realtime |
+| Laptop | same, `--ai-upscale-tile 256` | 1.22 | CUDA | 61 ms/frame (16 fps) | identical output |
+| Laptop | same, CPU path | 1.22 | CPU | 1072 ms/frame (0.9 fps) | 0.9 fps, 0.04x |
+| Media server | 2x NVIDIA GTX 960 Maxwell, 2 GB | 1.16, CUDA 12 / cuDNN 8 | CUDA | 269 ms/frame (3.7 fps) | 3.1 fps, 0.13x |
+| Media server | same | 1.22, CUDA 12 / cuDNN 9 | CUDA | fails fast (no sm_52 kernels) | no output written |
+| Media server | same, CPU path | 1.16 | CPU | 3.4 s/frame (0.3 fps) | 0.3 fps, 0.01x |
+
+The 2x SPAN model (`custom`) reaches 19 fps end to end on the laptop (0.80x
+realtime) because the deterministic fit from a 2x output is far cheaper than
+from a 4x output; it is also the best live-action model in the benchmark.
+Export it with `scripts/upscale-tools/export_sr_onnx.py` from the Apache-2.0
+`spanx2_ch48` weights.
 
 ## Benchmark results
 
