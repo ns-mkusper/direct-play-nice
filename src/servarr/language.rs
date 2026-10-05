@@ -13,7 +13,6 @@ use rsmpeg::ffi;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::ffi::CString;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -284,25 +283,11 @@ fn set_language_metadata(
 }
 
 fn retag_temp_path(path: &Path) -> PathBuf {
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("tmp");
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("media");
-    path.with_file_name(format!("{stem}.dpn-retag.tmp.{extension}"))
+    crate::staging::path_for(path, "retag")
 }
 
 fn replace_with_temp(tmp_path: &Path, path: &Path, context: &str) -> Result<()> {
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("removing '{}' before {context}", path.display()))?;
-    }
-    fs::rename(tmp_path, path)
-        .with_context(|| format!("replacing '{}' after {context}", path.display()))
+    crate::staging::promote(tmp_path, path, context)
 }
 
 fn check_sets(
