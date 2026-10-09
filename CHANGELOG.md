@@ -10,6 +10,14 @@ All notable changes to this project will be documented in this file.
   (`vcpkg-overlays/ports`). Local builds set
   `VCPKG_OVERLAY_PORTS="$PWD/vcpkg-overlays/ports"` before `cargo vcpkg build`.
 
+### Dependencies
+
+- Updated the bundled FFmpeg from 8.1 to 8.1.2 (vcpkg
+  `39ec37c17d122da0c98c3279e6a6b0f4efb75c4a`), picking up the 8.1.1 and 8.1.2
+  bounds and overflow fixes in the Matroska, AVI, MPEG-TS, H.264, HEVC, and
+  swscale paths. Intel Quick Sync on Windows now links through libvpl instead
+  of the legacy Media SDK.
+
 ## [1.1.0-beta.9] - 2026-10-09
 
 ### Direct Play Reliability

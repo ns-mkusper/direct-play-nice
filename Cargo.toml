@@ -113,12 +113,10 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d]",
   "x264[asm,core]",
 ]
-# fork includes update to ffmpeg8
-# see: https://github.com/microsoft/vcpkg/pull/47107
-# git = "https://github.com/cqundefine/vcpkg"
-# rev = "21012a516c9e5fa547baf212f2d937cd8d15dcb5"
+# Last upstream vcpkg commit before the ffmpeg port moved to 9.0. Pins FFmpeg
+# 8.1.2; the rsmpeg/rusty_ffmpeg bindings above do not support FFmpeg 9 yet.
 git = "https://github.com/microsoft/vcpkg.git"
-rev = "7147ac1294ef9647e8679e1183ac440a5d0a63b7"
+rev = "39ec37c17d122da0c98c3279e6a6b0f4efb75c4a"
 
 [package.metadata.vcpkg.target.x86_64-unknown-linux-gnu]
 triplet = "x64-linux"
