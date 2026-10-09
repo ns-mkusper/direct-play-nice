@@ -338,10 +338,13 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.5
         continue-on-error: true
 
+      # sccache expands cargo's rustc argument file before spawning rustc, and
+      # ffmpeg-sys-next's cfg list pushes that past the Windows command-line
+      # limit ("The filename or extension is too long"). Build without it here.
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER=sccache"
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER="
       - name: Clear RUSTC_WRAPPER on sccache failure
         if: steps.sccache-setup.outcome == 'failure'
         shell: pwsh
