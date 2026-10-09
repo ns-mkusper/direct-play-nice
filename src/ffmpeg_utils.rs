@@ -830,6 +830,24 @@ pub(crate) fn encode_and_write_frame(
         };
 
         packet.set_stream_index(stream_index as i32);
+        if packet.duration <= 0
+            && encode_context.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO
+            && encode_context.framerate.num > 0
+            && encode_context.framerate.den > 0
+            && encode_context.time_base.num > 0
+            && encode_context.time_base.den > 0
+        {
+            // Encoders do not always stamp a duration on the last packet. The MP4
+            // muxer then ends the edit list at that packet's start, and players
+            // drop the final frame. Derive the duration from the frame rate.
+            let frame_duration = ffi::AVRational {
+                num: encode_context.framerate.den,
+                den: encode_context.framerate.num,
+            };
+            packet.set_duration(unsafe {
+                ffi::av_rescale_q(1, frame_duration, encode_context.time_base)
+            });
+        }
         packet.rescale_ts(
             encode_context.time_base,
             output_format_context

@@ -20,6 +20,7 @@
       "pix_fmt": "yuv420p",
       "fps": 23.976,
       "packets": 46,
+      "discarded": 0,
       "first_pts_s": 0.0,
       "last_end_s": 1.919
     },
@@ -34,6 +35,7 @@
       "sample_rate": 48000,
       "channels": 6,
       "packets": 96,
+      "discarded": 1,
       "first_pts_s": -0.021,
       "last_end_s": 2.016
     }

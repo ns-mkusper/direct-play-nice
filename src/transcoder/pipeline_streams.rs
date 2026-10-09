@@ -82,6 +82,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
         sw_frame.set_width(frame.width);
         sw_frame.set_height(frame.height);
         sw_frame.set_pts(frame.pts);
+        sw_frame.set_duration(frame.duration);
         sw_frame.set_time_base(frame.time_base);
         unsafe {
             let ret = ffi::av_hwframe_transfer_data(sw_frame.as_mut_ptr(), frame.as_ptr(), 0);
