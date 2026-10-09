@@ -16,6 +16,10 @@ All notable changes to this project will be documented in this file.
 - Baselines count discard-flagged packets per stream.
 - nv-codec-headers stay at 13.0 through a vcpkg overlay so NVENC keeps working
   on the 580 driver branch, the last one for Maxwell, Pascal, and Volta GPUs.
+- Linux builds compile FFmpeg's CUDA filter kernels with clang when it is
+  present, so `scale_cuda` ships and the CUDA resize backend no longer falls
+  back to libswscale. Upstream vcpkg never enabled it; the plexserver had
+  carried this as a local patch.
 
 ### Build
 

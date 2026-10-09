@@ -11,8 +11,10 @@ cargo build
 
 `vcpkg-overlays/ports` carries local copies of upstream vcpkg ports that need a
 different source URL or version: x264, which upstream fetches from a GitLab
-host that answers archive downloads with an anti-bot page, and ffnvcodec, held
-at 13.0 so NVENC keeps working on the 580 driver branch. CI and the Docker
+host that answers archive downloads with an anti-bot page; ffnvcodec, held
+at 13.0 so NVENC keeps working on the 580 driver branch; and ffmpeg, which
+enables `cuda-llvm` and `scale_cuda` on Linux when clang is installed. See
+`vcpkg-overlays/ports/README.md`. CI and the Docker
 image set `VCPKG_OVERLAY_PORTS` the same way.
 
 If your vcpkg checkout is in a non-default location, set `VCPKG_ROOT`.
