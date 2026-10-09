@@ -1,14 +1,14 @@
 //! Thin ownership layer over [`ffmpeg_next`].
 //!
 //! ffmpeg-next supplies the raw bindings (`ffmpeg_next::sys`, re-exported here
-//! as [`ffi`]) and owns the long-lived objects whose teardown matters: format
+//! as `ffi`) and owns the long-lived objects whose teardown matters: format
 //! contexts close their I/O, codec contexts free private data, subtitles free
 //! their rects. The types in this module keep a small, stable surface for the
 //! rest of the crate: each dereferences to the underlying C struct so the
 //! transcoder can read fields directly, and each carries the handful of
-//! methods the pipeline calls. Everything else goes through [`ffi`].
+//! methods the pipeline calls. Everything else goes through `ffi`.
 //!
-//! Errors use [`FfmpegError`]; `AVERROR(EAGAIN)` and `AVERROR_EOF` on the
+//! Errors use `FfmpegError`; `AVERROR(EAGAIN)` and `AVERROR_EOF` on the
 //! decode/encode calls map to the drain and flushed variants so callers can
 //! match on pipeline state instead of raw codes.
 
