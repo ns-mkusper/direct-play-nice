@@ -1,10 +1,10 @@
 //! CUDA video resize filter graph support.
 
+use crate::ff::AVFrame;
+use crate::ff::FfmpegError;
 use anyhow::{anyhow, bail, Context, Result};
+use ffmpeg_next::sys as ffi;
 use log::{debug, trace};
-use rsmpeg::avutil::AVFrame;
-use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi;
 use std::ffi::CString;
 use std::ptr;
 
@@ -29,7 +29,7 @@ pub(crate) fn cuda_resize_interpolation(quality: ResizeQuality) -> Option<&'stat
 }
 
 pub(crate) fn attach_cuda_encoder_frames_context(
-    encode_context: &mut rsmpeg::avcodec::AVCodecContext,
+    encode_context: &mut crate::ff::AVCodecContext,
     device: *mut ffi::AVBufferRef,
     sw_format: ffi::AVPixelFormat,
 ) -> Result<()> {
@@ -46,7 +46,7 @@ pub(crate) fn attach_cuda_encoder_frames_context(
             unref_buffer(frames_ref);
             bail!("CUDA encoder hardware frames context has null data");
         }
-        (*frames_ctx).format = ffi::AV_PIX_FMT_CUDA;
+        (*frames_ctx).format = ffi::AVPixelFormat::AV_PIX_FMT_CUDA;
         (*frames_ctx).sw_format = sw_format;
         (*frames_ctx).width = encode_context.width;
         (*frames_ctx).height = encode_context.height;
@@ -99,7 +99,7 @@ impl CudaResizeFilter {
         target_height: i32,
         quality: ResizeQuality,
     ) -> Result<Self> {
-        if frame.format != ffi::AV_PIX_FMT_CUDA {
+        if frame.format != ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32 {
             bail!(
                 "CUDA resize requires CUDA input frames, got format {}",
                 frame.format
@@ -174,7 +174,7 @@ impl CudaResizeFilter {
             if params.is_null() {
                 bail!("Failed to allocate CUDA buffer source parameters");
             }
-            (*params).format = ffi::AV_PIX_FMT_CUDA;
+            (*params).format = ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32;
             (*params).time_base = source_time_base;
             (*params).width = self.source_width;
             (*params).height = self.source_height;
@@ -248,7 +248,7 @@ impl CudaResizeFilter {
                 ffi::av_buffersrc_add_frame_flags(
                     self.buffersrc,
                     frame.as_ptr() as *mut ffi::AVFrame,
-                    ffi::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
+                    ffi::_bindgen_ty_6::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
                 ),
                 "submitting frame to CUDA resize graph",
             )?;
@@ -256,10 +256,10 @@ impl CudaResizeFilter {
             let mut output = AVFrame::new();
             match ffi::av_buffersink_get_frame_flags(self.buffersink, output.as_mut_ptr(), 0) {
                 ret if ret >= 0 => Ok(output),
-                ret if ret == ffi::AVERROR(libc::EAGAIN as u32) => {
-                    Err(anyhow!(RsmpegError::BufferSinkDrainError))
+                ret if ret == ffi::AVERROR(libc::EAGAIN) => {
+                    Err(anyhow!(FfmpegError::BufferSinkDrainError))
                 }
-                ret if ret == ffi::AVERROR_EOF => Err(anyhow!(RsmpegError::BufferSinkEofError)),
+                ret if ret == ffi::AVERROR_EOF => Err(anyhow!(FfmpegError::BufferSinkEofError)),
                 ret => Err(anyhow!(
                     "Failed to read CUDA-resized frame from filter graph: {}",
                     av_error_to_string(ret)

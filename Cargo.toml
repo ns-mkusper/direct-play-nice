@@ -29,19 +29,24 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = [
 ] }
 sha2 = "0.10"
 serde_json = "1.0"
-# rsmpeg/rusty_ffmpeg track FFmpeg 8 as of 0.18/0.16.
-rsmpeg = { version = "0.18.0", default-features = false, features = [
-  "ffmpeg8",
-  "link_vcpkg_ffmpeg",
+paste = "1.0"
+# ffmpeg-next 9 tracks FFmpeg 9. ffmpeg-sys-next finds the vcpkg-built
+# libraries through pkg-config (see .cargo/config.toml) and links them
+# statically; the raw bindings are re-exported as `ffmpeg_next::sys`.
+ffmpeg-next = { version = "9.0.0", default-features = false, features = [
+  "codec",
+  "format",
+  "filter",
+  "software-resampling",
+  "software-scaling",
+  "static",
 ] }
-rusty_ffmpeg = { version = "0.16.7", features = ["link_vcpkg_ffmpeg"] }
 serde = { version = "1.0.204", features = ["derive"] }
 shlex = "1.3"
 strum = "0.26.3"
 strum_macros = "0.26.4"
 syslog = "6.1.1"
 toml = "0.8.16"
-vcpkg = "0.2.15"
 fs2 = "0.4"
 libc = "0.2"
 roxmltree = "0.20.0"
@@ -113,10 +118,10 @@ dependencies = [
   "ffmpeg[x264,vpx,freetype,fontconfig,nvcodec,dav1d]",
   "x264[asm,core]",
 ]
-# Last upstream vcpkg commit before the ffmpeg port moved to 9.0. Pins FFmpeg
-# 8.1.2; the rsmpeg/rusty_ffmpeg bindings above do not support FFmpeg 9 yet.
+# Pins the vcpkg ffmpeg port at 9.0.2. x264 comes from the overlay port under
+# vcpkg-overlays/ports regardless of the version upstream carries here.
 git = "https://github.com/microsoft/vcpkg.git"
-rev = "39ec37c17d122da0c98c3279e6a6b0f4efb75c4a"
+rev = "0699a19d0c6386247ce50d4dedbb8217d484d536"
 
 [package.metadata.vcpkg.target.x86_64-unknown-linux-gnu]
 triplet = "x64-linux"

@@ -8,8 +8,8 @@ use tempfile::TempDir;
 
 mod common;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 #[test]
 fn cli_sub_mode_skip_drops_all_subtitle_streams() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,7 +34,7 @@ fn cli_sub_mode_skip_drops_all_subtitle_streams() -> Result<(), Box<dyn std::err
     let subtitle_count = octx
         .streams()
         .iter()
-        .filter(|st| st.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE)
+        .filter(|st| st.codecpar().codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE)
         .count();
 
     assert_eq!(subtitle_count, 0, "expected no subtitle streams in output");

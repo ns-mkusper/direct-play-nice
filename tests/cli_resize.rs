@@ -3,8 +3,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,7 +47,7 @@ fn video_dimensions(path: &Path) -> (i32, i32) {
     let ctx = AVFormatContextInput::open(cstr.as_c_str()).unwrap();
     for stream in ctx.streams() {
         let par = stream.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             return (par.width, par.height);
         }
     }

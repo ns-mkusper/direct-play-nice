@@ -11,9 +11,7 @@ pub(super) fn timestamp_to_ms(value: i64, time_base: ffi::AVRational) -> Option<
     Some(unsafe { ffi::av_rescale_q(value, time_base, ffi::AVRational { num: 1, den: 1000 }) })
 }
 
-pub(super) fn extract_language_tag_from_metadata(
-    dict: &rsmpeg::avutil::AVDictionary,
-) -> Option<String> {
+pub(super) fn extract_language_tag_from_metadata(dict: &crate::ff::AVDictionary) -> Option<String> {
     for entry in dict.iter() {
         if entry
             .key()
@@ -227,9 +225,9 @@ pub(super) fn codec_name(codec_id: ffi::AVCodecID) -> String {
 pub(super) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
-            | ffi::AV_CODEC_ID_DVD_SUBTITLE
-            | ffi::AV_CODEC_ID_DVB_SUBTITLE
-            | ffi::AV_CODEC_ID_XSUB
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_XSUB
     )
 }

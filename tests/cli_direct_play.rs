@@ -7,8 +7,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use std::ffi::CString;
 use std::process::Command;
 use tempfile::TempDir;
@@ -51,9 +51,13 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     for st in octx.streams() {
         let par = st.codecpar();
         match par.codec_type {
-            t if t == ffi::AVMEDIA_TYPE_VIDEO => {
+            t if t == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 saw_v = true;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_H264, "video must be H.264");
+                assert_eq!(
+                    par.codec_id,
+                    ffi::AVCodecID::AV_CODEC_ID_H264,
+                    "video must be H.264"
+                );
                 width = par.width;
                 height = par.height;
                 level = par.level;
@@ -62,15 +66,19 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
                 fps_num = rate.num;
                 fps_den = rate.den;
             }
-            t if t == ffi::AVMEDIA_TYPE_AUDIO => {
+            t if t == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 saw_a = true;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_AAC, "audio must be AAC");
+                assert_eq!(
+                    par.codec_id,
+                    ffi::AVCodecID::AV_CODEC_ID_AAC,
+                    "audio must be AAC"
+                );
             }
-            t if t == ffi::AVMEDIA_TYPE_SUBTITLE => {
+            t if t == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 saw_s = true;
                 assert_eq!(
                     par.codec_id,
-                    ffi::AV_CODEC_ID_MOV_TEXT,
+                    ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT,
                     "subs must be MOV_TEXT"
                 );
             }
@@ -91,7 +99,11 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     // Accept any profile but ensure level <= 4.1 (41)
     assert!(level <= 41, "H.264 level too high: {}", level);
     // yuv420p pixel format
-    assert_eq!(pix_fmt, ffi::AV_PIX_FMT_YUV420P, "pix fmt must be yuv420p");
+    assert_eq!(
+        pix_fmt,
+        ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+        "pix fmt must be yuv420p"
+    );
     // fps <= 30
     if fps_den != 0 {
         // guard

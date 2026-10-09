@@ -4,8 +4,8 @@ use std::fs;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::ArgMatches;
+use ffmpeg_next::sys as ffi;
 use log::{debug, info, warn};
-use rsmpeg::ffi;
 
 use crate::config;
 use crate::config_merge::apply_config_overrides;
@@ -466,8 +466,8 @@ fn run_conversion(
     let target_video_codec = match args.video_codec {
         VideoCodecPreference::Auto => resolved_profile.video_codec,
         VideoCodecPreference::H264 => {
-            if devices_support_codec(&streaming_devices, ffi::AV_CODEC_ID_H264) {
-                ffi::AV_CODEC_ID_H264
+            if devices_support_codec(&streaming_devices, ffi::AVCodecID::AV_CODEC_ID_H264) {
+                ffi::AVCodecID::AV_CODEC_ID_H264
             } else {
                 bail!(
                     "Requested video codec H.264 is not supported by all selected streaming devices"
@@ -475,8 +475,8 @@ fn run_conversion(
             }
         }
         VideoCodecPreference::Hevc => {
-            if devices_support_codec(&streaming_devices, ffi::AV_CODEC_ID_HEVC) {
-                ffi::AV_CODEC_ID_HEVC
+            if devices_support_codec(&streaming_devices, ffi::AVCodecID::AV_CODEC_ID_HEVC) {
+                ffi::AVCodecID::AV_CODEC_ID_HEVC
             } else {
                 bail!(
                     "Requested video codec HEVC is not supported by all selected streaming devices"
@@ -485,7 +485,7 @@ fn run_conversion(
         }
     };
     let common_audio_codec = resolved_profile.audio_codec;
-    let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
+    let h264_constraints = if target_video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
         resolved_profile.h264_constraints
     } else {
         None
@@ -757,7 +757,7 @@ fn run_conversion(
 
     if needs_conversion {
         if let Err(err0) = conversion_result {
-            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            if target_video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
                 conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                     Ok(mismatch) => handle_hw_profile_mismatch(
                         mismatch,

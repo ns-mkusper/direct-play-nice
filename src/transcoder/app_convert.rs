@@ -60,14 +60,14 @@ pub(crate) fn convert_video_file(
     } = params;
 
     // H.264 profile/level checks are only meaningful when the output codec is H.264.
-    let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
+    let h264_constraints = if target_video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
         h264_constraints
     } else {
         None
     };
     let mut input_format_context = AVFormatContextInput::open(input_file)?;
     if log::log_enabled!(Level::Debug) {
-        input_format_context.dump(0, input_file)?;
+        input_format_context.dump(0, input_file);
     }
 
     let mut output_format_context = AVFormatContextOutput::create(output_file)?;
@@ -134,11 +134,11 @@ pub(crate) fn convert_video_file(
         // avoid repeated slow failures on every stream with that codec.
         let prefer_hw_decode = allow_cuda_hw_decode
             && shared_hw_device.is_some()
-            && input_codec_type == ffi::AVMEDIA_TYPE_VIDEO
+            && input_codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO
             && !hw_decode_blacklist.contains(&input_codec_id);
         let mut decoder = match find_decoder_with_fallback(input_codec_id, prefer_hw_decode) {
             Some(dec) => dec,
-            None if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE => {
+            None if input_codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 warn!(
                     "Skipping subtitle stream {} (codec {}): decoder not available.",
                     stream.index, input_codec_name
@@ -251,7 +251,7 @@ pub(crate) fn convert_video_file(
                     describe_codec(input_codec_id)
                 );
             }
-            if input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+            if input_codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
                 warn!(
                     "Skipping subtitle stream {} (codec {}): failed to open decoder ({}).",
                     stream.index, input_codec_name, err
@@ -281,7 +281,7 @@ pub(crate) fn convert_video_file(
         let mut target_h264_profile: Option<H264Profile> = None;
         let mut target_h264_level: Option<H264Level> = None;
 
-        let is_video_stream = decode_context.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
+        let is_video_stream = decode_context.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
         if is_video_stream && stream.index as usize != primary_index {
             // Secondary video streams are controlled by unsupported-video policy.
             // This keeps multi-video files deterministic for direct-play targets.
@@ -303,7 +303,7 @@ pub(crate) fn convert_video_file(
             }
         }
 
-        if decode_context.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+        if decode_context.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             if matches!(sub_mode, SubMode::Skip) {
                 info!(
                     "Skipping subtitle stream {} due to --sub-mode=skip",
@@ -328,7 +328,7 @@ pub(crate) fn convert_video_file(
         let mut active_resize_backend = ResizeBackend::Software;
 
         match decode_context.codec_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
                     find_hw_encoder(target_video_codec, hw_accel, shared_hw_device);
@@ -356,7 +356,7 @@ pub(crate) fn convert_video_file(
                     }
                     hw_device_ctx_ptr = Some(buf);
                 }
-                media_type = ffi::AVMEDIA_TYPE_VIDEO;
+                media_type = ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
 
                 let encoder_name_owned = encoder.name().to_string_lossy().into_owned();
                 let encoder_key = CString::new("encoder")
@@ -485,12 +485,12 @@ pub(crate) fn convert_video_file(
                         encode_context.width,
                         encode_context.height
                     );
-                    encode_context.set_pix_fmt(ffi::AV_PIX_FMT_CUDA);
+                    encode_context.set_pix_fmt(ffi::AVPixelFormat::AV_PIX_FMT_CUDA);
                     if let Some(device) = maybe_hw_dev {
                         attach_cuda_encoder_frames_context(
                             &mut encode_context,
                             device,
-                            ffi::AV_PIX_FMT_YUV420P,
+                            ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
                         )?;
                     }
                 } else {
@@ -530,7 +530,7 @@ pub(crate) fn convert_video_file(
                 _video_streams_seen += 1;
                 video_streams_added += 1;
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
                 let encoder = AVCodec::find_encoder(target_audio_codec).ok_or_else(|| {
                     anyhow!(
@@ -540,7 +540,7 @@ pub(crate) fn convert_video_file(
                 })?;
 
                 encode_context = AVCodecContext::new(&encoder);
-                media_type = ffi::AVMEDIA_TYPE_AUDIO;
+                media_type = ffi::AVMediaType::AVMEDIA_TYPE_AUDIO;
 
                 if !logged_audio_encoder {
                     let encoder_name = encoder.name().to_string_lossy().into_owned();
@@ -601,13 +601,13 @@ pub(crate) fn convert_video_file(
                     1,
                 ));
             }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 output_stream.set_metadata(stream.metadata().as_deref().cloned());
 
-                let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_MOV_TEXT)
+                let encoder = AVCodec::find_encoder(ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT)
                     .ok_or_else(|| anyhow!("Could not find MOV_TEXT encoder"))?;
                 encode_context = AVCodecContext::new(&encoder);
-                media_type = ffi::AVMEDIA_TYPE_SUBTITLE;
+                media_type = ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE;
                 set_subtitle_codec_par(
                     &mut decode_context,
                     &mut encode_context,
@@ -617,26 +617,26 @@ pub(crate) fn convert_video_file(
                     "Subtitle stream {}: {} -> {}",
                     output_stream.index,
                     codec_name(stream.codecpar().codec_id),
-                    describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
+                    describe_codec(ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT)
                 );
             }
             unsupported_type => {
                 debug!(
                     "Encountered unsupported stream type ({}). Not setting up Codec.",
-                    unsupported_type
+                    unsupported_type as i32
                 );
                 continue;
             }
         }
 
         let media_label = match media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => "video",
-            ffi::AVMEDIA_TYPE_AUDIO => "audio",
-            ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => "video",
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => "audio",
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => "subtitle",
             _ => "stream",
         };
 
-        if media_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if media_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             if let (Some(profile), Some(level), Some(encoder_name)) = (
                 target_h264_profile,
                 target_h264_level,
@@ -650,7 +650,7 @@ pub(crate) fn convert_video_file(
             .open(None)
             .with_context(|| format!("Error opening {} encoder", media_label));
         if let Err(err) = open_result {
-            if encoder_is_hw && media_type == ffi::AVMEDIA_TYPE_VIDEO {
+            if encoder_is_hw && media_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
                 return Err(anyhow!(HwEncoderInitError::new(
                     current_encoder_name.unwrap_or_else(|| "unknown".to_string()),
                     err.to_string(),
@@ -659,12 +659,12 @@ pub(crate) fn convert_video_file(
                 return Err(err);
             }
         }
-        if media_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+        if media_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             sanitize_mov_text_encode_context_header(&mut encode_context);
         }
 
         output_stream.set_codecpar(encode_context.extract_codecpar());
-        if media_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+        if media_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             sanitize_mov_text_stream_header(&mut output_stream);
         }
 
@@ -871,23 +871,23 @@ fn process_packets(
             continue;
         };
 
-        let input_stream: &rsmpeg::avformat::AVStreamRef<'_> =
+        let input_stream: &crate::ff::AVStreamRef<'_> =
             &input_format_context.streams()[packet.stream_index as usize];
         match stream_processing_context.media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => process_video_stream(
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => process_video_stream(
                 stream_processing_context,
                 input_stream,
                 output_format_context,
                 &mut packet,
                 progress_tracker.as_mut(),
             )?,
-            ffi::AVMEDIA_TYPE_AUDIO => process_audio_stream(
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => process_audio_stream(
                 stream_processing_context,
                 input_stream,
                 output_format_context,
                 &mut packet,
             )?,
-            ffi::AVMEDIA_TYPE_SUBTITLE => process_subtitle_stream(
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => process_subtitle_stream(
                 stream_processing_context,
                 input_stream,
                 output_format_context,
@@ -896,7 +896,7 @@ fn process_packets(
             unsupported_type => {
                 debug!(
                     "Encountered unsupported stream type ({}). Not setting up Codec.",
-                    unsupported_type
+                    unsupported_type as i32
                 );
             }
         }
@@ -911,7 +911,7 @@ fn flush_stream_contexts(
 ) -> Result<()> {
     for context in stream_contexts {
         match context.media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 encode_and_write_frame(
                     &mut context.encode_context,
                     output_format_context,
@@ -924,7 +924,7 @@ fn flush_stream_contexts(
                     unref_buffer_ref(dev);
                 }
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 if let Some(fifo) = context.frame_buffer.as_mut() {
                     while fifo.size() > 0 {
                         load_encode_and_write(
@@ -947,11 +947,11 @@ fn flush_stream_contexts(
                 )
                 .context("Failed to flush audio encoder.")?;
             }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {}
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {}
             unsupported_type => {
                 debug!(
                     "Encountered unsupported stream type ({}). Not flushing.",
-                    unsupported_type
+                    unsupported_type as i32
                 );
             }
         }
@@ -969,7 +969,7 @@ fn log_output_stream_summaries(
 ) {
     for context in stream_contexts {
         match context.media_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 let preset = if requested_video_quality == VideoQuality::MatchSource {
                     format!(
                         " (~{} approx)",
@@ -982,7 +982,7 @@ fn log_output_stream_summaries(
                 } else {
                     String::new()
                 };
-                if target_video_codec == ffi::AV_CODEC_ID_H264 {
+                if target_video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
                     info!(
                         "Output video stream {} summary: {}x{} {}{}, bitrate {} bps, profile {}, level {}",
                         context.output_stream_index,
@@ -1006,7 +1006,7 @@ fn log_output_stream_summaries(
                     );
                 }
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 let preset = if requested_audio_quality == AudioQuality::MatchSource {
                     format!(
                         " (~{} approx)",
@@ -1025,11 +1025,11 @@ fn log_output_stream_summaries(
                     context.encode_context.bit_rate
                 );
             }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 info!(
                     "Output subtitle stream {} summary: {}",
                     context.output_stream_index,
-                    describe_codec(ffi::AV_CODEC_ID_MOV_TEXT)
+                    describe_codec(ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT)
                 );
             }
             _ => {}
@@ -1050,7 +1050,7 @@ struct H264VerificationRequest<'a> {
 }
 
 fn verify_h264_output(request: H264VerificationRequest<'_>) -> Result<Option<H264Verification>> {
-    if request.target_video_codec != ffi::AV_CODEC_ID_H264 {
+    if request.target_video_codec != ffi::AVCodecID::AV_CODEC_ID_H264 {
         return Ok(None);
     }
     if request.skip_codec_check {

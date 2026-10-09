@@ -246,7 +246,7 @@ pub(super) fn build_subtitle_muxer(
 
     let mut input_stream_index = None;
     for (idx, stream) in input_ctx.streams().iter().enumerate() {
-        if stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+        if stream.codecpar().codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             input_stream_index = Some(idx);
             break;
         }
@@ -304,14 +304,14 @@ pub(super) fn select_subtitle_codec_id(
     is_mkv: bool,
 ) -> ffi::AVCodecID {
     if is_mp4 {
-        ffi::AV_CODEC_ID_MOV_TEXT
+        ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT
     } else if is_mkv {
         match format {
-            OcrFormat::Ass => ffi::AV_CODEC_ID_ASS,
-            OcrFormat::Srt => ffi::AV_CODEC_ID_SUBRIP,
+            OcrFormat::Ass => ffi::AVCodecID::AV_CODEC_ID_ASS,
+            OcrFormat::Srt => ffi::AVCodecID::AV_CODEC_ID_SUBRIP,
         }
     } else {
-        ffi::AV_CODEC_ID_MOV_TEXT
+        ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT
     }
 }
 
@@ -351,7 +351,7 @@ pub(super) fn set_subtitle_codec_par(
 
 pub(super) fn encode_subtitle_packet(
     encode_context: &mut AVCodecContext,
-    subtitle: &rsmpeg::avcodec::AVSubtitle,
+    subtitle: &crate::ff::AVSubtitle,
     packet: &AVPacket,
     output_stream_index: i32,
     output_time_base: ffi::AVRational,
@@ -442,7 +442,7 @@ pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
     } else {
         return 0;
     };
-    unsafe { ffi::av_rescale_q(ts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) }
+    unsafe { ffi::av_rescale_q(ts, time_base, ra(1, ffi::AV_TIME_BASE)) }
 }
 
 #[cfg(test)]
@@ -450,12 +450,13 @@ mod tests {
     use super::replace_output_file;
     #[cfg(feature = "ffmpeg-cli-tests")]
     use super::{mux_text_tracks_from, remux_copy_streams};
+    use crate::ff::AVFormatContextInput;
     #[cfg(feature = "ffmpeg-cli-tests")]
     use crate::subtitle_ocr::OcrSubtitleTrack;
     #[cfg(feature = "ffmpeg-cli-tests")]
     use crate::OcrFormat;
     #[cfg(feature = "ffmpeg-cli-tests")]
-    use rsmpeg::{avformat::AVFormatContextInput, ffi};
+    use ffmpeg_next::sys as ffi;
     #[cfg(feature = "ffmpeg-cli-tests")]
     use std::ffi::CString;
     use std::fs;
@@ -596,7 +597,8 @@ mod tests {
             output_ctx
                 .streams()
                 .iter()
-                .any(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE),
+                .any(|stream| stream.codecpar().codec_type
+                    == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE),
             "expected muxed output to include a subtitle stream"
         );
     }

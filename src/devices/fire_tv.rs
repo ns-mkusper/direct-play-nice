@@ -3,7 +3,7 @@
 // Sources:
 // - https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html
 
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 
 use super::device_profile::{
     ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice,
@@ -11,15 +11,15 @@ use super::device_profile::{
 
 const FIRE_TV_CONTAINERS: &[ContainerFormat] = &[ContainerFormat::Mp4, ContainerFormat::Mkv];
 const FIRE_TV_VIDEO: &[ffi::AVCodecID] = &[
-    ffi::AV_CODEC_ID_H264,
-    ffi::AV_CODEC_ID_HEVC,
-    ffi::AV_CODEC_ID_AV1,
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_HEVC,
+    ffi::AVCodecID::AV_CODEC_ID_AV1,
 ];
 const FIRE_TV_AUDIO: &[ffi::AVCodecID] = &[
-    ffi::AV_CODEC_ID_AAC,
-    ffi::AV_CODEC_ID_AC3,
-    ffi::AV_CODEC_ID_EAC3,
-    ffi::AV_CODEC_ID_FLAC,
+    ffi::AVCodecID::AV_CODEC_ID_AAC,
+    ffi::AVCodecID::AV_CODEC_ID_AC3,
+    ffi::AVCodecID::AV_CODEC_ID_EAC3,
+    ffi::AVCodecID::AV_CODEC_ID_FLAC,
 ];
 
 /// Capability profile for Fire TV Stick 4K.

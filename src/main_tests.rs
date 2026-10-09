@@ -35,7 +35,8 @@ mod video_tests {
 
     #[test]
     fn enforce_h264_constraints_sets_target_profile_and_level_for_nvenc() {
-        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let codec =
+            AVCodec::find_encoder(ffi::AVCodecID::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
         enforce_h264_constraints(
             &mut ctx,
@@ -49,7 +50,8 @@ mod video_tests {
 
     #[test]
     fn enforce_h264_constraints_sets_target_profile_and_level_for_x264() {
-        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let codec =
+            AVCodec::find_encoder(ffi::AVCodecID::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
         enforce_h264_constraints(&mut ctx, H264Profile::High, H264Level::Level4, "libx264");
         assert_eq!(ctx.profile, H264Profile::High as i32);
@@ -58,7 +60,8 @@ mod video_tests {
 
     #[test]
     fn nvenc_rate_controls_obey_level_limits() {
-        let codec = AVCodec::find_encoder(ffi::AV_CODEC_ID_H264).expect("libx264 missing");
+        let codec =
+            AVCodec::find_encoder(ffi::AVCodecID::AV_CODEC_ID_H264).expect("libx264 missing");
         let mut ctx = AVCodecContext::new(&codec);
         ctx.set_bit_rate(2_000_000);
         ctx.set_width(1280);
@@ -102,7 +105,7 @@ mod video_tests {
     fn h264_constraints_ignore_non_h264_streams() {
         let mut reasons = Vec::new();
         check_h264_profile_level_constraints(
-            ffi::AV_CODEC_ID_HEVC,
+            ffi::AVCodecID::AV_CODEC_ID_HEVC,
             ffi::AV_PROFILE_UNKNOWN,
             0,
             H264Profile::High,
@@ -119,8 +122,8 @@ mod video_tests {
     fn h264_constraints_flag_out_of_bounds_profiles_and_levels() {
         let mut reasons = Vec::new();
         check_h264_profile_level_constraints(
-            ffi::AV_CODEC_ID_H264,
-            ffi::AV_PROFILE_H264_HIGH_444 as i32,
+            ffi::AVCodecID::AV_CODEC_ID_H264,
+            ffi::AV_PROFILE_H264_HIGH_444,
             H264Level::Level5_2 as i32,
             H264Profile::High,
             H264Level::Level4_1,

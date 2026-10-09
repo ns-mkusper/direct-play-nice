@@ -1,14 +1,14 @@
 //! Shared runtime types and helpers used across CLI parsing and FFmpeg stream-processing paths.
 
+use crate::ff::AVCodecContext;
+use crate::ff::AVFormatContextOutput;
+use crate::ff::FfmpegError;
+use crate::ff::SwrContext;
+use crate::ff::{AVAudioFifo, AVDictionary, AVFrame, AVSamples};
 use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
+use ffmpeg_next::sys as ffi;
 use log::debug;
-use rsmpeg::avcodec::AVCodecContext;
-use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::{AVAudioFifo, AVDictionary, AVFrame, AVSamples};
-use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi;
-use rsmpeg::swresample::SwrContext;
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicI64;
@@ -755,13 +755,13 @@ pub(crate) fn add_samples_to_fifo(
 pub(crate) fn init_output_audio_frame(
     nb_samples: i32,
     ch_layout: ffi::AVChannelLayout,
-    sample_fmt: i32,
+    sample_fmt: ffi::AVSampleFormat,
     sample_rate: i32,
 ) -> Result<AVFrame> {
     let mut frame = AVFrame::new();
     frame.set_nb_samples(nb_samples);
     frame.set_ch_layout(ch_layout);
-    frame.set_format(sample_fmt);
+    frame.set_format(sample_fmt as i32);
     frame.set_sample_rate(sample_rate);
 
     frame
@@ -783,7 +783,7 @@ pub(crate) fn write_container_header(output: &mut AVFormatContextOutput) -> Resu
     // SAFETY: a non-null pb belongs to this live output context. Only inspect it;
     // muxers with AVFMT_NOFILE may have no I/O context.
     let is_seekable = unsafe { output.pb.as_ref() }
-        .is_some_and(|io| io.seekable & ffi::AVIO_SEEKABLE_NORMAL as i32 != 0);
+        .is_some_and(|io| io.seekable & ffi::AVIO_SEEKABLE_NORMAL != 0);
     let mut options = if is_mp4 && is_seekable {
         Some(AVDictionary::new(
             cstr::cstr!("movflags"),
@@ -819,7 +819,7 @@ pub(crate) fn encode_and_write_frame(
     loop {
         let mut packet = match encode_context.receive_packet() {
             Ok(packet) => packet,
-            Err(RsmpegError::EncoderDrainError) | Err(RsmpegError::EncoderFlushedError) => {
+            Err(FfmpegError::EncoderDrainError) | Err(FfmpegError::EncoderFlushedError) => {
                 break;
             }
             Err(e) if is_eagain_error(&e) => {
@@ -858,9 +858,7 @@ pub(crate) fn encode_and_write_frame(
     Ok(())
 }
 
-pub(crate) fn is_eagain_error(err: &RsmpegError) -> bool {
+pub(crate) fn is_eagain_error(err: &FfmpegError) -> bool {
     let raw = err.raw_error().unwrap_or_default();
-    raw == ffi::AVERROR(ffi::EAGAIN)
-        || raw == -(ffi::EAGAIN as i32)
-        || err.to_string().contains("(-11)")
+    raw == ffi::AVERROR(ffi::EAGAIN) || raw == -ffi::EAGAIN || err.to_string().contains("(-11)")
 }

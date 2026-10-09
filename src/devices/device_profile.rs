@@ -3,7 +3,7 @@
 use std::{cmp::Ordering, convert::TryFrom};
 
 use anyhow::{anyhow, bail, Result};
-use rusty_ffmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -173,13 +173,13 @@ impl TryFrom<i32> for H264Profile {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            x if x == ffi::AV_PROFILE_H264_BASELINE as i32 => Ok(H264Profile::Baseline),
-            x if x == ffi::AV_PROFILE_H264_MAIN as i32 => Ok(H264Profile::Main),
-            x if x == ffi::AV_PROFILE_H264_EXTENDED as i32 => Ok(H264Profile::Extended),
-            x if x == ffi::AV_PROFILE_H264_HIGH as i32 => Ok(H264Profile::High),
-            x if x == ffi::AV_PROFILE_H264_HIGH_10 as i32 => Ok(H264Profile::High10),
-            x if x == ffi::AV_PROFILE_H264_HIGH_422 as i32 => Ok(H264Profile::High422),
-            x if x == ffi::AV_PROFILE_H264_HIGH_444 as i32 => Ok(H264Profile::High444),
+            x if x == ffi::AV_PROFILE_H264_BASELINE => Ok(H264Profile::Baseline),
+            x if x == ffi::AV_PROFILE_H264_MAIN => Ok(H264Profile::Main),
+            x if x == ffi::AV_PROFILE_H264_EXTENDED => Ok(H264Profile::Extended),
+            x if x == ffi::AV_PROFILE_H264_HIGH => Ok(H264Profile::High),
+            x if x == ffi::AV_PROFILE_H264_HIGH_10 => Ok(H264Profile::High10),
+            x if x == ffi::AV_PROFILE_H264_HIGH_422 => Ok(H264Profile::High422),
+            x if x == ffi::AV_PROFILE_H264_HIGH_444 => Ok(H264Profile::High444),
             _ => Err("Invalid H.264 profile value"),
         }
     }
@@ -507,7 +507,7 @@ pub fn resolve_target_profile(devices: &[&StreamingDevice]) -> Result<ResolvedTa
     let video_codec = StreamingDevice::get_common_video_codec(devices)?;
     let audio_codec = StreamingDevice::get_common_audio_codec(devices)?;
     let container = StreamingDevice::get_common_container(devices)?;
-    let h264_constraints = if video_codec == ffi::AV_CODEC_ID_H264 {
+    let h264_constraints = if video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
         Some((
             StreamingDevice::get_min_h264_profile(devices)?,
             StreamingDevice::get_min_h264_level(devices)?,
@@ -534,13 +534,13 @@ pub fn resolve_target_profile(devices: &[&StreamingDevice]) -> Result<ResolvedTa
 /// # Examples
 ///
 /// ```rust
-/// use rsmpeg::ffi;
+/// use ffmpeg_next::sys as ffi;
 ///
 /// let devices = vec![&direct_play_nice::devices::roku::ROKU_ULTRA];
 /// let input = direct_play_nice::devices::InputMediaProfile {
 ///     container: Some(direct_play_nice::devices::ContainerFormat::Mkv),
-///     video_codec: ffi::AV_CODEC_ID_H264,
-///     audio_codec: ffi::AV_CODEC_ID_AAC,
+///     video_codec: ffi::AVCodecID::AV_CODEC_ID_H264,
+///     audio_codec: ffi::AVCodecID::AV_CODEC_ID_AAC,
 ///     video_bitrate: Some(8_000_000),
 ///     audio_bitrate: Some(192_000),
 /// };
@@ -590,7 +590,7 @@ pub fn plan_output_profile(
         (None, None) => None,
     };
 
-    let h264_constraints = if video_codec == ffi::AV_CODEC_ID_H264 {
+    let h264_constraints = if video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
         resolved.h264_constraints
     } else {
         None

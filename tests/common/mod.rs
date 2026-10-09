@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use predicates::str;
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
 use std::env;
 use std::error::Error;
 use std::ffi::CString;
@@ -349,7 +349,7 @@ pub fn read_video_profile_level(path: &Path) -> (i32, i32) {
     let ictx = AVFormatContextInput::open(cstr.as_c_str()).expect("open output file");
     for stream in ictx.streams() {
         let par = stream.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             return (par.profile, par.level);
         }
     }

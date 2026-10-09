@@ -1,14 +1,14 @@
 //! Stream-processing routines that execute per-stream decode/encode flows for video, audio, and subtitle data.
 
+use crate::ff::FfmpegError;
+use crate::ff::SwsContext;
+use crate::ff::{AVAudioFifo, AVFrame, AVSamples};
+use crate::ff::{AVCodecContext, AVPacket};
+use crate::ff::{AVFormatContextOutput, AVStreamRef};
 use anyhow::{anyhow, bail, Context, Result};
+use ffmpeg_next::sys as ffi;
 use libc::EINVAL;
 use log::{debug, error, trace, warn};
-use rsmpeg::avcodec::{AVCodecContext, AVPacket};
-use rsmpeg::avformat::{AVFormatContextOutput, AVStreamRef};
-use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
-use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi;
-use rsmpeg::swscale::SwsContext;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -25,15 +25,17 @@ use crate::transcoder::timestamp::{
 };
 use crate::types::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
 
-fn sws_flags_for_resize_quality(quality: ResizeQuality) -> ffi::SwsFlags {
+/// `SwsFlags` is a C enum used as a bit set; `sws_getContext` takes the OR'd
+/// value as an `int`.
+fn sws_flags_for_resize_quality(quality: ResizeQuality) -> i32 {
     let kernel = match quality {
-        ResizeQuality::FastBilinear => ffi::SWS_FAST_BILINEAR,
-        ResizeQuality::Bilinear => ffi::SWS_BILINEAR,
-        ResizeQuality::Bicubic => ffi::SWS_BICUBIC,
-        ResizeQuality::Lanczos => ffi::SWS_LANCZOS,
-        ResizeQuality::Spline => ffi::SWS_SPLINE,
+        ResizeQuality::FastBilinear => ffi::SwsFlags::SWS_FAST_BILINEAR,
+        ResizeQuality::Bilinear => ffi::SwsFlags::SWS_BILINEAR,
+        ResizeQuality::Bicubic => ffi::SwsFlags::SWS_BICUBIC,
+        ResizeQuality::Lanczos => ffi::SwsFlags::SWS_LANCZOS,
+        ResizeQuality::Spline => ffi::SwsFlags::SWS_SPLINE,
     };
-    kernel | ffi::SWS_ACCURATE_RND
+    kernel as i32 | ffi::SwsFlags::SWS_ACCURATE_RND as i32
 }
 
 fn sws_flags_for_frame_transform(
@@ -42,32 +44,32 @@ fn sws_flags_for_frame_transform(
     source_height: i32,
     target_width: i32,
     target_height: i32,
-) -> ffi::SwsFlags {
+) -> i32 {
     if source_width == target_width && source_height == target_height {
-        return ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND;
+        return ffi::SwsFlags::SWS_FAST_BILINEAR as i32 | ffi::SwsFlags::SWS_ACCURATE_RND as i32;
     }
     sws_flags_for_resize_quality(quality)
 }
 
 fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
-    if frame.format == ffi::AV_PIX_FMT_CUDA {
+    if frame.format == ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32 {
         let transfer_format = unsafe {
             let hw_frames_ctx = (*frame.as_ptr()).hw_frames_ctx;
             if hw_frames_ctx.is_null() {
                 warn!("CUDA frame is missing hw_frames_ctx; falling back to NV12 transfer format.");
-                ffi::AV_PIX_FMT_NV12
+                ffi::AVPixelFormat::AV_PIX_FMT_NV12
             } else {
                 let frames_ctx_ptr = (*hw_frames_ctx).data as *const ffi::AVHWFramesContext;
                 if frames_ctx_ptr.is_null() {
                     warn!("CUDA frame hw_frames_ctx has null data; falling back to NV12.");
-                    ffi::AV_PIX_FMT_NV12
+                    ffi::AVPixelFormat::AV_PIX_FMT_NV12
                 } else {
                     let sw_format = (*frames_ctx_ptr).sw_format;
-                    if sw_format == ffi::AV_PIX_FMT_NONE {
+                    if sw_format == ffi::AVPixelFormat::AV_PIX_FMT_NONE {
                         warn!(
                             "CUDA frame reports AV_PIX_FMT_NONE sw_format; falling back to NV12."
                         );
-                        ffi::AV_PIX_FMT_NV12
+                        ffi::AVPixelFormat::AV_PIX_FMT_NV12
                     } else {
                         sw_format
                     }
@@ -76,7 +78,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
         };
 
         let mut sw_frame = AVFrame::new();
-        sw_frame.set_format(transfer_format);
+        sw_frame.set_format(transfer_format as i32);
         sw_frame.set_width(frame.width);
         sw_frame.set_height(frame.height);
         sw_frame.set_pts(frame.pts);
@@ -96,7 +98,7 @@ fn ensure_software_frame(frame: AVFrame) -> Result<AVFrame> {
             "Transferred CUDA frame {}x{} from {} to software format {}",
             frame.width,
             frame.height,
-            pix_fmt_name(frame.format as ffi::AVPixelFormat),
+            pix_fmt_name(crate::ff::pix_fmt_from_i32(frame.format)),
             pix_fmt_name(transfer_format)
         );
         Ok(sw_frame)
@@ -121,7 +123,7 @@ pub(crate) fn process_video_stream(
         .decode_context
         .send_packet(Some(packet))
     {
-        Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+        Ok(_) | Err(FfmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
             error!(
@@ -148,7 +150,7 @@ pub(crate) fn process_video_stream(
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
-            Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
+            Err(FfmpegError::DecoderDrainError) | Err(FfmpegError::DecoderFlushedError) => {
                 if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Video decoder drained/flushed for stream {}",
@@ -223,7 +225,7 @@ fn resize_cuda_frame(
     frame: &AVFrame,
     rescaled_pts: i64,
 ) -> Result<AVFrame> {
-    if frame.format != ffi::AV_PIX_FMT_CUDA {
+    if frame.format != ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32 {
         bail!(
             "CUDA resize backend selected but decoded frame is not CUDA (format {}). Use --resize-backend=software to force CPU resize.",
             frame.format
@@ -287,12 +289,12 @@ fn resize_software_frame(
     let mut new_frame = AVFrame::new();
     new_frame.set_width(stream_processing_context.encode_context.width);
     new_frame.set_height(stream_processing_context.encode_context.height);
-    new_frame.set_format(ffi::AV_PIX_FMT_YUV420P);
+    new_frame.set_format(ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32);
     new_frame.alloc_buffer().context("Error allocating ")?;
 
     let source_width = frame.width;
     let source_height = frame.height;
-    let source_pix_fmt = frame.format as ffi::AVPixelFormat;
+    let source_pix_fmt = crate::ff::pix_fmt_from_i32(frame.format);
     let mut sws_context = SwsContext::get_context(
         source_width,
         source_height,
@@ -346,7 +348,7 @@ pub(crate) fn process_audio_stream(
         .decode_context
         .send_packet(Some(packet))
     {
-        Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+        Ok(_) | Err(FfmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) => {
             error!(
@@ -373,7 +375,7 @@ pub(crate) fn process_audio_stream(
     loop {
         let frame = match stream_processing_context.decode_context.receive_frame() {
             Ok(frame) => frame,
-            Err(RsmpegError::DecoderDrainError) | Err(RsmpegError::DecoderFlushedError) => {
+            Err(FfmpegError::DecoderDrainError) | Err(FfmpegError::DecoderFlushedError) => {
                 if !std::mem::replace(&mut warned_drain, true) {
                     debug!(
                         "Audio decoder drained/flushed for stream {}",
@@ -566,7 +568,7 @@ pub(crate) fn process_subtitle_stream(
 
                 match output_format_context.interleaved_write_frame(&mut encoded_packet) {
                     Ok(()) => {}
-                    Err(rsmpeg::error::RsmpegError::AVError(code)) if code == -EINVAL => {
+                    Err(crate::ff::FfmpegError::AVError(code)) if code == -EINVAL => {
                         return handle_subtitle_stream_failure(
                             stream_processing_context,
                             "produced invalid timestamps".to_string(),
@@ -578,13 +580,13 @@ pub(crate) fn process_subtitle_stream(
                 }
             }
         }
-        Err(rsmpeg::error::RsmpegError::DecoderDrainError) => {
+        Err(crate::ff::FfmpegError::DecoderDrainError) => {
             return handle_subtitle_stream_failure(
                 stream_processing_context,
                 "decoder is drained".to_string(),
             );
         }
-        Err(rsmpeg::error::RsmpegError::DecoderFlushedError) => {
+        Err(crate::ff::FfmpegError::DecoderFlushedError) => {
             return handle_subtitle_stream_failure(
                 stream_processing_context,
                 "decoder is flushed".to_string(),
@@ -637,7 +639,7 @@ fn handle_subtitle_stream_failure(
 /// directly so subtitle packets can preserve legitimate trailing zero bytes and
 /// oversized text events can retry with a larger buffer before the stream is
 /// skipped by policy.
-fn sanitize_text_subtitle_styles(subtitle: &mut rsmpeg::avcodec::AVSubtitle) -> bool {
+fn sanitize_text_subtitle_styles(subtitle: &mut crate::ff::AVSubtitle) -> bool {
     if subtitle.num_rects == 0 || subtitle.rects.is_null() {
         return false;
     }
@@ -649,10 +651,10 @@ fn sanitize_text_subtitle_styles(subtitle: &mut rsmpeg::avcodec::AVSubtitle) -> 
             continue;
         }
         let rect = unsafe { &mut *rect_ptr };
-        if rect.type_ == ffi::SUBTITLE_TEXT && !rect.text.is_null() {
+        if rect.type_ == ffi::AVSubtitleType::SUBTITLE_TEXT && !rect.text.is_null() {
             changed |= sanitize_c_string_in_place(rect.text);
         }
-        if rect.type_ == ffi::SUBTITLE_ASS && !rect.ass.is_null() {
+        if rect.type_ == ffi::AVSubtitleType::SUBTITLE_ASS && !rect.ass.is_null() {
             changed |= sanitize_c_string_in_place(rect.ass);
         }
     }
@@ -786,7 +788,7 @@ fn sanitize_mov_text_packet_text_and_strip_style_boxes(packet: &mut Vec<u8>) -> 
 
 fn encode_subtitle_to_vec(
     encode_context: &mut AVCodecContext,
-    subtitle: &rsmpeg::avcodec::AVSubtitle,
+    subtitle: &crate::ff::AVSubtitle,
     input_stream_index: i32,
 ) -> Result<Option<Vec<u8>>> {
     const INITIAL_SUBTITLE_PACKET_SIZE: usize = 32 * 1024;
@@ -834,10 +836,10 @@ fn encode_subtitle_to_vec(
 pub(crate) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
-            | ffi::AV_CODEC_ID_DVD_SUBTITLE
-            | ffi::AV_CODEC_ID_DVB_SUBTITLE
-            | ffi::AV_CODEC_ID_XSUB
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_XSUB
     )
 }
 
@@ -856,7 +858,7 @@ pub(crate) fn load_encode_and_write(
 
     let mut frame = init_output_audio_frame(
         frame_size,
-        encode_context.ch_layout().clone().into_inner(),
+        encode_context.ch_layout().to_owned().into_inner(),
         encode_context.sample_fmt,
         encode_context.sample_rate,
     )
@@ -933,7 +935,7 @@ mod resize_quality_tests {
     fn same_size_transform_keeps_legacy_fast_scaler_path() {
         assert_eq!(
             sws_flags_for_frame_transform(ResizeQuality::Lanczos, 640, 360, 640, 360),
-            ffi::SWS_FAST_BILINEAR | ffi::SWS_ACCURATE_RND
+            ffi::SwsFlags::SWS_FAST_BILINEAR as i32 | ffi::SwsFlags::SWS_ACCURATE_RND as i32
         );
     }
 
@@ -941,11 +943,11 @@ mod resize_quality_tests {
     fn resize_transform_uses_selected_kernel() {
         assert_eq!(
             sws_flags_for_frame_transform(ResizeQuality::Lanczos, 1280, 720, 640, 360),
-            ffi::SWS_LANCZOS | ffi::SWS_ACCURATE_RND
+            ffi::SwsFlags::SWS_LANCZOS as i32 | ffi::SwsFlags::SWS_ACCURATE_RND as i32
         );
         assert_eq!(
             sws_flags_for_frame_transform(ResizeQuality::Spline, 1280, 720, 640, 360),
-            ffi::SWS_SPLINE | ffi::SWS_ACCURATE_RND
+            ffi::SwsFlags::SWS_SPLINE as i32 | ffi::SwsFlags::SWS_ACCURATE_RND as i32
         );
     }
 }

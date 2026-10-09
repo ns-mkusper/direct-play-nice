@@ -7,10 +7,10 @@ pub(crate) use linux::*;
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux {
+    use crate::ff::AVCodecContext;
+    use crate::ff::AVFrame;
     use anyhow::{bail, Result};
-    use rsmpeg::avcodec::AVCodecContext;
-    use rsmpeg::avutil::AVFrame;
-    use rsmpeg::ffi;
+    use ffmpeg_next::sys as ffi;
 
     use crate::types::ResizeQuality;
 

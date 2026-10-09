@@ -13,7 +13,7 @@ pub(super) fn discover_candidates(
 
     for stream in ictx.streams() {
         let cp = stream.codecpar();
-        if cp.codec_type != ffi::AVMEDIA_TYPE_SUBTITLE {
+        if cp.codec_type != ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             continue;
         }
         if !is_image_based_subtitle(cp.codec_id) {
@@ -40,7 +40,7 @@ pub(super) fn probe_video_dimensions(input_file: &CStr) -> Option<(u32, u32)> {
     let ictx = AVFormatContextInput::open(input_file).ok()?;
     for stream in ictx.streams() {
         let cp = stream.codecpar();
-        if cp.codec_type == ffi::AVMEDIA_TYPE_VIDEO && cp.width > 0 && cp.height > 0 {
+        if cp.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO && cp.width > 0 && cp.height > 0 {
             return Some((cp.width as u32, cp.height as u32));
         }
     }
@@ -478,7 +478,7 @@ pub(super) fn subtitle_rect_counts(subtitle: *const ffi::AVSubtitle) -> (usize, 
             continue;
         }
         let rect = unsafe { &*rect_ptr };
-        if rect.type_ == ffi::SUBTITLE_BITMAP {
+        if rect.type_ == ffi::AVSubtitleType::SUBTITLE_BITMAP {
             image_rects += 1;
         }
     }
@@ -604,7 +604,7 @@ fn extract_subtitle_lines(
         }
         let rect = unsafe { &*rect_ptr };
 
-        if rect.type_ == ffi::SUBTITLE_TEXT && !rect.text.is_null() {
+        if rect.type_ == ffi::AVSubtitleType::SUBTITLE_TEXT && !rect.text.is_null() {
             let txt = unsafe { CStr::from_ptr(rect.text) }
                 .to_string_lossy()
                 .trim()
@@ -622,7 +622,7 @@ fn extract_subtitle_lines(
             continue;
         }
 
-        if rect.type_ == ffi::SUBTITLE_ASS && !rect.ass.is_null() {
+        if rect.type_ == ffi::AVSubtitleType::SUBTITLE_ASS && !rect.ass.is_null() {
             let txt = unsafe { CStr::from_ptr(rect.ass) }
                 .to_string_lossy()
                 .trim()

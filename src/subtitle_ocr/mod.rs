@@ -5,12 +5,12 @@
 //! It is the integration layer over `engine`, `ocr_pipeline`, `text_processing`,
 //! `text_render`, `language`, and `muxing`.
 
+use crate::ff::{ra, AVDictionary};
+use crate::ff::{AVCodec, AVCodecContext, AVPacket};
+use crate::ff::{AVFormatContextInput, AVFormatContextOutput};
 use anyhow::{anyhow, bail, Context, Result};
+use ffmpeg_next::sys as ffi;
 use log::{debug, info, warn};
-use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket};
-use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
-use rsmpeg::avutil::{ra, AVDictionary};
-use rsmpeg::ffi;
 #[cfg(test)]
 use sha2::Digest;
 #[cfg(test)]

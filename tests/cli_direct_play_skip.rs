@@ -8,8 +8,8 @@ use predicates::str;
 use std::process::Command;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -73,11 +73,11 @@ fn probe_audio_codec(path: &std::path::Path) -> ffi::AVCodecID {
     .expect("open media for probe");
     for st in ictx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
             return par.codec_id;
         }
     }
-    ffi::AV_CODEC_ID_NONE
+    ffi::AVCodecID::AV_CODEC_ID_NONE
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn cli_transcodes_when_audio_incompatible() -> Result<(), Box<dyn std::error::Er
     // Sanity check: ensure audio codec really is MP3 pre-conversion.
     assert_eq!(
         probe_audio_codec(&input),
-        ffi::AV_CODEC_ID_MP3,
+        ffi::AVCodecID::AV_CODEC_ID_MP3,
         "precondition: source audio must be MP3"
     );
 
@@ -164,7 +164,7 @@ fn cli_transcodes_when_audio_incompatible() -> Result<(), Box<dyn std::error::Er
     assert!(output.exists(), "output should exist after transcode");
     assert_eq!(
         probe_audio_codec(&output),
-        ffi::AV_CODEC_ID_AAC,
+        ffi::AVCodecID::AV_CODEC_ID_AAC,
         "audio should be transcoded to AAC"
     );
 

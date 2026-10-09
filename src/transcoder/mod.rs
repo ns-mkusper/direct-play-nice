@@ -17,21 +17,21 @@ pub mod verification;
 pub(crate) mod prelude {
     // Centralized imports for transcoder submodules. This keeps leaf modules
     // focused on pipeline logic instead of repeating long FFmpeg type imports.
-    pub(crate) use anyhow::{anyhow, bail, Context, Result};
-    pub(crate) use clap::ValueEnum;
-    pub(crate) use libc::EINVAL;
-    pub(crate) use log::{debug, error, info, trace, warn, Level};
-    pub(crate) use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVCodecRef, AVPacket};
-    pub(crate) use rsmpeg::avformat::{
-        AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef,
-    };
-    pub(crate) use rsmpeg::avutil::{
+    pub(crate) use crate::ff::FfmpegError;
+    pub(crate) use crate::ff::SwrContext;
+    pub(crate) use crate::ff::SwsContext;
+    pub(crate) use crate::ff::{
         ra, AVAudioFifo, AVChannelLayout, AVDictionary, AVFrame, AVSamples,
     };
-    pub(crate) use rsmpeg::error::RsmpegError;
-    pub(crate) use rsmpeg::ffi::{self};
-    pub(crate) use rsmpeg::swresample::SwrContext;
-    pub(crate) use rsmpeg::swscale::SwsContext;
+    pub(crate) use crate::ff::{AVCodec, AVCodecContext, AVCodecRef, AVPacket};
+    pub(crate) use crate::ff::{
+        AVFormatContextInput, AVFormatContextOutput, AVStreamMut, AVStreamRef,
+    };
+    pub(crate) use anyhow::{anyhow, bail, Context, Result};
+    pub(crate) use clap::ValueEnum;
+    pub(crate) use ffmpeg_next::sys as ffi;
+    pub(crate) use libc::EINVAL;
+    pub(crate) use log::{debug, error, info, trace, warn, Level};
     pub(crate) use serde::Deserialize;
     pub(crate) use std::{
         collections::HashSet,
