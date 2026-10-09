@@ -137,6 +137,8 @@ jobs:
             if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
               echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
               rm -f target/vcpkg/vcpkg
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              rm -rf target/vcpkg/installed target/vcpkg/packages target/vcpkg/buildtrees
               # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
               git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>/dev/null || true
               cache_invalid=1
@@ -162,8 +164,8 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: cargo vcpkg --verbose build
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
@@ -349,6 +351,8 @@ jobs:
             if ($headRev -ne $expectedRev -and (Test-Path "target/vcpkg/vcpkg.exe")) {
               Write-Host "vcpkg checkout at $headRev, pin is $expectedRev; removing cached vcpkg tool"
               Remove-Item -Force -ErrorAction SilentlyContinue "target/vcpkg/vcpkg.exe"
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg/installed", "target/vcpkg/packages", "target/vcpkg/buildtrees"
               # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
               git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>$null
               $cacheInvalid = $true
@@ -412,8 +416,8 @@ jobs:
             target/vcpkg/vcpkg.exe
           key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
@@ -569,6 +573,8 @@ jobs:
             if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
               echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
               rm -f target/vcpkg/vcpkg
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              rm -rf target/vcpkg/installed target/vcpkg/packages target/vcpkg/buildtrees
               # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
               git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>/dev/null || true
               cache_invalid=1
@@ -594,8 +600,8 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: cargo vcpkg --verbose build
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Run FFmpeg CLI tests
         env:
