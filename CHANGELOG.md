@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Build
+
+- Fetch x264 from its GitHub mirror through a vcpkg overlay port
+  (`vcpkg-overlays/ports`). Local builds set
+  `VCPKG_OVERLAY_PORTS="$PWD/vcpkg-overlays/ports"` before `cargo vcpkg build`.
+
 ## [1.1.0-beta.9] - 2026-10-09
 
 ### Direct Play Reliability

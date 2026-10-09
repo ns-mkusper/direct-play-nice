@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 env:
+  VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/vcpkg-overlays/ports
   CARGO_TERM_COLOR: always
 
 concurrency:
