@@ -152,6 +152,8 @@ jobs:
             if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
               echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
               rm -f target/vcpkg/vcpkg
+              # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
+              git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>/dev/null || true
               cache_invalid=1
             fi
           fi
@@ -444,6 +446,8 @@ jobs:
             if ($headRev -ne $expectedRev -and (Test-Path "target/vcpkg/vcpkg.exe")) {
               Write-Host "vcpkg checkout at $headRev, pin is $expectedRev; removing cached vcpkg tool"
               Remove-Item -Force -ErrorAction SilentlyContinue "target/vcpkg/vcpkg.exe"
+              # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
+              git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>$null
               $cacheInvalid = $true
             }
           }
@@ -678,6 +682,8 @@ jobs:
             if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
               echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
               rm -f target/vcpkg/vcpkg
+              # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
+              git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>/dev/null || true
               cache_invalid=1
             fi
           fi
