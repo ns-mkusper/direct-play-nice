@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.9] - 2026-10-09
+
+### Direct Play Reliability
+
+- Interleaved audio, video, and subtitle packet writes consistently so early
+  subtitle samples are no longer deferred until the end of MP4 output.
+- Enabled fast-start finalization for seekable MP4 conversion, subtitle remux,
+  and language-retagging outputs.
+- Added physical-layout regressions for one, seventeen, and thirty-four sparse
+  text-subtitle tracks while preserving track metadata and cue timing.
+
 ### Safety
 
 - Added a global `--dry-run` flag and `dry_run` config key that report the
