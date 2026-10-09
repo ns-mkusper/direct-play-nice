@@ -18,6 +18,13 @@ All notable changes to this project will be documented in this file.
   swscale paths. Intel Quick Sync on Windows now links through libvpl instead
   of the legacy Media SDK.
 
+### Testing
+
+- Added binding-independent FFmpeg layout and quality baselines
+  (`tests/ffmpeg_baseline.rs`, snapshots under `tests/baselines/`). Each
+  scenario is inspected with the `ffprobe` and `ffmpeg` CLIs only, so the same
+  oracle gates output across bindings and FFmpeg version changes.
+
 ## [1.1.0-beta.9] - 2026-10-09
 
 ### Direct Play Reliability
