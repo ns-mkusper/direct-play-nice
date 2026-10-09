@@ -835,7 +835,7 @@ fn write_output_header(
     output_format_context: &mut AVFormatContextOutput,
     video_streams_added: usize,
 ) -> Result<()> {
-    if let Err(e) = output_format_context.write_header(&mut None) {
+    if let Err(e) = write_container_header(output_format_context) {
         if video_streams_added > 1 {
             bail!(
                 "Failed to write container header ({}). The output container may not support multiple video streams. Try --unsupported-video-policy=ignore to drop extra video streams.",
