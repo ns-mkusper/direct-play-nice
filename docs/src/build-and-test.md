@@ -29,18 +29,15 @@ export LD_LIBRARY_PATH="$VCPKG_ROOT/installed/x64-linux/lib:${LD_LIBRARY_PATH:-}
 cargo build --release
 ```
 
-If `rsmpeg` fails with missing FFmpeg struct fields such as `AVFormatContext.pb`,
-`AVFormatContext.streams`, or `AVBitStreamFilter.name`, bindgen likely generated
-opaque FFmpeg structs for the local headers. Reuse the bundled FFmpeg 8 bindings
-from `rusty_ffmpeg` while still linking against the host vcpkg libraries:
+The FFmpeg bindings come from `ffmpeg-next`; its `ffmpeg-sys-next` build script
+finds the vcpkg libraries through pkg-config and runs bindgen against their
+headers, so `libclang` must be installed. `.cargo/config.toml` points the
+per-target `PKG_CONFIG_PATH_*` variables at `target/vcpkg/installed/<triplet>/lib/pkgconfig`.
+To build against an FFmpeg installed elsewhere, export the variable for your
+target triple, for example:
 
 ```bash
-export FFMPEG_BINDING_PATH="$(
-  find "$HOME/.cargo/registry/src" \
-    -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' \
-    -print -quit
-)"
-
+export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu="$VCPKG_ROOT/installed/x64-linux/lib/pkgconfig"
 cargo build --release
 ```
 
