@@ -51,7 +51,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
     for st in octx.streams() {
         let par = st.codecpar();
         match par.codec_type {
-            t if t == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 saw_v = true;
                 assert_eq!(
                     par.codec_id,
@@ -66,7 +66,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
                 fps_num = rate.num;
                 fps_den = rate.den;
             }
-            t if t == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 saw_a = true;
                 assert_eq!(
                     par.codec_id,
@@ -74,7 +74,7 @@ fn cli_produces_chromecast_direct_play_mp4() -> Result<(), Box<dyn std::error::E
                     "audio must be AAC"
                 );
             }
-            t if t == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 saw_s = true;
                 assert_eq!(
                     par.codec_id,

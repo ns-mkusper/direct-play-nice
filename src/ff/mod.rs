@@ -378,7 +378,7 @@ impl AVCodecParameters {
         ptr
     }
 
-    pub fn from_context(&mut self, context: &AVCodecContext) {
+    pub fn copy_from_context(&mut self, context: &AVCodecContext) {
         unsafe { ffi::avcodec_parameters_from_context(self.as_mut_ptr(), context.as_ptr()) };
     }
 
@@ -1196,7 +1196,7 @@ impl AVCodecContext {
 
     pub fn extract_codecpar(&self) -> AVCodecParameters {
         let mut params = AVCodecParameters::new();
-        params.from_context(self);
+        params.copy_from_context(self);
         params
     }
 

@@ -186,11 +186,11 @@ pub(crate) fn rational_to_string(r: ffi::AVRational) -> String {
 
 fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> String {
     match media_type {
-        mt if mt == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
+        ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
             let name = pix_fmt_name(crate::ff::pix_fmt_from_i32(format));
             format!("{} ({})", format, name)
         }
-        mt if mt == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
+        ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
             let name = sample_fmt_name_from_i32(format);
             format!("{} ({})", format, name)
         }
