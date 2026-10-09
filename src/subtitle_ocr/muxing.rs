@@ -4,6 +4,7 @@
 //! preserves language/default metadata in the output container.
 
 use super::*;
+use crate::ffmpeg_utils::write_container_header;
 pub(super) struct PendingPacket {
     ts: i64,
     packet: AVPacket,
@@ -91,8 +92,7 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
         stream_index_map.push(out_stream.index);
     }
 
-    output_ctx
-        .write_header(&mut None)
+    write_container_header(&mut output_ctx)
         .context("failed to write output header for subtitle remux")?;
 
     loop {
@@ -181,8 +181,7 @@ pub fn mux_text_tracks_from(
         )?);
     }
 
-    output_ctx
-        .write_header(&mut None)
+    write_container_header(&mut output_ctx)
         .context("failed to write output header for subtitle remux")?;
 
     let mut pending = Vec::new();

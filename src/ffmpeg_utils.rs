@@ -5,7 +5,7 @@ use clap::{value_parser, Parser};
 use log::debug;
 use rsmpeg::avcodec::AVCodecContext;
 use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
+use rsmpeg::avutil::{AVAudioFifo, AVDictionary, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 use rsmpeg::swresample::SwrContext;
@@ -771,6 +771,40 @@ pub(crate) fn init_output_audio_frame(
     Ok(frame)
 }
 
+/// Write a container header, enabling progressive playback for seekable MP4 outputs.
+pub(crate) fn write_container_header(output: &mut AVFormatContextOutput) -> Result<()> {
+    // FFmpeg selects the ipod (MP4) muxer for .m4v; the m4v muxer is raw video.
+    let is_mp4 = output
+        .oformat()
+        .name()
+        .to_bytes()
+        .split(|byte| *byte == b',')
+        .any(|name| matches!(name, b"mp4" | b"ipod"));
+    // SAFETY: a non-null pb belongs to this live output context. Only inspect it;
+    // muxers with AVFMT_NOFILE may have no I/O context.
+    let is_seekable = unsafe { output.pb.as_ref() }
+        .is_some_and(|io| io.seekable & ffi::AVIO_SEEKABLE_NORMAL as i32 != 0);
+    let mut options = if is_mp4 && is_seekable {
+        Some(AVDictionary::new(
+            cstr::cstr!("movflags"),
+            cstr::cstr!("+faststart"),
+            0,
+        ))
+    } else {
+        None
+    };
+
+    // rsmpeg transfers ownership to FFmpeg and returns any unconsumed options,
+    // including on failure. Keep the returned dictionary owned so it is freed.
+    output.write_header(&mut options)?;
+    if let Some(unused) = options.as_ref() {
+        if unused.iter().next().is_some() {
+            bail!("Unrecognized output header options: {:?}", unused);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_and_write_frame(
     encode_context: &mut AVCodecContext,
     output_format_context: &mut AVFormatContextOutput,
@@ -817,7 +851,7 @@ pub(crate) fn encode_and_write_frame(
         }
 
         output_format_context
-            .write_frame(&mut packet)
+            .interleaved_write_frame(&mut packet)
             .context("Could not write frame")?;
     }
 

@@ -5,6 +5,7 @@
 //! results and only grab a specific replacement when the release metadata proves
 //! the desired languages are available.
 
+use crate::ffmpeg_utils::write_container_header;
 use anyhow::{Context, Result};
 use log::info;
 use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
@@ -234,9 +235,7 @@ fn remux_with_retagged_unknown_streams(
         stream_index_map.push(out_stream.index);
     }
 
-    output_ctx
-        .write_header(&mut None)
-        .context("failed to write retagged output header")?;
+    write_container_header(&mut output_ctx).context("failed to write retagged output header")?;
 
     loop {
         let mut packet = match input_ctx.read_packet()? {
