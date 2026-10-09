@@ -9,7 +9,10 @@ COPY .cargo .cargo
 COPY src src
 COPY benches benches
 COPY config config
+# FFMPEG_PKG_CONFIG_PATH tells build.rs an external FFmpeg is in use, so it
+# skips the link arguments that only the vcpkg build needs.
 ENV PKG_CONFIG_PATH=/usr/lib/pkgconfig \
+    FFMPEG_PKG_CONFIG_PATH=/usr/lib/pkgconfig \
     RUSTFLAGS="-C target-feature=-crt-static"
 # Cargo.lock is not tracked by this repository. Save the resolved lock in the
 # image/artifacts so each run records exactly which dependency versions it used.
