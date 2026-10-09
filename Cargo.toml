@@ -10,6 +10,10 @@ edition = "2021"
 
 
 [features]
+# Release builds link the vcpkg FFmpeg statically. Builds against a distro
+# FFmpeg (tests/e2e/servarr/Dockerfile) turn this off with --no-default-features.
+default = ["ffmpeg-static"]
+ffmpeg-static = ["ffmpeg-next/static"]
 ffmpeg-cli-tests = []
 
 
@@ -39,7 +43,6 @@ ffmpeg-next = { version = "9.0.0", default-features = false, features = [
   "filter",
   "software-resampling",
   "software-scaling",
-  "static",
 ] }
 serde = { version = "1.0.204", features = ["derive"] }
 shlex = "1.3"
