@@ -148,6 +148,11 @@ pub fn check(ret: c_int) -> Result<c_int> {
     }
 }
 
+/// `AV_BUFFERSRC_FLAG_KEEP_REF` from libavfilter/buffersrc.h. bindgen puts the
+/// anonymous enum it lives in under a `_bindgen_ty_N` name that changes with
+/// the header set, so the value is spelled out here.
+pub const AV_BUFFERSRC_FLAG_KEEP_REF: c_int = 8;
+
 /// Build an [`ffi::AVRational`].
 #[inline]
 pub const fn ra(num: c_int, den: c_int) -> ffi::AVRational {

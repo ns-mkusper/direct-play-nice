@@ -248,7 +248,7 @@ impl CudaResizeFilter {
                 ffi::av_buffersrc_add_frame_flags(
                     self.buffersrc,
                     frame.as_ptr() as *mut ffi::AVFrame,
-                    ffi::_bindgen_ty_6::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
+                    crate::ff::AV_BUFFERSRC_FLAG_KEEP_REF,
                 ),
                 "submitting frame to CUDA resize graph",
             )?;
