@@ -299,10 +299,7 @@ fn ocr_single_stream_once(
         }
     }
 
-    loop {
-        let Some(subtitle) = decode_context.decode_subtitle(None)? else {
-            break;
-        };
+    while let Some(subtitle) = decode_context.decode_subtitle(None)? {
         decoded_subtitle_count += 1;
         let (rect_count, image_rect_count) = subtitle_rect_counts(subtitle.as_ptr());
         decoded_rect_count += rect_count;
