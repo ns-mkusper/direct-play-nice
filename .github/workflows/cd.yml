@@ -107,6 +107,17 @@ jobs:
               fi
             fi
           done
+          # A cached checkout can move to the pinned rev without a matching tool: the
+          # bundled vcpkg binary then rejects newer scripts (vcpkg-tools.json schema).
+          # Drop the tool so cargo-vcpkg bootstraps it again for the new checkout.
+          if [ -e "target/vcpkg/.git" ] && [ -n "$expected_rev" ]; then
+            head_rev="$(git -C target/vcpkg rev-parse HEAD 2>/dev/null || true)"
+            if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
+              echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
+              rm -f target/vcpkg/vcpkg
+              cache_invalid=1
+            fi
+          fi
           if [ "$cache_invalid" -eq 1 ]; then
             echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
           fi
