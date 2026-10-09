@@ -117,8 +117,9 @@ jobs:
               rm -f target/vcpkg/vcpkg
               # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
               rm -rf target/vcpkg/installed target/vcpkg/packages target/vcpkg/buildtrees
-              # The cache keeps a subset of the tree; the bootstrap scripts are not in it.
-              git -C target/vcpkg checkout -- bootstrap-vcpkg.sh bootstrap-vcpkg.bat 2>/dev/null || true
+              # The cache keeps a subset of the tree; restore the rest before cargo-vcpkg
+              # checks out the new rev, so ports see a complete checkout (LICENSE.txt, bootstrap).
+              git -C target/vcpkg checkout -- . 2>/dev/null || true
               cache_invalid=1
             fi
           fi
