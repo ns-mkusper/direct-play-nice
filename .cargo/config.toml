@@ -23,6 +23,8 @@ rustflags = [
   "link-arg=Ole32.lib",
   "-C",
   "link-arg=User32.lib",
+  "-C",
+  "link-arg=Advapi32.lib",
 ]
 
 [target.x86_64-apple-darwin]
