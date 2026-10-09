@@ -4,9 +4,15 @@
 
 ```bash
 cargo install cargo-vcpkg
+export VCPKG_OVERLAY_PORTS="$PWD/vcpkg-overlays/ports"
 cargo vcpkg build
 cargo build
 ```
+
+`vcpkg-overlays/ports` carries local copies of upstream vcpkg ports that need a
+different source URL; today that is x264, which upstream fetches from a GitLab
+host that answers archive downloads with an anti-bot page. CI and the Docker
+image set `VCPKG_OVERLAY_PORTS` the same way.
 
 If your vcpkg checkout is in a non-default location, set `VCPKG_ROOT`.
 

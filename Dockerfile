@@ -18,12 +18,14 @@ WORKDIR /src
 # build layer is cached until Cargo.toml changes. Cargo.lock is not tracked;
 # Cargo resolves it inside the image, just as it does in release CI.
 COPY Cargo.toml build.rs ./
+COPY vcpkg-overlays ./vcpkg-overlays
 RUN mkdir -p src benches \
     && echo 'fn main() {}' > src/main.rs \
     && echo 'fn main() {}' > benches/ocr_benchmark.rs \
     && echo 'fn main() {}' > benches/transcode_benchmark.rs \
     && echo 'fn main() {}' > benches/resize_benchmark.rs
 ENV VCPKG_FEATURE_FLAGS=manifests,binarycaching
+ENV VCPKG_OVERLAY_PORTS=/src/vcpkg-overlays/ports
 RUN cargo vcpkg --verbose build
 
 COPY . .
