@@ -193,21 +193,37 @@ impl CudaResizeFilter {
                 "initializing CUDA buffer source",
             )?;
 
-            let scale_args = cstring(format!(
+            // FFmpeg 9 added `use_filters` to scale_cuda and defaults it to auto,
+            // which routes every downscale through a new generic filter path.
+            // That path softens the picture relative to the fixed-function
+            // kernels (VMAF 89.8 vs 94.6 on the plexserver sample). Pin the
+            // kernels so output matches the FFmpeg 8 builds; the generic path
+            // is a separate evaluation. Older builds reject the option, so
+            // retry without it.
+            let base_args = format!(
                 "w={}:h={}:interp_algo={}:format=yuv420p:passthrough=0",
                 self.target_width, self.target_height, interpolation
-            ))?;
-            check_av(
-                ffi::avfilter_graph_create_filter(
+            );
+            let mut created = ffi::AVERROR_OPTION_NOT_FOUND;
+            for args in [format!("{base_args}:use_filters=0"), base_args] {
+                let scale_args = cstring(args)?;
+                created = ffi::avfilter_graph_create_filter(
                     &mut self.scale,
                     scale_cuda,
                     scale_name.as_ptr(),
                     scale_args.as_ptr(),
                     ptr::null_mut(),
                     self.graph,
-                ),
-                "creating scale_cuda filter",
-            )?;
+                );
+                if created != ffi::AVERROR_OPTION_NOT_FOUND {
+                    break;
+                }
+                if !self.scale.is_null() {
+                    ffi::avfilter_free(self.scale);
+                    self.scale = ptr::null_mut();
+                }
+            }
+            check_av(created, "creating scale_cuda filter")?;
 
             check_av(
                 ffi::avfilter_graph_create_filter(
