@@ -107,7 +107,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-linux-v2-
 
@@ -391,7 +391,7 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-windows-v3-
 
@@ -513,7 +513,7 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
 
       - name: Force regenerate FFmpeg bindings
         run: cargo clean -p ffmpeg-sys-next
@@ -643,7 +643,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-${{ matrix.cache_suffix }}-v1-
 
@@ -730,7 +730,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
 
       - name: Force regenerate FFmpeg bindings
         run: cargo clean -p ffmpeg-sys-next

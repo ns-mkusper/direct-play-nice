@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
   frame rate, so the MP4 edit list covers the final frame. Under FFmpeg 9 that
   frame was flagged for discard and players dropped it.
 - Baselines count discard-flagged packets per stream.
+- nv-codec-headers stay at 13.0 through a vcpkg overlay so NVENC keeps working
+  on the 580 driver branch, the last one for Maxwell, Pascal, and Volta GPUs.
 
 ### Build
 

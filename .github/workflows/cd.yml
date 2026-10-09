@@ -70,7 +70,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-linux-v2-
 
