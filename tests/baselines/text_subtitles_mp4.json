@@ -1,0 +1,132 @@
+{
+  "scenario": "text_subtitles_mp4",
+  "container": {
+    "format": "mov,mp4,m4a,3gp,3g2,mj2",
+    "duration_s": 4.008,
+    "moov_before_mdat": true
+  },
+  "streams": [
+    {
+      "index": 0,
+      "kind": "video",
+      "codec": "h264",
+      "language": "und",
+      "default": true,
+      "forced": false,
+      "profile": "High",
+      "level": 41,
+      "width": 160,
+      "height": 120,
+      "pix_fmt": "yuv420p",
+      "fps": 10.0,
+      "packets": 40,
+      "first_pts_s": 0.0,
+      "last_end_s": 4.0
+    },
+    {
+      "index": 1,
+      "kind": "audio",
+      "codec": "aac",
+      "language": "eng",
+      "default": true,
+      "forced": false,
+      "profile": "LC",
+      "sample_rate": 48000,
+      "channels": 1,
+      "packets": 189,
+      "first_pts_s": -0.021,
+      "last_end_s": 4.008
+    },
+    {
+      "index": 2,
+      "kind": "audio",
+      "codec": "aac",
+      "language": "pol",
+      "default": false,
+      "forced": false,
+      "profile": "LC",
+      "sample_rate": 48000,
+      "channels": 1,
+      "packets": 189,
+      "first_pts_s": -0.021,
+      "last_end_s": 4.008
+    },
+    {
+      "index": 3,
+      "kind": "subtitle",
+      "codec": "mov_text",
+      "language": "eng",
+      "default": true,
+      "forced": false,
+      "packets": 4,
+      "first_pts_s": 0.0,
+      "last_end_s": 3.75
+    },
+    {
+      "index": 4,
+      "kind": "subtitle",
+      "codec": "mov_text",
+      "language": "pol",
+      "default": false,
+      "forced": false,
+      "packets": 4,
+      "first_pts_s": 0.0,
+      "last_end_s": 3.75
+    },
+    {
+      "index": 5,
+      "kind": "subtitle",
+      "codec": "mov_text",
+      "language": "fra",
+      "default": false,
+      "forced": false,
+      "packets": 2,
+      "first_pts_s": 0.0,
+      "last_end_s": 0.75
+    }
+  ],
+  "subtitles": [
+    {
+      "stream": 3,
+      "cues": [
+        {
+          "start_s": 0.25,
+          "end_s": 0.75,
+          "text": "track 0 early payload"
+        },
+        {
+          "start_s": 3.25,
+          "end_s": 3.75,
+          "text": "track 0 late payload"
+        }
+      ]
+    },
+    {
+      "stream": 4,
+      "cues": [
+        {
+          "start_s": 0.25,
+          "end_s": 0.75,
+          "text": "track 1 early payload"
+        },
+        {
+          "start_s": 3.25,
+          "end_s": 3.75,
+          "text": "track 1 late payload"
+        }
+      ]
+    },
+    {
+      "stream": 5,
+      "cues": [
+        {
+          "start_s": 0.25,
+          "end_s": 0.75,
+          "text": "track 2 early payload"
+        }
+      ]
+    }
+  ],
+  "subtitle_max_lag_s": 0.0,
+  "video_psnr_db": 36.307
+}
