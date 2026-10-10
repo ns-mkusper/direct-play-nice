@@ -13,8 +13,8 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -121,16 +121,16 @@ fn cli_skips_mkv_attachment_streams() -> Result<(), Box<dyn std::error::Error>> 
     let mut saw_a = false;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             saw_v = true;
         }
-        if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
             saw_a = true;
         }
         // ensure no attachments made it into output
         assert_ne!(
             par.codec_type,
-            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT,
             "attachment leaked to output"
         );
     }
@@ -238,7 +238,7 @@ fn cli_skips_mkv_font_attachment_streams() -> Result<(), Box<dyn std::error::Err
         let par = st.codecpar();
         assert_ne!(
             par.codec_type,
-            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT,
             "font attachment leaked to output"
         );
     }
@@ -344,11 +344,11 @@ fn cli_keeps_av_when_skipped_subtitle_is_between_them() -> Result<(), Box<dyn st
         let par = st.codecpar();
         assert_ne!(
             par.codec_type,
-            ffi::AVMEDIA_TYPE_SUBTITLE,
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE,
             "subtitle stream leaked despite --sub-mode=skip"
         );
-        saw_v |= par.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
-        saw_a |= par.codec_type == ffi::AVMEDIA_TYPE_AUDIO;
+        saw_v |= par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+        saw_a |= par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO;
     }
     assert!(
         saw_v && saw_a,
@@ -476,9 +476,9 @@ fn cli_skips_webvtt_subtitles_but_keeps_text_streams() -> Result<(), Box<dyn std
     let mut subtitle_count = 0usize;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE {
             subtitle_count += 1;
-            assert_eq!(par.codec_id, ffi::AV_CODEC_ID_MOV_TEXT);
+            assert_eq!(par.codec_id, ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT);
         }
     }
     assert!(
@@ -604,7 +604,7 @@ fn cli_skips_mp4_attached_picture_streams() -> Result<(), Box<dyn std::error::Er
         let par = st.codecpar();
         assert_ne!(
             par.codec_type,
-            ffi::AVMEDIA_TYPE_ATTACHMENT,
+            ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT,
             "attachment leaked to output"
         );
     }
@@ -719,8 +719,8 @@ fn cli_skips_mov_text_encode_overflow_subtitle() -> Result<(), Box<dyn std::erro
     let mut saw_a = false;
     for st in octx.streams() {
         let par = st.codecpar();
-        saw_v |= par.codec_type == ffi::AVMEDIA_TYPE_VIDEO;
-        saw_a |= par.codec_type == ffi::AVMEDIA_TYPE_AUDIO;
+        saw_v |= par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+        saw_a |= par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO;
     }
     assert!(
         saw_v && saw_a,

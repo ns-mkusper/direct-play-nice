@@ -141,7 +141,7 @@ pub(crate) fn set_h264_video_codec_par(
     encode_context.set_height(target_height);
     configure_video_timing(decode_context, encode_context, output_stream, input_stream);
     // Keep YUV420P for broad direct-play compatibility.
-    encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
+    encode_context.set_pix_fmt(ffi::AVPixelFormat::AV_PIX_FMT_YUV420P);
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
     let default_hint = default_video_bitrate(target_width, target_height);
@@ -250,7 +250,7 @@ pub(crate) fn set_hevc_video_codec_par(
     encode_context.set_width(target_width);
     encode_context.set_height(target_height);
     configure_video_timing(decode_context, encode_context, output_stream, input_stream);
-    encode_context.set_pix_fmt(ffi::AV_PIX_FMT_YUV420P);
+    encode_context.set_pix_fmt(ffi::AVPixelFormat::AV_PIX_FMT_YUV420P);
     encode_context.set_max_b_frames(decode_context.max_b_frames);
 
     let default_hint = default_video_bitrate(target_width, target_height);
@@ -312,7 +312,7 @@ pub(crate) fn set_audio_codec_par(
     quality_limits: &QualityLimits,
     source_bit_rate_hint: i64,
 ) -> Result<()> {
-    let encoder = AVCodec::find_encoder(ffi::AV_CODEC_ID_AAC)
+    let encoder = AVCodec::find_encoder(ffi::AVCodecID::AV_CODEC_ID_AAC)
         .ok_or_else(|| anyhow!("Could not find AAC encoder"))?;
     let decode_channels = decode_context.ch_layout.nb_channels;
     encode_context.set_ch_layout(AVChannelLayout::from_nb_channels(decode_channels).into_inner());
@@ -324,10 +324,10 @@ pub(crate) fn set_audio_codec_par(
             formats
                 .iter()
                 .copied()
-                .find(|fmt| *fmt == ffi::AV_SAMPLE_FMT_FLTP)
+                .find(|fmt| *fmt == ffi::AVSampleFormat::AV_SAMPLE_FMT_FLTP)
                 .or_else(|| formats.first().copied())
         })
-        .unwrap_or(ffi::AV_SAMPLE_FMT_FLTP);
+        .unwrap_or(ffi::AVSampleFormat::AV_SAMPLE_FMT_FLTP);
     encode_context.set_sample_fmt(sample_fmt);
     let source_bit_rate = if decode_context.bit_rate > 0 {
         decode_context.bit_rate

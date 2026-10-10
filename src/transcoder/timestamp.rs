@@ -5,9 +5,9 @@
 //! preserve `AV_NOPTS_VALUE`, and only synthesize monotonic subtitle DTS when a
 //! muxer would otherwise reject the stream.
 
-use rsmpeg::avcodec::AVPacket;
-use rsmpeg::avutil::AVFrame;
-use rsmpeg::ffi;
+use crate::ff::AVFrame;
+use crate::ff::AVPacket;
+use ffmpeg_next::sys as ffi;
 
 /// Returns the best timestamp to feed an encoder for a decoded frame.
 pub(crate) fn best_effort_frame_pts(frame: &AVFrame) -> i64 {
@@ -80,7 +80,7 @@ pub(crate) fn enforce_monotonic_dts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsmpeg::avcodec::AVPacket;
+    use crate::ff::AVPacket;
 
     #[test]
     fn enforce_monotonic_dts_allows_increasing_packets() {

@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod config_merge;
 mod devices;
+mod ff;
 mod ffmpeg_utils;
 mod gpu;
 mod logging;

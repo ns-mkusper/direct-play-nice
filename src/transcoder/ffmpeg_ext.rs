@@ -7,8 +7,8 @@
 
 use std::ffi::CStr;
 
-use rsmpeg::avformat::{AVFormatContextInput, AVStreamRef};
-use rsmpeg::ffi;
+use crate::ff::{AVFormatContextInput, AVStreamRef};
+use ffmpeg_next::sys as ffi;
 
 use crate::transcoder::ffmpeg_diagnostics::av_error_to_string;
 
@@ -45,7 +45,7 @@ pub(crate) fn input_format_name(input: &AVFormatContextInput) -> String {
 
 /// Clears hardware decoder hooks after a failed hardware setup attempt so the
 /// same codec context can be safely discarded or rebuilt for software decode.
-pub(crate) fn clear_decoder_hardware_state(ctx: &mut rsmpeg::avcodec::AVCodecContext) {
+pub(crate) fn clear_decoder_hardware_state(ctx: &mut crate::ff::AVCodecContext) {
     unsafe {
         let ctx_ptr = ctx.as_mut_ptr();
         (*ctx_ptr).hw_device_ctx = std::ptr::null_mut();
@@ -64,7 +64,7 @@ pub(crate) fn unref_buffer_ref(mut buffer: *mut ffi::AVBufferRef) {
 /// Allocates an FFmpeg packet large enough to hold `payload` and copies the
 /// payload into it.
 pub(crate) fn copy_payload_into_packet(
-    packet: &mut rsmpeg::avcodec::AVPacket,
+    packet: &mut crate::ff::AVPacket,
     payload: &[u8],
 ) -> anyhow::Result<()> {
     unsafe {

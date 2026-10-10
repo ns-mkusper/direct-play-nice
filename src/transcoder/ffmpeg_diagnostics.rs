@@ -4,7 +4,7 @@ use crate::transcoder::prelude::*;
 use std::{env, ffi::c_char};
 
 pub(crate) fn av_error_to_string(err: i32) -> String {
-    let mut buf = [0 as c_char; ffi::AV_ERROR_MAX_STRING_SIZE as usize];
+    let mut buf = [0 as c_char; ffi::AV_ERROR_MAX_STRING_SIZE];
     unsafe {
         if ffi::av_strerror(err, buf.as_mut_ptr().cast(), buf.len()) == 0 {
             CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
@@ -18,7 +18,7 @@ pub(crate) fn pix_fmt_name(fmt: ffi::AVPixelFormat) -> String {
     unsafe {
         let ptr = ffi::av_get_pix_fmt_name(fmt);
         if ptr.is_null() {
-            format!("pix_fmt({})", fmt)
+            format!("pix_fmt({})", fmt as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -29,7 +29,7 @@ fn sample_fmt_name(fmt: ffi::AVSampleFormat) -> String {
     unsafe {
         let ptr = ffi::av_get_sample_fmt_name(fmt);
         if ptr.is_null() {
-            format!("sample_fmt({})", fmt)
+            format!("sample_fmt({})", fmt as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -37,14 +37,14 @@ fn sample_fmt_name(fmt: ffi::AVSampleFormat) -> String {
 }
 
 fn sample_fmt_name_from_i32(fmt: i32) -> String {
-    sample_fmt_name(fmt as ffi::AVSampleFormat)
+    sample_fmt_name(crate::ff::sample_fmt_from_i32(fmt))
 }
 
 fn media_type_name(media_type: ffi::AVMediaType) -> String {
     unsafe {
         let ptr = ffi::av_get_media_type_string(media_type);
         if ptr.is_null() {
-            format!("media_type({})", media_type)
+            format!("media_type({})", media_type as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -55,7 +55,7 @@ fn codec_id_name(codec_id: ffi::AVCodecID) -> String {
     unsafe {
         let ptr = ffi::avcodec_get_name(codec_id);
         if ptr.is_null() {
-            format!("codec({})", codec_id)
+            format!("codec({})", codec_id as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -63,7 +63,7 @@ fn codec_id_name(codec_id: ffi::AVCodecID) -> String {
 }
 
 fn profile_label(codec_id: ffi::AVCodecID, profile: i32) -> String {
-    if codec_id == ffi::AV_CODEC_ID_H264 {
+    if codec_id == ffi::AVCodecID::AV_CODEC_ID_H264 {
         format!("{} ({})", profile, describe_h264_profile(profile))
     } else {
         profile.to_string()
@@ -71,7 +71,7 @@ fn profile_label(codec_id: ffi::AVCodecID, profile: i32) -> String {
 }
 
 fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
-    if codec_id == ffi::AV_CODEC_ID_H264 {
+    if codec_id == ffi::AVCodecID::AV_CODEC_ID_H264 {
         format!("{} ({})", level, describe_h264_level(level))
     } else {
         level.to_string()
@@ -80,13 +80,12 @@ fn level_label(codec_id: ffi::AVCodecID, level: i32) -> String {
 
 fn field_order_name(order: ffi::AVFieldOrder) -> &'static str {
     match order {
-        ffi::AV_FIELD_UNKNOWN => "unknown",
-        ffi::AV_FIELD_PROGRESSIVE => "progressive",
-        ffi::AV_FIELD_TT => "tt (top coded/display top)",
-        ffi::AV_FIELD_BB => "bb (bottom coded/display bottom)",
-        ffi::AV_FIELD_TB => "tb (top coded/bottom display)",
-        ffi::AV_FIELD_BT => "bt (bottom coded/top display)",
-        _ => "invalid",
+        ffi::AVFieldOrder::AV_FIELD_UNKNOWN => "unknown",
+        ffi::AVFieldOrder::AV_FIELD_PROGRESSIVE => "progressive",
+        ffi::AVFieldOrder::AV_FIELD_TT => "tt (top coded/display top)",
+        ffi::AVFieldOrder::AV_FIELD_BB => "bb (bottom coded/display bottom)",
+        ffi::AVFieldOrder::AV_FIELD_TB => "tb (top coded/bottom display)",
+        ffi::AVFieldOrder::AV_FIELD_BT => "bt (bottom coded/top display)",
     }
 }
 
@@ -94,7 +93,7 @@ fn color_range_name(range: ffi::AVColorRange) -> String {
     unsafe {
         let ptr = ffi::av_color_range_name(range);
         if ptr.is_null() {
-            format!("range({})", range)
+            format!("range({})", range as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -105,7 +104,7 @@ fn color_primaries_name(primaries: ffi::AVColorPrimaries) -> String {
     unsafe {
         let ptr = ffi::av_color_primaries_name(primaries);
         if ptr.is_null() {
-            format!("primaries({})", primaries)
+            format!("primaries({})", primaries as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -116,7 +115,7 @@ fn color_trc_name(trc: ffi::AVColorTransferCharacteristic) -> String {
     unsafe {
         let ptr = ffi::av_color_transfer_name(trc);
         if ptr.is_null() {
-            format!("transfer({})", trc)
+            format!("transfer({})", trc as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -127,7 +126,7 @@ fn color_space_name(space: ffi::AVColorSpace) -> String {
     unsafe {
         let ptr = ffi::av_color_space_name(space);
         if ptr.is_null() {
-            format!("colorspace({})", space)
+            format!("colorspace({})", space as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -138,7 +137,7 @@ fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
     unsafe {
         let ptr = ffi::av_chroma_location_name(loc);
         if ptr.is_null() {
-            format!("chroma_loc({})", loc)
+            format!("chroma_loc({})", loc as i32)
         } else {
             CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
@@ -147,10 +146,10 @@ fn chroma_location_name(loc: ffi::AVChromaLocation) -> String {
 
 fn channel_order_name(order: ffi::AVChannelOrder) -> &'static str {
     match order {
-        ffi::AV_CHANNEL_ORDER_UNSPEC => "unspecified",
-        ffi::AV_CHANNEL_ORDER_NATIVE => "native",
-        ffi::AV_CHANNEL_ORDER_CUSTOM => "custom",
-        ffi::AV_CHANNEL_ORDER_AMBISONIC => "ambisonic",
+        ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC => "unspecified",
+        ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE => "native",
+        ffi::AVChannelOrder::AV_CHANNEL_ORDER_CUSTOM => "custom",
+        ffi::AVChannelOrder::AV_CHANNEL_ORDER_AMBISONIC => "ambisonic",
         _ => "invalid",
     }
 }
@@ -169,7 +168,7 @@ fn describe_channel_layout(layout: &ffi::AVChannelLayout) -> String {
         );
         if res >= 0 {
             CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
-        } else if layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
+        } else if layout.order == ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE {
             format!("mask=0x{:x}", layout.u.mask)
         } else {
             format!(
@@ -187,11 +186,11 @@ pub(crate) fn rational_to_string(r: ffi::AVRational) -> String {
 
 fn codec_params_format_string(media_type: ffi::AVMediaType, format: i32) -> String {
     match media_type {
-        mt if mt == ffi::AVMEDIA_TYPE_VIDEO => {
-            let name = pix_fmt_name(format as ffi::AVPixelFormat);
+        ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
+            let name = pix_fmt_name(crate::ff::pix_fmt_from_i32(format));
             format!("{} ({})", format, name)
         }
-        mt if mt == ffi::AVMEDIA_TYPE_AUDIO => {
+        ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
             let name = sample_fmt_name_from_i32(format);
             format!("{} ({})", format, name)
         }
@@ -206,12 +205,12 @@ fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
         lines.push(format!(
             "      codec_type: {} ({})",
             media_type_name((*raw).codec_type),
-            (*raw).codec_type
+            (*raw).codec_type as i32
         ));
         lines.push(format!(
             "      codec_id: {} ({})",
             codec_id_name((*raw).codec_id),
-            (*raw).codec_id
+            (*raw).codec_id as i32
         ));
         lines.push(format!(
             "      profile: {}",
@@ -262,9 +261,9 @@ fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
         lines.push(format!(
             "      channel_order: {} ({})",
             channel_order_name((*raw).ch_layout.order),
-            (*raw).ch_layout.order
+            (*raw).ch_layout.order as i32
         ));
-        if (*raw).ch_layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
+        if (*raw).ch_layout.order == ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE {
             lines.push(format!(
                 "      channel_mask: 0x{:x}",
                 (*raw).ch_layout.u.mask
@@ -277,27 +276,27 @@ fn build_codec_context_lines(raw: *const ffi::AVCodecContext) -> Vec<String> {
         lines.push(format!(
             "      color_range: {} ({})",
             color_range_name((*raw).color_range),
-            (*raw).color_range
+            (*raw).color_range as i32
         ));
         lines.push(format!(
             "      color_primaries: {} ({})",
             color_primaries_name((*raw).color_primaries),
-            (*raw).color_primaries
+            (*raw).color_primaries as i32
         ));
         lines.push(format!(
             "      color_trc: {} ({})",
             color_trc_name((*raw).color_trc),
-            (*raw).color_trc
+            (*raw).color_trc as i32
         ));
         lines.push(format!(
             "      color_space: {} ({})",
             color_space_name((*raw).colorspace),
-            (*raw).colorspace
+            (*raw).colorspace as i32
         ));
         lines.push(format!(
             "      chroma_location: {} ({})",
             chroma_location_name((*raw).chroma_sample_location),
-            (*raw).chroma_sample_location
+            (*raw).chroma_sample_location as i32
         ));
         lines.push(format!("      hw_device_ctx: {:p}", (*raw).hw_device_ctx));
         lines.push(format!("      hw_frames_ctx: {:p}", (*raw).hw_frames_ctx));
@@ -322,12 +321,12 @@ fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<S
         lines.push(format!(
             "      codec_type: {} ({})",
             media_type_name((*params).codec_type),
-            (*params).codec_type
+            (*params).codec_type as i32
         ));
         lines.push(format!(
             "      codec_id: {} ({})",
             codec_id_name((*params).codec_id),
-            (*params).codec_id
+            (*params).codec_id as i32
         ));
         lines.push(format!("      codec_tag: 0x{:08x}", (*params).codec_tag));
         lines.push(format!(
@@ -360,32 +359,32 @@ fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<S
         lines.push(format!(
             "      field_order: {} ({})",
             field_order_name((*params).field_order),
-            (*params).field_order
+            (*params).field_order as i32
         ));
         lines.push(format!(
             "      color_range: {} ({})",
             color_range_name((*params).color_range),
-            (*params).color_range
+            (*params).color_range as i32
         ));
         lines.push(format!(
             "      color_primaries: {} ({})",
             color_primaries_name((*params).color_primaries),
-            (*params).color_primaries
+            (*params).color_primaries as i32
         ));
         lines.push(format!(
             "      color_trc: {} ({})",
             color_trc_name((*params).color_trc),
-            (*params).color_trc
+            (*params).color_trc as i32
         ));
         lines.push(format!(
             "      color_space: {} ({})",
             color_space_name((*params).color_space),
-            (*params).color_space
+            (*params).color_space as i32
         ));
         lines.push(format!(
             "      chroma_location: {} ({})",
             chroma_location_name((*params).chroma_location),
-            (*params).chroma_location
+            (*params).chroma_location as i32
         ));
         lines.push(format!("      video_delay: {}", (*params).video_delay));
         lines.push(format!("      sample_rate: {}", (*params).sample_rate));
@@ -407,13 +406,13 @@ fn build_codec_parameters_lines(raw: *const ffi::AVCodecContext) -> Option<Vec<S
         lines.push(format!(
             "      channel_order: {} ({})",
             channel_order_name((*params).ch_layout.order),
-            (*params).ch_layout.order
+            (*params).ch_layout.order as i32
         ));
         lines.push(format!(
             "      channel_layout: {}",
             describe_channel_layout(&(*params).ch_layout)
         ));
-        if (*params).ch_layout.order == ffi::AV_CHANNEL_ORDER_NATIVE {
+        if (*params).ch_layout.order == ffi::AVChannelOrder::AV_CHANNEL_ORDER_NATIVE {
             lines.push(format!(
                 "      channel_mask: 0x{:x}",
                 (*params).ch_layout.u.mask
@@ -490,14 +489,14 @@ fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
     }
     let level = match trimmed.to_ascii_lowercase().as_str() {
         "quiet" => ffi::AV_LOG_QUIET,
-        "panic" => ffi::AV_LOG_PANIC as i32,
-        "fatal" => ffi::AV_LOG_FATAL as i32,
-        "error" => ffi::AV_LOG_ERROR as i32,
-        "warning" | "warn" => ffi::AV_LOG_WARNING as i32,
-        "info" => ffi::AV_LOG_INFO as i32,
-        "verbose" => ffi::AV_LOG_VERBOSE as i32,
-        "debug" => ffi::AV_LOG_DEBUG as i32,
-        "trace" => ffi::AV_LOG_TRACE as i32,
+        "panic" => ffi::AV_LOG_PANIC,
+        "fatal" => ffi::AV_LOG_FATAL,
+        "error" => ffi::AV_LOG_ERROR,
+        "warning" | "warn" => ffi::AV_LOG_WARNING,
+        "info" => ffi::AV_LOG_INFO,
+        "verbose" => ffi::AV_LOG_VERBOSE,
+        "debug" => ffi::AV_LOG_DEBUG,
+        "trace" => ffi::AV_LOG_TRACE,
         _ => return None,
     };
     Some(level)
@@ -506,19 +505,19 @@ fn parse_ffmpeg_log_level(value: &str) -> Option<i32> {
 fn ffmpeg_log_level_name(level: i32) -> &'static str {
     match level {
         x if x <= ffi::AV_LOG_QUIET => "quiet",
-        x if x <= ffi::AV_LOG_PANIC as i32 => "panic",
-        x if x <= ffi::AV_LOG_FATAL as i32 => "fatal",
-        x if x <= ffi::AV_LOG_ERROR as i32 => "error",
-        x if x <= ffi::AV_LOG_WARNING as i32 => "warning",
-        x if x <= ffi::AV_LOG_INFO as i32 => "info",
-        x if x <= ffi::AV_LOG_VERBOSE as i32 => "verbose",
-        x if x <= ffi::AV_LOG_DEBUG as i32 => "debug",
+        x if x <= ffi::AV_LOG_PANIC => "panic",
+        x if x <= ffi::AV_LOG_FATAL => "fatal",
+        x if x <= ffi::AV_LOG_ERROR => "error",
+        x if x <= ffi::AV_LOG_WARNING => "warning",
+        x if x <= ffi::AV_LOG_INFO => "info",
+        x if x <= ffi::AV_LOG_VERBOSE => "verbose",
+        x if x <= ffi::AV_LOG_DEBUG => "debug",
         _ => "trace",
     }
 }
 
 pub(crate) fn configure_ffmpeg_logging() {
-    let default_level = ffi::AV_LOG_WARNING as i32;
+    let default_level = ffi::AV_LOG_WARNING;
     let requested = env::var("FFMPEG_LOG_LEVEL").ok();
     let level = requested
         .as_deref()

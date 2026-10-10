@@ -28,8 +28,10 @@ packet loop.
 
 ## FFmpeg Boundaries
 
-Most FFmpeg operations use rsmpeg wrappers. Raw pointer access is isolated in
-small helpers where possible:
+FFmpeg comes in through `ffmpeg-next`. The `ff` module owns the format, codec,
+frame, packet, and subtitle objects and dereferences each to its C struct, so the
+transcoder reads fields directly and calls `ffmpeg_next::sys` for everything
+else. Raw pointer access beyond that is isolated in small helpers where possible:
 
 - `ffmpeg_ext` contains metadata reads, packet allocation, buffer unref, and
   other narrow unsafe operations.

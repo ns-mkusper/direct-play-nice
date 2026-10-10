@@ -23,6 +23,8 @@ rustflags = [
   "link-arg=Ole32.lib",
   "-C",
   "link-arg=User32.lib",
+  "-C",
+  "link-arg=Advapi32.lib",
 ]
 
 [target.x86_64-apple-darwin]
@@ -83,6 +85,12 @@ rustflags = [
 
 [env]
 RUST_LOG = "info"
+# ffmpeg-sys-next locates the vcpkg-built FFmpeg through pkg-config. pkg-config-rs
+# reads the per-target variable first, so each release triplet maps here.
+PKG_CONFIG_PATH_x86_64_unknown_linux_gnu = { value = "target/vcpkg/installed/x64-linux/lib/pkgconfig", relative = true }
+PKG_CONFIG_PATH_aarch64_unknown_linux_gnu = { value = "target/vcpkg/installed/arm64-linux/lib/pkgconfig", relative = true }
+PKG_CONFIG_PATH_x86_64_apple_darwin = { value = "target/vcpkg/installed/x64-osx/lib/pkgconfig", relative = true }
+PKG_CONFIG_PATH_aarch64_apple_darwin = { value = "target/vcpkg/installed/arm64-osx/lib/pkgconfig", relative = true }
 
 # On Linux, dynamic FFmpeg libs from vcpkg may be under installed/x64-linux/lib.
 # Uncomment to help the test runner locate them at runtime.

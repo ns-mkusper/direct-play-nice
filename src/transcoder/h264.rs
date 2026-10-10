@@ -288,10 +288,10 @@ pub(crate) fn verify_output_h264_profile_level(
     let mut actual_level: Option<H264Level> = None;
 
     for stream in input_ctx.streams() {
-        if stream.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+        if stream.codecpar().codec_type != ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             continue;
         }
-        if stream.codecpar().codec_id != ffi::AV_CODEC_ID_H264 {
+        if stream.codecpar().codec_id != ffi::AVCodecID::AV_CODEC_ID_H264 {
             break;
         }
         actual_profile = H264Profile::try_from(stream.codecpar().profile).ok();
@@ -332,7 +332,7 @@ pub(crate) fn check_h264_profile_level_constraints(
     min_h264_level: H264Level,
     reasons: &mut Vec<String>,
 ) {
-    if stream_codec_id != ffi::AV_CODEC_ID_H264 {
+    if stream_codec_id != ffi::AVCodecID::AV_CODEC_ID_H264 {
         return;
     }
 
@@ -379,7 +379,7 @@ pub(crate) unsafe fn set_codec_option_str(
                 ctx as *mut c_void,
                 k.as_ptr(),
                 v.as_ptr(),
-                ffi::AV_OPT_SEARCH_CHILDREN as i32,
+                ffi::AV_OPT_SEARCH_CHILDREN,
             );
             if ret == 0 {
                 trace!("Codec option {}='{}' set", key, value);
@@ -424,7 +424,7 @@ pub(crate) unsafe fn set_codec_option_i64(
                 ctx as *mut c_void,
                 k.as_ptr(),
                 value,
-                ffi::AV_OPT_SEARCH_CHILDREN as i32,
+                ffi::AV_OPT_SEARCH_CHILDREN,
             );
             if ret == 0 {
                 trace!("Codec option {}={} (int) set", key, value);

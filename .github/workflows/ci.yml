@@ -107,7 +107,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-linux-v2-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-linux-v2-
 
@@ -144,6 +144,22 @@ jobs:
               fi
             fi
           done
+          # A cached checkout can move to the pinned rev without a matching tool: the
+          # bundled vcpkg binary then rejects newer scripts (vcpkg-tools.json schema).
+          # Drop the tool so cargo-vcpkg bootstraps it again for the new checkout.
+          if [ -e "target/vcpkg/.git" ] && [ -n "$expected_rev" ]; then
+            head_rev="$(git -C target/vcpkg rev-parse HEAD 2>/dev/null || true)"
+            if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
+              echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
+              rm -f target/vcpkg/vcpkg
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              rm -rf target/vcpkg/installed target/vcpkg/packages target/vcpkg/buildtrees
+              # The cache keeps a subset of the tree; restore the rest before cargo-vcpkg
+              # checks out the new rev, so ports see a complete checkout (LICENSE.txt, bootstrap).
+              git -C target/vcpkg checkout -- . 2>/dev/null || true
+              cache_invalid=1
+            fi
+          fi
           if [ "$cache_invalid" -eq 1 ]; then
             echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
           fi
@@ -164,8 +180,8 @@ jobs:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
         run: cargo vcpkg --verbose build
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Rust format check
         if: matrix.toolchain == 'stable'
@@ -322,10 +338,13 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.5
         continue-on-error: true
 
+      # sccache expands cargo's rustc argument file before spawning rustc, and
+      # ffmpeg-sys-next's cfg list pushes that past the Windows command-line
+      # limit ("The filename or extension is too long"). Build without it here.
       - name: Set job-level RUSTC_WRAPPER
         if: steps.sccache-setup.outcome == 'success'
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER=sccache"
+        run: Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER="
       - name: Clear RUSTC_WRAPPER on sccache failure
         if: steps.sccache-setup.outcome == 'failure'
         shell: pwsh
@@ -375,7 +394,7 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-windows-v3-
 
@@ -423,6 +442,21 @@ jobs:
             } catch {
               Write-Host "Failed to validate vcpkg origin in : $($_.Exception.Message)"
               Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $dir
+              $cacheInvalid = $true
+            }
+          }
+          # See the bash variant: a checkout moved to the pinned rev keeps the cached
+          # tool, which rejects newer scripts. Drop it so cargo-vcpkg bootstraps again.
+          if ((Test-Path "target/vcpkg/.git") -and $expectedRev) {
+            $headRev = git -C target/vcpkg rev-parse HEAD 2>$null
+            if ($headRev -ne $expectedRev -and (Test-Path "target/vcpkg/vcpkg.exe")) {
+              Write-Host "vcpkg checkout at $headRev, pin is $expectedRev; removing cached vcpkg tool"
+              Remove-Item -Force -ErrorAction SilentlyContinue "target/vcpkg/vcpkg.exe"
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "target/vcpkg/installed", "target/vcpkg/packages", "target/vcpkg/buildtrees"
+              # The cache keeps a subset of the tree; restore the rest before cargo-vcpkg
+              # checks out the new rev, so ports see a complete checkout (LICENSE.txt, bootstrap).
+              git -C target/vcpkg checkout -- . 2>$null
               $cacheInvalid = $true
             }
           }
@@ -482,10 +516,10 @@ jobs:
             target/vcpkg/triplets
             target/vcpkg/vcpkg
             target/vcpkg/vcpkg.exe
-          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-windows-v3-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
@@ -612,7 +646,7 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
           restore-keys: |
             vcpkg-root-${{ matrix.cache_suffix }}-v1-
 
@@ -649,6 +683,22 @@ jobs:
               fi
             fi
           done
+          # A cached checkout can move to the pinned rev without a matching tool: the
+          # bundled vcpkg binary then rejects newer scripts (vcpkg-tools.json schema).
+          # Drop the tool so cargo-vcpkg bootstraps it again for the new checkout.
+          if [ -e "target/vcpkg/.git" ] && [ -n "$expected_rev" ]; then
+            head_rev="$(git -C target/vcpkg rev-parse HEAD 2>/dev/null || true)"
+            if [ "$head_rev" != "$expected_rev" ] && [ -e "target/vcpkg/vcpkg" ]; then
+              echo "vcpkg checkout at ${head_rev:-unknown}, pin is $expected_rev; removing cached vcpkg tool"
+              rm -f target/vcpkg/vcpkg
+              # Installed packages from the old pin would satisfy vcpkg and skip the rebuild.
+              rm -rf target/vcpkg/installed target/vcpkg/packages target/vcpkg/buildtrees
+              # The cache keeps a subset of the tree; restore the rest before cargo-vcpkg
+              # checks out the new rev, so ports see a complete checkout (LICENSE.txt, bootstrap).
+              git -C target/vcpkg checkout -- . 2>/dev/null || true
+              cache_invalid=1
+            fi
+          fi
           if [ "$cache_invalid" -eq 1 ]; then
             echo "VCPKG_CACHE_INVALID=1" >> "$GITHUB_ENV"
           fi
@@ -683,10 +733,10 @@ jobs:
             target/vcpkg/scripts
             target/vcpkg/triplets
             target/vcpkg/vcpkg
-          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml') }}
+          key: vcpkg-root-${{ matrix.cache_suffix }}-v1-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}
 
-      - name: Force regenerate rusty_ffmpeg bindings
-        run: cargo clean -p rusty_ffmpeg
+      - name: Force regenerate FFmpeg bindings
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}

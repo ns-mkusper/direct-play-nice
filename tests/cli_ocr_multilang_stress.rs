@@ -11,8 +11,8 @@ use std::time::Instant;
 use strsim::normalized_levenshtein;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 fn write_srt(path: &Path, first: &str, second: &str) {
     let mut file = fs::File::create(path).expect("create srt");
@@ -142,13 +142,13 @@ fn count_bitmap_subtitle_streams(input: &Path) -> usize {
         .iter()
         .filter(|stream| {
             let cp = stream.codecpar();
-            cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
+            cp.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE
                 && matches!(
                     cp.codec_id,
-                    ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
-                        | ffi::AV_CODEC_ID_DVD_SUBTITLE
-                        | ffi::AV_CODEC_ID_DVB_SUBTITLE
-                        | ffi::AV_CODEC_ID_XSUB
+                    ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+                        | ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE
+                        | ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE
+                        | ffi::AVCodecID::AV_CODEC_ID_XSUB
                 )
         })
         .count()

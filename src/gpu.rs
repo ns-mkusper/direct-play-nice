@@ -1,8 +1,8 @@
 //! Hardware capability helpers for FFmpeg device probing, encoder discovery, and acceleration checks.
 
+use crate::ff::{AVCodec, AVCodecRef};
 use clap::ValueEnum;
-use rsmpeg::avcodec::{AVCodec, AVCodecRef};
-use rsmpeg::ffi::{self};
+use ffmpeg_next::sys as ffi;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
@@ -54,7 +54,7 @@ pub fn try_create_hw_device(device_name: &str) -> Option<*mut ffi::AVBufferRef> 
     unsafe {
         let c_name = CString::new(device_name).ok()?;
         let dev_type = ffi::av_hwdevice_find_type_by_name(c_name.as_ptr());
-        if dev_type == ffi::AV_HWDEVICE_TYPE_NONE {
+        if dev_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
             return None;
         }
         let mut buf: *mut ffi::AVBufferRef = std::ptr::null_mut();
@@ -144,8 +144,8 @@ pub fn encoder_candidates(
     codec_id: ffi::AVCodecID,
 ) -> &'static [(&'static str, &'static [&'static str])] {
     match codec_id {
-        ffi::AV_CODEC_ID_H264 => h264_candidates(),
-        ffi::AV_CODEC_ID_HEVC => hevc_candidates(),
+        ffi::AVCodecID::AV_CODEC_ID_H264 => h264_candidates(),
+        ffi::AVCodecID::AV_CODEC_ID_HEVC => hevc_candidates(),
         _ => &[],
     }
 }
@@ -224,7 +224,7 @@ fn linked_ffmpeg_hw_device_type(device_name: &str) -> Option<ffi::AVHWDeviceType
     unsafe {
         let c_name = CString::new(device_name).ok()?;
         let dev_type = ffi::av_hwdevice_find_type_by_name(c_name.as_ptr());
-        (dev_type != ffi::AV_HWDEVICE_TYPE_NONE).then_some(dev_type)
+        (dev_type != ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE).then_some(dev_type)
     }
 }
 
@@ -394,10 +394,10 @@ pub fn print_probe() {
 
 fn media_type_to_str(t: ffi::AVMediaType) -> &'static str {
     match t {
-        ffi::AVMEDIA_TYPE_VIDEO => "video",
-        ffi::AVMEDIA_TYPE_AUDIO => "audio",
-        ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
-        ffi::AVMEDIA_TYPE_DATA => "data",
+        ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => "video",
+        ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => "audio",
+        ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+        ffi::AVMediaType::AVMEDIA_TYPE_DATA => "data",
         _ => "other",
     }
 }
@@ -505,7 +505,7 @@ pub fn print_probe_codecs(only_video: bool, only_hw: bool) {
                     let dname = if !dname_ptr.is_null() {
                         CStr::from_ptr(dname_ptr).to_string_lossy().into_owned()
                     } else {
-                        format!("type={}", dtype)
+                        format!("type={}", dtype as i32)
                     };
                     let available = devices_map.get::<str>(&dname).copied().unwrap_or(false);
                     hw_entries.push(format!("{}{}", dname, if available { "(ok)" } else { "" }));
@@ -680,7 +680,7 @@ pub fn gather_probe_json(
                     let dname = if !dname_ptr.is_null() {
                         CStr::from_ptr(dname_ptr).to_string_lossy().into_owned()
                     } else {
-                        format!("type={}", dtype)
+                        format!("type={}", dtype as i32)
                     };
                     let available = devices_map.get::<str>(&dname).copied().unwrap_or(false);
                     hw_list.push(if available {

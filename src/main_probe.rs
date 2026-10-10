@@ -1,8 +1,8 @@
 //! Probe command implementations for inspecting media metadata, codec availability, and hardware capabilities.
 
+use crate::ff::AVFormatContextInput;
 use anyhow::Result;
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 use serde::Serialize;
 use std::ffi::CStr;
 
@@ -22,9 +22,9 @@ pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Re
         let ctype = cp.codec_type;
         let kind_matches = match filter {
             StreamsFilter::All => true,
-            StreamsFilter::Video => ctype == ffi::AVMEDIA_TYPE_VIDEO,
-            StreamsFilter::Audio => ctype == ffi::AVMEDIA_TYPE_AUDIO,
-            StreamsFilter::Subtitle => ctype == ffi::AVMEDIA_TYPE_SUBTITLE,
+            StreamsFilter::Video => ctype == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO,
+            StreamsFilter::Audio => ctype == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO,
+            StreamsFilter::Subtitle => ctype == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE,
         };
         if !kind_matches {
             continue;
@@ -36,10 +36,10 @@ pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Re
             let d = (*s_ptr).disposition;
             (
                 id,
-                (d & ffi::AV_DISPOSITION_DEFAULT as i32) != 0,
-                (d & ffi::AV_DISPOSITION_FORCED as i32) != 0,
-                (d & ffi::AV_DISPOSITION_HEARING_IMPAIRED as i32) != 0,
-                (d & ffi::AV_DISPOSITION_VISUAL_IMPAIRED as i32) != 0,
+                (d & ffi::AV_DISPOSITION_DEFAULT) != 0,
+                (d & ffi::AV_DISPOSITION_FORCED) != 0,
+                (d & ffi::AV_DISPOSITION_HEARING_IMPAIRED) != 0,
+                (d & ffi::AV_DISPOSITION_VISUAL_IMPAIRED) != 0,
             )
         };
         print!(
@@ -50,7 +50,7 @@ pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Re
             cname.to_string_lossy()
         );
         match ctype {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 let (w, h) = (cp.width, cp.height);
                 let fps = st
                     .guess_framerate()
@@ -61,14 +61,14 @@ pub(super) fn print_streams_info(input_file: &CStr, filter: StreamsFilter) -> Re
                     w, h, fps, cp.bit_rate, tb.num, tb.den
                 );
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 let ch = cp.ch_layout.nb_channels;
                 println!(
                     "channels={} sample_rate={} bitrate={} time_base={}/{}",
                     ch, cp.sample_rate, cp.bit_rate, tb.num, tb.den
                 );
             }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 println!("subtitle time_base={}/{}", tb.num, tb.den);
             }
             _ => {
@@ -137,19 +137,19 @@ pub(super) fn gather_streams_info_json(
         let cp = st.codecpar();
         let ctype = cp.codec_type;
         let kind = match ctype {
-            ffi::AVMEDIA_TYPE_VIDEO => "video",
-            ffi::AVMEDIA_TYPE_AUDIO => "audio",
-            ffi::AVMEDIA_TYPE_SUBTITLE => "subtitle",
-            ffi::AVMEDIA_TYPE_ATTACHMENT => "attachment",
-            ffi::AVMEDIA_TYPE_DATA => "data",
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => "video",
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => "audio",
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => "subtitle",
+            ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT => "attachment",
+            ffi::AVMediaType::AVMEDIA_TYPE_DATA => "data",
             _ => "other",
         }
         .to_string();
         let kind_matches = match filter {
             StreamsFilter::All => true,
-            StreamsFilter::Video => ctype == ffi::AVMEDIA_TYPE_VIDEO,
-            StreamsFilter::Audio => ctype == ffi::AVMEDIA_TYPE_AUDIO,
-            StreamsFilter::Subtitle => ctype == ffi::AVMEDIA_TYPE_SUBTITLE,
+            StreamsFilter::Video => ctype == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO,
+            StreamsFilter::Audio => ctype == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO,
+            StreamsFilter::Subtitle => ctype == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE,
         };
         if !kind_matches {
             continue;
@@ -161,21 +161,21 @@ pub(super) fn gather_streams_info_json(
             let d = (*s_ptr).disposition;
             (
                 id,
-                (d & ffi::AV_DISPOSITION_DEFAULT as i32) != 0,
-                (d & ffi::AV_DISPOSITION_FORCED as i32) != 0,
-                (d & ffi::AV_DISPOSITION_HEARING_IMPAIRED as i32) != 0,
-                (d & ffi::AV_DISPOSITION_VISUAL_IMPAIRED as i32) != 0,
+                (d & ffi::AV_DISPOSITION_DEFAULT) != 0,
+                (d & ffi::AV_DISPOSITION_FORCED) != 0,
+                (d & ffi::AV_DISPOSITION_HEARING_IMPAIRED) != 0,
+                (d & ffi::AV_DISPOSITION_VISUAL_IMPAIRED) != 0,
             )
         };
         let (mut width, mut height, mut fps, mut channels, mut sample_rate) =
             (None, None, None, None, None);
         match ctype {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 width = Some(cp.width);
                 height = Some(cp.height);
                 fps = st.guess_framerate().map(|r| (r.num, r.den));
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 channels = Some(cp.ch_layout.nb_channels);
                 sample_rate = Some(cp.sample_rate);
             }

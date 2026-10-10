@@ -3,8 +3,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use std::ffi::CString;
 use std::process::Command;
 use tempfile::TempDir;
@@ -39,13 +39,13 @@ fn cli_ignores_secondary_video_stream_without_misrouting_audio_packets(
     for st in octx.streams() {
         let par = st.codecpar();
         match par.codec_type {
-            t if t == ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 video_streams += 1;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_H264);
+                assert_eq!(par.codec_id, ffi::AVCodecID::AV_CODEC_ID_H264);
             }
-            t if t == ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 audio_streams += 1;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_AAC);
+                assert_eq!(par.codec_id, ffi::AVCodecID::AV_CODEC_ID_AAC);
             }
             _ => {}
         }

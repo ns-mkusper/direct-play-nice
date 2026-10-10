@@ -5,12 +5,12 @@
 //! results and only grab a specific replacement when the release metadata proves
 //! the desired languages are available.
 
+use crate::ff::AVDictionary;
+use crate::ff::{AVFormatContextInput, AVFormatContextOutput};
 use crate::ffmpeg_utils::write_container_header;
 use anyhow::{Context, Result};
+use ffmpeg_next::sys as ffi;
 use log::info;
-use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
-use rsmpeg::avutil::AVDictionary;
-use rsmpeg::ffi;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -119,10 +119,10 @@ pub fn check_file(path: &Path, requirements: &LanguageRequirements) -> Result<La
             continue;
         };
         match cp.codec_type {
-            ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 audio.insert(language);
             }
-            ffi::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 subtitles.insert(language);
             }
             _ => {}
@@ -167,8 +167,10 @@ pub fn retag_unknown_streams(
             continue;
         }
         match cp.codec_type {
-            ffi::AVMEDIA_TYPE_AUDIO if should_tag_audio => report.audio_streams += 1,
-            ffi::AVMEDIA_TYPE_SUBTITLE if should_tag_subtitles => report.subtitle_streams += 1,
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO if should_tag_audio => report.audio_streams += 1,
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE if should_tag_subtitles => {
+                report.subtitle_streams += 1
+            }
             _ => {}
         }
     }
@@ -218,14 +220,16 @@ fn remux_with_retagged_unknown_streams(
         let cp = stream.codecpar();
         let metadata = if !stream_has_known_language(stream.metadata().as_deref()) {
             match cp.codec_type {
-                ffi::AVMEDIA_TYPE_AUDIO if should_tag_audio => set_language_metadata(
+                ffi::AVMediaType::AVMEDIA_TYPE_AUDIO if should_tag_audio => set_language_metadata(
                     stream.metadata().as_deref().cloned(),
                     options.audio_language.as_deref(),
                 ),
-                ffi::AVMEDIA_TYPE_SUBTITLE if should_tag_subtitles => set_language_metadata(
-                    stream.metadata().as_deref().cloned(),
-                    options.subtitle_language.as_deref(),
-                ),
+                ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE if should_tag_subtitles => {
+                    set_language_metadata(
+                        stream.metadata().as_deref().cloned(),
+                        options.subtitle_language.as_deref(),
+                    )
+                }
                 _ => stream.metadata().as_deref().cloned(),
             }
         } else {

@@ -151,7 +151,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo clean -p rusty_ffmpeg
+          cargo clean -p ffmpeg-sys-next
           cargo build --release
 
       - name: Run OCR GPU runtime matrix
@@ -433,9 +433,9 @@ jobs:
           fi
           echo "LIBCLANG_PATH=$(dirname "$libclang_path")" >> "$GITHUB_ENV"
 
-      - name: Force regenerate rusty_ffmpeg bindings
+      - name: Force regenerate FFmpeg bindings
         if: steps.cached-bin.outputs.missing == 'true'
-        run: cargo clean -p rusty_ffmpeg
+        run: cargo clean -p ffmpeg-sys-next
 
       - name: Build release binary
         if: steps.cached-bin.outputs.missing == 'true'

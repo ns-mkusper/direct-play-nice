@@ -3,7 +3,7 @@
 mod common;
 
 use common::{ensure_ffmpeg_present, gen_h264_high_input, read_video_profile_level};
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 use std::error::Error;
 use std::process::Command;
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ fn assert_converted_profile_level(output: &std::path::Path) {
     let (profile, level) = read_video_profile_level(output);
     assert_eq!(
         profile,
-        ffi::AV_PROFILE_H264_HIGH as i32,
+        ffi::AV_PROFILE_H264_HIGH,
         "output profile mismatch"
     );
     assert_eq!(level, 41, "output level mismatch");
