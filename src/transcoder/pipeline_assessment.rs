@@ -57,6 +57,7 @@ pub(crate) fn assess_direct_play_compatibility(
     } = constraints;
 
     let ictx = AVFormatContextInput::open(input_file)?;
+    let track_hygiene = plan_track_hygiene(&ictx);
     let primary_idx =
         select_primary_video_stream_index(&ictx, primary_video_stream_index, primary_criteria)?;
 
@@ -238,6 +239,10 @@ pub(crate) fn assess_direct_play_compatibility(
                 describe_codec(target_audio_codec)
             ));
         }
+    }
+
+    if let Some(reason) = track_hygiene.reason() {
+        reasons.push(reason);
     }
 
     if target_is_mp4 && !matches!(sub_mode, SubMode::Skip) {

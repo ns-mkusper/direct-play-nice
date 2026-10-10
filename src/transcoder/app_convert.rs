@@ -75,6 +75,11 @@ pub(crate) fn convert_video_file(
     let output_path_buf = cstr_to_path_buf(output_file);
     let output_path = output_path_buf.as_path();
 
+    let track_hygiene = plan_track_hygiene(&input_format_context);
+    if let Some(reason) = track_hygiene.reason() {
+        info!("{}", reason);
+    }
+
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
     let mut progress_tracker = create_progress_tracker(&mut input_format_context);
 
@@ -124,6 +129,22 @@ pub(crate) fn convert_video_file(
     for stream in input_format_context.streams() {
         let input_codec_type = stream.codecpar().codec_type;
         if should_skip_auxiliary_stream(stream, input_codec_type) {
+            continue;
+        }
+        if matches!(
+            input_codec_type,
+            ffi::AVMEDIA_TYPE_AUDIO | ffi::AVMEDIA_TYPE_SUBTITLE
+        ) && !track_hygiene.keeps(stream.index)
+        {
+            info!(
+                "Skipping extra {} stream {} from bloated track layout.",
+                if input_codec_type == ffi::AVMEDIA_TYPE_AUDIO {
+                    "audio"
+                } else {
+                    "subtitle"
+                },
+                stream.index
+            );
             continue;
         }
 
