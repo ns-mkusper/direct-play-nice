@@ -49,10 +49,14 @@ The binary auto-detects Sonarr/Radarr custom-script invocations:
 
 ## Naming and replacement notes
 
-- Use `--servarr-output-extension` and `--servarr-output-suffix` to control
-  output naming.
+- DPN resolves the container before naming the replacement. It preserves the
+  input container when all selected devices support it; otherwise it selects a
+  common container (`mp4` for `--device all`).
+- Use `--servarr-output-suffix` to control output naming.
+- `--servarr-output-extension` is a deprecated advanced override;
+  `match-input` remains supported, and overrides must support every selected
+  device.
 - `--delete-source` applies to direct CLI usage.
-- `--servarr-output-extension match-input` keeps the source container.
 
 ### Replacement policy
 

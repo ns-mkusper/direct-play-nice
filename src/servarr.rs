@@ -1,5 +1,6 @@
 //! Sonarr/Radarr integration workflow for event handling, path planning, and atomic media replacement.
 
+use crate::devices::{ContainerFormat, StreamingDevice};
 use crate::transcoder::VideoQuality;
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
@@ -225,7 +226,8 @@ impl ReplacePlan {
 pub struct ArgsView<'a> {
     pub has_input: bool,
     pub has_output: bool,
-    pub desired_extension: &'a str,
+    pub output_extension_override: Option<&'a str>,
+    pub streaming_devices: &'a [&'a StreamingDevice],
     pub desired_suffix: &'a str,
     pub desired_video_quality: VideoQuality,
     pub language_requirements: LanguageRequirements,
@@ -448,9 +450,14 @@ fn prepare_download(
             );
         }
 
+        let output_container = resolve_output_container(
+            &input_path,
+            view.streaming_devices,
+            view.output_extension_override,
+        )?;
         let final_output_path = resolve_output_path(
             &input_path,
-            view.desired_extension,
+            output_container.as_str(),
             effective_suffix,
             view.desired_video_quality,
         )?;
@@ -481,6 +488,62 @@ fn prepare_download(
     } else {
         Ok(IntegrationPreparation::Batch(plans))
     }
+}
+
+fn resolve_output_container(
+    input_path: &Path,
+    devices: &[&StreamingDevice],
+    output_extension_override: Option<&str>,
+) -> Result<ContainerFormat> {
+    let common = StreamingDevice::get_common_containers(devices)?;
+
+    if let Some(raw_override) = output_extension_override {
+        let extension = raw_override.trim().trim_start_matches('.');
+        let container = if extension.eq_ignore_ascii_case("match-input")
+            || extension.eq_ignore_ascii_case("same")
+        {
+            input_container(input_path).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Cannot use --servarr-output-extension={} because '{}' has no supported container extension",
+                    raw_override,
+                    input_path.display()
+                )
+            })?
+        } else {
+            ContainerFormat::from_extension(extension).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unsupported --servarr-output-extension '{}'. Supported container extensions: mp4, m4v, mov, mkv",
+                    raw_override
+                )
+            })?
+        };
+        if !common.contains(&container) {
+            bail!(
+                "Servarr output container '{}' is not compatible with all selected devices",
+                container.as_str()
+            );
+        }
+        warn!(
+            "--servarr-output-extension is deprecated; omit it to select a device-compatible container automatically."
+        );
+        return Ok(container);
+    }
+
+    if let Some(input) = input_container(input_path).filter(|container| common.contains(container))
+    {
+        return Ok(input);
+    }
+
+    common.into_iter().next().ok_or_else(|| {
+        anyhow::anyhow!("No common output container found among the selected devices")
+    })
+}
+
+fn input_container(input_path: &Path) -> Option<ContainerFormat> {
+    input_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(ContainerFormat::from_extension)
 }
 
 fn resolve_output_path(

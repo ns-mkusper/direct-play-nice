@@ -29,7 +29,6 @@ hw_accel = "auto"
 unsupported_video_policy = "ignore"
 sub_mode = "auto"
 ocr_default_language = "eng"
-servarr_output_extension = "mp4"
 servarr_output_suffix = ".fixed"
 
 [plex]
@@ -50,8 +49,9 @@ EOF
   break muxing in common container/player paths.
 - `sub_mode = "auto"` only OCRs bitmap subtitles when needed.
 - `ocr_default_language = "eng"` gives OCR a stable fallback language.
-- `servarr_output_extension = "mp4"` targets the most portable container for
-  direct play.
+- Servarr output containers are selected automatically: the input container is
+  preserved when every selected device supports it; otherwise DPN chooses a
+  common supported container (`mp4` for `streaming_devices = "all"`).
 - `servarr_output_suffix = ".fixed"` makes replaced files easy to identify
   during rollout.
 

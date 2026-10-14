@@ -129,7 +129,7 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 
     if !cli_value_provided(matches, "servarr_output_extension") {
         if let Some(ext) = cfg.servarr_output_extension.as_ref() {
-            args.servarr_output_extension = ext.clone();
+            args.servarr_output_extension = Some(ext.clone());
         }
     }
 
@@ -402,6 +402,29 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.video_quality, VideoQuality::P1080);
+    }
+
+    #[test]
+    fn applies_servarr_output_extension_override_from_config() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            servarr_output_extension: Some("mkv".to_string()),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.servarr_output_extension.as_deref(), Some("mkv"));
+    }
+
+    #[test]
+    fn cli_servarr_output_extension_takes_precedence_over_config() {
+        let (mut args, matches) =
+            parse_args(&["direct_play_nice", "--servarr-output-extension", "mov"]);
+        let cfg = config::Config {
+            servarr_output_extension: Some("mkv".to_string()),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.servarr_output_extension.as_deref(), Some("mov"));
     }
 
     #[test]
