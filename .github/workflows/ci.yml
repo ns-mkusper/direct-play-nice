@@ -310,6 +310,7 @@ jobs:
         -C link-arg=Secur32.lib
         -C link-arg=Ole32.lib
         -C link-arg=User32.lib
+        -C link-arg=Advapi32.lib
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -514,6 +515,7 @@ jobs:
             -C link-arg=Secur32.lib
             -C link-arg=Ole32.lib
             -C link-arg=User32.lib
+            -C link-arg=Advapi32.lib
           DPN_OCR_GOLDEN: "1"
           DPN_OCR_AI_E2E: "1"
           DPN_OCR_MODEL_DIR: ${{ github.workspace }}\\target\\ocr-models
