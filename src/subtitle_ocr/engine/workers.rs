@@ -15,7 +15,7 @@ use std::thread;
 
 use super::detect_nvidia_gpu_indexes;
 use super::{
-    create_ocr_engine, force_cpu_execution_providers, ocr_single_stream,
+    create_ocr_engine, force_cpu_execution_providers, ocr_stream_with_recovery,
     set_thread_ocr_cuda_device, write_ass, write_srt, OcrEngine, OcrFormat, OcrStreamRequest,
     OcrSubtitleTrack, OcrTask, OcrTaskOutput, ORT_ENV_GPU_AVAILABLE,
 };
@@ -244,6 +244,7 @@ pub(in crate::subtitle_ocr) struct OcrParallelParams {
     pub(in crate::subtitle_ocr) resolved_engine: OcrEngine,
     pub(in crate::subtitle_ocr) ocr_external_command: Option<String>,
     pub(in crate::subtitle_ocr) total_tasks: usize,
+    pub(in crate::subtitle_ocr) failure_policy: crate::SubtitleFailurePolicy,
 }
 
 /// Executes OCR tasks in parallel worker threads and returns results in original stream order.
@@ -280,6 +281,7 @@ pub(in crate::subtitle_ocr) fn run_ocr_tasks_parallel(
         let video_dimensions = params.video_dimensions;
         let resolved_engine = params.resolved_engine;
         let total_tasks = params.total_tasks;
+        let failure_policy = params.failure_policy;
 
         handles.push(thread::spawn(move || -> Result<Vec<OcrTaskOutput>> {
             let _device_guard = set_thread_ocr_cuda_device(assigned_device);
@@ -316,15 +318,21 @@ pub(in crate::subtitle_ocr) fn run_ocr_tasks_parallel(
                     video_dimensions,
                     ocr_engine: resolved_engine,
                 };
-                let cues = ocr_single_stream(&request, &mut *engine)?;
-
-                local_outputs.push(OcrTaskOutput {
-                    order: task.order,
-                    stream_index: task.stream_index,
-                    language: task.language,
-                    subtitle_path: task.subtitle_path,
-                    cues,
-                });
+                let cues = ocr_stream_with_recovery(
+                    &request,
+                    &mut engine,
+                    command.as_deref(),
+                    failure_policy,
+                )?;
+                if let Some(cues) = cues {
+                    local_outputs.push(OcrTaskOutput {
+                        order: task.order,
+                        stream_index: task.stream_index,
+                        language: task.language,
+                        subtitle_path: task.subtitle_path,
+                        cues,
+                    });
+                }
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 log_ocr_stream_progress(done, total_tasks.max(1));
             }

@@ -820,6 +820,7 @@ fn run_conversion(
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
                 ocr_stream_filter: &ocr_stream_filter,
+                subtitle_failure_policy: args.subtitle_failure_policy,
             })?;
             output_ready = output_ready || ocr_output_ready;
             Ok(outcome)
