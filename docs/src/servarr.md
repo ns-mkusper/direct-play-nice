@@ -49,13 +49,13 @@ The binary auto-detects Sonarr/Radarr custom-script invocations:
 
 ## Naming and replacement notes
 
-- DPN resolves the container before naming the replacement. It preserves the
-  input container when all selected devices support it; otherwise it selects a
-  common container (`mp4` for `--device all`).
+- DPN picks the replacement's container before naming the file. It keeps the
+  source container when every selected device can play it, and otherwise uses a
+  container all of them support (`mp4` for `--device all`).
 - Use `--servarr-output-suffix` to control output naming.
-- `--servarr-output-extension` is a deprecated advanced override;
-  `match-input` remains supported, and overrides must support every selected
-  device.
+- `--servarr-output-extension` (deprecated) forces a container: `mp4`, `m4v`,
+  `mov`, `mkv`, or `match-input` to keep the source container. The forced
+  container must be playable on every selected device.
 - `--delete-source` applies to direct CLI usage.
 
 ### Replacement policy

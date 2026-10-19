@@ -49,9 +49,9 @@ EOF
   break muxing in common container/player paths.
 - `sub_mode = "auto"` only OCRs bitmap subtitles when needed.
 - `ocr_default_language = "eng"` gives OCR a stable fallback language.
-- Servarr output containers are selected automatically: the input container is
-  preserved when every selected device supports it; otherwise DPN chooses a
-  common supported container (`mp4` for `streaming_devices = "all"`).
+- Sonarr/Radarr replacements keep the source container when every selected
+  device can play it; otherwise DPN uses a container all of them support
+  (`mp4` for `streaming_devices = "all"`).
 - `servarr_output_suffix = ".fixed"` makes replaced files easy to identify
   during rollout.
 

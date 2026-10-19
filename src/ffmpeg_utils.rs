@@ -188,7 +188,7 @@ pub(crate) struct Args {
     )]
     pub(crate) probe_ocr_fixtures: Option<PathBuf>,
 
-    /// Deprecated advanced override for the auto-selected Sonarr/Radarr output container.
+    /// Deprecated. Force the Sonarr/Radarr replacement container: mp4, m4v, mov, mkv, or match-input to keep the source container. By default the container is chosen from the selected devices.
     #[arg(
         long = "servarr-output-extension",
         value_name = "EXTENSION",

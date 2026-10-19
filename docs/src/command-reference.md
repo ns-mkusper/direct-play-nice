@@ -70,8 +70,9 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 ## Sonarr/Radarr options
 
-- `--servarr-output-extension <EXTENSION>`: deprecated advanced override for
-  automatic Servarr container selection (`match-input` supported)
+- `--servarr-output-extension <EXTENSION>` (deprecated): force the replacement
+  container (`mp4`, `m4v`, `mov`, `mkv`, or `match-input`). By default the
+  container is chosen from the selected devices.
 - `--servarr-output-suffix <servarr_output_suffix>`
 - `--servarr-language-audit` run a periodic Sonarr/Radarr audit for
   delayed language upgrades

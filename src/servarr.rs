@@ -524,7 +524,7 @@ fn resolve_output_container(
             );
         }
         warn!(
-            "--servarr-output-extension is deprecated; omit it to select a device-compatible container automatically."
+            "--servarr-output-extension is deprecated; leave it unset and DPN picks a container every selected device can play."
         );
         return Ok(container);
     }
