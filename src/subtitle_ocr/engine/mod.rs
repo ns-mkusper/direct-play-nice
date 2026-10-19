@@ -10,7 +10,7 @@ use super::ocr_pipeline::{
     discover_candidates, ocr_single_stream, probe_video_dimensions, OcrStreamRequest,
 };
 use super::text_render::{write_ass, write_srt};
-use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
+use super::{OcrEngine, OcrFormat, OcrStreamFilter, OcrSubtitleTrack, SubMode};
 
 mod converters;
 mod factory;
@@ -34,8 +34,8 @@ pub(super) use workers::*;
 ///
 /// The function performs stream discovery, language resolution, engine selection,
 /// optional parallelization, and final subtitle serialization (`.srt`/`.ass`).
-/// With `skip_redundant_ocr`, bitmap streams whose language a text subtitle
-/// stream already covers are left out.
+/// `stream_filter` leaves out bitmap streams a text stream already covers or
+/// whose language is not in the OCR language list.
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
     work_dir: &Path,
@@ -44,13 +44,13 @@ pub fn convert_bitmap_subtitles(
     ocr_engine: OcrEngine,
     ocr_format: OcrFormat,
     ocr_external_command: Option<&str>,
-    skip_redundant_ocr: bool,
+    stream_filter: &OcrStreamFilter,
 ) -> Result<Vec<OcrSubtitleTrack>> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(Vec::new());
     }
 
-    let candidates = discover_candidates(input_file, sub_mode, skip_redundant_ocr)?;
+    let candidates = discover_candidates(input_file, sub_mode, stream_filter)?;
     if candidates.is_empty() {
         return Ok(Vec::new());
     }

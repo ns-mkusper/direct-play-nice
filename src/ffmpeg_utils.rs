@@ -415,6 +415,10 @@ pub(crate) struct Args {
     )]
     pub(crate) no_skip_redundant_ocr: bool,
 
+    /// Only OCR bitmap subtitle streams in these languages, comma-separated (e.g. eng,spa,pol,chi; chi covers every Chinese variant). Bitmap streams in other languages are dropped from MP4 output. Untagged streams are always OCR'd. Default: every language.
+    #[arg(long = "ocr-languages", id = "ocr_languages")]
+    pub(crate) ocr_languages: Option<String>,
+
     /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
     #[arg(
         long = "skip-codec-check",

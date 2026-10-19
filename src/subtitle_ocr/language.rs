@@ -284,6 +284,77 @@ pub(crate) fn redundant_bitmap_subtitles(streams: &[SubtitleStreamFacts]) -> Has
         .collect()
 }
 
+/// Language family used by the OCR language list: like
+/// [`redundancy_language_key`], but every Chinese tag (`zh`, `zh-Hant`, `chi`,
+/// `zho`, `cmn`, `yue`, ...) folds into `chi`.
+fn ocr_language_family(tag: &str) -> Option<String> {
+    let key = redundancy_language_key(tag)?;
+    if key.starts_with("chi")
+        || matches!(
+            key.as_str(),
+            "cmn" | "yue" | "wuu" | "nan" | "hak" | "gan" | "hsn" | "lzh"
+        )
+    {
+        return Some("chi".to_string());
+    }
+    Some(key)
+}
+
+/// Why a bitmap subtitle stream is left out of OCR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OcrSkipReason {
+    /// A text subtitle stream already covers its language and forced flag.
+    Redundant,
+    /// Its language is not in the configured OCR language list.
+    LanguageNotListed,
+}
+
+/// Which bitmap subtitle streams the OCR side pass leaves out.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OcrStreamFilter {
+    skip_redundant: bool,
+    /// Language families to OCR; `None` OCRs every language.
+    languages: Option<HashSet<String>>,
+}
+
+impl OcrStreamFilter {
+    /// `languages` is a comma- or space-separated list of language tags
+    /// (`eng,spa,pol,chi`); empty or `None` means every language.
+    pub(crate) fn new(skip_redundant: bool, languages: Option<&str>) -> Self {
+        let languages = languages
+            .map(|list| {
+                list.split([',', ' '])
+                    .filter_map(ocr_language_family)
+                    .collect::<HashSet<_>>()
+            })
+            .filter(|set| !set.is_empty());
+        Self {
+            skip_redundant,
+            languages,
+        }
+    }
+
+    /// Bitmap streams to leave out, with the reason. Untagged bitmap streams
+    /// are never skipped by the language list, since their language is unknown.
+    pub(crate) fn skipped(&self, streams: &[SubtitleStreamFacts]) -> HashMap<i32, OcrSkipReason> {
+        let mut skipped = HashMap::new();
+        if let Some(languages) = &self.languages {
+            for stream in streams.iter().filter(|s| s.bitmap) {
+                let family = stream.language.as_deref().and_then(ocr_language_family);
+                if family.is_some_and(|family| !languages.contains(&family)) {
+                    skipped.insert(stream.index, OcrSkipReason::LanguageNotListed);
+                }
+            }
+        }
+        if self.skip_redundant {
+            for index in redundant_bitmap_subtitles(streams) {
+                skipped.entry(index).or_insert(OcrSkipReason::Redundant);
+            }
+        }
+        skipped
+    }
+}
+
 /// Collects [`SubtitleStreamFacts`] for every subtitle stream in an input.
 pub(crate) fn subtitle_stream_facts(ictx: &AVFormatContextInput) -> Vec<SubtitleStreamFacts> {
     ictx.streams()
@@ -347,6 +418,54 @@ mod redundancy_tests {
             facts(5, true, false, Some("und")),
         ];
         assert!(redundant_bitmap_subtitles(&streams).is_empty());
+    }
+
+    #[test]
+    fn language_list_keeps_listed_and_untagged_streams() {
+        let filter = OcrStreamFilter::new(false, Some("eng, spa,pol,chi"));
+        let streams = [
+            facts(5, true, false, Some("eng")),
+            facts(11, true, false, Some("zh-Hant")),
+            facts(12, true, false, Some("cmn")),
+            facts(16, true, false, Some("ger")),
+            facts(21, true, false, Some("jpn")),
+            facts(22, true, false, None),
+            facts(29, true, false, Some("es-419")),
+            facts(30, false, false, Some("fre")),
+        ];
+        let skipped = filter.skipped(&streams);
+        assert_eq!(
+            skipped,
+            HashMap::from([
+                (16, OcrSkipReason::LanguageNotListed),
+                (21, OcrSkipReason::LanguageNotListed),
+            ])
+        );
+    }
+
+    #[test]
+    fn empty_language_list_ocrs_every_language() {
+        let filter = OcrStreamFilter::new(false, Some(" , "));
+        let streams = [facts(3, true, false, Some("ger"))];
+        assert!(filter.skipped(&streams).is_empty());
+        assert!(OcrStreamFilter::new(false, None)
+            .skipped(&streams)
+            .is_empty());
+    }
+
+    #[test]
+    fn filter_reports_redundant_streams_when_enabled() {
+        let streams = [
+            facts(2, false, false, Some("spa")),
+            facts(3, true, false, Some("spa")),
+        ];
+        assert_eq!(
+            OcrStreamFilter::new(true, Some("spa")).skipped(&streams),
+            HashMap::from([(3, OcrSkipReason::Redundant)])
+        );
+        assert!(OcrStreamFilter::new(false, Some("spa"))
+            .skipped(&streams)
+            .is_empty());
     }
 
     #[test]

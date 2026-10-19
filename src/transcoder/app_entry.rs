@@ -599,6 +599,8 @@ fn run_conversion(
     let target_is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
     let output_is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
     let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
+    let ocr_stream_filter =
+        subtitle_ocr::OcrStreamFilter::new(args.skip_redundant_ocr, args.ocr_languages.as_deref());
 
     // Direct conversion stages its output the same way Servarr replacement does:
     // write to `<output>.direct-play-nice.tmp.<ext>`, promote by rename on
@@ -628,7 +630,7 @@ fn run_conversion(
         DirectPlayConstraints {
             target_is_mp4,
             sub_mode: args.sub_mode,
-            skip_redundant_ocr: args.skip_redundant_ocr,
+            ocr_stream_filter: &ocr_stream_filter,
             target_video_codec,
             target_audio_codec: common_audio_codec,
             h264_constraints,
@@ -817,7 +819,7 @@ fn run_conversion(
                 ocr_format: args.ocr_format,
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
-                skip_redundant_ocr: args.skip_redundant_ocr,
+                ocr_stream_filter: &ocr_stream_filter,
             })?;
             output_ready = output_ready || ocr_output_ready;
             Ok(outcome)

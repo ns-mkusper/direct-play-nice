@@ -118,6 +118,8 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--ocr-write-srt-sidecar`
 - `--skip-redundant-ocr` / `--no-skip-redundant-ocr` (default: skip OCR for a
   bitmap stream when a text stream with the same language and forced flag exists)
+- `--ocr-languages <list>` OCR only bitmap streams in these languages (default:
+  all); other languages' bitmap streams are dropped from MP4 output
 
 ## Failure policy
 

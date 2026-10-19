@@ -7,15 +7,11 @@ use super::*;
 pub(super) fn discover_candidates(
     input_file: &CStr,
     sub_mode: SubMode,
-    skip_redundant_ocr: bool,
+    stream_filter: &OcrStreamFilter,
 ) -> Result<Vec<SubtitleCandidate>> {
     let ictx = AVFormatContextInput::open(input_file)?;
     let mut out = Vec::new();
-    let redundant = if skip_redundant_ocr {
-        redundant_bitmap_subtitles(&subtitle_stream_facts(&ictx))
-    } else {
-        HashSet::new()
-    };
+    let skipped = stream_filter.skipped(&subtitle_stream_facts(&ictx));
 
     for stream in ictx.streams() {
         let cp = stream.codecpar();
@@ -25,12 +21,22 @@ pub(super) fn discover_candidates(
         if !is_image_based_subtitle(cp.codec_id) {
             continue;
         }
-        if redundant.contains(&stream.index) {
-            info!(
-                "Skipping OCR for bitmap subtitle stream {}: a text subtitle stream already covers its language (--no-skip-redundant-ocr to OCR it anyway).",
-                stream.index
-            );
-            continue;
+        match skipped.get(&stream.index) {
+            Some(OcrSkipReason::Redundant) => {
+                info!(
+                    "Skipping OCR for bitmap subtitle stream {}: a text subtitle stream already covers its language (--no-skip-redundant-ocr to OCR it anyway).",
+                    stream.index
+                );
+                continue;
+            }
+            Some(OcrSkipReason::LanguageNotListed) => {
+                info!(
+                    "Skipping OCR for bitmap subtitle stream {}: its language is not in --ocr-languages; the track is not carried into the output.",
+                    stream.index
+                );
+                continue;
+            }
+            None => {}
         }
 
         let language_tag = stream
