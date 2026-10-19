@@ -48,8 +48,8 @@ mod muxing;
 mod ocr_pipeline;
 mod text_render;
 
-pub(crate) use engine::convert_bitmap_subtitles;
 use engine::*;
+pub(crate) use engine::{convert_bitmap_subtitles, OcrOptions};
 pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
 use language::*;
 pub(crate) use language::{subtitle_stream_facts, OcrSkipReason, OcrStreamFilter};

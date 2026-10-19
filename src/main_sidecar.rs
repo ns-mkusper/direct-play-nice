@@ -46,12 +46,14 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
     let tracks = subtitle_ocr::convert_bitmap_subtitles(
         input_file,
         ocr_work_dir.path(),
-        sub_mode,
-        default_ocr_language,
-        ocr_engine,
-        ocr_format,
-        ocr_external_command,
-        ocr_stream_filter,
+        subtitle_ocr::OcrOptions {
+            sub_mode,
+            default_language: default_ocr_language,
+            ocr_engine,
+            ocr_format,
+            ocr_external_command,
+            stream_filter: ocr_stream_filter,
+        },
     )?;
     if tracks.is_empty() {
         info!("No bitmap subtitle tracks required OCR; no OCR mux output was produced.");
