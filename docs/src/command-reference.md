@@ -116,6 +116,8 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--ocr-engine <ocr_engine>` `auto|tesseract|pp-ocr-v3|pp-ocr-v4|external`
 - `--ocr-format <ocr_format>` `srt|ass`
 - `--ocr-write-srt-sidecar`
+- `--skip-redundant-ocr` / `--no-skip-redundant-ocr` (default: skip OCR for a
+  bitmap stream when a text stream with the same language and forced flag exists)
 
 ## Failure policy
 

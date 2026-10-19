@@ -399,6 +399,22 @@ pub(crate) struct Args {
     )]
     pub(crate) ocr_write_srt_sidecar: bool,
 
+    /// Skip OCR for a bitmap subtitle stream when a text subtitle stream with the same language (and forced flag) is already present (default: enabled).
+    #[arg(
+        long = "skip-redundant-ocr",
+        default_value_t = true,
+        id = "skip_redundant_ocr"
+    )]
+    pub(crate) skip_redundant_ocr: bool,
+
+    /// OCR every bitmap subtitle stream, even when a text stream already covers its language.
+    #[arg(
+        long = "no-skip-redundant-ocr",
+        default_value_t = false,
+        id = "no_skip_redundant_ocr"
+    )]
+    pub(crate) no_skip_redundant_ocr: bool,
+
     /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
     #[arg(
         long = "skip-codec-check",

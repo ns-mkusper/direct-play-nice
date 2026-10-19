@@ -233,3 +233,128 @@ pub(super) fn is_image_based_subtitle(codec_id: ffi::AVCodecID) -> bool {
             | ffi::AV_CODEC_ID_XSUB
     )
 }
+
+/// What redundancy detection needs to know about one subtitle stream.
+#[derive(Debug, Clone)]
+pub(crate) struct SubtitleStreamFacts {
+    pub(crate) index: i32,
+    pub(crate) bitmap: bool,
+    pub(crate) forced: bool,
+    pub(crate) language: Option<String>,
+}
+
+/// Normalizes a stream language tag so `en`, `eng` and `en-US` compare equal.
+/// Tags without a known mapping compare by their lowercased primary subtag.
+fn redundancy_language_key(tag: &str) -> Option<String> {
+    let primary = tag
+        .trim()
+        .to_ascii_lowercase()
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if primary.is_empty() || matches!(primary.as_str(), "und" | "unk" | "mis" | "zxx") {
+        return None;
+    }
+    Some(map_language_tag_to_tesseract(&primary).unwrap_or(primary))
+}
+
+/// Bitmap subtitle streams that duplicate a text subtitle stream: same
+/// language and same forced flag. A bitmap stream with no usable language tag
+/// is never redundant, so OCR still runs on it.
+pub(crate) fn redundant_bitmap_subtitles(streams: &[SubtitleStreamFacts]) -> HashSet<i32> {
+    let text_tracks: HashSet<(String, bool)> = streams
+        .iter()
+        .filter(|s| !s.bitmap)
+        .filter_map(|s| {
+            let key = redundancy_language_key(s.language.as_deref()?)?;
+            Some((key, s.forced))
+        })
+        .collect();
+    streams
+        .iter()
+        .filter(|s| s.bitmap)
+        .filter(|s| {
+            s.language
+                .as_deref()
+                .and_then(redundancy_language_key)
+                .is_some_and(|key| text_tracks.contains(&(key, s.forced)))
+        })
+        .map(|s| s.index)
+        .collect()
+}
+
+/// Collects [`SubtitleStreamFacts`] for every subtitle stream in an input.
+pub(crate) fn subtitle_stream_facts(ictx: &AVFormatContextInput) -> Vec<SubtitleStreamFacts> {
+    ictx.streams()
+        .iter()
+        .filter(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE)
+        .map(|stream| SubtitleStreamFacts {
+            index: stream.index,
+            bitmap: is_image_based_subtitle(stream.codecpar().codec_id),
+            forced: stream.disposition & ffi::AV_DISPOSITION_FORCED as i32 != 0,
+            language: stream
+                .metadata()
+                .as_deref()
+                .and_then(extract_language_tag_from_metadata),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod redundancy_tests {
+    use super::*;
+
+    fn facts(
+        index: i32,
+        bitmap: bool,
+        forced: bool,
+        language: Option<&str>,
+    ) -> SubtitleStreamFacts {
+        SubtitleStreamFacts {
+            index,
+            bitmap,
+            forced,
+            language: language.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn bitmap_stream_with_matching_text_language_is_redundant() {
+        let streams = [
+            facts(2, false, false, Some("en")),
+            facts(3, true, false, Some("eng")),
+            facts(4, true, false, Some("fre")),
+        ];
+        assert_eq!(redundant_bitmap_subtitles(&streams), HashSet::from([3]));
+    }
+
+    #[test]
+    fn forced_flag_must_match() {
+        let streams = [
+            facts(2, false, false, Some("eng")),
+            facts(3, true, true, Some("eng")),
+        ];
+        assert!(redundant_bitmap_subtitles(&streams).is_empty());
+    }
+
+    #[test]
+    fn untagged_or_undetermined_streams_are_never_redundant() {
+        let streams = [
+            facts(2, false, false, None),
+            facts(3, true, false, None),
+            facts(4, false, false, Some("und")),
+            facts(5, true, false, Some("und")),
+        ];
+        assert!(redundant_bitmap_subtitles(&streams).is_empty());
+    }
+
+    #[test]
+    fn unmapped_languages_compare_by_primary_subtag() {
+        let streams = [
+            facts(2, false, false, Some("tlh-Latn")),
+            facts(3, true, false, Some("TLH")),
+        ];
+        assert_eq!(redundant_bitmap_subtitles(&streams), HashSet::from([3]));
+    }
+}

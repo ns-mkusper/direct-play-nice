@@ -13,6 +13,9 @@ For official GPU architecture/provider references and compatibility links, see
 - `--sub-mode auto`
 - `--ocr-engine auto`
 - `--ocr-format srt`
+- `--skip-redundant-ocr`: a bitmap stream is not OCR'd when the input already
+  has a text subtitle stream with the same language and forced flag. Bitmap
+  streams without a language tag are always OCR'd.
 
 ## Common overrides
 
@@ -22,6 +25,8 @@ For official GPU architecture/provider references and compatibility links, see
 - `--ocr-engine pp-ocr-v3` fallback for older GPU/runtime combinations
 - `--ocr-format ass` request ASS (may be downgraded in MP4)
 - `--ocr-write-srt-sidecar` write `.srt` sidecars in addition to embedded output
+- `--no-skip-redundant-ocr` OCR every bitmap stream, including ones a text
+  stream already covers
 
 ## OCR flow
 
@@ -134,5 +139,6 @@ ocr_default_language = "eng"
 ocr_engine = "auto"         # auto | tesseract | pp-ocr-v3 | pp-ocr-v4 | external
 ocr_format = "srt"          # srt | ass
 ocr_write_srt_sidecar = false
+skip_redundant_ocr = true   # false OCRs bitmap streams a text stream already covers
 ocr_external_command = "python3 /opt/ocr/run.py"
 ```

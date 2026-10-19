@@ -34,6 +34,8 @@ pub(super) use workers::*;
 ///
 /// The function performs stream discovery, language resolution, engine selection,
 /// optional parallelization, and final subtitle serialization (`.srt`/`.ass`).
+/// With `skip_redundant_ocr`, bitmap streams whose language a text subtitle
+/// stream already covers are left out.
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
     work_dir: &Path,
@@ -42,12 +44,13 @@ pub fn convert_bitmap_subtitles(
     ocr_engine: OcrEngine,
     ocr_format: OcrFormat,
     ocr_external_command: Option<&str>,
+    skip_redundant_ocr: bool,
 ) -> Result<Vec<OcrSubtitleTrack>> {
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(Vec::new());
     }
 
-    let candidates = discover_candidates(input_file, sub_mode)?;
+    let candidates = discover_candidates(input_file, sub_mode, skip_redundant_ocr)?;
     if candidates.is_empty() {
         return Ok(Vec::new());
     }

@@ -292,6 +292,14 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if cli_value_provided(matches, "no_skip_redundant_ocr") && args.no_skip_redundant_ocr {
+        args.skip_redundant_ocr = false;
+    } else if !cli_value_provided(matches, "skip_redundant_ocr") {
+        if let Some(skip_redundant_ocr) = cfg.skip_redundant_ocr {
+            args.skip_redundant_ocr = skip_redundant_ocr;
+        }
+    }
+
     if !cli_value_provided(matches, "skip_codec_check") {
         if let Some(skip_codec_check) = cfg.skip_codec_check {
             args.skip_codec_check = skip_codec_check;
@@ -532,6 +540,32 @@ mod tests {
         assert_eq!(args.visual_scan_frames, 240);
         assert_eq!(args.visual_sample_interval, 10);
         assert_eq!(args.visual_failure_ratio, 0.40);
+    }
+
+    #[test]
+    fn redundant_ocr_skip_defaults_on_and_follows_config_and_cli() {
+        let (args, _matches) = parse_args(&["direct_play_nice"]);
+        assert!(args.skip_redundant_ocr);
+
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            skip_redundant_ocr: Some(false),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.skip_redundant_ocr);
+
+        let (mut args, matches) = parse_args(&["direct_play_nice", "--skip-redundant-ocr"]);
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.skip_redundant_ocr);
+
+        let (mut args, matches) = parse_args(&["direct_play_nice", "--no-skip-redundant-ocr"]);
+        let cfg = config::Config {
+            skip_redundant_ocr: Some(true),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.skip_redundant_ocr);
     }
 
     #[test]

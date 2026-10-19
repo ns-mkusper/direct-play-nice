@@ -628,6 +628,7 @@ fn run_conversion(
         DirectPlayConstraints {
             target_is_mp4,
             sub_mode: args.sub_mode,
+            skip_redundant_ocr: args.skip_redundant_ocr,
             target_video_codec,
             target_audio_codec: common_audio_codec,
             h264_constraints,
@@ -816,6 +817,7 @@ fn run_conversion(
                 ocr_format: args.ocr_format,
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
+                skip_redundant_ocr: args.skip_redundant_ocr,
             })?;
             output_ready = output_ready || ocr_output_ready;
             Ok(outcome)

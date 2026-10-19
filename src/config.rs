@@ -58,6 +58,7 @@ pub struct Config {
     pub ocr_format: Option<OcrFormat>,
     pub ocr_external_command: Option<String>,
     pub ocr_write_srt_sidecar: Option<bool>,
+    pub skip_redundant_ocr: Option<bool>,
     pub skip_codec_check: Option<bool>,
     pub validate_output: Option<bool>,
     pub visual_validate_output: Option<bool>,

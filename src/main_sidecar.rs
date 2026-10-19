@@ -20,6 +20,7 @@ pub(super) struct OcrSidecarRequest<'a> {
     pub(super) ocr_format: OcrFormat,
     pub(super) ocr_external_command: Option<&'a str>,
     pub(super) ocr_write_srt_sidecar: bool,
+    pub(super) skip_redundant_ocr: bool,
 }
 
 pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<bool> {
@@ -33,6 +34,7 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
         ocr_format,
         ocr_external_command,
         ocr_write_srt_sidecar,
+        skip_redundant_ocr,
     } = request;
 
     if matches!(sub_mode, SubMode::Skip) {
@@ -49,6 +51,7 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
         ocr_engine,
         ocr_format,
         ocr_external_command,
+        skip_redundant_ocr,
     )?;
     if tracks.is_empty() {
         info!("No bitmap subtitle tracks required OCR; no OCR mux output was produced.");

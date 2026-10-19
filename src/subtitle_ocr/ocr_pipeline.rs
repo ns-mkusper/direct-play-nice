@@ -7,9 +7,15 @@ use super::*;
 pub(super) fn discover_candidates(
     input_file: &CStr,
     sub_mode: SubMode,
+    skip_redundant_ocr: bool,
 ) -> Result<Vec<SubtitleCandidate>> {
     let ictx = AVFormatContextInput::open(input_file)?;
     let mut out = Vec::new();
+    let redundant = if skip_redundant_ocr {
+        redundant_bitmap_subtitles(&subtitle_stream_facts(&ictx))
+    } else {
+        HashSet::new()
+    };
 
     for stream in ictx.streams() {
         let cp = stream.codecpar();
@@ -17,6 +23,13 @@ pub(super) fn discover_candidates(
             continue;
         }
         if !is_image_based_subtitle(cp.codec_id) {
+            continue;
+        }
+        if redundant.contains(&stream.index) {
+            info!(
+                "Skipping OCR for bitmap subtitle stream {}: a text subtitle stream already covers its language (--no-skip-redundant-ocr to OCR it anyway).",
+                stream.index
+            );
             continue;
         }
 
