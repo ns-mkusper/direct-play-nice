@@ -6,9 +6,9 @@
 mod common;
 
 use assert_cmd::prelude::*;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use predicates::str;
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
 use std::ffi::CString;
 use std::process::Command;
 use tempfile::TempDir;
@@ -39,17 +39,29 @@ fn cli_all_devices_selector_converts_to_direct_play() -> Result<(), Box<dyn std:
     let mut pix_fmt = -1i32;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             saw_v = true;
-            assert_eq!(par.codec_id, ffi::AV_CODEC_ID_H264, "video must be H.264");
+            assert_eq!(
+                par.codec_id,
+                ffi::AVCodecID::AV_CODEC_ID_H264,
+                "video must be H.264"
+            );
             pix_fmt = par.format;
-        } else if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO {
-            assert_eq!(par.codec_id, ffi::AV_CODEC_ID_AAC, "audio must be AAC");
+        } else if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
+            assert_eq!(
+                par.codec_id,
+                ffi::AVCodecID::AV_CODEC_ID_AAC,
+                "audio must be AAC"
+            );
         }
     }
 
     assert!(saw_v, "missing required video stream");
-    assert_eq!(pix_fmt, ffi::AV_PIX_FMT_YUV420P, "pix fmt must be yuv420p");
+    assert_eq!(
+        pix_fmt,
+        ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+        "pix fmt must be yuv420p"
+    );
 
     Ok(())
 }

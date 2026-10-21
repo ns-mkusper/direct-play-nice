@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -215,10 +215,10 @@ fn gen_multi_stream_bitmap_input(tmp: &TempDir) -> Option<PathBuf> {
 fn is_bitmap_subtitle_codec(codec_id: ffi::AVCodecID) -> bool {
     matches!(
         codec_id,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
-            | ffi::AV_CODEC_ID_DVD_SUBTITLE
-            | ffi::AV_CODEC_ID_DVB_SUBTITLE
-            | ffi::AV_CODEC_ID_XSUB
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE
+            | ffi::AVCodecID::AV_CODEC_ID_XSUB
     )
 }
 
@@ -230,7 +230,8 @@ fn count_bitmap_subtitle_streams(path: &Path) -> Result<usize, Box<dyn std::erro
         .iter()
         .filter(|st| {
             let cp = st.codecpar();
-            cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && is_bitmap_subtitle_codec(cp.codec_id)
+            cp.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE
+                && is_bitmap_subtitle_codec(cp.codec_id)
         })
         .count())
 }
@@ -243,7 +244,8 @@ fn count_mov_text_streams(path: &Path) -> Result<usize, Box<dyn std::error::Erro
         .iter()
         .filter(|st| {
             let cp = st.codecpar();
-            cp.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && cp.codec_id == ffi::AV_CODEC_ID_MOV_TEXT
+            cp.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE
+                && cp.codec_id == ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT
         })
         .count())
 }
@@ -295,9 +297,13 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
     for st in octx.streams() {
         let par = st.codecpar();
         match par.codec_type {
-            t if t == ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 saw_v = true;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_H264, "video must be H.264");
+                assert_eq!(
+                    par.codec_id,
+                    ffi::AVCodecID::AV_CODEC_ID_H264,
+                    "video must be H.264"
+                );
                 width = par.width;
                 height = par.height;
                 level = par.level;
@@ -306,15 +312,19 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
                 fps_num = rate.num;
                 fps_den = rate.den;
             }
-            t if t == ffi::AVMEDIA_TYPE_AUDIO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {
                 saw_a = true;
-                assert_eq!(par.codec_id, ffi::AV_CODEC_ID_AAC, "audio must be AAC");
+                assert_eq!(
+                    par.codec_id,
+                    ffi::AVCodecID::AV_CODEC_ID_AAC,
+                    "audio must be AAC"
+                );
             }
-            t if t == ffi::AVMEDIA_TYPE_SUBTITLE => {
+            ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE => {
                 saw_s = true;
                 assert_eq!(
                     par.codec_id,
-                    ffi::AV_CODEC_ID_MOV_TEXT,
+                    ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT,
                     "subs must be MOV_TEXT"
                 );
             }
@@ -332,7 +342,11 @@ fn cli_converts_bitmap_subs_to_mov_text_and_direct_play() -> Result<(), Box<dyn 
         "resolution too high"
     );
     assert!(level <= 41, "H.264 level too high: {}", level);
-    assert_eq!(pix_fmt, ffi::AV_PIX_FMT_YUV420P, "pix fmt must be yuv420p");
+    assert_eq!(
+        pix_fmt,
+        ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+        "pix fmt must be yuv420p"
+    );
     if fps_den != 0 {
         let fps = (fps_num as f64) / (fps_den as f64);
         assert!(fps <= 30.01, "fps too high: {}", fps);

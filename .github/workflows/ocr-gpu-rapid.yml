@@ -103,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo clean -p rusty_ffmpeg
+          cargo clean -p ffmpeg-sys-next
           cargo build --release
 
       - name: Generate tiny bitmap-subtitle source

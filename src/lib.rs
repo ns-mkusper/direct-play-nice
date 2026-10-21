@@ -8,6 +8,8 @@
 
 /// Streaming-device definitions and compatibility helpers.
 pub mod devices;
+/// Ownership layer over ffmpeg-next used by the transcoder and probes.
+pub mod ff;
 /// Hardware acceleration detection and codec probing helpers.
 pub mod gpu;
 

@@ -1,8 +1,8 @@
 //! Progress-reporting utilities for long-running operations, including elapsed-time tracking and terminal bar updates.
 
+use crate::ff::ra;
+use ffmpeg_next::sys as ffi;
 use log::info;
-use rsmpeg::avutil::ra;
-use rsmpeg::ffi;
 
 /// Reports transcoding progress at coarse percentage intervals.
 pub(crate) struct ProgressTracker {
@@ -24,8 +24,7 @@ impl ProgressTracker {
         if pts == ffi::AV_NOPTS_VALUE {
             return;
         }
-        let current_us =
-            unsafe { ffi::av_rescale_q(pts, time_base, ra(1, ffi::AV_TIME_BASE as i32)) };
+        let current_us = unsafe { ffi::av_rescale_q(pts, time_base, ra(1, ffi::AV_TIME_BASE)) };
         if current_us < 0 {
             return;
         }

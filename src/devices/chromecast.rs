@@ -3,23 +3,29 @@
 // Sources:
 // - https://developers.google.com/cast/docs/media
 
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 
 use super::device_profile::{
     ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice,
 };
 
 const CHROMECAST_CONTAINERS: &[ContainerFormat] = &[ContainerFormat::Mp4];
-const CHROMECAST_AUDIO: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_AAC];
+const CHROMECAST_AUDIO: &[ffi::AVCodecID] = &[ffi::AVCodecID::AV_CODEC_ID_AAC];
 
-const H264_ONLY: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264];
-const H264_VP8: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264, ffi::AV_CODEC_ID_VP8];
-const H264_HEVC_VP9: &[ffi::AVCodecID] = &[
-    ffi::AV_CODEC_ID_H264,
-    ffi::AV_CODEC_ID_HEVC,
-    ffi::AV_CODEC_ID_VP9,
+const H264_ONLY: &[ffi::AVCodecID] = &[ffi::AVCodecID::AV_CODEC_ID_H264];
+const H264_VP8: &[ffi::AVCodecID] = &[
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_VP8,
 ];
-const H264_VP9: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264, ffi::AV_CODEC_ID_VP9];
+const H264_HEVC_VP9: &[ffi::AVCodecID] = &[
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_HEVC,
+    ffi::AVCodecID::AV_CODEC_ID_VP9,
+];
+const H264_VP9: &[ffi::AVCodecID] = &[
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_VP9,
+];
 
 /// Capability profile for Chromecast (1st generation).
 pub const CHROMECAST_1ST_GEN: StreamingDevice = StreamingDevice {

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### FFmpeg
+
+- Moved the FFmpeg layer from rsmpeg and rusty_ffmpeg to ffmpeg-next 9 on
+  FFmpeg 9.0.2. `src/ff` keeps the ownership surface the transcoder calls;
+  bindings are `ffmpeg_next::sys`. Builds locate the vcpkg libraries through
+  pkg-config (`PKG_CONFIG_PATH_<target>` in `.cargo/config.toml`).
+- Encoded video packets without a duration now receive one from the encoder
+  frame rate, so the MP4 edit list covers the final frame. Under FFmpeg 9 that
+  frame was flagged for discard and players dropped it.
+- Baselines count discard-flagged packets per stream.
+- nv-codec-headers stay at 13.0 through a vcpkg overlay so NVENC keeps working
+  on the 580 driver branch, the last one for Maxwell, Pascal, and Volta GPUs.
+- Linux builds compile FFmpeg's CUDA filter kernels with clang when it is
+  present, so `scale_cuda` ships and the CUDA resize backend no longer falls
+  back to libswscale. Upstream vcpkg never enabled it; the plexserver had
+  carried this as a local patch.
+
 ### Build
 
 - Fetch x264 from its GitHub mirror through a vcpkg overlay port

@@ -5,8 +5,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;
@@ -63,7 +63,7 @@ fn assert_no_config_output_sane(
     let mut video_stream = None;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             video_stream = Some((par.width, par.height, par.bit_rate, par.codec_id));
             break;
         }
@@ -74,7 +74,7 @@ fn assert_no_config_output_sane(
 
     assert_eq!(
         codec_id,
-        ffi::AV_CODEC_ID_H264,
+        ffi::AVCodecID::AV_CODEC_ID_H264,
         "default conversion should output H.264 video"
     );
     assert_eq!(

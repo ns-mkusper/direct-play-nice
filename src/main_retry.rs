@@ -1,9 +1,9 @@
 //! Retry and recovery logic for conversion failures, including hardware-to-software fallback decisions.
 
+use crate::ff::AVFormatContextInput;
 use anyhow::{anyhow, bail, Result};
+use ffmpeg_next::sys as ffi;
 use log::warn;
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
 use std::ffi::CStr;
 use std::fs;
 use std::path::PathBuf;
@@ -102,7 +102,7 @@ pub(super) fn select_primary_video_stream_index(
             );
         }
         let st = &streams[idx];
-        if st.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+        if st.codecpar().codec_type != ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             bail!("--primary-video-stream-index={} is not a video stream", idx);
         }
         return Ok(idx);
@@ -111,7 +111,7 @@ pub(super) fn select_primary_video_stream_index(
     let mut best_idx: Option<usize> = None;
     let mut best_score: u128 = 0;
     for st in input_ctx.streams() {
-        if st.codecpar().codec_type != ffi::AVMEDIA_TYPE_VIDEO {
+        if st.codecpar().codec_type != ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             continue;
         }
         let cp = st.codecpar();

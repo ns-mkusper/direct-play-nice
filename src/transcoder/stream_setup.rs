@@ -4,11 +4,11 @@
 //! initialize progress tracking. Keeping them outside the main conversion
 //! function makes the high-level pipeline easier to audit.
 
+use crate::ff::{AVCodecContext, AVCodecRef};
+use crate::ff::{AVFormatContextInput, AVStreamRef};
 use anyhow::Result;
+use ffmpeg_next::sys as ffi;
 use log::{info, warn};
-use rsmpeg::avcodec::{AVCodecContext, AVCodecRef};
-use rsmpeg::avformat::{AVFormatContextInput, AVStreamRef};
-use rsmpeg::ffi;
 
 use crate::ffmpeg_utils::ProgressTracker;
 use crate::transcoder::ffmpeg_ext::{codec_name, input_duration_us, stream_disposition};
@@ -33,7 +33,7 @@ pub(crate) fn should_skip_auxiliary_stream(
     stream: &AVStreamRef<'_>,
     input_codec_type: ffi::AVMediaType,
 ) -> bool {
-    if input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+    if input_codec_type == ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT {
         warn!(
             "Skipping attachment stream {} ({}).",
             stream.index,
@@ -42,7 +42,7 @@ pub(crate) fn should_skip_auxiliary_stream(
         return true;
     }
 
-    if input_codec_type == ffi::AVMEDIA_TYPE_DATA {
+    if input_codec_type == ffi::AVMediaType::AVMEDIA_TYPE_DATA {
         warn!(
             "Skipping data stream {} ({}).",
             stream.index,
@@ -51,7 +51,7 @@ pub(crate) fn should_skip_auxiliary_stream(
         return true;
     }
 
-    if (stream_disposition(stream) & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
+    if (stream_disposition(stream) & ffi::AV_DISPOSITION_ATTACHED_PIC) != 0 {
         info!(
             "Skipping attached-picture stream {} ({}).",
             stream.index,

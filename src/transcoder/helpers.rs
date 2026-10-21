@@ -18,10 +18,10 @@ pub(crate) fn describe_resolution(dimensions: Option<(u32, u32)>) -> String {
 
 pub(crate) fn describe_codec(codec_id: ffi::AVCodecID) -> &'static str {
     match codec_id {
-        ffi::AV_CODEC_ID_H264 => "H.264",
-        ffi::AV_CODEC_ID_AAC => "AAC",
-        ffi::AV_CODEC_ID_HEVC => "HEVC",
-        ffi::AV_CODEC_ID_VP9 => "VP9",
+        ffi::AVCodecID::AV_CODEC_ID_H264 => "H.264",
+        ffi::AVCodecID::AV_CODEC_ID_AAC => "AAC",
+        ffi::AVCodecID::AV_CODEC_ID_HEVC => "HEVC",
+        ffi::AVCodecID::AV_CODEC_ID_VP9 => "VP9",
         _ => unsafe {
             CStr::from_ptr(ffi::avcodec_get_name(codec_id))
                 .to_str()
@@ -42,7 +42,7 @@ pub(crate) fn ensure_decoder_pkt_time_base(ctx: &mut AVCodecContext, time_base: 
 pub(crate) fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
     // Fail fast on broken bitstreams instead of writing partially decoded output.
     unsafe {
-        (*ctx.as_mut_ptr()).err_recognition |= ffi::AV_EF_EXPLODE as i32;
+        (*ctx.as_mut_ptr()).err_recognition |= ffi::AV_EF_EXPLODE;
     }
 }
 
@@ -55,21 +55,21 @@ const HEVC_SW_DECODER_NAMES: &[&str] = &["hevc"];
 
 fn preferred_decoder_names(codec_id: ffi::AVCodecID, prefer_hw: bool) -> &'static [&'static str] {
     match codec_id {
-        ffi::AV_CODEC_ID_AV1 => {
+        ffi::AVCodecID::AV_CODEC_ID_AV1 => {
             if prefer_hw {
                 AV1_HW_DECODER_NAMES
             } else {
                 AV1_SW_DECODER_NAMES
             }
         }
-        ffi::AV_CODEC_ID_H264 => {
+        ffi::AVCodecID::AV_CODEC_ID_H264 => {
             if prefer_hw {
                 H264_HW_DECODER_NAMES
             } else {
                 H264_SW_DECODER_NAMES
             }
         }
-        ffi::AV_CODEC_ID_HEVC => {
+        ffi::AVCodecID::AV_CODEC_ID_HEVC => {
             if prefer_hw {
                 HEVC_HW_DECODER_NAMES
             } else {
@@ -120,11 +120,11 @@ unsafe extern "C" fn select_cuda_hw_format(
     pix_fmts: *const ffi::AVPixelFormat,
 ) -> ffi::AVPixelFormat {
     if pix_fmts.is_null() {
-        return ffi::AV_PIX_FMT_NONE;
+        return ffi::AVPixelFormat::AV_PIX_FMT_NONE;
     }
     let mut ptr = pix_fmts;
-    while (*ptr) != ffi::AV_PIX_FMT_NONE {
-        if (*ptr) == ffi::AV_PIX_FMT_CUDA {
+    while (*ptr) != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+        if (*ptr) == ffi::AVPixelFormat::AV_PIX_FMT_CUDA {
             return *ptr;
         }
         ptr = ptr.add(1);

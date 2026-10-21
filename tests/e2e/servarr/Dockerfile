@@ -9,11 +9,16 @@ COPY .cargo .cargo
 COPY src src
 COPY benches benches
 COPY config config
-ENV FFMPEG_PKG_CONFIG_PATH=/usr/lib/pkgconfig \
+# FFMPEG_PKG_CONFIG_PATH tells build.rs an external FFmpeg is in use, so it
+# skips the link arguments that only the vcpkg build needs.
+ENV PKG_CONFIG_PATH=/usr/lib/pkgconfig \
+    FFMPEG_PKG_CONFIG_PATH=/usr/lib/pkgconfig \
     RUSTFLAGS="-C target-feature=-crt-static"
 # Cargo.lock is not tracked by this repository. Save the resolved lock in the
 # image/artifacts so each run records exactly which dependency versions it used.
-RUN cargo build --bin direct_play_nice && \
+# Distro FFmpeg is shared; the ffmpeg-static default feature would pull its
+# private dependencies into the link.
+RUN cargo build --bin direct_play_nice --no-default-features && \
     mkdir -p /opt/dpn && cp target/debug/direct_play_nice Cargo.lock /opt/dpn/
 
 FROM ${APP_IMAGE}

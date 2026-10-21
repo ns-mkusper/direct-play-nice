@@ -7,12 +7,12 @@
 
 use std::ffi::CStr;
 
+use crate::ff::FfmpegError;
+use crate::ff::{AVCodec, AVCodecContext};
+use crate::ff::{AVFormatContextInput, AVStreamRef};
 use anyhow::{anyhow, bail, Context, Result};
+use ffmpeg_next::sys as ffi;
 use log::{debug, info, warn};
-use rsmpeg::avcodec::{AVCodec, AVCodecContext};
-use rsmpeg::avformat::{AVFormatContextInput, AVStreamRef};
-use rsmpeg::error::RsmpegError;
-use rsmpeg::ffi;
 
 use crate::ffmpeg_utils::{
     is_eagain_error, DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL,
@@ -93,7 +93,7 @@ pub(crate) fn validate_output_file(
     for stream in output_ctx.streams() {
         let codecpar = stream.codecpar();
         match codecpar.codec_type {
-            ffi::AVMEDIA_TYPE_VIDEO => {
+            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO => {
                 if codecpar.width <= 0 || codecpar.height <= 0 {
                     bail!(
                         "Output validation failed: video stream {} has invalid dimensions {}x{}",
@@ -106,11 +106,11 @@ pub(crate) fn validate_output_file(
                     saw_expected_video = true;
                 }
             }
-            ffi::AVMEDIA_TYPE_AUDIO if codecpar.codec_id == expected_audio_codec => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO if codecpar.codec_id == expected_audio_codec => {
                 saw_expected_audio = true;
             }
-            ffi::AVMEDIA_TYPE_AUDIO => {}
-            ffi::AVMEDIA_TYPE_ATTACHMENT | ffi::AVMEDIA_TYPE_DATA => {
+            ffi::AVMediaType::AVMEDIA_TYPE_AUDIO => {}
+            ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT | ffi::AVMediaType::AVMEDIA_TYPE_DATA => {
                 bail!(
                     "Output validation failed: unsupported auxiliary stream {} remains in '{}'",
                     stream.index,
@@ -173,7 +173,7 @@ fn validate_video_temporal_consistency(
 fn primary_video_temporal_info(ctx: &AVFormatContextInput) -> Option<VideoTemporalInfo> {
     ctx.streams()
         .iter()
-        .find(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_VIDEO)
+        .find(|stream| stream.codecpar().codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO)
         .map(|stream| video_temporal_info(stream, ctx))
 }
 
@@ -304,7 +304,7 @@ fn validate_visual_output(
         let video_stream = output_ctx
             .streams()
             .iter()
-            .find(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_VIDEO)
+            .find(|stream| stream.codecpar().codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO)
             .ok_or_else(|| anyhow!("Output visual validation failed: no video stream"))?;
         let codec_id = video_stream.codecpar().codec_id;
         let decoder = AVCodec::find_decoder(codec_id).ok_or_else(|| {
@@ -344,7 +344,7 @@ fn validate_visual_output(
         video_packets_seen += 1;
         packet.rescale_ts(video_time_base, decode_ctx.time_base);
         match decode_ctx.send_packet(Some(&packet)) {
-            Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+            Ok(_) | Err(FfmpegError::DecoderFlushedError) => {}
             Err(err) if is_eagain_error(&err) => {}
             Err(err) => {
                 bail!("Output visual validation failed: decoder send_packet failed: {err}");
@@ -354,7 +354,7 @@ fn validate_visual_output(
     }
 
     match decode_ctx.send_packet(None) {
-        Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
+        Ok(_) | Err(FfmpegError::DecoderFlushedError) => {}
         Err(err) if is_eagain_error(&err) => {}
         Err(err) => bail!("Output visual validation failed: decoder flush failed: {err}"),
     }
@@ -433,7 +433,7 @@ fn drain_visual_frames(
                     }
                 }
             }
-            Err(RsmpegError::DecoderDrainError | RsmpegError::DecoderFlushedError) => break,
+            Err(FfmpegError::DecoderDrainError | FfmpegError::DecoderFlushedError) => break,
             Err(err) if is_eagain_error(&err) => break,
             Err(err) => {
                 bail!("Output visual validation failed: decoder receive_frame failed: {err}")
@@ -449,7 +449,7 @@ fn format_optional_f64(value: Option<f64>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
-fn frame_visual_stats(frame: &rsmpeg::avutil::AVFrame) -> Option<FrameVisualStats> {
+fn frame_visual_stats(frame: &crate::ff::AVFrame) -> Option<FrameVisualStats> {
     let width = frame.width.max(0) as usize;
     let height = frame.height.max(0) as usize;
     if width == 0 || height == 0 {
@@ -461,25 +461,25 @@ fn frame_visual_stats(frame: &rsmpeg::avutil::AVFrame) -> Option<FrameVisualStat
         let data = (*raw).data;
         let linesize = (*raw).linesize;
         let luma = sample_plane(data[0], linesize[0], width, height)?;
-        let pix_fmt = frame.format as ffi::AVPixelFormat;
+        let pix_fmt = crate::ff::pix_fmt_from_i32(frame.format);
         let (chroma_u_mean, chroma_v_mean) = match pix_fmt {
-            ffi::AV_PIX_FMT_YUV420P | ffi::AV_PIX_FMT_YUVJ420P => {
+            ffi::AVPixelFormat::AV_PIX_FMT_YUV420P | ffi::AVPixelFormat::AV_PIX_FMT_YUVJ420P => {
                 sample_planar_chroma(data, linesize, width.div_ceil(2), height.div_ceil(2))
             }
-            ffi::AV_PIX_FMT_YUV422P | ffi::AV_PIX_FMT_YUVJ422P => {
+            ffi::AVPixelFormat::AV_PIX_FMT_YUV422P | ffi::AVPixelFormat::AV_PIX_FMT_YUVJ422P => {
                 sample_planar_chroma(data, linesize, width.div_ceil(2), height)
             }
-            ffi::AV_PIX_FMT_YUV444P | ffi::AV_PIX_FMT_YUVJ444P => {
+            ffi::AVPixelFormat::AV_PIX_FMT_YUV444P | ffi::AVPixelFormat::AV_PIX_FMT_YUVJ444P => {
                 sample_planar_chroma(data, linesize, width, height)
             }
-            ffi::AV_PIX_FMT_NV12 => sample_interleaved_chroma(
+            ffi::AVPixelFormat::AV_PIX_FMT_NV12 => sample_interleaved_chroma(
                 data[1],
                 linesize[1],
                 width.div_ceil(2),
                 height.div_ceil(2),
                 true,
             ),
-            ffi::AV_PIX_FMT_NV21 => sample_interleaved_chroma(
+            ffi::AVPixelFormat::AV_PIX_FMT_NV21 => sample_interleaved_chroma(
                 data[1],
                 linesize[1],
                 width.div_ceil(2),

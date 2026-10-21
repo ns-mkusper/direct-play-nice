@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
-use rsmpeg::ffi;
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -104,17 +104,29 @@ fn assert_output_basic(output: &Path) {
     let mut pix_fmt = -1i32;
     for st in octx.streams() {
         let par = st.codecpar();
-        if par.codec_type == ffi::AVMEDIA_TYPE_VIDEO {
+        if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO {
             saw_v = true;
-            assert_eq!(par.codec_id, ffi::AV_CODEC_ID_H264, "video must be H.264");
+            assert_eq!(
+                par.codec_id,
+                ffi::AVCodecID::AV_CODEC_ID_H264,
+                "video must be H.264"
+            );
             pix_fmt = par.format;
-        } else if par.codec_type == ffi::AVMEDIA_TYPE_AUDIO {
+        } else if par.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
             saw_a = true;
-            assert_eq!(par.codec_id, ffi::AV_CODEC_ID_AAC, "audio must be AAC");
+            assert_eq!(
+                par.codec_id,
+                ffi::AVCodecID::AV_CODEC_ID_AAC,
+                "audio must be AAC"
+            );
         }
     }
     assert!(saw_v && saw_a, "missing video or audio stream");
-    assert_eq!(pix_fmt, ffi::AV_PIX_FMT_YUV420P, "pix fmt must be yuv420p");
+    assert_eq!(
+        pix_fmt,
+        ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32,
+        "pix fmt must be yuv420p"
+    );
 }
 
 #[test]

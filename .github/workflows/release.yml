@@ -180,7 +180,7 @@ jobs:
         id: "vcpkg-cache"
         uses: "actions/cache@v4"
         with:
-          "key": "vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-${{ hashFiles('Cargo.toml') }}"
+          "key": "vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-${{ hashFiles('Cargo.toml', 'vcpkg-overlays/**') }}"
           "path": |
             target/vcpkg/.vcpkg-root
             target/vcpkg/downloads

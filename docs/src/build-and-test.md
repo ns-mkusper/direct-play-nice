@@ -10,8 +10,11 @@ cargo build
 ```
 
 `vcpkg-overlays/ports` carries local copies of upstream vcpkg ports that need a
-different source URL; today that is x264, which upstream fetches from a GitLab
-host that answers archive downloads with an anti-bot page. CI and the Docker
+different source URL or version: x264, which upstream fetches from a GitLab
+host that answers archive downloads with an anti-bot page; ffnvcodec, held
+at 13.0 so NVENC keeps working on the 580 driver branch; and ffmpeg, which
+enables `cuda-llvm` and `scale_cuda` on Linux when clang is installed. See
+`vcpkg-overlays/ports/README.md`. CI and the Docker
 image set `VCPKG_OVERLAY_PORTS` the same way.
 
 If your vcpkg checkout is in a non-default location, set `VCPKG_ROOT`.
@@ -29,18 +32,15 @@ export LD_LIBRARY_PATH="$VCPKG_ROOT/installed/x64-linux/lib:${LD_LIBRARY_PATH:-}
 cargo build --release
 ```
 
-If `rsmpeg` fails with missing FFmpeg struct fields such as `AVFormatContext.pb`,
-`AVFormatContext.streams`, or `AVBitStreamFilter.name`, bindgen likely generated
-opaque FFmpeg structs for the local headers. Reuse the bundled FFmpeg 8 bindings
-from `rusty_ffmpeg` while still linking against the host vcpkg libraries:
+The FFmpeg bindings come from `ffmpeg-next`; its `ffmpeg-sys-next` build script
+finds the vcpkg libraries through pkg-config and runs bindgen against their
+headers, so `libclang` must be installed. `.cargo/config.toml` points the
+per-target `PKG_CONFIG_PATH_*` variables at `target/vcpkg/installed/<triplet>/lib/pkgconfig`.
+To build against an FFmpeg installed elsewhere, export the variable for your
+target triple, for example:
 
 ```bash
-export FFMPEG_BINDING_PATH="$(
-  find "$HOME/.cargo/registry/src" \
-    -path '*/rusty_ffmpeg-0.16.7+ffmpeg.8/src/binding.rs' \
-    -print -quit
-)"
-
+export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu="$VCPKG_ROOT/installed/x64-linux/lib/pkgconfig"
 cargo build --release
 ```
 

@@ -4,7 +4,7 @@
 // - https://developer.apple.com/library/archive/technotes/tn2429/_index.html
 // - https://developer.apple.com/documentation/tvos-release-notes/tvos-media-formats
 
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 
 use super::device_profile::{
     ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice,
@@ -15,12 +15,15 @@ const APPLE_TV_CONTAINERS: &[ContainerFormat] = &[
     ContainerFormat::M4v,
     ContainerFormat::Mov,
 ];
-const APPLE_TV_HD_VIDEO: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264];
-const APPLE_TV_4K_VIDEO: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264, ffi::AV_CODEC_ID_HEVC];
+const APPLE_TV_HD_VIDEO: &[ffi::AVCodecID] = &[ffi::AVCodecID::AV_CODEC_ID_H264];
+const APPLE_TV_4K_VIDEO: &[ffi::AVCodecID] = &[
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_HEVC,
+];
 const APPLE_TV_AUDIO: &[ffi::AVCodecID] = &[
-    ffi::AV_CODEC_ID_AAC,
-    ffi::AV_CODEC_ID_AC3,
-    ffi::AV_CODEC_ID_EAC3,
+    ffi::AVCodecID::AV_CODEC_ID_AAC,
+    ffi::AVCodecID::AV_CODEC_ID_AC3,
+    ffi::AVCodecID::AV_CODEC_ID_EAC3,
 ];
 
 /// Capability profile for Apple TV HD.

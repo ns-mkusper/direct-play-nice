@@ -6,7 +6,8 @@
 
 mod common;
 
-use rsmpeg::{avformat::AVFormatContextInput, ffi};
+use direct_play_nice::ff::AVFormatContextInput;
+use ffmpeg_next::sys as ffi;
 use std::ffi::CString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -216,7 +217,7 @@ fn inspect(path: &Path) -> (f64, Vec<Track>) {
             "missing PTS in stream {index}"
         );
         assert!(packet.pos >= 0, "missing physical offset in stream {index}");
-        let text = if tracks[index].codec == ffi::AV_CODEC_ID_MOV_TEXT {
+        let text = if tracks[index].codec == ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT {
             assert!(
                 packet.size >= 2 && !packet.data.is_null(),
                 "invalid MOV_TEXT packet"
@@ -298,18 +299,18 @@ fn assert_head_moov(path: &Path) {
 fn assert_av(tracks: &[Track]) {
     let videos: Vec<_> = tracks
         .iter()
-        .filter(|t| t.kind == ffi::AVMEDIA_TYPE_VIDEO)
+        .filter(|t| t.kind == ffi::AVMediaType::AVMEDIA_TYPE_VIDEO)
         .collect();
     let audios: Vec<_> = tracks
         .iter()
-        .filter(|t| t.kind == ffi::AVMEDIA_TYPE_AUDIO)
+        .filter(|t| t.kind == ffi::AVMediaType::AVMEDIA_TYPE_AUDIO)
         .collect();
     assert_eq!(videos.len(), 1, "video track count");
     assert_eq!(audios.len(), AUDIO_LANGUAGES.len(), "audio track count");
-    assert_eq!(videos[0].codec, ffi::AV_CODEC_ID_H264);
+    assert_eq!(videos[0].codec, ffi::AVCodecID::AV_CODEC_ID_H264);
     assert!(videos[0].packets.len() >= 39, "video frames lost");
     for (audio, language) in audios.iter().zip(AUDIO_LANGUAGES) {
-        assert_eq!(audio.codec, ffi::AV_CODEC_ID_AAC);
+        assert_eq!(audio.codec, ffi::AVCodecID::AV_CODEC_ID_AAC);
         assert_eq!(audio.language, language);
         assert!(
             audio.packets.len() >= 100,
@@ -351,11 +352,11 @@ fn mp4_case(subtitle_count: usize, sparse: bool) -> TestResult {
     );
     let subtitles: Vec<_> = tracks
         .iter()
-        .filter(|t| t.kind == ffi::AVMEDIA_TYPE_SUBTITLE)
+        .filter(|t| t.kind == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE)
         .collect();
     assert_eq!(subtitles.len(), subtitle_count);
     for (index, subtitle) in subtitles.iter().enumerate() {
-        assert_eq!(subtitle.codec, ffi::AV_CODEC_ID_MOV_TEXT);
+        assert_eq!(subtitle.codec, ffi::AVCodecID::AV_CODEC_ID_MOV_TEXT);
         assert_eq!(subtitle.language, LANGUAGES[index % LANGUAGES.len()]);
         let nonempty: Vec<_> = subtitle
             .packets
@@ -383,11 +384,12 @@ fn mp4_case(subtitle_count: usize, sparse: bool) -> TestResult {
             );
         }
         let early = nonempty[0];
-        for (av_index, av) in tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| matches!(t.kind, ffi::AVMEDIA_TYPE_VIDEO | ffi::AVMEDIA_TYPE_AUDIO))
-        {
+        for (av_index, av) in tracks.iter().enumerate().filter(|(_, t)| {
+            matches!(
+                t.kind,
+                ffi::AVMediaType::AVMEDIA_TYPE_VIDEO | ffi::AVMediaType::AVMEDIA_TYPE_AUDIO
+            )
+        }) {
             let late_pos = av
                 .packets
                 .iter()

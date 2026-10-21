@@ -67,13 +67,13 @@ fn char_error_rate(expected: &str, actual: &str) -> f32 {
 
 #[test]
 fn bitmap_subtitle_canvas_fallback_uses_video_dimensions_when_decoder_has_no_size() {
-    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+    let decoder = AVCodec::find_decoder(ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
         .expect("PGS decoder should be available in FFmpeg build");
     let mut ctx = AVCodecContext::new(&decoder);
 
     apply_bitmap_subtitle_canvas_fallback(
         &mut ctx,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
         0,
         0,
         Some((1440, 1080)),
@@ -88,7 +88,7 @@ fn bitmap_subtitle_canvas_fallback_uses_video_dimensions_when_decoder_has_no_siz
 
 #[test]
 fn bitmap_subtitle_canvas_fallback_preserves_existing_decoder_size() {
-    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+    let decoder = AVCodec::find_decoder(ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
         .expect("PGS decoder should be available in FFmpeg build");
     let mut ctx = AVCodecContext::new(&decoder);
     unsafe {
@@ -100,7 +100,7 @@ fn bitmap_subtitle_canvas_fallback_preserves_existing_decoder_size() {
 
     apply_bitmap_subtitle_canvas_fallback(
         &mut ctx,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
         0,
         0,
         Some((1440, 1080)),
@@ -115,13 +115,13 @@ fn bitmap_subtitle_canvas_fallback_preserves_existing_decoder_size() {
 
 #[test]
 fn bitmap_subtitle_canvas_fallback_uses_larger_stream_dimensions() {
-    let decoder = AVCodec::find_decoder(ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+    let decoder = AVCodec::find_decoder(ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE)
         .expect("PGS decoder should be available in FFmpeg build");
     let mut ctx = AVCodecContext::new(&decoder);
 
     apply_bitmap_subtitle_canvas_fallback(
         &mut ctx,
-        ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
         1920,
         1080,
         Some((1440, 1080)),
@@ -143,7 +143,7 @@ fn subtitle_rect_counts_handles_null_subtitle() {
 fn bitmap_ocr_remux_retry_requires_packets_and_zero_decodes() {
     let retry = OcrDecodeOutcome {
         cues: Vec::new(),
-        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        stream_codec_id: ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
         subtitle_packet_count: 12,
         decoded_subtitle_count: 0,
         decoded_rect_count: 0,
@@ -161,7 +161,7 @@ fn bitmap_ocr_remux_retry_requires_packets_and_zero_decodes() {
 
     let text_subtitle = OcrDecodeOutcome {
         decoded_subtitle_count: 0,
-        stream_codec_id: ffi::AV_CODEC_ID_SUBRIP,
+        stream_codec_id: ffi::AVCodecID::AV_CODEC_ID_SUBRIP,
         ..decoded_without_cues
     };
     assert!(!should_retry_bitmap_ocr_with_external_remux(&text_subtitle));
@@ -673,7 +673,7 @@ fn dominant_color_from_rect_prefers_visible_palette() {
     rect.linesize[0] = 2;
     rect.data[0] = pixels.as_mut_ptr();
     rect.data[1] = palette.as_mut_ptr();
-    rect.type_ = ffi::SUBTITLE_BITMAP;
+    rect.type_ = ffi::AVSubtitleType::SUBTITLE_BITMAP;
     rect.x = 0;
     rect.y = 0;
     rect.nb_colors = 256;
@@ -1426,7 +1426,7 @@ fn test_color_distance_threshold() {
     rect.linesize[0] = 2;
     rect.data[0] = pixels.as_mut_ptr();
     rect.data[1] = palette.as_mut_ptr();
-    rect.type_ = ffi::SUBTITLE_BITMAP;
+    rect.type_ = ffi::AVSubtitleType::SUBTITLE_BITMAP;
     rect.x = 0;
     rect.y = 0;
     rect.nb_colors = 256;

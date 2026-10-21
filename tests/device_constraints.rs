@@ -2,7 +2,7 @@ use direct_play_nice::devices::{
     self, plan_output_profile, resolve_target_profile, ContainerFormat, DeviceFamily,
     InputMediaProfile, StreamingDevice,
 };
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 
 fn min_video_limit(devices: &[&StreamingDevice]) -> Option<i64> {
     devices.iter().filter_map(|d| d.max_video_bitrate).min()
@@ -17,16 +17,16 @@ fn test_chromecast_constraints() {
     let selected = devices::devices_for_family(DeviceFamily::Chromecast);
     let input = InputMediaProfile {
         container: Some(ContainerFormat::Mkv),
-        video_codec: ffi::AV_CODEC_ID_AV1,
-        audio_codec: ffi::AV_CODEC_ID_AC3,
+        video_codec: ffi::AVCodecID::AV_CODEC_ID_AV1,
+        audio_codec: ffi::AVCodecID::AV_CODEC_ID_AC3,
         video_bitrate: Some(80_000_000),
         audio_bitrate: Some(1_500_000),
     };
 
     let planned = plan_output_profile(&selected, &input).expect("plan should resolve");
     assert_eq!(planned.container, ContainerFormat::Mp4);
-    assert_eq!(planned.video_codec, ffi::AV_CODEC_ID_H264);
-    assert_eq!(planned.audio_codec, ffi::AV_CODEC_ID_AAC);
+    assert_eq!(planned.video_codec, ffi::AVCodecID::AV_CODEC_ID_H264);
+    assert_eq!(planned.audio_codec, ffi::AVCodecID::AV_CODEC_ID_AAC);
     assert!(planned.target_video_bitrate <= min_video_limit(&selected));
     assert!(planned.target_audio_bitrate <= min_audio_limit(&selected));
 }
@@ -36,16 +36,16 @@ fn test_roku_constraints() {
     let selected = devices::devices_for_family(DeviceFamily::Roku);
     let input = InputMediaProfile {
         container: Some(ContainerFormat::Mkv),
-        video_codec: ffi::AV_CODEC_ID_HEVC,
-        audio_codec: ffi::AV_CODEC_ID_EAC3,
+        video_codec: ffi::AVCodecID::AV_CODEC_ID_HEVC,
+        audio_codec: ffi::AVCodecID::AV_CODEC_ID_EAC3,
         video_bitrate: Some(90_000_000),
         audio_bitrate: Some(2_000_000),
     };
 
     let planned = plan_output_profile(&selected, &input).expect("plan should resolve");
     assert_eq!(planned.container, ContainerFormat::Mkv);
-    assert_eq!(planned.video_codec, ffi::AV_CODEC_ID_HEVC);
-    assert_eq!(planned.audio_codec, ffi::AV_CODEC_ID_EAC3);
+    assert_eq!(planned.video_codec, ffi::AVCodecID::AV_CODEC_ID_HEVC);
+    assert_eq!(planned.audio_codec, ffi::AVCodecID::AV_CODEC_ID_EAC3);
     assert!(planned.target_video_bitrate <= min_video_limit(&selected));
     assert!(planned.target_audio_bitrate <= min_audio_limit(&selected));
 }
@@ -55,16 +55,16 @@ fn test_apple_tv_constraints() {
     let selected = devices::devices_for_family(DeviceFamily::AppleTv);
     let input = InputMediaProfile {
         container: Some(ContainerFormat::Mkv),
-        video_codec: ffi::AV_CODEC_ID_HEVC,
-        audio_codec: ffi::AV_CODEC_ID_EAC3,
+        video_codec: ffi::AVCodecID::AV_CODEC_ID_HEVC,
+        audio_codec: ffi::AVCodecID::AV_CODEC_ID_EAC3,
         video_bitrate: Some(70_000_000),
         audio_bitrate: Some(2_000_000),
     };
 
     let planned = plan_output_profile(&selected, &input).expect("plan should resolve");
     assert_eq!(planned.container, ContainerFormat::Mp4);
-    assert_eq!(planned.video_codec, ffi::AV_CODEC_ID_H264);
-    assert_eq!(planned.audio_codec, ffi::AV_CODEC_ID_EAC3);
+    assert_eq!(planned.video_codec, ffi::AVCodecID::AV_CODEC_ID_H264);
+    assert_eq!(planned.audio_codec, ffi::AVCodecID::AV_CODEC_ID_EAC3);
     assert!(planned.target_video_bitrate <= min_video_limit(&selected));
     assert!(planned.target_audio_bitrate <= min_audio_limit(&selected));
 }
@@ -74,16 +74,16 @@ fn test_fire_tv_constraints() {
     let selected = devices::devices_for_family(DeviceFamily::FireTv);
     let input = InputMediaProfile {
         container: Some(ContainerFormat::Mkv),
-        video_codec: ffi::AV_CODEC_ID_AV1,
-        audio_codec: ffi::AV_CODEC_ID_FLAC,
+        video_codec: ffi::AVCodecID::AV_CODEC_ID_AV1,
+        audio_codec: ffi::AVCodecID::AV_CODEC_ID_FLAC,
         video_bitrate: Some(80_000_000),
         audio_bitrate: Some(2_000_000),
     };
 
     let planned = plan_output_profile(&selected, &input).expect("plan should resolve");
     assert_eq!(planned.container, ContainerFormat::Mkv);
-    assert_eq!(planned.video_codec, ffi::AV_CODEC_ID_AV1);
-    assert_eq!(planned.audio_codec, ffi::AV_CODEC_ID_FLAC);
+    assert_eq!(planned.video_codec, ffi::AVCodecID::AV_CODEC_ID_AV1);
+    assert_eq!(planned.audio_codec, ffi::AVCodecID::AV_CODEC_ID_FLAC);
     assert!(planned.target_video_bitrate <= min_video_limit(&selected));
     assert!(planned.target_audio_bitrate <= min_audio_limit(&selected));
 }
@@ -103,8 +103,8 @@ fn test_all_devices_constraints() {
 
     let input = InputMediaProfile {
         container: Some(ContainerFormat::Mkv),
-        video_codec: ffi::AV_CODEC_ID_AV1,
-        audio_codec: ffi::AV_CODEC_ID_DTS,
+        video_codec: ffi::AVCodecID::AV_CODEC_ID_AV1,
+        audio_codec: ffi::AVCodecID::AV_CODEC_ID_DTS,
         video_bitrate: Some(90_000_000),
         audio_bitrate: Some(2_000_000),
     };

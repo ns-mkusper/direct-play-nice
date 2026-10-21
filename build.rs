@@ -35,9 +35,11 @@ fn main() {
     }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Advapi32: vcpkg's ffmpeg[qsv] links Intel libvpl, which reads the
+        // driver store from the registry.
         for lib in [
             "Mfplat", "Strmiids", "Mfuuid", "Bcrypt", "Ncrypt", "Crypt32", "Secur32", "Ole32",
-            "User32",
+            "User32", "Advapi32",
         ] {
             println!("cargo:rustc-link-lib={lib}");
         }

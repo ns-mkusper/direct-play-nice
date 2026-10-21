@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-use rsmpeg::avformat::AVFormatContextInput;
+use direct_play_nice::ff::AVFormatContextInput;
 
 fn ensure_ffmpeg_present() {
     let out = Command::new("ffmpeg").arg("-version").output();
@@ -175,7 +175,7 @@ fn cli_ocr_preserves_subtitle_timing() -> Result<(), Box<dyn std::error::Error>>
     let has_subs = octx
         .streams()
         .iter()
-        .any(|st| st.codecpar().codec_type == rsmpeg::ffi::AVMEDIA_TYPE_SUBTITLE);
+        .any(|st| st.codecpar().codec_type == ffmpeg_next::sys::AVMediaType::AVMEDIA_TYPE_SUBTITLE);
     assert!(has_subs, "expected subtitle stream in output");
 
     let status_extract = Command::new("ffmpeg")

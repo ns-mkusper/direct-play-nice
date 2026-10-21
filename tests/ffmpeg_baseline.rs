@@ -83,6 +83,9 @@ struct Stream {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     channels: Option<u64>,
     packets: i64,
+    /// Packets ffprobe flags as discarded by the container's edit list.
+    #[serde(default)]
+    discarded: i64,
     first_pts_s: f64,
     last_end_s: f64,
 }
@@ -170,6 +173,7 @@ struct ProbedPacket {
     end_s: f64,
     pos: i64,
     size: i64,
+    discard: bool,
 }
 
 fn probe(path: &Path) -> (serde_json::Value, Vec<ProbedPacket>) {
@@ -209,6 +213,9 @@ fn probe(path: &Path) -> (serde_json::Value, Vec<ProbedPacket>) {
                     .as_str()
                     .and_then(|s| s.parse::<i64>().ok())
                     .unwrap_or(0),
+                // ffprobe marks samples outside the container's edit list with `D`;
+                // players skip them, so a trailing discard means a lost frame.
+                discard: p["flags"].as_str().is_some_and(|f| f.contains('D')),
             }
         })
         .collect();
@@ -366,6 +373,7 @@ fn observe(scenario: &str, output: &Path, source: &Path) -> Snapshot {
             sample_rate: num("sample_rate"),
             channels: num("channels"),
             packets: own.len() as i64,
+            discarded: own.iter().filter(|p| p.discard).count() as i64,
             first_pts_s: round3(first_pts_s),
             last_end_s: round3(last_end_s),
         };
@@ -506,6 +514,10 @@ fn diff(expected: &Snapshot, actual: &Snapshot) -> Vec<String> {
         check(
             (e.packets - a.packets).abs() <= packet_tolerance,
             format!("{id}: packets {} -> {}", e.packets, a.packets),
+        );
+        check(
+            e.discarded == a.discarded,
+            format!("{id}: discarded packets {} -> {}", e.discarded, a.discarded),
         );
         check(
             within(e.first_pts_s, a.first_pts_s, PTS_TOLERANCE_S),

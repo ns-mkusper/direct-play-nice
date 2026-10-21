@@ -3,19 +3,22 @@
 // Sources:
 // - https://developer.roku.com/docs/specs/media/streaming-specifications.md
 
-use rsmpeg::ffi;
+use ffmpeg_next::sys as ffi;
 
 use super::device_profile::{
     ContainerFormat, DeviceFamily, H264Level, H264Profile, Resolution, StreamingDevice,
 };
 
 const ROKU_CONTAINERS: &[ContainerFormat] = &[ContainerFormat::Mp4, ContainerFormat::Mkv];
-const ROKU_VIDEO: &[ffi::AVCodecID] = &[ffi::AV_CODEC_ID_H264, ffi::AV_CODEC_ID_HEVC];
+const ROKU_VIDEO: &[ffi::AVCodecID] = &[
+    ffi::AVCodecID::AV_CODEC_ID_H264,
+    ffi::AVCodecID::AV_CODEC_ID_HEVC,
+];
 const ROKU_AUDIO: &[ffi::AVCodecID] = &[
-    ffi::AV_CODEC_ID_AAC,
-    ffi::AV_CODEC_ID_AC3,
-    ffi::AV_CODEC_ID_EAC3,
-    ffi::AV_CODEC_ID_DTS,
+    ffi::AVCodecID::AV_CODEC_ID_AAC,
+    ffi::AVCodecID::AV_CODEC_ID_AC3,
+    ffi::AVCodecID::AV_CODEC_ID_EAC3,
+    ffi::AVCodecID::AV_CODEC_ID_DTS,
 ];
 
 /// Capability profile for Roku Express.

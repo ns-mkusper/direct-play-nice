@@ -99,11 +99,11 @@ pub(crate) fn assess_direct_play_compatibility(
 
     for stream in &streams {
         let disposition_flags = stream_disposition(stream);
-        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC as i32) != 0 {
+        if (disposition_flags & ffi::AV_DISPOSITION_ATTACHED_PIC) != 0 {
             reasons.push("input contains an attached picture stream".to_string());
             break;
         }
-        if stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+        if stream.codecpar().codec_type == ffi::AVMediaType::AVMEDIA_TYPE_ATTACHMENT {
             reasons.push("input contains an attachment stream".to_string());
             break;
         }
@@ -171,7 +171,7 @@ pub(crate) fn assess_direct_play_compatibility(
         }
     }
 
-    if target_video_codec == ffi::AV_CODEC_ID_H264 {
+    if target_video_codec == ffi::AVCodecID::AV_CODEC_ID_H264 {
         if let Some((min_h264_profile, min_h264_level)) = h264_constraints {
             check_h264_profile_level_constraints(
                 video_par.codec_id,
@@ -192,7 +192,7 @@ pub(crate) fn assess_direct_play_compatibility(
     let mut audio_quality_reason: Option<String> = None;
     for stream in &streams {
         let codecpar = stream.codecpar();
-        if codecpar.codec_type != ffi::AVMEDIA_TYPE_AUDIO {
+        if codecpar.codec_type != ffi::AVMediaType::AVMEDIA_TYPE_AUDIO {
             continue;
         }
         if codecpar.codec_id != target_audio_codec {
@@ -248,7 +248,7 @@ pub(crate) fn assess_direct_play_compatibility(
         let redundant = ocr_stream_filter.skipped(&subtitle_ocr::subtitle_stream_facts(&ictx));
         for stream in &streams {
             let codecpar = stream.codecpar();
-            if codecpar.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
+            if codecpar.codec_type == ffi::AVMediaType::AVMEDIA_TYPE_SUBTITLE
                 && is_image_based_subtitle(codecpar.codec_id)
                 && !redundant.contains_key(&stream.index)
             {
