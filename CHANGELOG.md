@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.10] - 2026-10-22
+
+### Subtitle OCR
+
+- Bitmap subtitle streams (PGS, DVD, DVB, XSUB) are no longer OCR'd when the
+  input already has a text subtitle stream with the same language and forced
+  flag. On by default; turn it off with `--no-skip-redundant-ocr` or
+  `skip_redundant_ocr = false`.
+- Added an opt-in OCR language list (`--ocr-languages`, config
+  `ocr_languages`). Bitmap streams in other languages are dropped from MP4
+  output; untagged streams are always OCR'd, and `chi` matches every Chinese
+  tag.
+- A GPU run-time error while OCRing one stream (out of memory, CUDA, cuDNN,
+  cuBLAS) now switches OCR to the CPU and retries that stream once instead of
+  failing the conversion. A stream that still fails follows
+  `--subtitle-failure-policy` (`skip-stream` by default). `DPN_OCR_REQUIRE_GPU=1`
+  still disables the CPU retry.
+
 ### Build
 
 - Fetch x264 from its GitHub mirror through a vcpkg overlay port
