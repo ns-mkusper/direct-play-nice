@@ -1,0 +1,58 @@
+{
+  "scenario": "matroska_remux",
+  "container": {
+    "format": "matroska,webm",
+    "duration_s": 4.029,
+    "moov_before_mdat": null
+  },
+  "streams": [
+    {
+      "index": 0,
+      "kind": "video",
+      "codec": "h264",
+      "language": null,
+      "default": false,
+      "forced": false,
+      "profile": "High",
+      "level": 51,
+      "width": 160,
+      "height": 120,
+      "pix_fmt": "yuv420p",
+      "fps": 10.0,
+      "packets": 40,
+      "first_pts_s": 0.021,
+      "last_end_s": 4.021
+    },
+    {
+      "index": 1,
+      "kind": "audio",
+      "codec": "aac",
+      "language": "eng",
+      "default": false,
+      "forced": false,
+      "profile": "LC",
+      "sample_rate": 48000,
+      "channels": 1,
+      "packets": 189,
+      "first_pts_s": 0.0,
+      "last_end_s": 4.031
+    },
+    {
+      "index": 2,
+      "kind": "audio",
+      "codec": "aac",
+      "language": "pol",
+      "default": false,
+      "forced": false,
+      "profile": "LC",
+      "sample_rate": 48000,
+      "channels": 1,
+      "packets": 189,
+      "first_pts_s": 0.0,
+      "last_end_s": 4.031
+    }
+  ],
+  "subtitles": [],
+  "subtitle_max_lag_s": null,
+  "video_psnr_db": 40.814
+}

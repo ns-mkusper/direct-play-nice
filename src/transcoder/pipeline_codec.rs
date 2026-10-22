@@ -103,6 +103,8 @@ pub(crate) struct H264VideoCodecParams<'a> {
     pub(crate) source_bit_rate_hint: i64,
     pub(crate) encoder_name: &'a str,
     pub(crate) is_constant_quality_mode: bool,
+    /// Enlarge sources below the cap instead of only clamping (AI upscale path).
+    pub(crate) upscale_to_cap: bool,
 }
 
 pub(crate) fn set_h264_video_codec_par(
@@ -120,14 +122,16 @@ pub(crate) fn set_h264_video_codec_par(
         source_bit_rate_hint,
         encoder_name,
         is_constant_quality_mode,
+        upscale_to_cap,
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let (target_width, target_height) = clamp_dimensions(
+    let (target_width, target_height) = target_dimensions(
         decode_context.width,
         decode_context.height,
         device_cap,
         quality_limits.max_video_dimensions,
+        upscale_to_cap,
     );
 
     if target_width != decode_context.width || target_height != decode_context.height {
@@ -215,6 +219,8 @@ pub(crate) struct HevcVideoCodecParams<'a> {
     pub(crate) source_bit_rate_hint: i64,
     pub(crate) encoder_name: &'a str,
     pub(crate) is_constant_quality_mode: bool,
+    /// Enlarge sources below the cap instead of only clamping (AI upscale path).
+    pub(crate) upscale_to_cap: bool,
 }
 
 pub(crate) fn set_hevc_video_codec_par(
@@ -230,14 +236,16 @@ pub(crate) fn set_hevc_video_codec_par(
         source_bit_rate_hint,
         encoder_name,
         is_constant_quality_mode,
+        upscale_to_cap,
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let (target_width, target_height) = clamp_dimensions(
+    let (target_width, target_height) = target_dimensions(
         decode_context.width,
         decode_context.height,
         device_cap,
         quality_limits.max_video_dimensions,
+        upscale_to_cap,
     );
 
     if target_width != decode_context.width || target_height != decode_context.height {
@@ -432,6 +440,30 @@ fn sanitize_mov_text_subtitle_header(header: &mut [u8]) {
         if *font_size > 24 {
             *font_size = NEUTRAL_TX3G_FONT_SIZE;
         }
+    }
+}
+
+/// Output dimensions for the video stream: the deterministic clamp, or an
+/// enlargement to the effective cap when AI upscaling is active and the source
+/// is smaller than that cap.
+fn target_dimensions(
+    source_width: i32,
+    source_height: i32,
+    device_cap: (u32, u32),
+    quality_cap: Option<(u32, u32)>,
+    upscale_to_cap: bool,
+) -> (i32, i32) {
+    let clamped = clamp_dimensions(source_width, source_height, device_cap, quality_cap);
+    if !upscale_to_cap {
+        return clamped;
+    }
+    let cap =
+        crate::transcoder::pipeline_assessment::effective_resolution_cap(device_cap, quality_cap);
+    let enlarged = crate::upscale::upscale_dimensions(source_width, source_height, cap);
+    if enlarged.0 > clamped.0 || enlarged.1 > clamped.1 {
+        enlarged
+    } else {
+        clamped
     }
 }
 

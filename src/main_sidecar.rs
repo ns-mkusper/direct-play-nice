@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{subtitle_ocr, OcrEngine, OcrFormat, SubMode};
+use crate::{subtitle_ocr, OcrEngine, OcrFormat, SubMode, SubtitleFailurePolicy};
 
 pub(super) struct OcrSidecarRequest<'a> {
     pub(super) input_file: &'a CStr,
@@ -20,6 +20,8 @@ pub(super) struct OcrSidecarRequest<'a> {
     pub(super) ocr_format: OcrFormat,
     pub(super) ocr_external_command: Option<&'a str>,
     pub(super) ocr_write_srt_sidecar: bool,
+    pub(super) ocr_stream_filter: &'a subtitle_ocr::OcrStreamFilter,
+    pub(super) subtitle_failure_policy: SubtitleFailurePolicy,
 }
 
 pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Result<bool> {
@@ -33,6 +35,8 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
         ocr_format,
         ocr_external_command,
         ocr_write_srt_sidecar,
+        ocr_stream_filter,
+        subtitle_failure_policy,
     } = request;
 
     if matches!(sub_mode, SubMode::Skip) {
@@ -44,11 +48,15 @@ pub(super) fn post_process_ocr_subtitles(request: OcrSidecarRequest<'_>) -> Resu
     let tracks = subtitle_ocr::convert_bitmap_subtitles(
         input_file,
         ocr_work_dir.path(),
-        sub_mode,
-        default_ocr_language,
-        ocr_engine,
-        ocr_format,
-        ocr_external_command,
+        subtitle_ocr::OcrOptions {
+            sub_mode,
+            default_language: default_ocr_language,
+            ocr_engine,
+            ocr_format,
+            ocr_external_command,
+            stream_filter: ocr_stream_filter,
+            failure_policy: subtitle_failure_policy,
+        },
     )?;
     if tracks.is_empty() {
         info!("No bitmap subtitle tracks required OCR; no OCR mux output was produced.");

@@ -283,6 +283,15 @@ fn resize_software_frame(
     rescaled_pts: i64,
 ) -> Result<AVFrame> {
     let frame = ensure_software_frame(frame)?;
+    let frame = match stream_processing_context.upscaler.as_mut() {
+        Some(upscaler)
+            if frame.width < stream_processing_context.encode_context.width
+                || frame.height < stream_processing_context.encode_context.height =>
+        {
+            upscaler.upscale_frame(&frame)?
+        }
+        _ => frame,
+    };
 
     let mut new_frame = AVFrame::new();
     new_frame.set_width(stream_processing_context.encode_context.width);

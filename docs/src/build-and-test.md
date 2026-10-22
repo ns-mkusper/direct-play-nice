@@ -4,9 +4,15 @@
 
 ```bash
 cargo install cargo-vcpkg
+export VCPKG_OVERLAY_PORTS="$PWD/vcpkg-overlays/ports"
 cargo vcpkg build
 cargo build
 ```
+
+`vcpkg-overlays/ports` carries local copies of upstream vcpkg ports that need a
+different source URL; today that is x264, which upstream fetches from a GitLab
+host that answers archive downloads with an anti-bot page. CI and the Docker
+image set `VCPKG_OVERLAY_PORTS` the same way.
 
 If your vcpkg checkout is in a non-default location, set `VCPKG_ROOT`.
 
@@ -51,6 +57,27 @@ Run integration tests requiring ffmpeg CLI:
 
 ```bash
 VCPKG_ROOT=/opt/vcpkg cargo test --features ffmpeg-cli-tests
+```
+
+## FFmpeg layout and quality baselines
+
+`tests/ffmpeg_baseline.rs` converts generated fixtures and compares the result
+with snapshots in `tests/baselines/`: container format, head `moov`, the stream
+table with profile, level, dimensions, languages and dispositions, packet counts
+and timing per stream, subtitle cue text and timing, how far subtitle payloads
+trail the audio/video already written, and video PSNR against the source. The
+inspection uses only the `ffprobe` and `ffmpeg` CLIs, so the snapshots judge
+output the same way before and after a bindings or FFmpeg version change.
+
+```bash
+cargo test --features ffmpeg-cli-tests --test ffmpeg_baseline
+```
+
+When an output change is intended, regenerate the snapshots and review the
+diff before committing:
+
+```bash
+DPN_UPDATE_BASELINES=1 cargo test --features ffmpeg-cli-tests --test ffmpeg_baseline
 ```
 
 ## Real Sonarr/Radarr imports in kind

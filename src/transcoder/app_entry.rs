@@ -273,10 +273,12 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
 
 /// Computes Servarr integration strategy based on CLI and process environment.
 fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
+    let streaming_devices = resolve_streaming_devices(args.streaming_devices.as_deref())?;
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
-        desired_extension: &args.servarr_output_extension,
+        output_extension_override: args.servarr_output_extension.as_deref(),
+        streaming_devices: &streaming_devices,
         desired_suffix: &args.servarr_output_suffix,
         desired_video_quality: servarr_filename_video_quality(args),
         language_requirements: servarr::LanguageRequirements {
@@ -362,6 +364,35 @@ fn log_servarr_context(servarr_preparation: &IntegrationPreparation) {
     }
 }
 
+fn resolve_streaming_devices(
+    selections: Option<&[StreamingDeviceSelection]>,
+) -> Result<Vec<&'static StreamingDevice>> {
+    let selections = selections.unwrap_or(&[]);
+    let mut resolved: Vec<&StreamingDevice> = if selections.is_empty()
+        || selections
+            .iter()
+            .any(|selection| matches!(selection, StreamingDeviceSelection::All))
+    {
+        devices::STREAMING_DEVICES.iter().collect()
+    } else {
+        selections
+            .iter()
+            .flat_map(|selection| match selection {
+                StreamingDeviceSelection::Model(device) => vec![*device],
+                StreamingDeviceSelection::Family(family) => devices::devices_for_family(*family),
+                StreamingDeviceSelection::All => Vec::new(),
+            })
+            .collect()
+    };
+
+    resolved.sort_by_key(|device| device.model);
+    resolved.dedup_by_key(|device| device.model);
+    if resolved.is_empty() {
+        bail!("No streaming devices resolved from CLI arguments.");
+    }
+    Ok(resolved)
+}
+
 /// Converts a Servarr preparation strategy into per-file conversion jobs.
 fn prepare_run_queue(servarr_preparation: IntegrationPreparation) -> Vec<Option<ReplacePlan>> {
     match servarr_preparation {
@@ -432,33 +463,7 @@ fn run_conversion(
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|| "<unset>".to_string());
 
-    let selections = args
-        .streaming_devices
-        .take()
-        .unwrap_or_else(|| vec![StreamingDeviceSelection::All]);
-
-    let mut streaming_devices: Vec<&StreamingDevice> = if selections
-        .iter()
-        .any(|selection| matches!(selection, StreamingDeviceSelection::All))
-    {
-        devices::STREAMING_DEVICES.iter().collect()
-    } else {
-        selections
-            .into_iter()
-            .flat_map(|selection| match selection {
-                StreamingDeviceSelection::Model(device) => vec![device],
-                StreamingDeviceSelection::Family(family) => devices::devices_for_family(family),
-                StreamingDeviceSelection::All => Vec::new(),
-            })
-            .collect()
-    };
-
-    streaming_devices.sort_by_key(|device| device.model);
-    streaming_devices.dedup_by_key(|device| device.model);
-
-    if streaming_devices.is_empty() {
-        bail!("No streaming devices resolved from CLI arguments.");
-    }
+    let streaming_devices = resolve_streaming_devices(args.streaming_devices.as_deref())?;
 
     let resolved_profile = devices::resolve_target_profile(&streaming_devices)?;
     let common_containers = StreamingDevice::get_common_containers(&streaming_devices)?;
@@ -599,6 +604,8 @@ fn run_conversion(
     let target_is_mp4 = matches!(output_extension.as_str(), "mp4" | "m4v");
     let output_is_mkv = matches!(output_extension.as_str(), "mkv" | "mka" | "mks");
     let should_ocr = target_is_mp4 || matches!(args.ocr_format, OcrFormat::Ass);
+    let ocr_stream_filter =
+        subtitle_ocr::OcrStreamFilter::new(args.skip_redundant_ocr, args.ocr_languages.as_deref());
 
     // Direct conversion stages its output the same way Servarr replacement does:
     // write to `<output>.direct-play-nice.tmp.<ext>`, promote by rename on
@@ -620,6 +627,16 @@ fn run_conversion(
         None => (output_file, output_path),
     };
 
+    let ai_upscale = ai_upscale_settings(&args);
+    if let Some(settings) = &ai_upscale {
+        info!(
+            "AI upscale enabled: model {}, device {}, tile {}",
+            settings.describe(),
+            settings.device,
+            settings.tile
+        );
+    }
+
     let mut needs_conversion = true;
     let mut dry_run_action = DryRunAction::Transcode;
     let mut dry_run_reasons = Vec::new();
@@ -628,6 +645,7 @@ fn run_conversion(
         DirectPlayConstraints {
             target_is_mp4,
             sub_mode: args.sub_mode,
+            ocr_stream_filter: &ocr_stream_filter,
             target_video_codec,
             target_audio_codec: common_audio_codec,
             h264_constraints,
@@ -637,6 +655,7 @@ fn run_conversion(
             quality_limits: &quality_limits,
             primary_video_stream_index: args.primary_video_stream_index,
             primary_criteria: args.primary_video_criteria,
+            ai_upscale_model: ai_upscale.as_ref().map(|_| args.ai_upscale_model.label()),
         },
     ) {
         Ok(assessment) => {
@@ -707,6 +726,7 @@ fn run_conversion(
             common_audio_codec,
             container: requested_container,
             should_ocr,
+            ai_upscale: ai_upscale.as_ref().map(|settings| settings.describe()),
         });
         println!("{}", report.render(args.output));
         return Ok(());
@@ -730,6 +750,7 @@ fn run_conversion(
         skip_codec_check: args.skip_codec_check,
         subtitle_failure_policy: args.subtitle_failure_policy,
         hw_accel: args.hw_accel,
+        ai_upscale: ai_upscale.as_ref(),
     };
 
     let mut conversion_result = if needs_conversion {
@@ -757,7 +778,10 @@ fn run_conversion(
 
     if needs_conversion {
         if let Err(err0) = conversion_result {
-            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            if err0.is::<crate::upscale::UpscaleError>() {
+                // Model load or inference failures are final; no encoder retry can fix them.
+                conversion_result = Err(err0);
+            } else if target_video_codec == ffi::AV_CODEC_ID_H264 {
                 conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                     Ok(mismatch) => handle_hw_profile_mismatch(
                         mismatch,
@@ -816,6 +840,8 @@ fn run_conversion(
                 ocr_format: args.ocr_format,
                 ocr_external_command: args.ocr_external_command.as_deref(),
                 ocr_write_srt_sidecar: args.ocr_write_srt_sidecar,
+                ocr_stream_filter: &ocr_stream_filter,
+                subtitle_failure_policy: args.subtitle_failure_policy,
             })?;
             output_ready = output_ready || ocr_output_ready;
             Ok(outcome)
@@ -968,6 +994,7 @@ struct DryRunInputs<'a> {
     common_audio_codec: ffi::AVCodecID,
     container: ContainerFormat,
     should_ocr: bool,
+    ai_upscale: Option<String>,
 }
 
 /// Assembles the paths and decisions a real run would act on, without acting on them.
@@ -988,6 +1015,7 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
         common_audio_codec,
         container,
         should_ocr,
+        ai_upscale,
     } = inputs;
 
     let mut temp_outputs = Vec::new();
@@ -1030,7 +1058,19 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
         audio_codec: describe_codec(common_audio_codec).to_string(),
         container: container.as_str().to_string(),
         subtitle_ocr_pass: should_ocr,
+        ai_upscale,
     }
+}
+
+/// Builds the opt-in AI upscale settings from CLI/config, or `None` when off.
+fn ai_upscale_settings(args: &Args) -> Option<crate::upscale::UpscaleSettings> {
+    let settings = crate::upscale::UpscaleSettings {
+        model: args.ai_upscale_model,
+        model_path: args.ai_upscale_model_path.clone(),
+        device: args.ai_upscale_device,
+        tile: args.ai_upscale_tile,
+    };
+    settings.enabled().then_some(settings)
 }
 
 fn ocr_multi_gpu_requested() -> bool {

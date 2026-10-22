@@ -42,6 +42,10 @@ When overrides are provided, they constrain the selected quality profile.
 
 ## Resizing
 
+Deterministic kernels only ever shrink a source to the active cap. The opt-in
+[AI Upscaling](./ai-upscaling.md) path enlarges smaller sources with an ONNX
+super-resolution model before the same deterministic fit.
+
 When a source exceeds a selected device or quality cap, the video is resized down
 while preserving aspect ratio and keeping encoder-friendly dimensions. The tool
 does not enlarge source dimensions as part of this deterministic FFmpeg resizing

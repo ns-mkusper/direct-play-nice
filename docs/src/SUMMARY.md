@@ -8,6 +8,7 @@
 - [Quality Controls](./quality-controls.md)
 - [Subtitle OCR](./subtitle-ocr.md)
 - [Hardware Acceleration](./hardware-acceleration.md)
+- [AI Upscaling](./ai-upscaling.md)
 - [Plex Refresh](./plex-refresh.md)
 - [Sonarr/Radarr Integration](./servarr.md)
 - [Probe and Debug](./probe-and-debug.md)

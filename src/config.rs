@@ -1,6 +1,7 @@
 //! Configuration subsystem for resolving config sources and deserializing TOML into runtime settings.
 
 use crate::gpu::HwAccel;
+use crate::upscale::{AiUpscaleDevice, AiUpscaleModel};
 use crate::{
     AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
     ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode, SubtitleFailurePolicy,
@@ -58,6 +59,8 @@ pub struct Config {
     pub ocr_format: Option<OcrFormat>,
     pub ocr_external_command: Option<String>,
     pub ocr_write_srt_sidecar: Option<bool>,
+    pub skip_redundant_ocr: Option<bool>,
+    pub ocr_languages: Option<String>,
     pub skip_codec_check: Option<bool>,
     pub validate_output: Option<bool>,
     pub visual_validate_output: Option<bool>,
@@ -67,6 +70,10 @@ pub struct Config {
     pub visual_failure_ratio: Option<f64>,
     pub delete_source: Option<bool>,
     pub dry_run: Option<bool>,
+    pub ai_upscale_model: Option<AiUpscaleModel>,
+    pub ai_upscale_model_path: Option<PathBuf>,
+    pub ai_upscale_device: Option<AiUpscaleDevice>,
+    pub ai_upscale_tile: Option<u32>,
     pub plex: Option<PlexSettings>,
 }
 
@@ -265,6 +272,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_deprecated_servarr_output_extension_override() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "servarr_output_extension = \"mkv\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension.as_deref(), Some("mkv"));
+    }
+
+    #[test]
+    fn servarr_output_extension_is_absent_by_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "video_quality = \"match-source\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension, None);
+    }
+
+    #[test]
     fn parses_servarr_language_check_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
@@ -335,6 +360,33 @@ mod tests {
             cfg.servarr_language_candidate_policy,
             Some(ServarrLanguageCandidatePolicy::CustomFormatOrTitle)
         );
+    }
+
+    #[test]
+    fn parses_ai_upscale_settings() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(
+            tmp,
+            r#"
+            ai_upscale_model = "realesr-animevideov3"
+            ai_upscale_model_path = "/models/custom.onnx"
+            ai_upscale_device = "cpu"
+            ai_upscale_tile = 256
+            "#
+        )
+        .unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.ai_upscale_model,
+            Some(AiUpscaleModel::RealesrAnimevideov3)
+        );
+        assert_eq!(
+            cfg.ai_upscale_model_path.as_deref(),
+            Some(Path::new("/models/custom.onnx"))
+        );
+        assert_eq!(cfg.ai_upscale_device, Some(AiUpscaleDevice::Cpu));
+        assert_eq!(cfg.ai_upscale_tile, Some(256));
     }
 
     #[test]

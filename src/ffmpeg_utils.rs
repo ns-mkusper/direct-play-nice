@@ -5,7 +5,7 @@ use clap::{value_parser, Parser};
 use log::debug;
 use rsmpeg::avcodec::AVCodecContext;
 use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
+use rsmpeg::avutil::{AVAudioFifo, AVDictionary, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 use rsmpeg::swresample::SwrContext;
@@ -22,6 +22,7 @@ use crate::types::{
     ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter, SubMode,
     SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
+use crate::upscale::{AiUpscaleDevice, AiUpscaleModel};
 
 pub(crate) use crate::cli::progress::ProgressTracker;
 
@@ -188,14 +189,13 @@ pub(crate) struct Args {
     )]
     pub(crate) probe_ocr_fixtures: Option<PathBuf>,
 
-    /// File extension to use when replacing Sonarr/Radarr media (default: mp4). Use 'match-input' to keep the original extension.
+    /// Deprecated. Force the Sonarr/Radarr replacement container: mp4, m4v, mov, mkv, or match-input to keep the source container. By default the container is chosen from the selected devices.
     #[arg(
         long = "servarr-output-extension",
         value_name = "EXTENSION",
-        default_value = "mp4",
         id = "servarr_output_extension"
     )]
-    pub(crate) servarr_output_extension: String,
+    pub(crate) servarr_output_extension: Option<String>,
 
     /// Suffix to append before the extension when replacing Sonarr/Radarr media (e.g. '.fixed')
     #[arg(
@@ -399,6 +399,26 @@ pub(crate) struct Args {
     )]
     pub(crate) ocr_write_srt_sidecar: bool,
 
+    /// Skip OCR for a bitmap subtitle stream when a text subtitle stream with the same language (and forced flag) is already present (default: enabled).
+    #[arg(
+        long = "skip-redundant-ocr",
+        default_value_t = true,
+        id = "skip_redundant_ocr"
+    )]
+    pub(crate) skip_redundant_ocr: bool,
+
+    /// OCR every bitmap subtitle stream, even when a text stream already covers its language.
+    #[arg(
+        long = "no-skip-redundant-ocr",
+        default_value_t = false,
+        id = "no_skip_redundant_ocr"
+    )]
+    pub(crate) no_skip_redundant_ocr: bool,
+
+    /// Only OCR bitmap subtitle streams in these languages, comma-separated (e.g. eng,spa,pol,chi; chi covers every Chinese variant). Bitmap streams in other languages are dropped from MP4 output. Untagged streams are always OCR'd. Default: every language.
+    #[arg(long = "ocr-languages", id = "ocr_languages")]
+    pub(crate) ocr_languages: Option<String>,
+
     /// Skip H.264 profile/level verification after transcode (troubleshooting for non-standard streams).
     #[arg(
         long = "skip-codec-check",
@@ -486,6 +506,42 @@ pub(crate) struct Args {
     /// Report what would be converted or replaced and exit without writing, renaming, or deleting any file
     #[arg(long = "dry-run", default_value_t = false, id = "dry_run")]
     pub(crate) dry_run: bool,
+
+    /// Opt-in AI super-resolution for sources below the resolution cap: off|realesr-animevideov3|realesr-general-x4v3|custom
+    #[arg(
+        long = "ai-upscale-model",
+        value_enum,
+        default_value_t = AiUpscaleModel::Off,
+        id = "ai_upscale_model"
+    )]
+    pub(crate) ai_upscale_model: AiUpscaleModel,
+
+    /// ONNX file for --ai-upscale-model custom (single float NCHW RGB input in [0,1])
+    #[arg(
+        long = "ai-upscale-model-path",
+        value_name = "FILE",
+        value_parser = value_parser!(PathBuf),
+        id = "ai_upscale_model_path"
+    )]
+    pub(crate) ai_upscale_model_path: Option<PathBuf>,
+
+    /// Where the AI upscale model runs: auto (GPU or fail) | cuda | openvino (Intel GPU) | cpu (explicit slow fallback)
+    #[arg(
+        long = "ai-upscale-device",
+        value_enum,
+        default_value_t = AiUpscaleDevice::Auto,
+        id = "ai_upscale_device"
+    )]
+    pub(crate) ai_upscale_device: AiUpscaleDevice,
+
+    /// Tile edge in source pixels for AI upscaling (0 = whole frame); use 256-512 on GPUs with 2-4 GB
+    #[arg(
+        long = "ai-upscale-tile",
+        value_name = "PIXELS",
+        default_value_t = 0,
+        id = "ai_upscale_tile"
+    )]
+    pub(crate) ai_upscale_tile: u32,
 
     /// Trigger a Plex library refresh for the output directory after a successful conversion
     #[arg(long = "plex-refresh", default_value_t = false)]
@@ -704,6 +760,8 @@ pub(crate) struct StreamProcessingContext {
     pub(crate) resize_quality: ResizeQuality,
     pub(crate) resize_backend: ResizeBackend,
     pub(crate) cuda_resize_filter: Option<crate::transcoder::cuda_resize::CudaResizeFilter>,
+    /// Loaded AI super-resolution model, present only when the video stream is enlarged.
+    pub(crate) upscaler: Option<crate::upscale::Upscaler>,
 }
 
 impl std::fmt::Debug for StreamProcessingContext {
@@ -771,6 +829,40 @@ pub(crate) fn init_output_audio_frame(
     Ok(frame)
 }
 
+/// Write a container header, enabling progressive playback for seekable MP4 outputs.
+pub(crate) fn write_container_header(output: &mut AVFormatContextOutput) -> Result<()> {
+    // FFmpeg selects the ipod (MP4) muxer for .m4v; the m4v muxer is raw video.
+    let is_mp4 = output
+        .oformat()
+        .name()
+        .to_bytes()
+        .split(|byte| *byte == b',')
+        .any(|name| matches!(name, b"mp4" | b"ipod"));
+    // SAFETY: a non-null pb belongs to this live output context. Only inspect it;
+    // muxers with AVFMT_NOFILE may have no I/O context.
+    let is_seekable = unsafe { output.pb.as_ref() }
+        .is_some_and(|io| io.seekable & ffi::AVIO_SEEKABLE_NORMAL as i32 != 0);
+    let mut options = if is_mp4 && is_seekable {
+        Some(AVDictionary::new(
+            cstr::cstr!("movflags"),
+            cstr::cstr!("+faststart"),
+            0,
+        ))
+    } else {
+        None
+    };
+
+    // rsmpeg transfers ownership to FFmpeg and returns any unconsumed options,
+    // including on failure. Keep the returned dictionary owned so it is freed.
+    output.write_header(&mut options)?;
+    if let Some(unused) = options.as_ref() {
+        if unused.iter().next().is_some() {
+            bail!("Unrecognized output header options: {:?}", unused);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_and_write_frame(
     encode_context: &mut AVCodecContext,
     output_format_context: &mut AVFormatContextOutput,
@@ -817,7 +909,7 @@ pub(crate) fn encode_and_write_frame(
         }
 
         output_format_context
-            .write_frame(&mut packet)
+            .interleaved_write_frame(&mut packet)
             .context("Could not write frame")?;
     }
 

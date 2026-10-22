@@ -292,3 +292,80 @@ fn direct_conversion_promotes_staged_output_and_leaves_no_temp() -> Result<(), B
     );
     Ok(())
 }
+
+#[test]
+fn dry_run_reports_ai_upscale_without_loading_a_model() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = gen_problem_input(&tmp);
+    let output = tmp.path().join("out.mp4");
+
+    let mut cmd = isolated_cmd(&tmp);
+    cmd.env("DPN_UPSCALE_MODEL_DIR", tmp.path().join("models"))
+        .arg("-s")
+        .arg("roku")
+        .arg("--video-quality")
+        .arg("1080p")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg("--ai-upscale-model")
+        .arg("realesr-animevideov3")
+        .arg("--dry-run")
+        .arg("--output")
+        .arg("json")
+        .arg(&input)
+        .arg(&output);
+
+    let before = snapshot(tmp.path());
+    let stdout = run_and_capture(cmd);
+    let after = snapshot(tmp.path());
+    assert_unchanged(&before, &after);
+
+    let report: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(report["ai_upscale"], "realesr-animevideov3");
+    let reasons = report["reasons"].as_array().unwrap();
+    assert!(
+        reasons.iter().any(|r| r
+            .as_str()
+            .unwrap_or("")
+            .contains("AI upscale (realesr-animevideov3) requested")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn custom_ai_upscale_model_requires_a_path() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = gen_problem_input(&tmp);
+    let output = tmp.path().join("out.mp4");
+
+    let mut cmd = isolated_cmd(&tmp);
+    cmd.arg("-s")
+        .arg("roku")
+        .arg("--video-quality")
+        .arg("1080p")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg("--ai-upscale-model")
+        .arg("custom")
+        .arg(&input)
+        .arg(&output);
+    let out = cmd.output()?;
+    assert!(
+        !out.status.success(),
+        "custom model without a path must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--ai-upscale-model-path"),
+        "error should name the missing flag:\n{stderr}"
+    );
+    assert!(!output.exists(), "no output must be written");
+    assert!(
+        !tmp.path().join("out.direct-play-nice.tmp.mp4").exists(),
+        "staged temp must be cleaned up"
+    );
+    Ok(())
+}

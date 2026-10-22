@@ -56,6 +56,25 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 - `--hw-accel <hw_accel>` `auto|none|nvenc|vaapi|qsv|videotoolbox|amf`
 
+## AI upscaling (opt-in)
+
+Separate from the deterministic `--resize-quality` kernels. Off by default.
+See [AI Upscaling](./ai-upscaling.html) for model choices, hardware support,
+and benchmark results.
+
+- `--ai-upscale-model <MODEL>` `off|realesr-animevideov3|realesr-general-x4v3|custom`
+  run an ONNX super-resolution model on sources below the active resolution
+  cap (`--video-quality` narrowed by the device limit), then fit the result to
+  the cap deterministically
+- `--ai-upscale-model-path <FILE>` ONNX file for `custom` (one float NCHW RGB
+  input in `[0,1]`, one output; the scale factor is probed at load)
+- `--ai-upscale-device <DEVICE>` `auto|cuda|openvino|cpu`; `auto` uses a GPU
+  provider (CUDA, then OpenVINO, then DirectML or CoreML) or fails with
+  instructions, `openvino` targets an Intel GPU through an ONNX Runtime build
+  with OpenVINO, `cpu` is the explicit slow fallback
+- `--ai-upscale-tile <PIXELS>` tile edge in source pixels; `0` runs whole
+  frames, `256`-`512` fits 2-4 GB GPUs
+
 ## Probe modes
 
 - `--probe-streams`
@@ -70,7 +89,9 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 
 ## Sonarr/Radarr options
 
-- `--servarr-output-extension <EXTENSION>` (`match-input` supported)
+- `--servarr-output-extension <EXTENSION>` (deprecated): force the replacement
+  container (`mp4`, `m4v`, `mov`, `mkv`, or `match-input`). By default the
+  container is chosen from the selected devices.
 - `--servarr-output-suffix <servarr_output_suffix>`
 - `--servarr-language-audit` run a periodic Sonarr/Radarr audit for
   delayed language upgrades
@@ -116,6 +137,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--ocr-engine <ocr_engine>` `auto|tesseract|pp-ocr-v3|pp-ocr-v4|external`
 - `--ocr-format <ocr_format>` `srt|ass`
 - `--ocr-write-srt-sidecar`
+- `--skip-redundant-ocr` / `--no-skip-redundant-ocr` (default: skip OCR for a
+  bitmap stream when a text stream with the same language and forced flag exists)
+- `--ocr-languages <list>` OCR only bitmap streams in these languages (default:
+  all); other languages' bitmap streams are dropped from MP4 output
 
 ## Failure policy
 

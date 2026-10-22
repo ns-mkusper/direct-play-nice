@@ -1,6 +1,7 @@
 //! OCR engine selection, worker planning, model provisioning, and execution-provider setup.
 
 use anyhow::{anyhow, bail, Context, Result};
+use log::warn;
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::path::Path;
@@ -10,7 +11,8 @@ use super::ocr_pipeline::{
     discover_candidates, ocr_single_stream, probe_video_dimensions, OcrStreamRequest,
 };
 use super::text_render::{write_ass, write_srt};
-use super::{OcrEngine, OcrFormat, OcrSubtitleTrack, SubMode};
+use super::{OcrEngine, OcrFormat, OcrStreamFilter, OcrSubtitleTrack, SubMode};
+use crate::SubtitleFailurePolicy;
 
 mod converters;
 mod factory;
@@ -25,10 +27,25 @@ pub(in crate::subtitle_ocr) use converters::rec_profile_for_language_with_test_c
 pub(in crate::subtitle_ocr) use converters::{rec_profile_for_language, OcrRecProfile};
 pub(super) use factory::*;
 pub(super) use models::*;
+pub(crate) use models::{ensure_model_file, resolve_model_dir, ModelSpec};
 pub(super) use providers::*;
 pub(super) use runtime::*;
 pub(super) use types::*;
 pub(super) use workers::*;
+
+/// OCR settings for [`convert_bitmap_subtitles`].
+pub struct OcrOptions<'a> {
+    pub sub_mode: SubMode,
+    pub default_language: Option<&'a str>,
+    pub ocr_engine: OcrEngine,
+    pub ocr_format: OcrFormat,
+    pub ocr_external_command: Option<&'a str>,
+    /// Leaves out bitmap streams a text stream already covers or whose
+    /// language is not in the OCR language list.
+    pub stream_filter: &'a OcrStreamFilter,
+    /// What to do when OCR of a stream fails even after the CPU retry.
+    pub failure_policy: SubtitleFailurePolicy,
+}
 
 /// Converts bitmap subtitle streams into OCR subtitle tracks.
 ///
@@ -37,17 +54,22 @@ pub(super) use workers::*;
 pub fn convert_bitmap_subtitles(
     input_file: &CStr,
     work_dir: &Path,
-    sub_mode: SubMode,
-    default_language: Option<&str>,
-    ocr_engine: OcrEngine,
-    ocr_format: OcrFormat,
-    ocr_external_command: Option<&str>,
+    options: OcrOptions<'_>,
 ) -> Result<Vec<OcrSubtitleTrack>> {
+    let OcrOptions {
+        sub_mode,
+        default_language,
+        ocr_engine,
+        ocr_format,
+        ocr_external_command,
+        stream_filter,
+        failure_policy,
+    } = options;
     if matches!(sub_mode, SubMode::Skip) {
         return Ok(Vec::new());
     }
 
-    let candidates = discover_candidates(input_file, sub_mode)?;
+    let candidates = discover_candidates(input_file, sub_mode, stream_filter)?;
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -109,14 +131,21 @@ pub fn convert_bitmap_subtitles(
                 video_dimensions,
                 ocr_engine: resolved_engine,
             };
-            let cues = ocr_single_stream(&request, &mut *seed_engine)?;
-            outputs.push(OcrTaskOutput {
-                order: task.order,
-                stream_index: task.stream_index,
-                language: task.language,
-                subtitle_path: task.subtitle_path,
-                cues,
-            });
+            let cues = ocr_stream_with_recovery(
+                &request,
+                &mut seed_engine,
+                ocr_external_command,
+                failure_policy,
+            )?;
+            if let Some(cues) = cues {
+                outputs.push(OcrTaskOutput {
+                    order: task.order,
+                    stream_index: task.stream_index,
+                    language: task.language,
+                    subtitle_path: task.subtitle_path,
+                    cues,
+                });
+            }
             log_ocr_stream_progress(idx + 1, total_tasks);
         }
         outputs
@@ -131,6 +160,7 @@ pub fn convert_bitmap_subtitles(
             resolved_engine,
             ocr_external_command: ocr_external_command.map(str::to_string),
             total_tasks,
+            failure_policy,
         };
         run_ocr_tasks_parallel(tasks, worker_plan, params)?
     };
@@ -145,5 +175,90 @@ impl OcrFormat {
             OcrFormat::Srt => "srt",
             OcrFormat::Ass => "ass",
         }
+    }
+}
+
+/// True when an OCR error came from a GPU execution provider at run time:
+/// device memory exhaustion or a CUDA/cuDNN/cuBLAS failure. Small GPUs shared
+/// with video encode/decode run out of memory mid-stream.
+pub(in crate::subtitle_ocr) fn is_gpu_runtime_failure(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_ascii_lowercase();
+    [
+        "failed to allocate memory",
+        "out of memory",
+        "bfc_arena",
+        "cuda",
+        "cudnn",
+        "cublas",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+/// OCRs one stream. A GPU run-time failure switches this process's OCR to the
+/// CPU execution provider and retries the stream once. A stream that still
+/// fails is dropped (`Ok(None)`) under `SkipStream`, or fails the run under
+/// `Fail`.
+pub(in crate::subtitle_ocr) fn ocr_stream_with_recovery(
+    request: &OcrStreamRequest<'_>,
+    engine: &mut Box<dyn SubtitleConverter>,
+    ocr_external_command: Option<&str>,
+    failure_policy: SubtitleFailurePolicy,
+) -> Result<Option<Vec<SubtitleCue>>> {
+    let mut err = match ocr_single_stream(request, &mut **engine) {
+        Ok(cues) => return Ok(Some(cues)),
+        Err(err) => err,
+    };
+    if is_gpu_runtime_failure(&err) && !force_cpu_execution_providers() && !require_gpu() {
+        warn!(
+            "OCR of subtitle stream {} failed on the GPU; switching OCR to the CPU execution provider and retrying: {:#}",
+            request.stream_index, err
+        );
+        FORCE_CPU_EP.store(true, std::sync::atomic::Ordering::Relaxed);
+        match create_ocr_engine(request.ocr_engine, ocr_external_command) {
+            Ok(cpu_engine) => {
+                *engine = cpu_engine;
+                match ocr_single_stream(request, &mut **engine) {
+                    Ok(cues) => return Ok(Some(cues)),
+                    Err(retry_err) => err = retry_err,
+                }
+            }
+            Err(init_err) => err = init_err.context("initializing CPU OCR engine for retry"),
+        }
+    }
+    match failure_policy {
+        SubtitleFailurePolicy::SkipStream => {
+            warn!(
+                "Dropping subtitle stream {} after OCR failed (--subtitle-failure-policy=skip-stream): {:#}",
+                request.stream_index, err
+            );
+            Ok(None)
+        }
+        SubtitleFailurePolicy::Fail => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod gpu_failure_tests {
+    use super::is_gpu_runtime_failure;
+    use anyhow::anyhow;
+
+    #[test]
+    fn device_memory_exhaustion_is_a_gpu_failure() {
+        let err = anyhow!(
+            "Non-zero status code returned while running Conv node. Status Message: bfc_arena.cc:376 Failed to allocate memory for requested buffer of size 6927872"
+        )
+        .context("PP-OCRv3 failed (rec_profile=cjk, language=chi_sim)");
+        assert!(is_gpu_runtime_failure(&err));
+        assert!(is_gpu_runtime_failure(&anyhow!(
+            "CUDNN_STATUS_EXECUTION_FAILED"
+        )));
+    }
+
+    #[test]
+    fn decode_and_layout_errors_are_not_gpu_failures() {
+        assert!(!is_gpu_runtime_failure(&anyhow!(
+            "OCR produced no cues for bitmap subtitle stream 5 (hdmv_pgs_subtitle)"
+        )));
     }
 }
