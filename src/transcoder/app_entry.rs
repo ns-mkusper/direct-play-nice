@@ -273,10 +273,12 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
 
 /// Computes Servarr integration strategy based on CLI and process environment.
 fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
+    let streaming_devices = resolve_streaming_devices(args.streaming_devices.as_deref())?;
     let servarr_view = ServeArrArgsView {
         has_input: args.input_file.is_some(),
         has_output: args.output_file.is_some(),
-        desired_extension: &args.servarr_output_extension,
+        output_extension_override: args.servarr_output_extension.as_deref(),
+        streaming_devices: &streaming_devices,
         desired_suffix: &args.servarr_output_suffix,
         desired_video_quality: servarr_filename_video_quality(args),
         language_requirements: servarr::LanguageRequirements {
@@ -362,6 +364,35 @@ fn log_servarr_context(servarr_preparation: &IntegrationPreparation) {
     }
 }
 
+fn resolve_streaming_devices(
+    selections: Option<&[StreamingDeviceSelection]>,
+) -> Result<Vec<&'static StreamingDevice>> {
+    let selections = selections.unwrap_or(&[]);
+    let mut resolved: Vec<&StreamingDevice> = if selections.is_empty()
+        || selections
+            .iter()
+            .any(|selection| matches!(selection, StreamingDeviceSelection::All))
+    {
+        devices::STREAMING_DEVICES.iter().collect()
+    } else {
+        selections
+            .iter()
+            .flat_map(|selection| match selection {
+                StreamingDeviceSelection::Model(device) => vec![*device],
+                StreamingDeviceSelection::Family(family) => devices::devices_for_family(*family),
+                StreamingDeviceSelection::All => Vec::new(),
+            })
+            .collect()
+    };
+
+    resolved.sort_by_key(|device| device.model);
+    resolved.dedup_by_key(|device| device.model);
+    if resolved.is_empty() {
+        bail!("No streaming devices resolved from CLI arguments.");
+    }
+    Ok(resolved)
+}
+
 /// Converts a Servarr preparation strategy into per-file conversion jobs.
 fn prepare_run_queue(servarr_preparation: IntegrationPreparation) -> Vec<Option<ReplacePlan>> {
     match servarr_preparation {
@@ -432,33 +463,7 @@ fn run_conversion(
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|| "<unset>".to_string());
 
-    let selections = args
-        .streaming_devices
-        .take()
-        .unwrap_or_else(|| vec![StreamingDeviceSelection::All]);
-
-    let mut streaming_devices: Vec<&StreamingDevice> = if selections
-        .iter()
-        .any(|selection| matches!(selection, StreamingDeviceSelection::All))
-    {
-        devices::STREAMING_DEVICES.iter().collect()
-    } else {
-        selections
-            .into_iter()
-            .flat_map(|selection| match selection {
-                StreamingDeviceSelection::Model(device) => vec![device],
-                StreamingDeviceSelection::Family(family) => devices::devices_for_family(family),
-                StreamingDeviceSelection::All => Vec::new(),
-            })
-            .collect()
-    };
-
-    streaming_devices.sort_by_key(|device| device.model);
-    streaming_devices.dedup_by_key(|device| device.model);
-
-    if streaming_devices.is_empty() {
-        bail!("No streaming devices resolved from CLI arguments.");
-    }
+    let streaming_devices = resolve_streaming_devices(args.streaming_devices.as_deref())?;
 
     let resolved_profile = devices::resolve_target_profile(&streaming_devices)?;
     let common_containers = StreamingDevice::get_common_containers(&streaming_devices)?;

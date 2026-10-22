@@ -188,14 +188,13 @@ pub(crate) struct Args {
     )]
     pub(crate) probe_ocr_fixtures: Option<PathBuf>,
 
-    /// File extension to use when replacing Sonarr/Radarr media (default: mp4). Use 'match-input' to keep the original extension.
+    /// Deprecated. Force the Sonarr/Radarr replacement container: mp4, m4v, mov, mkv, or match-input to keep the source container. By default the container is chosen from the selected devices.
     #[arg(
         long = "servarr-output-extension",
         value_name = "EXTENSION",
-        default_value = "mp4",
         id = "servarr_output_extension"
     )]
-    pub(crate) servarr_output_extension: String,
+    pub(crate) servarr_output_extension: Option<String>,
 
     /// Suffix to append before the extension when replacing Sonarr/Radarr media (e.g. '.fixed')
     #[arg(

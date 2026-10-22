@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::devices::{self, ContainerFormat};
     use crate::servarr::*;
     use crate::transcoder::VideoQuality;
     use std::ffi::CString;
@@ -252,7 +253,8 @@ mod tests {
         let view = ArgsView {
             has_input: false,
             has_output: false,
-            desired_extension: "mp4",
+            output_extension_override: None,
+            streaming_devices: &[&devices::chromecast::CHROMECAST_1ST_GEN],
             desired_suffix: "",
             desired_video_quality: VideoQuality::MatchSource,
             language_requirements: LanguageRequirements::default(),
@@ -289,7 +291,8 @@ mod tests {
         let view = ArgsView {
             has_input: false,
             has_output: false,
-            desired_extension: "mp4",
+            output_extension_override: None,
+            streaming_devices: &[&devices::chromecast::CHROMECAST_1ST_GEN],
             desired_suffix: "",
             desired_video_quality: VideoQuality::MatchSource,
             language_requirements: LanguageRequirements::default(),
@@ -311,6 +314,52 @@ mod tests {
 
         env::remove_var("radarr_eventtype");
         env::remove_var("radarr_moviefile_path");
+    }
+
+    #[test]
+    fn automatic_container_preserves_compatible_input() {
+        let selected = [&devices::roku::ROKU_ULTRA];
+        assert_eq!(
+            resolve_output_container(Path::new("Movie.mkv"), &selected, None).unwrap(),
+            ContainerFormat::Mkv
+        );
+    }
+
+    #[test]
+    fn automatic_container_falls_back_to_common_device_container() {
+        let selected = [
+            &devices::roku::ROKU_ULTRA,
+            &devices::chromecast::CHROMECAST_1ST_GEN,
+        ];
+        assert_eq!(
+            resolve_output_container(Path::new("Movie.mkv"), &selected, None).unwrap(),
+            ContainerFormat::Mp4
+        );
+    }
+
+    #[test]
+    fn automatic_container_for_all_devices_is_mp4() {
+        let selected: Vec<_> = devices::STREAMING_DEVICES.iter().collect();
+        assert_eq!(
+            resolve_output_container(Path::new("Movie.mkv"), &selected, None).unwrap(),
+            ContainerFormat::Mp4
+        );
+    }
+
+    #[test]
+    fn deprecated_override_remains_supported_and_validated() {
+        let selected = [&devices::roku::ROKU_ULTRA];
+        assert_eq!(
+            resolve_output_container(Path::new("Movie.mp4"), &selected, Some("mkv")).unwrap(),
+            ContainerFormat::Mkv
+        );
+        let chromecast = [&devices::chromecast::CHROMECAST_1ST_GEN];
+        assert!(
+            resolve_output_container(Path::new("Movie.mkv"), &chromecast, Some("mkv"))
+                .unwrap_err()
+                .to_string()
+                .contains("not compatible")
+        );
     }
 
     #[test]

@@ -267,6 +267,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_deprecated_servarr_output_extension_override() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "servarr_output_extension = \"mkv\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension.as_deref(), Some("mkv"));
+    }
+
+    #[test]
+    fn servarr_output_extension_is_absent_by_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "video_quality = \"match-source\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension, None);
+    }
+
+    #[test]
     fn parses_servarr_language_check_settings() {
         let mut tmp = NamedTempFile::new().unwrap();
         write!(
