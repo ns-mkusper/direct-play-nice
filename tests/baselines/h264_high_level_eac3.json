@@ -1,0 +1,44 @@
+{
+  "scenario": "h264_high_level_eac3",
+  "container": {
+    "format": "mov,mp4,m4a,3gp,3g2,mj2",
+    "duration_s": 2.016,
+    "moov_before_mdat": true
+  },
+  "streams": [
+    {
+      "index": 0,
+      "kind": "video",
+      "codec": "h264",
+      "language": "und",
+      "default": true,
+      "forced": false,
+      "profile": "High",
+      "level": 41,
+      "width": 1920,
+      "height": 1080,
+      "pix_fmt": "yuv420p",
+      "fps": 23.976,
+      "packets": 46,
+      "first_pts_s": 0.0,
+      "last_end_s": 1.919
+    },
+    {
+      "index": 1,
+      "kind": "audio",
+      "codec": "aac",
+      "language": "und",
+      "default": true,
+      "forced": false,
+      "profile": "LC",
+      "sample_rate": 48000,
+      "channels": 6,
+      "packets": 96,
+      "first_pts_s": -0.021,
+      "last_end_s": 2.016
+    }
+  ],
+  "subtitles": [],
+  "subtitle_max_lag_s": null,
+  "video_psnr_db": 48.195
+}

@@ -39,6 +39,19 @@ small helpers where possible:
 - `pipeline_codec` owns encoder setup and rate/profile options.
 - `pipeline_assessment` owns direct-play compatibility explanations.
 
+## Output Layout
+
+Audio, video, and subtitle packets share FFmpeg's interleaved write path. Mixing
+queued subtitle writes with direct A/V writes can leave subtitle samples at the
+end of the file even when their timestamps refer to the beginning.
+
+Seekable MP4 outputs use fast-start finalization to place the index before the
+media payload. The same header policy applies to conversion, subtitle remuxing,
+and language-retagging outputs; non-MP4 muxers do not receive MP4-specific flags.
+Fast-start may add a final relocation pass, which completes before staged output
+is promoted. Codec compatibility alone does not guarantee efficient remote
+playback, and existing files that are skipped are not automatically repaired.
+
 ## Content Policy
 
 Playable A/V streams are preserved by conversion. Attachments, data streams,

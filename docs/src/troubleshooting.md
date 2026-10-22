@@ -18,3 +18,16 @@
 - inspect stream details with `--probe-streams`
 - set explicit bitrate/quality limits to match endpoint constraints
 - compare against [SUPPORTED_DEVICES.md](../../SUPPORTED_DEVICES.md)
+
+## Remote playback buffers despite compatible codecs
+
+Check container layout as well as bitrate. Subtitle timestamps can be correct
+while their bytes are stored far from the corresponding audio/video packets,
+causing repeated remote range requests. MP4 fast-start only moves the index; it
+does not by itself repair poorly interleaved packet data.
+
+Newly written seekable MP4 outputs use interleaved packet writes and fast-start
+finalization. Existing compatible files may still take the skip path, so this
+change does not retroactively rewrite a library. Preserve the original when
+repairing a file, and verify the final client's actual playback mode, startup,
+and seeking before replacing more media.

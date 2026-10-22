@@ -59,6 +59,8 @@ pub struct Config {
     pub ocr_format: Option<OcrFormat>,
     pub ocr_external_command: Option<String>,
     pub ocr_write_srt_sidecar: Option<bool>,
+    pub skip_redundant_ocr: Option<bool>,
+    pub ocr_languages: Option<String>,
     pub skip_codec_check: Option<bool>,
     pub validate_output: Option<bool>,
     pub visual_validate_output: Option<bool>,
@@ -267,6 +269,24 @@ mod tests {
             Some("python3 /opt/ocr/run.py")
         );
         assert_eq!(cfg.ocr_write_srt_sidecar, Some(true));
+    }
+
+    #[test]
+    fn parses_deprecated_servarr_output_extension_override() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "servarr_output_extension = \"mkv\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension.as_deref(), Some("mkv"));
+    }
+
+    #[test]
+    fn servarr_output_extension_is_absent_by_default() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "video_quality = \"match-source\"").unwrap();
+
+        let cfg = read_from_path(tmp.path()).unwrap();
+        assert_eq!(cfg.servarr_output_extension, None);
     }
 
     #[test]

@@ -27,6 +27,7 @@ impl ConversionOutcome {
 pub(crate) struct DirectPlayConstraints<'a> {
     pub(crate) target_is_mp4: bool,
     pub(crate) sub_mode: SubMode,
+    pub(crate) ocr_stream_filter: &'a subtitle_ocr::OcrStreamFilter,
     pub(crate) target_video_codec: ffi::AVCodecID,
     pub(crate) target_audio_codec: ffi::AVCodecID,
     pub(crate) h264_constraints: Option<(H264Profile, H264Level)>,
@@ -48,6 +49,7 @@ pub(crate) fn assess_direct_play_compatibility(
     let DirectPlayConstraints {
         target_is_mp4,
         sub_mode,
+        ocr_stream_filter,
         target_video_codec,
         target_audio_codec,
         h264_constraints,
@@ -259,10 +261,14 @@ pub(crate) fn assess_direct_play_compatibility(
     }
 
     if target_is_mp4 && !matches!(sub_mode, SubMode::Skip) {
+        // Bitmap streams the OCR pass leaves out are dropped rather than
+        // OCR'd, so they do not force a conversion on their own.
+        let redundant = ocr_stream_filter.skipped(&subtitle_ocr::subtitle_stream_facts(&ictx));
         for stream in &streams {
             let codecpar = stream.codecpar();
             if codecpar.codec_type == ffi::AVMEDIA_TYPE_SUBTITLE
                 && is_image_based_subtitle(codecpar.codec_id)
+                && !redundant.contains_key(&stream.index)
             {
                 reasons.push(format!(
                     "bitmap subtitle stream {} requires OCR conversion for MP4 direct-play",

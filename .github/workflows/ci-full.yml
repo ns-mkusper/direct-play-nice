@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
 
 env:
+  VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/vcpkg-overlays/ports
   CARGO_TERM_COLOR: always
 
 concurrency:
@@ -212,6 +213,7 @@ jobs:
         -C link-arg=Secur32.lib
         -C link-arg=Ole32.lib
         -C link-arg=User32.lib
+        -C link-arg=Advapi32.lib
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust

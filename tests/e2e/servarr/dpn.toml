@@ -4,7 +4,6 @@ video_quality = "480p"
 max_video_bitrate = "1M"
 audio_quality = "128k"
 max_audio_bitrate = "128k"
-servarr_output_extension = "mp4"
 servarr_output_suffix = ".fixed"
 delete_source = true
 validate_output = true

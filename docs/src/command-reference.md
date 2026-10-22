@@ -89,7 +89,9 @@ and benchmark results.
 
 ## Sonarr/Radarr options
 
-- `--servarr-output-extension <EXTENSION>` (`match-input` supported)
+- `--servarr-output-extension <EXTENSION>` (deprecated): force the replacement
+  container (`mp4`, `m4v`, `mov`, `mkv`, or `match-input`). By default the
+  container is chosen from the selected devices.
 - `--servarr-output-suffix <servarr_output_suffix>`
 - `--servarr-language-audit` run a periodic Sonarr/Radarr audit for
   delayed language upgrades
@@ -135,6 +137,10 @@ and benchmark results.
 - `--ocr-engine <ocr_engine>` `auto|tesseract|pp-ocr-v3|pp-ocr-v4|external`
 - `--ocr-format <ocr_format>` `srt|ass`
 - `--ocr-write-srt-sidecar`
+- `--skip-redundant-ocr` / `--no-skip-redundant-ocr` (default: skip OCR for a
+  bitmap stream when a text stream with the same language and forced flag exists)
+- `--ocr-languages <list>` OCR only bitmap streams in these languages (default:
+  all); other languages' bitmap streams are dropped from MP4 output
 
 ## Failure policy
 

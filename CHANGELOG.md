@@ -17,6 +17,56 @@ All notable changes to this project will be documented in this file.
   (OCR and AI upscaling) by disabling ONNX Runtime telemetry and skipping its
   exit-time teardown once all output has been promoted.
 
+## [1.1.0-beta.10] - 2026-10-22
+
+### Subtitle OCR
+
+- Bitmap subtitle streams (PGS, DVD, DVB, XSUB) are no longer OCR'd when the
+  input already has a text subtitle stream with the same language and forced
+  flag. On by default; turn it off with `--no-skip-redundant-ocr` or
+  `skip_redundant_ocr = false`.
+- Added an opt-in OCR language list (`--ocr-languages`, config
+  `ocr_languages`). Bitmap streams in other languages are dropped from MP4
+  output; untagged streams are always OCR'd, and `chi` matches every Chinese
+  tag.
+- A GPU run-time error while OCRing one stream (out of memory, CUDA, cuDNN,
+  cuBLAS) now switches OCR to the CPU and retries that stream once instead of
+  failing the conversion. A stream that still fails follows
+  `--subtitle-failure-policy` (`skip-stream` by default). `DPN_OCR_REQUIRE_GPU=1`
+  still disables the CPU retry.
+
+### Build
+
+- Fetch x264 from its GitHub mirror through a vcpkg overlay port
+  (`vcpkg-overlays/ports`). Local builds set
+  `VCPKG_OVERLAY_PORTS="$PWD/vcpkg-overlays/ports"` before `cargo vcpkg build`.
+
+### Dependencies
+
+- Updated the bundled FFmpeg from 8.1 to 8.1.2 (vcpkg
+  `39ec37c17d122da0c98c3279e6a6b0f4efb75c4a`), picking up the 8.1.1 and 8.1.2
+  bounds and overflow fixes in the Matroska, AVI, MPEG-TS, H.264, HEVC, and
+  swscale paths. Intel Quick Sync on Windows now links through libvpl instead
+  of the legacy Media SDK.
+
+### Testing
+
+- Added binding-independent FFmpeg layout and quality baselines
+  (`tests/ffmpeg_baseline.rs`, snapshots under `tests/baselines/`). Each
+  scenario is inspected with the `ffprobe` and `ffmpeg` CLIs only, so the same
+  oracle gates output across bindings and FFmpeg version changes.
+
+## [1.1.0-beta.9] - 2026-10-09
+
+### Direct Play Reliability
+
+- Interleaved audio, video, and subtitle packet writes consistently so early
+  subtitle samples are no longer deferred until the end of MP4 output.
+- Enabled fast-start finalization for seekable MP4 conversion, subtitle remux,
+  and language-retagging outputs.
+- Added physical-layout regressions for one, seventeen, and thirty-four sparse
+  text-subtitle tracks while preserving track metadata and cue timing.
+
 ### Safety
 
 - Added a global `--dry-run` flag and `dry_run` config key that report the
