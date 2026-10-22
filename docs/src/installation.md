@@ -30,6 +30,22 @@ Each GitHub release publishes platform archives and checksums built by
 
 The release also includes shell and PowerShell installers.
 
+Linux (x86_64, aarch64) and macOS:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ns-mkusper/direct-play-nice/releases/latest/download/direct_play_nice-installer.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/ns-mkusper/direct-play-nice/releases/latest/download/direct_play_nice-installer.ps1 | iex"
+```
+
+To install from an archive instead, put the binary on your `PATH`, for example
+in `/usr/local/bin`. Subtitle OCR needs the ONNX Runtime shared library at run
+time; see [Subtitle OCR](subtitle-ocr.md).
+
 ## From crates.io
 
 ```bash
