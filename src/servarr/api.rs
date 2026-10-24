@@ -1180,9 +1180,7 @@ impl ApiClient {
                 return None;
             }
         };
-        let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
-            return None;
-        };
+        let file_id = episode.get("episodeFileId").and_then(Value::as_i64)?;
         if file_id <= 0 {
             return None;
         }
@@ -2098,7 +2096,10 @@ impl ApiClient {
             Err(UreqError::Status(404, _)) => {
                 // Queue cleanup is idempotent: another worker, Sonarr, or the
                 // download client may remove the item after it was listed.
-                warn!("Servarr queue item was already gone while deleting {}", endpoint);
+                warn!(
+                    "Servarr queue item was already gone while deleting {}",
+                    endpoint
+                );
                 return Ok(Value::Null);
             }
             Err(error) => return Err(error).with_context(|| format!("DELETE {}", endpoint)),
