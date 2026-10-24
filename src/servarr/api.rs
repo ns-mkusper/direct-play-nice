@@ -1069,6 +1069,9 @@ impl ApiClient {
             let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
                 continue;
             };
+            if file_id <= 0 {
+                continue;
+            }
             let file = self.sonarr_episode_file(file_id)?;
             out.push((episode_id, file));
         }
