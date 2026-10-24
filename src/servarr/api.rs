@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use ureq::{Agent, AgentBuilder};
+use ureq::{Agent, AgentBuilder, Error as UreqError};
 
 const SERVARR_HISTORY_PAGE_SIZE: u32 = 100;
 const SERVARR_HISTORY_MAX_PAGES: u32 = 1_000;
@@ -2080,12 +2080,21 @@ impl ApiClient {
     }
 
     fn delete(&self, endpoint: &str) -> Result<Value> {
-        let response = self
+        let response = match self
             .agent
             .delete(endpoint)
             .set("X-Api-Key", &self.api_key)
             .call()
-            .with_context(|| format!("DELETE {}", endpoint))?;
+        {
+            Ok(response) => response,
+            Err(UreqError::Status(404, _)) => {
+                // Queue cleanup is idempotent: another worker, Sonarr, or the
+                // download client may remove the item after it was listed.
+                warn!("Servarr queue item was already gone while deleting {}", endpoint);
+                return Ok(Value::Null);
+            }
+            Err(error) => return Err(error).with_context(|| format!("DELETE {}", endpoint)),
+        };
         read_json_response(response)
     }
 }
@@ -3221,6 +3230,23 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn deleting_missing_queue_item_is_idempotent() {
+        let mut server = mockito::Server::new();
+        let delete = server
+            .mock("DELETE", "/api/v3/queue/648187895")
+            .match_query(Matcher::Any)
+            .with_status(404)
+            .create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        client
+            .sonarr_delete_queue_item_with_options(648187895, true, true)
+            .unwrap();
+
+        delete.assert();
     }
 
     #[test]
