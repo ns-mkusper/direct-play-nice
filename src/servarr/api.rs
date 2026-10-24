@@ -1177,7 +1177,12 @@ impl ApiClient {
                 return None;
             }
         };
-        let file_id = episode.get("episodeFileId").and_then(Value::as_i64)?;
+        let Some(file_id) = episode.get("episodeFileId").and_then(Value::as_i64) else {
+            return None;
+        };
+        if file_id <= 0 {
+            return None;
+        }
         match self.sonarr_episode_file(file_id) {
             Ok(file) => Some(file),
             Err(err) => {
