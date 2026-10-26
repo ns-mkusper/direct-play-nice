@@ -29,7 +29,9 @@ use crate::transcoder::convert_video_file;
 use crate::transcoder::dry_run::{DryRunAction, DryRunReport, SourceHandling};
 use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMismatch};
 use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
-use crate::transcoder::pipeline::{assess_direct_play_compatibility, DirectPlayConstraints};
+use crate::transcoder::pipeline::{
+    assess_direct_play_compatibility, AudioDecodeErrorLimits, DirectPlayConstraints,
+};
 use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
 use crate::transcoder::verification::{validate_output_file, OutputValidationOptions};
 use crate::transcoder::ConversionOutcome;
@@ -737,6 +739,11 @@ fn run_conversion(
         resize_backend: args.resize_backend,
         skip_codec_check: args.skip_codec_check,
         subtitle_failure_policy: args.subtitle_failure_policy,
+        audio_decode_error_limits: AudioDecodeErrorLimits {
+            policy: args.audio_decode_error_policy,
+            max_packets: args.audio_decode_error_max_packets,
+            max_ratio: args.audio_decode_error_max_ratio,
+        },
         hw_accel: args.hw_accel,
     };
 
