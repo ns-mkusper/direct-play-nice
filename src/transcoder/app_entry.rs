@@ -86,6 +86,7 @@ fn prepare_runtime_configuration(
         args.plex_refresh,
         args.plex_url.as_deref(),
         args.plex_token.as_deref(),
+        args.plex_remove_replaced_versions,
     )
 }
 
@@ -875,9 +876,10 @@ fn run_conversion(
                 );
                 return Ok(());
             }
+            let replaced_path = plan.input_path.clone();
             let final_path = plan.finalize_success()?;
             if let Some(ref refresher) = plex_refresher {
-                if let Err(err) = refresher.refresh_path(&final_path) {
+                if let Err(err) = refresher.refresh_replaced(&final_path, Some(&replaced_path)) {
                     warn!(
                         "Plex refresh failed for '{}': {}",
                         final_path.display(),
@@ -908,6 +910,7 @@ fn run_conversion(
                 }
                 None => output_path.clone(),
             };
+            let mut deleted_source = None;
             if args.delete_source.unwrap_or(false) && output_ready {
                 if !outcome.profile_verified() {
                     warn!(
@@ -918,10 +921,13 @@ fn run_conversion(
                     let output_path = final_output_path.clone();
                     if input_path != output_path {
                         match fs::remove_file(&input_path) {
-                            Ok(_) => info!(
-                                "Deleted source file '{}' after successful conversion",
-                                input_path.display()
-                            ),
+                            Ok(_) => {
+                                info!(
+                                    "Deleted source file '{}' after successful conversion",
+                                    input_path.display()
+                                );
+                                deleted_source = Some(input_path);
+                            }
                             Err(err) => warn!(
                                 "Failed to delete source file '{}': {}",
                                 input_path.display(),
@@ -937,7 +943,9 @@ fn run_conversion(
             }
             if output_ready {
                 if let Some(ref refresher) = plex_refresher {
-                    if let Err(err) = refresher.refresh_path(&final_output_path) {
+                    if let Err(err) =
+                        refresher.refresh_replaced(&final_output_path, deleted_source.as_deref())
+                    {
                         warn!(
                             "Plex refresh failed for '{}': {}",
                             final_output_path.display(),
