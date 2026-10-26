@@ -230,3 +230,57 @@ fn cli_tolerates_a_few_invalid_audio_packets() -> Result<(), Box<dyn std::error:
 
     Ok(())
 }
+
+#[test]
+fn cli_fills_holes_in_audio_timestamps() -> Result<(), Box<dyn std::error::Error>> {
+    common::ensure_ffmpeg_present();
+
+    // Dropping two seconds of audio frames keeps their timestamps, which is how
+    // lost Matroska clusters look to the decoder: a jump with no decode error.
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("input_audio_hole.mkv");
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=24:duration=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=10",
+                "-filter:a",
+                "aselect=not(between(t\\,3\\,5))",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "flac",
+                input.to_string_lossy().as_ref(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg failed to generate sample with an audio hole"
+    );
+
+    let output = tmp.path().join("out_hole.mp4");
+    Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .args(["--hw-accel", "none", "--delete-source", "false"])
+        .arg(&input)
+        .arg(&output)
+        .assert()
+        .success()
+        .stderr(str::contains("of missing audio with silence"));
+    let duration = audio_duration_secs(&output);
+    assert!(
+        (duration - 10.0).abs() < 0.1,
+        "the hole should be filled, got {duration}s of audio"
+    );
+
+    Ok(())
+}

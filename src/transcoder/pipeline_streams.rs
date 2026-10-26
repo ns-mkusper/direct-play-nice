@@ -19,7 +19,7 @@ use crate::ffmpeg_utils::{
 use crate::transcoder::ffmpeg_diagnostics::{av_error_to_string, pix_fmt_name};
 use crate::transcoder::ffmpeg_ext::copy_payload_into_packet;
 use crate::transcoder::h264::DecoderError;
-use crate::transcoder::pipeline_audio_errors::AudioDecodeErrorAction;
+use crate::transcoder::pipeline_audio_errors::{AudioDecodeErrorAction, AudioTimelineAction};
 use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
@@ -438,6 +438,7 @@ pub(crate) fn process_audio_stream(
         stream_processing_context
             .audio_decode_errors
             .last_frame_samples = frame.nb_samples;
+        fill_audio_timestamp_gap(stream_processing_context, output_format_context, &frame)?;
 
         let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
             bail!(
@@ -551,21 +552,88 @@ fn drop_invalid_audio_packet(
         packet.duration,
         gap_samples
     );
-    if gap_samples <= 0 {
+    queue_silence(
+        stream_processing_context,
+        output_format_context,
+        gap_samples,
+    )?;
+    stream_processing_context
+        .audio_decode_errors
+        .record_padding(i64::from(gap_samples));
+    Ok(())
+}
+
+/// Fills holes in the input audio timestamps with silence.
+///
+/// Damaged Matroska files can lose whole clusters in the demuxer; the decoder
+/// then sees a timestamp jump but no error. Output timestamps come from a
+/// running sample count, so the hole has to be filled for later audio to stay
+/// aligned with the video. See `AUDIO_GAP_FILL_MIN_SECS` and
+/// `AUDIO_GAP_FILL_MAX_SECS` for which jumps are filled.
+fn fill_audio_timestamp_gap(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    frame: &AVFrame,
+) -> Result<()> {
+    let sample_rate = stream_processing_context.encode_context.sample_rate;
+    let pts = best_effort_frame_pts(frame);
+    let frame_start = (pts != ffi::AV_NOPTS_VALUE && sample_rate > 0).then(|| {
+        rescale_timestamp(
+            pts,
+            stream_processing_context.decode_context.time_base,
+            ffi::AVRational {
+                num: 1,
+                den: sample_rate,
+            },
+        )
+    });
+    match stream_processing_context.audio_decode_errors.place_frame(
+        frame_start,
+        frame.nb_samples,
+        sample_rate,
+    ) {
+        AudioTimelineAction::Continue => Ok(()),
+        AudioTimelineAction::FillGap(samples) => {
+            debug!(
+                "Audio stream {} timestamps skip {} samples at pts {}; filling with silence",
+                stream_processing_context.input_stream_index, samples, pts
+            );
+            queue_silence(
+                stream_processing_context,
+                output_format_context,
+                i32::try_from(samples).unwrap_or(i32::MAX),
+            )
+        }
+        AudioTimelineAction::Discontinuity(samples) => {
+            warn!(
+                "Audio stream {} timestamps jump by {} samples at pts {}; not filling the jump",
+                stream_processing_context.input_stream_index, samples, pts
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Queues `samples` of silence in the audio FIFO and encodes any full frames.
+fn queue_silence(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    samples: i32,
+) -> Result<()> {
+    if samples <= 0 {
         return Ok(());
     }
-
     let encode_context = &stream_processing_context.encode_context;
     let nb_channels = encode_context.ch_layout.nb_channels;
     let sample_fmt = encode_context.sample_fmt;
-    let silence = AVSamples::new(nb_channels, gap_samples, sample_fmt, 0)
+    let silence = AVSamples::new(nb_channels, samples, sample_fmt, 0)
         .context("Create silence buffer failed.")?;
     // AVSamples zero-fills, which is not silence for unsigned 8-bit formats.
     unsafe {
         ffi::av_samples_set_silence(
             silence.audio_data.as_ptr(),
             0,
-            gap_samples,
+            samples,
             nb_channels,
             sample_fmt,
         );
@@ -577,8 +645,7 @@ fn drop_invalid_audio_packet(
             stream_processing_context.input_stream_index
         );
     };
-    add_samples_to_fifo(fifo, &silence, gap_samples)?;
-    stream_processing_context.audio_decode_errors.padded_samples += gap_samples as u64;
+    add_samples_to_fifo(fifo, &silence, samples)?;
 
     let output_frame_size =
         preferred_audio_frame_size(&stream_processing_context.encode_context, fifo.size());

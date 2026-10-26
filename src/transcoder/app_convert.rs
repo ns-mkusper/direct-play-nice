@@ -923,6 +923,16 @@ fn check_audio_decode_errors(stream_contexts: &[StreamProcessingContext]) -> Res
             continue;
         }
         let errors = &context.audio_decode_errors;
+        if errors.gap_filled_samples > 0 {
+            warn!(
+                "Audio stream {} (decoder='{}'): filled {} samples ({:.1}s) of missing audio with silence to keep it in sync",
+                context.input_stream_index,
+                context.decoder_name,
+                errors.gap_filled_samples,
+                errors.gap_filled_samples as f64
+                    / f64::from(context.encode_context.sample_rate.max(1))
+            );
+        }
         if errors.dropped == 0 {
             continue;
         }
