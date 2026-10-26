@@ -18,6 +18,13 @@ use ureq::{Agent, AgentBuilder, Error as UreqError};
 
 const SERVARR_HISTORY_PAGE_SIZE: u32 = 100;
 const SERVARR_HISTORY_MAX_PAGES: u32 = 1_000;
+// How long the language audit waits for a Sonarr ManualImport command to
+// finish before giving up on that import (120 polls x 5 s = 10 minutes).
+const SERVARR_COMMAND_MAX_POLLS: u32 = 120;
+#[cfg(not(test))]
+const SERVARR_COMMAND_POLL_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SERVARR_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Default)]
 pub struct ApiSettings {
@@ -962,12 +969,95 @@ impl ApiClient {
         let response = self
             .get(&endpoint)
             .with_context(|| format!("requesting {} manual release search", self.kind.label()))?;
-        response.as_array().cloned().ok_or_else(|| {
+        let releases = response.as_array().cloned().ok_or_else(|| {
             anyhow!(
                 "{} release search did not return an array",
                 self.kind.label()
             )
-        })
+        })?;
+        let Target::SonarrEpisode { episode_id } = *target else {
+            return Ok(releases);
+        };
+        // Sonarr maps every result of an episode search onto the requested
+        // series, even releases of a different show or film whose title only
+        // shares a prefix. Drop results whose parsed series title is not the
+        // series' title or one of its alternate titles.
+        let titles = match self.sonarr_series_titles_for_episode(episode_id) {
+            Ok(titles) => titles,
+            Err(err) => {
+                warn!(
+                    "Sonarr language audit could not load series titles for episode {}; not filtering releases by series title: {}",
+                    episode_id, err
+                );
+                return Ok(releases);
+            }
+        };
+        Ok(releases
+            .into_iter()
+            .filter(|release| {
+                let Some(parsed) = release.get("seriesTitle").and_then(Value::as_str) else {
+                    return true;
+                };
+                let matches = parsed_series_title_matches(parsed, &titles);
+                if !matches {
+                    info!(
+                        "Sonarr language audit ignored release '{}' for episode {}: parsed series '{}' is not this series.",
+                        release_title(release).unwrap_or_default(),
+                        episode_id,
+                        parsed
+                    );
+                }
+                matches
+            })
+            .collect())
+    }
+
+    fn sonarr_series_titles_for_episode(&self, episode_id: i64) -> Result<Vec<Vec<String>>> {
+        let series_id = self
+            .sonarr_episode(episode_id)?
+            .get("seriesId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("episode {} has no series id", episode_id))?;
+        self.sonarr_series_titles(series_id)
+    }
+
+    fn sonarr_series_titles(&self, series_id: i64) -> Result<Vec<Vec<String>>> {
+        let series = self.get(&format!("{}/api/v3/series/{}", self.base_url, series_id))?;
+        Ok(series_title_candidates(&series))
+    }
+
+    /// Returns whether Sonarr's parse of `release_title` names the given
+    /// series. A release Sonarr cannot parse a series title from never matches.
+    fn sonarr_release_title_names_series(
+        &self,
+        release_title: &str,
+        series_id: i64,
+    ) -> Result<bool> {
+        let endpoint = format!(
+            "{}/api/v3/parse?title={}",
+            self.base_url,
+            url_encode(release_title)
+        );
+        let parsed = self.get(&endpoint)?;
+        if parsed
+            .get("series")
+            .and_then(|series| series.get("id"))
+            .and_then(Value::as_i64)
+            == Some(series_id)
+        {
+            return Ok(true);
+        }
+        let Some(parsed_title) = parsed
+            .get("parsedEpisodeInfo")
+            .and_then(|info| info.get("seriesTitle"))
+            .and_then(Value::as_str)
+        else {
+            return Ok(false);
+        };
+        Ok(parsed_series_title_matches(
+            parsed_title,
+            &self.sonarr_series_titles(series_id)?,
+        ))
     }
 
     fn redownload_for_target_with_preference(
@@ -1443,6 +1533,45 @@ impl ApiClient {
             if current_report.satisfied() {
                 continue;
             }
+            let title = queue_item
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("<pending import>");
+            let series_id = queue_item
+                .get("seriesId")
+                .and_then(Value::as_i64)
+                .or_else(|| {
+                    queue_item
+                        .get("series")
+                        .and_then(|series| series.get("id"))
+                        .and_then(Value::as_i64)
+                });
+            // Sonarr links a grabbed release to the episode it was searched
+            // for, even when the release is a different show or film, and
+            // then blocks the import. Only force imports whose release title
+            // names this series.
+            let names_series = match series_id {
+                Some(series_id) => self.sonarr_release_title_names_series(title, series_id),
+                None => Ok(false),
+            };
+            match names_series {
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(
+                        "Sonarr language audit will not force-import '{}' for episode {}: the release title does not name this series.",
+                        title, episode_id
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit could not check the series of '{}' for episode {}: {}",
+                        title, episode_id, err
+                    );
+                    continue;
+                }
+            }
             let manual_items = match self.sonarr_manual_import_items(&download_id) {
                 Ok(items) => items,
                 Err(err) => {
@@ -1467,10 +1596,6 @@ impl ApiClient {
             };
             summary.missing += 1;
             summary.searched += 1;
-            let title = queue_item
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("<pending import>");
             if options.dry_run {
                 summary.dry_run += 1;
                 info!(
@@ -1479,8 +1604,39 @@ impl ApiClient {
                 );
                 continue;
             }
-            self.sonarr_delete_episode_file(current_file_id)?;
-            self.sonarr_post_manual_import(item, episode_id)?;
+            // Sonarr's ManualImport command replaces the existing episode file
+            // itself, so the current file is only removed once the replacement
+            // has actually been imported.
+            if let Err(err) = self.sonarr_command_manual_import(item, queue_item, episode_id) {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr language audit could not import '{}' for episode {}; kept the current file: {}",
+                    title, episode_id, err
+                );
+                continue;
+            }
+            match self
+                .sonarr_episode(episode_id)
+                .map(|episode| episode.get("episodeFileId").and_then(Value::as_i64))
+            {
+                Ok(Some(new_file_id)) if new_file_id > 0 && new_file_id != current_file_id => {}
+                Ok(_) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit import of '{}' did not replace episode {} file {}; leaving the queue item in place.",
+                        title, episode_id, current_file_id
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!(
+                        "Sonarr language audit could not confirm the import of '{}' for episode {}: {}",
+                        title, episode_id, err
+                    );
+                    continue;
+                }
+            }
             if let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) {
                 if let Err(err) = self.sonarr_delete_queue_item(queue_id) {
                     warn!(
@@ -1533,31 +1689,88 @@ impl ApiClient {
             .ok_or_else(|| anyhow!("Sonarr manual import did not return an array"))
     }
 
-    fn sonarr_post_manual_import(&self, mut item: Value, episode_id: i64) -> Result<()> {
-        if let Value::Object(ref mut map) = item {
-            map.insert(
-                "episodeIds".to_string(),
-                Value::Array(vec![Value::from(episode_id)]),
-            );
-            if !map.contains_key("seriesId") {
-                if let Some(series_id) = map
-                    .get("series")
+    /// Imports one manual-import item through Sonarr's ManualImport command and
+    /// waits for the command to finish. `POST /api/v3/manualimport` only
+    /// re-evaluates items and never imports them, so it must not be used here.
+    fn sonarr_command_manual_import(
+        &self,
+        item: Value,
+        queue_item: &Value,
+        episode_id: i64,
+    ) -> Result<()> {
+        let series_id = item
+            .get("seriesId")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                item.get("series")
                     .and_then(|series| series.get("id"))
                     .and_then(Value::as_i64)
-                {
-                    map.insert("seriesId".to_string(), Value::from(series_id));
-                }
+            })
+            .or_else(|| queue_item.get("seriesId").and_then(Value::as_i64))
+            .ok_or_else(|| anyhow!("manual import item has no series id"))?;
+        let mut file = serde_json::Map::new();
+        file.insert(
+            "path".to_string(),
+            item.get("path").cloned().unwrap_or(Value::Null),
+        );
+        file.insert("seriesId".to_string(), Value::from(series_id));
+        file.insert("episodeIds".to_string(), serde_json::json!([episode_id]));
+        for key in ["quality", "languages", "releaseGroup", "downloadId"] {
+            if let Some(value) = item.get(key) {
+                file.insert(key.to_string(), value.clone());
             }
         }
-        let endpoint = format!("{}/api/v3/manualimport", self.base_url);
-        self.post_json(&endpoint, &Value::Array(vec![item]))?;
-        Ok(())
+        if !file.contains_key("downloadId") {
+            if let Some(download_id) = queue_item.get("downloadId") {
+                file.insert("downloadId".to_string(), download_id.clone());
+            }
+        }
+        file.insert(
+            "indexerFlags".to_string(),
+            item.get("indexerFlags")
+                .cloned()
+                .unwrap_or_else(|| Value::from(0)),
+        );
+        file.insert(
+            "releaseType".to_string(),
+            item.get("releaseType")
+                .cloned()
+                .unwrap_or_else(|| Value::from("singleEpisode")),
+        );
+        let body = serde_json::json!({
+            "name": "ManualImport",
+            "files": [Value::Object(file)],
+            "importMode": "auto",
+        });
+        let endpoint = format!("{}/api/v3/command", self.base_url);
+        let command = self.post_json(&endpoint, &body)?;
+        let command_id = command
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("Sonarr ManualImport command returned no id"))?;
+        self.wait_for_command(command_id)
     }
 
-    fn sonarr_delete_episode_file(&self, file_id: i64) -> Result<()> {
-        let endpoint = format!("{}/api/v3/episodefile/{}", self.base_url, file_id);
-        self.delete(&endpoint)?;
-        Ok(())
+    fn wait_for_command(&self, command_id: i64) -> Result<()> {
+        let endpoint = format!("{}/api/v3/command/{}", self.base_url, command_id);
+        for attempt in 0..SERVARR_COMMAND_MAX_POLLS {
+            if attempt > 0 {
+                std::thread::sleep(SERVARR_COMMAND_POLL_INTERVAL);
+            }
+            let command = self.get(&endpoint)?;
+            match command.get("status").and_then(Value::as_str) {
+                Some("completed") => return Ok(()),
+                Some(status @ ("failed" | "aborted" | "cancelled" | "orphaned")) => {
+                    let message = command
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    bail!("command {} {}: {}", command_id, status, message);
+                }
+                _ => {}
+            }
+        }
+        bail!("command {} did not finish in time", command_id)
     }
 
     fn sonarr_delete_queue_item(&self, queue_id: i64) -> Result<()> {
@@ -2463,6 +2676,45 @@ fn manual_import_item_satisfies(
         map.insert("title".to_string(), Value::from(title));
     }
     release_satisfies_languages(&candidate, requirements, policy)
+}
+
+fn title_words(title: &str) -> Vec<String> {
+    title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn series_title_candidates(series: &Value) -> Vec<Vec<String>> {
+    let mut titles = Vec::new();
+    for key in ["title", "originalTitle"] {
+        if let Some(title) = series.get(key).and_then(Value::as_str) {
+            titles.push(title_words(title));
+        }
+    }
+    if let Some(alternates) = series.get("alternateTitles").and_then(Value::as_array) {
+        for alternate in alternates {
+            if let Some(title) = alternate.get("title").and_then(Value::as_str) {
+                titles.push(title_words(title));
+            }
+        }
+    }
+    titles.retain(|words| !words.is_empty());
+    titles
+}
+
+/// A parsed series title matches when it starts with one of the series'
+/// titles (release names often carry trailing words such as "EP" or "Dual
+/// Audio"), or when it is a shortened form of one of them of at least two words.
+fn parsed_series_title_matches(parsed: &str, titles: &[Vec<String>]) -> bool {
+    let parsed = title_words(parsed);
+    if parsed.is_empty() {
+        return false;
+    }
+    titles
+        .iter()
+        .any(|title| parsed.starts_with(title) || (parsed.len() >= 2 && title.starts_with(&parsed)))
 }
 
 fn sonarr_manual_import_item_matches_episode(item: &Value, episode_id: i64) -> bool {
@@ -4098,6 +4350,8 @@ mod tests {
             .mock("GET", "/api/v3/episode/77")
             .with_status(200)
             .with_body(json!({ "id": 77, "episodeFileId": 555 }).to_string())
+            // Once for the audit and once for the release search's series-title check.
+            .expect(2)
             .create();
         let episode_file = server
             .mock("GET", "/api/v3/episodefile/555")
@@ -4236,6 +4490,7 @@ mod tests {
         json!({
             "id": 321,
             "episodeId": 77,
+            "seriesId": 1,
             "downloadId": "download 1",
             "title": "episode dual audio",
             "status": "completed",
@@ -4245,6 +4500,38 @@ mod tests {
                 "episodeFileId": 555
             }
         })
+    }
+
+    fn mock_sonarr_series_lookup(
+        server: &mut mockito::Server,
+        parsed_series_title: &str,
+    ) -> Vec<mockito::Mock> {
+        vec![
+            server
+                .mock("GET", "/api/v3/series/1")
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "id": 1,
+                        "title": "Example Show",
+                        "alternateTitles": [{"title": "Reidai Show"}]
+                    })
+                    .to_string(),
+                )
+                .create(),
+            server
+                .mock("GET", "/api/v3/parse")
+                .match_query(Matcher::Any)
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "series": null,
+                        "parsedEpisodeInfo": {"seriesTitle": parsed_series_title}
+                    })
+                    .to_string(),
+                )
+                .create(),
+        ]
     }
 
     fn language_requirements() -> LanguageRequirements {
@@ -4258,6 +4545,7 @@ mod tests {
     #[test]
     fn sonarr_force_import_pending_language_upgrade_dry_run_is_safe() {
         let mut server = mockito::Server::new();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show Dual Audio");
         let queue = server
             .mock("GET", "/api/v3/queue")
             .match_query(Matcher::Any)
@@ -4335,6 +4623,7 @@ mod tests {
     #[test]
     fn sonarr_force_import_pending_language_upgrade_applies_manual_import() {
         let mut server = mockito::Server::new();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show Dual Audio");
         let queue = server
             .mock("GET", "/api/v3/queue")
             .match_query(Matcher::Any)
@@ -4371,14 +4660,27 @@ mod tests {
             .create();
         let delete_file = server
             .mock("DELETE", "/api/v3/episodefile/555")
-            .with_status(200)
-            .with_body("{}")
+            .expect(0)
             .create();
-        let post_import = server
-            .mock("POST", "/api/v3/manualimport")
-            .match_header("content-type", "application/json")
+        let import_command = server
+            .mock("POST", "/api/v3/command")
+            .match_body(Matcher::AllOf(vec![
+                Matcher::PartialJson(json!({"name": "ManualImport"})),
+                Matcher::Regex(r#""episodeIds":\[77\]"#.to_string()),
+                Matcher::Regex(r#""path":"/downloads/episode.mkv""#.to_string()),
+            ]))
+            .with_status(201)
+            .with_body(json!({"id": 9, "status": "queued"}).to_string())
+            .create();
+        let command_status = server
+            .mock("GET", "/api/v3/command/9")
             .with_status(200)
-            .with_body("{}")
+            .with_body(json!({"id": 9, "status": "completed"}).to_string())
+            .create();
+        let episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_status(200)
+            .with_body(json!({"id": 77, "seriesId": 1, "episodeFileId": 556}).to_string())
             .create();
         let delete_queue = server
             .mock("DELETE", "/api/v3/queue/321")
@@ -4425,7 +4727,9 @@ mod tests {
         episode_file.assert();
         manual.assert();
         delete_file.assert();
-        post_import.assert();
+        import_command.assert();
+        command_status.assert();
+        episode.assert();
         delete_queue.assert();
         history.assert();
     }
@@ -4433,6 +4737,7 @@ mod tests {
     #[test]
     fn sonarr_force_import_skips_multi_episode_manual_import_item() {
         let mut server = mockito::Server::new();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show Dual Audio");
         let queue = server
             .mock("GET", "/api/v3/queue")
             .match_query(Matcher::Any)
@@ -4509,6 +4814,7 @@ mod tests {
     #[test]
     fn sonarr_force_import_skips_when_manual_import_item_is_for_different_episode() {
         let mut server = mockito::Server::new();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show Dual Audio");
         let queue = server
             .mock("GET", "/api/v3/queue")
             .match_query(Matcher::Any)
@@ -4580,6 +4886,235 @@ mod tests {
         episode_file.assert();
         manual.assert();
         history.assert();
+    }
+
+    fn run_sonarr_force_import_audit(server: &mockito::Server) -> AuditSummary {
+        run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run: false,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                lookback_days: 30,
+                max_searches: 10,
+                no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
+                stale_queue_max_removals: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn mock_sonarr_force_import_inputs(server: &mut mockito::Server) -> Vec<mockito::Mock> {
+        vec![
+            server
+                .mock("GET", "/api/v3/queue")
+                .match_query(Matcher::Any)
+                .with_status(200)
+                .with_body(json!({ "records": [sonarr_pending_queue_item()] }).to_string())
+                .create(),
+            server
+                .mock("GET", "/api/v3/episodefile/555")
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "id": 555,
+                        "path": "/shows/current.mkv",
+                        "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                    })
+                    .to_string(),
+                )
+                .create(),
+            server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::Any)
+                .with_status(200)
+                .with_body(json!({ "records": [] }).to_string())
+                .create(),
+        ]
+    }
+
+    fn mock_sonarr_manual_import_item(
+        server: &mut mockito::Server,
+        expect: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/episode.mkv",
+                    "episodes": [{"id": 77}],
+                    "series": {"id": 1},
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .expect(expect)
+            .create()
+    }
+
+    #[test]
+    fn sonarr_force_import_skips_release_of_a_different_series() {
+        let mut server = mockito::Server::new();
+        let _inputs = mock_sonarr_force_import_inputs(&mut server);
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Film Dual Audio BDRip");
+        let manual = mock_sonarr_manual_import_item(&mut server, 0);
+        let import_command = server.mock("POST", "/api/v3/command").expect(0).create();
+
+        let summary = run_sonarr_force_import_audit(&server);
+
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.errors, 0);
+        manual.assert();
+        import_command.assert();
+    }
+
+    #[test]
+    fn sonarr_force_import_keeps_current_file_when_import_fails() {
+        let mut server = mockito::Server::new();
+        let _inputs = mock_sonarr_force_import_inputs(&mut server);
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show");
+        let _manual = mock_sonarr_manual_import_item(&mut server, 1);
+        let _import_command = server
+            .mock("POST", "/api/v3/command")
+            .with_status(201)
+            .with_body(json!({"id": 9, "status": "queued"}).to_string())
+            .create();
+        let _command_status = server
+            .mock("GET", "/api/v3/command/9")
+            .with_status(200)
+            .with_body(json!({"id": 9, "status": "failed", "message": "import failed"}).to_string())
+            .create();
+        let delete_file = server
+            .mock("DELETE", "/api/v3/episodefile/555")
+            .expect(0)
+            .create();
+        let delete_queue = server
+            .mock("DELETE", "/api/v3/queue/321")
+            .match_query(Matcher::Any)
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_force_import_audit(&server);
+
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.errors, 1);
+        delete_file.assert();
+        delete_queue.assert();
+    }
+
+    #[test]
+    fn sonarr_force_import_keeps_queue_item_when_episode_file_is_unchanged() {
+        let mut server = mockito::Server::new();
+        let _inputs = mock_sonarr_force_import_inputs(&mut server);
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show");
+        let _manual = mock_sonarr_manual_import_item(&mut server, 1);
+        let _import_command = server
+            .mock("POST", "/api/v3/command")
+            .with_status(201)
+            .with_body(json!({"id": 9, "status": "queued"}).to_string())
+            .create();
+        let _command_status = server
+            .mock("GET", "/api/v3/command/9")
+            .with_status(200)
+            .with_body(json!({"id": 9, "status": "completed"}).to_string())
+            .create();
+        let _episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_status(200)
+            .with_body(json!({"id": 77, "seriesId": 1, "episodeFileId": 555}).to_string())
+            .create();
+        let delete_queue = server
+            .mock("DELETE", "/api/v3/queue/321")
+            .match_query(Matcher::Any)
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_force_import_audit(&server);
+
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.errors, 1);
+        delete_queue.assert();
+    }
+
+    #[test]
+    fn parsed_series_title_must_name_the_series() {
+        let series = json!({
+            "title": "Example Show Season Story",
+            "alternateTitles": [
+                {"title": "Reidai Show Kisetsu no Monogatari"},
+                {"title": "Example Show Winter Story"}
+            ]
+        });
+        let titles = series_title_candidates(&series);
+        assert!(!parsed_series_title_matches(
+            "Example Show Summer Film  Dual Audio BDRip",
+            &titles
+        ));
+        assert!(parsed_series_title_matches(
+            "Reidai Show Kisetsu no Monogatari",
+            &titles
+        ));
+        assert!(parsed_series_title_matches(
+            "Example Show Season Story Dual Audio",
+            &titles
+        ));
+        assert!(!parsed_series_title_matches("Example", &titles));
+        assert!(!parsed_series_title_matches("", &titles));
+    }
+
+    #[test]
+    fn sonarr_release_search_drops_releases_of_a_different_series() {
+        let mut server = mockito::Server::new();
+        let _release = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([
+                    {"title": "Example.Show.10.1080p", "seriesTitle": "Example Show"},
+                    {"title": "Example.Film.1080p.10.bits", "seriesTitle": "Example Film"},
+                    {"title": "untitled"}
+                ])
+                .to_string(),
+            )
+            .create();
+        let _episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_status(200)
+            .with_body(json!({"id": 77, "seriesId": 1}).to_string())
+            .create();
+        let _series = mock_sonarr_series_lookup(&mut server, "unused");
+        let client = ApiClient::from_settings(
+            IntegrationKind::Sonarr,
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+        )
+        .unwrap();
+
+        let releases = client
+            .search_releases(&Target::SonarrEpisode { episode_id: 77 })
+            .unwrap();
+
+        let titles: Vec<_> = releases
+            .iter()
+            .filter_map(|release| release.get("title").and_then(Value::as_str))
+            .collect();
+        assert_eq!(titles, vec!["Example.Show.10.1080p", "untitled"]);
     }
 
     fn radarr_pending_queue_item() -> Value {
