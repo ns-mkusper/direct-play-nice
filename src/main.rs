@@ -29,9 +29,9 @@ pub(crate) use transcoder::{
     configure_ffmpeg_logging, AudioQuality, VideoCodecPreference, VideoQuality,
 };
 pub(crate) use types::{
-    OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode, SubtitleFailurePolicy,
-    UnsupportedVideoPolicy,
+    AudioDecodeErrorPolicy, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend,
+    ResizeQuality, ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode,
+    SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 #[cfg(test)]

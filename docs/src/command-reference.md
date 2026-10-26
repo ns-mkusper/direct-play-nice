@@ -33,6 +33,12 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 ## Stream and compatibility controls
 
 - `--unsupported-video-policy <unsupported_video_policy>` `convert|ignore|fail`
+- `--audio-decode-error-policy <audio_decode_error_policy>` `tolerate|fail`
+  (default: `tolerate`)
+- `--audio-decode-error-max-packets <N>` invalid packets one audio stream may
+  drop before conversion fails; default is 1000
+- `--audio-decode-error-max-ratio <R>` share of one audio stream's packets that
+  may be dropped before conversion fails; default is 0.05
 - `--primary-video-stream-index <primary_video_stream_index>`
 - `--primary-video-criteria <primary_video_criteria>` `resolution|bitrate|fps`
 - `--skip-codec-check`
@@ -135,10 +141,21 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - Subtitle decode/encode timestamp failures follow
   `--subtitle-failure-policy`: `skip-stream` warns and disables only that
   subtitle stream, while `fail` aborts conversion.
+- Audio packets the decoder rejects as invalid data follow
+  `--audio-decode-error-policy`: `tolerate` drops the packet, inserts silence
+  for its duration so audio stays in sync, and logs a per-stream count of
+  dropped packets at the end; conversion still fails once a stream drops more
+  than `--audio-decode-error-max-packets` packets, or more than
+  `--audio-decode-error-max-ratio` of its packets. `fail` aborts on the first
+  invalid packet. Other audio decoder errors always abort.
+- Holes in the input audio timestamps (for example Matroska clusters lost to
+  file damage) longer than 50 ms are filled with silence so later audio stays
+  in sync with the video; jumps longer than 60 s are treated as broken
+  timestamps and only logged.
 - Audio conversion setup is fail-fast: if FFmpeg cannot initialize the required
   resampler, conversion aborts rather than writing suspect audio.
 - Hardware encoder/profile failures may retry with a safer software encoder
-  path; decoder bitstream failures remain hard failures.
+  path; other decoder bitstream failures remain hard failures.
 
 ## Plex options
 

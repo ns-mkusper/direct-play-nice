@@ -14,11 +14,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::ffmpeg_utils::{
     add_samples_to_fifo, encode_and_write_frame, init_output_audio_frame, is_eagain_error,
-    ProgressTracker, StreamProcessingContext,
+    is_invalid_data_error, ProgressTracker, StreamProcessingContext,
 };
 use crate::transcoder::ffmpeg_diagnostics::{av_error_to_string, pix_fmt_name};
 use crate::transcoder::ffmpeg_ext::copy_payload_into_packet;
 use crate::transcoder::h264::DecoderError;
+use crate::transcoder::pipeline_audio_errors::{AudioDecodeErrorAction, AudioTimelineAction};
 use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
@@ -335,12 +336,16 @@ pub(crate) fn process_audio_stream(
         stream_processing_context.decode_context.time_base,
     );
 
-    let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
+    if stream_processing_context.frame_buffer.is_none() {
         bail!(
             "Missing audio FIFO buffer for stream {}",
             stream_processing_context.input_stream_index
         );
-    };
+    }
+
+    stream_processing_context
+        .audio_decode_errors
+        .record_packet();
 
     match stream_processing_context
         .decode_context
@@ -348,6 +353,15 @@ pub(crate) fn process_audio_stream(
     {
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
+        Err(e) if is_invalid_data_error(&e) => {
+            return drop_invalid_audio_packet(
+                stream_processing_context,
+                output_format_context,
+                packet,
+                &e,
+                "send_packet",
+            );
+        }
         Err(e) => {
             error!(
                 "Audio decoder send_packet failure on stream {} (decoder='{}', pts={}, dts={}, duration={}, tb={}/{}): {}",
@@ -389,6 +403,18 @@ pub(crate) fn process_audio_stream(
                 );
                 break;
             }
+            Err(e) if is_invalid_data_error(&e) => {
+                // The decoder consumed the packet but could not produce its
+                // frame; later frames may still be pending, so keep receiving.
+                drop_invalid_audio_packet(
+                    stream_processing_context,
+                    output_format_context,
+                    packet,
+                    &e,
+                    "receive_frame",
+                )?;
+                continue;
+            }
             Err(e) => {
                 error!(
                     "Audio decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
@@ -407,6 +433,18 @@ pub(crate) fn process_audio_stream(
                     format!("receive_frame failed: {}", e),
                 )));
             }
+        };
+
+        stream_processing_context
+            .audio_decode_errors
+            .last_frame_samples = frame.nb_samples;
+        fill_audio_timestamp_gap(stream_processing_context, output_format_context, &frame)?;
+
+        let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
+            bail!(
+                "Missing audio FIFO buffer for stream {}",
+                stream_processing_context.input_stream_index
+            );
         };
 
         let output_frame_size =
@@ -458,6 +496,199 @@ pub(crate) fn process_audio_stream(
     }
 
     Ok(())
+}
+
+/// Handles an audio packet the decoder rejected with `AVERROR_INVALIDDATA`.
+///
+/// Under the tolerate policy the packet is dropped and the gap is filled with
+/// silence of the packet's duration, so the audio after the damage stays in
+/// sync with the video (output audio timestamps come from a running sample
+/// count, not from the input packets). When the packet carries no duration,
+/// the size of the last decoded frame is used instead. Failures are raised as
+/// `DecoderError` so the conversion is not retried with another encoder.
+fn drop_invalid_audio_packet(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    packet: &AVPacket,
+    err: &RsmpegError,
+    stage: &str,
+) -> Result<()> {
+    let limits = stream_processing_context.audio_decode_error_limits;
+    let action = stream_processing_context
+        .audio_decode_errors
+        .record_invalid_packet(&limits);
+    if let AudioDecodeErrorAction::Fail(failure) = action {
+        error!(
+            "Audio decoder {} failure on stream {} (decoder='{}', pts={}, dts={}, duration={}): {}",
+            stage,
+            stream_processing_context.input_stream_index,
+            stream_processing_context.decoder_name,
+            packet.pts,
+            packet.dts,
+            packet.duration,
+            err
+        );
+        return Err(anyhow!(DecoderError::new(
+            stream_processing_context.decoder_name.clone(),
+            stream_processing_context.input_stream_index.as_i32(),
+            format!("{} failed: {} ({})", stage, err, failure),
+        )));
+    }
+
+    let gap_samples = dropped_packet_samples(
+        packet.duration,
+        stream_processing_context.decode_context.time_base,
+        stream_processing_context.encode_context.sample_rate,
+        stream_processing_context
+            .audio_decode_errors
+            .last_frame_samples,
+    );
+    debug!(
+        "Dropped invalid audio packet on stream {} ({} failed: {}; pts={}, duration={}); padding {} samples of silence",
+        stream_processing_context.input_stream_index,
+        stage,
+        err,
+        packet.pts,
+        packet.duration,
+        gap_samples
+    );
+    queue_silence(
+        stream_processing_context,
+        output_format_context,
+        gap_samples,
+    )?;
+    stream_processing_context
+        .audio_decode_errors
+        .record_padding(i64::from(gap_samples));
+    Ok(())
+}
+
+/// Fills holes in the input audio timestamps with silence.
+///
+/// Damaged Matroska files can lose whole clusters in the demuxer; the decoder
+/// then sees a timestamp jump but no error. Output timestamps come from a
+/// running sample count, so the hole has to be filled for later audio to stay
+/// aligned with the video. See `AUDIO_GAP_FILL_MIN_SECS` and
+/// `AUDIO_GAP_FILL_MAX_SECS` for which jumps are filled.
+fn fill_audio_timestamp_gap(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    frame: &AVFrame,
+) -> Result<()> {
+    let sample_rate = stream_processing_context.encode_context.sample_rate;
+    let pts = best_effort_frame_pts(frame);
+    let frame_start = (pts != ffi::AV_NOPTS_VALUE && sample_rate > 0).then(|| {
+        rescale_timestamp(
+            pts,
+            stream_processing_context.decode_context.time_base,
+            ffi::AVRational {
+                num: 1,
+                den: sample_rate,
+            },
+        )
+    });
+    match stream_processing_context.audio_decode_errors.place_frame(
+        frame_start,
+        frame.nb_samples,
+        sample_rate,
+    ) {
+        AudioTimelineAction::Continue => Ok(()),
+        AudioTimelineAction::FillGap(samples) => {
+            debug!(
+                "Audio stream {} timestamps skip {} samples at pts {}; filling with silence",
+                stream_processing_context.input_stream_index, samples, pts
+            );
+            queue_silence(
+                stream_processing_context,
+                output_format_context,
+                i32::try_from(samples).unwrap_or(i32::MAX),
+            )
+        }
+        AudioTimelineAction::Discontinuity(samples) => {
+            warn!(
+                "Audio stream {} timestamps jump by {} samples at pts {}; not filling the jump",
+                stream_processing_context.input_stream_index, samples, pts
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Queues `samples` of silence in the audio FIFO and encodes any full frames.
+fn queue_silence(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    samples: i32,
+) -> Result<()> {
+    if samples <= 0 {
+        return Ok(());
+    }
+    let encode_context = &stream_processing_context.encode_context;
+    let nb_channels = encode_context.ch_layout.nb_channels;
+    let sample_fmt = encode_context.sample_fmt;
+    let silence = AVSamples::new(nb_channels, samples, sample_fmt, 0)
+        .context("Create silence buffer failed.")?;
+    // AVSamples zero-fills, which is not silence for unsigned 8-bit formats.
+    unsafe {
+        ffi::av_samples_set_silence(
+            silence.audio_data.as_ptr(),
+            0,
+            samples,
+            nb_channels,
+            sample_fmt,
+        );
+    }
+
+    let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
+        bail!(
+            "Missing audio FIFO buffer for stream {}",
+            stream_processing_context.input_stream_index
+        );
+    };
+    add_samples_to_fifo(fifo, &silence, samples)?;
+
+    let output_frame_size =
+        preferred_audio_frame_size(&stream_processing_context.encode_context, fifo.size());
+    while fifo.size() >= output_frame_size {
+        load_encode_and_write(
+            fifo,
+            output_format_context,
+            &mut stream_processing_context.encode_context,
+            stream_processing_context.output_stream_index.as_i32(),
+            &mut stream_processing_context.pts,
+            &mut stream_processing_context.last_written_dts,
+        )?;
+    }
+    Ok(())
+}
+
+/// Number of output samples covered by a dropped packet.
+///
+/// `duration` is in the decoder time base; the result is in samples at the
+/// encoder sample rate. Falls back to the last decoded frame size when the
+/// packet has no usable duration.
+fn dropped_packet_samples(
+    duration: i64,
+    decoder_time_base: ffi::AVRational,
+    output_sample_rate: i32,
+    last_frame_samples: i32,
+) -> i32 {
+    if duration > 0 && decoder_time_base.num > 0 && output_sample_rate > 0 {
+        let samples = unsafe {
+            ffi::av_rescale_q(
+                duration,
+                decoder_time_base,
+                ffi::AVRational {
+                    num: 1,
+                    den: output_sample_rate,
+                },
+            )
+        };
+        if samples > 0 {
+            return i32::try_from(samples).unwrap_or(i32::MAX);
+        }
+    }
+    last_frame_samples.max(0)
 }
 
 pub(crate) fn process_subtitle_stream(
@@ -947,5 +1178,31 @@ mod resize_quality_tests {
             sws_flags_for_frame_transform(ResizeQuality::Spline, 1280, 720, 640, 360),
             ffi::SWS_SPLINE | ffi::SWS_ACCURATE_RND
         );
+    }
+
+    #[test]
+    fn dropped_packet_samples_rescales_duration_to_output_rate() {
+        // 4096-sample FLAC frame at 48 kHz in a 1/1000 decoder time base.
+        let ms = ffi::AVRational { num: 1, den: 1000 };
+        assert_eq!(dropped_packet_samples(85, ms, 48_000, 1024), 4080);
+        // Same time base as the output rate: duration is already in samples.
+        let samples = ffi::AVRational {
+            num: 1,
+            den: 48_000,
+        };
+        assert_eq!(dropped_packet_samples(4096, samples, 48_000, 0), 4096);
+    }
+
+    #[test]
+    fn dropped_packet_samples_falls_back_to_last_frame_size() {
+        let samples = ffi::AVRational {
+            num: 1,
+            den: 48_000,
+        };
+        assert_eq!(dropped_packet_samples(0, samples, 48_000, 1024), 1024);
+        assert_eq!(dropped_packet_samples(-1, samples, 48_000, 1024), 1024);
+        let unset = ffi::AVRational { num: 0, den: 1 };
+        assert_eq!(dropped_packet_samples(1024, unset, 48_000, 960), 960);
+        assert_eq!(dropped_packet_samples(0, samples, 48_000, 0), 0);
     }
 }
