@@ -235,9 +235,13 @@ fn cli_tolerates_a_few_invalid_audio_packets() -> Result<(), Box<dyn std::error:
 fn cli_fills_holes_in_audio_timestamps() -> Result<(), Box<dyn std::error::Error>> {
     common::ensure_ffmpeg_present();
 
-    // Dropping two seconds of audio frames keeps their timestamps, which is how
-    // lost Matroska clusters look to the decoder: a jump with no decode error.
+    // Drop two seconds of audio packets in a stream copy so the remaining
+    // packets keep their timestamps, which is how lost Matroska clusters look
+    // to the decoder: a jump with no decode error. Dropping audio frames with
+    // a filter instead is not reliable: some FFmpeg CLI releases (8.0) retime
+    // the encoded audio contiguously and the hole disappears.
     let tmp = TempDir::new()?;
+    let full = tmp.path().join("input_audio_full.mkv");
     let input = tmp.path().join("input_audio_hole.mkv");
     assert!(
         Command::new("ffmpeg")
@@ -253,14 +257,30 @@ fn cli_fills_holes_in_audio_timestamps() -> Result<(), Box<dyn std::error::Error
                 "lavfi",
                 "-i",
                 "sine=frequency=440:sample_rate=48000:duration=10",
-                "-filter:a",
-                "aselect=not(between(t\\,3\\,5))",
                 "-c:v",
                 "libx264",
                 "-preset",
                 "ultrafast",
                 "-c:a",
                 "flac",
+                full.to_string_lossy().as_ref(),
+            ])
+            .status()?
+            .success(),
+        "ffmpeg failed to generate the audio hole source sample"
+    );
+    assert!(
+        Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                full.to_string_lossy().as_ref(),
+                "-c",
+                "copy",
+                "-bsf:a",
+                "noise=drop=between(pts*tb\\,3\\,5)",
                 input.to_string_lossy().as_ref(),
             ])
             .status()?
