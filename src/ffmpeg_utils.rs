@@ -15,12 +15,13 @@ use std::sync::atomic::AtomicI64;
 
 use crate::devices::{self, DeviceFamily};
 use crate::gpu::HwAccel;
+use crate::transcoder::pipeline::{AudioDecodeErrorLimits, AudioDecodeErrorTracker};
 use crate::transcoder::timestamp::enforce_monotonic_dts;
 use crate::transcoder::{AudioQuality, VideoCodecPreference, VideoQuality};
 use crate::types::{
-    OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, StreamsFilter, SubMode,
-    SubtitleFailurePolicy, UnsupportedVideoPolicy,
+    AudioDecodeErrorPolicy, OcrEngine, OcrFormat, OutputFormat, PrimaryVideoCriteria,
+    ResizeBackend, ResizeQuality, ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy,
+    StreamsFilter, SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy,
 };
 
 pub(crate) use crate::cli::progress::ProgressTracker;
@@ -28,6 +29,19 @@ pub(crate) use crate::cli::progress::ProgressTracker;
 pub(crate) const DEFAULT_VISUAL_SCAN_FRAMES: usize = 120;
 pub(crate) const DEFAULT_VISUAL_SAMPLE_INTERVAL: usize = 15;
 pub(crate) const DEFAULT_VISUAL_FAILURE_RATIO: f64 = 0.60;
+
+/// Per-stream cap on audio packets dropped as invalid data under
+/// `--audio-decode-error-policy=tolerate`. Damaged rips typically lose a few
+/// dozen to a few hundred packets per stream in a 24-minute episode (roughly
+/// 17k FLAC or 67k AAC packets), while a stream that is mostly undecodable
+/// produces thousands of errors. Checked as packets are dropped, so a badly
+/// damaged stream fails early instead of after a full encode.
+pub(crate) const DEFAULT_AUDIO_DECODE_ERROR_MAX_PACKETS: u64 = 1000;
+/// Per-stream cap on the share of audio packets dropped as invalid data under
+/// `--audio-decode-error-policy=tolerate`. Checked once all packets have been
+/// read, so a burst of errors early in a file does not fail it prematurely.
+/// 0.05 keeps short clips with heavy damage from passing under the packet cap.
+pub(crate) const DEFAULT_AUDIO_DECODE_ERROR_MAX_RATIO: f64 = 0.05;
 
 // TODO: switch to enum to allow for different modes
 // see: https://github.com/clap-rs/clap/discussions/3711#discussioncomment-2717657
@@ -130,6 +144,35 @@ pub(crate) struct Args {
         id = "unsupported_video_policy"
     )]
     pub(crate) unsupported_video_policy: UnsupportedVideoPolicy,
+
+    /// Policy for audio packets the decoder rejects as invalid data: tolerate drops the
+    /// packet, pads the gap with silence, and fails only past the per-stream drop limits;
+    /// fail aborts on the first invalid audio packet.
+    #[arg(
+        long = "audio-decode-error-policy",
+        value_enum,
+        default_value_t = AudioDecodeErrorPolicy::Tolerate,
+        id = "audio_decode_error_policy"
+    )]
+    pub(crate) audio_decode_error_policy: AudioDecodeErrorPolicy,
+
+    /// Maximum invalid packets dropped per audio stream before conversion fails (tolerate policy).
+    #[arg(
+        long = "audio-decode-error-max-packets",
+        value_name = "N",
+        default_value_t = DEFAULT_AUDIO_DECODE_ERROR_MAX_PACKETS,
+        id = "audio_decode_error_max_packets"
+    )]
+    pub(crate) audio_decode_error_max_packets: u64,
+
+    /// Maximum share of an audio stream's packets that may be dropped before conversion fails (tolerate policy).
+    #[arg(
+        long = "audio-decode-error-max-ratio",
+        value_name = "R",
+        default_value_t = DEFAULT_AUDIO_DECODE_ERROR_MAX_RATIO,
+        id = "audio_decode_error_max_ratio"
+    )]
+    pub(crate) audio_decode_error_max_ratio: f64,
 
     /// Override the auto-selected primary video stream by index (0-based)
     #[arg(long = "primary-video-stream-index", id = "primary_video_stream_index")]
@@ -717,6 +760,10 @@ pub(crate) struct StreamProcessingContext {
     pub(crate) last_written_dts: Option<i64>,
     pub(crate) skip_stream: bool,
     pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
+    /// Limits for audio packets rejected as invalid data; unused for other media types.
+    pub(crate) audio_decode_error_limits: AudioDecodeErrorLimits,
+    /// Packet and drop counters for audio streams; unused for other media types.
+    pub(crate) audio_decode_errors: AudioDecodeErrorTracker,
     #[allow(dead_code)]
     pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
     pub(crate) decoder_name: String,
@@ -875,6 +922,11 @@ pub(crate) fn encode_and_write_frame(
     }
 
     Ok(())
+}
+
+/// Returns true when FFmpeg rejected the input as corrupt (`AVERROR_INVALIDDATA`).
+pub(crate) fn is_invalid_data_error(err: &RsmpegError) -> bool {
+    err.raw_error() == Some(ffi::AVERROR_INVALIDDATA)
 }
 
 pub(crate) fn is_eagain_error(err: &RsmpegError) -> bool {

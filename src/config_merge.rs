@@ -115,6 +115,24 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "audio_decode_error_policy") {
+        if let Some(policy) = cfg.audio_decode_error_policy {
+            args.audio_decode_error_policy = policy;
+        }
+    }
+
+    if !cli_value_provided(matches, "audio_decode_error_max_packets") {
+        if let Some(max_packets) = cfg.audio_decode_error_max_packets {
+            args.audio_decode_error_max_packets = max_packets;
+        }
+    }
+
+    if !cli_value_provided(matches, "audio_decode_error_max_ratio") {
+        if let Some(max_ratio) = cfg.audio_decode_error_max_ratio {
+            args.audio_decode_error_max_ratio = max_ratio;
+        }
+    }
+
     if !cli_value_provided(matches, "primary_video_stream_index")
         && cfg.primary_video_stream_index.is_some()
     {
@@ -369,10 +387,11 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
 mod tests {
     use super::*;
     use crate::ffmpeg_utils::{
+        DEFAULT_AUDIO_DECODE_ERROR_MAX_PACKETS, DEFAULT_AUDIO_DECODE_ERROR_MAX_RATIO,
         DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL, DEFAULT_VISUAL_SCAN_FRAMES,
     };
     use crate::transcoder::quality::VideoQuality;
-    use crate::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
+    use crate::{AudioDecodeErrorPolicy, ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
     use clap::{CommandFactory, FromArgMatches};
 
     fn parse_args(argv: &[&str]) -> (Args, ArgMatches) {
@@ -537,6 +556,64 @@ mod tests {
             args.subtitle_failure_policy,
             SubtitleFailurePolicy::SkipStream
         );
+    }
+
+    #[test]
+    fn audio_decode_error_defaults_tolerate_with_limits() {
+        let (args, _matches) = parse_args(&["direct_play_nice"]);
+        assert_eq!(
+            args.audio_decode_error_policy,
+            AudioDecodeErrorPolicy::Tolerate
+        );
+        assert_eq!(
+            args.audio_decode_error_max_packets,
+            DEFAULT_AUDIO_DECODE_ERROR_MAX_PACKETS
+        );
+        assert_eq!(
+            args.audio_decode_error_max_ratio,
+            DEFAULT_AUDIO_DECODE_ERROR_MAX_RATIO
+        );
+    }
+
+    #[test]
+    fn applies_audio_decode_error_settings_from_config_when_not_set_in_cli() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        let cfg = config::Config {
+            audio_decode_error_policy: Some(AudioDecodeErrorPolicy::Fail),
+            audio_decode_error_max_packets: Some(50),
+            audio_decode_error_max_ratio: Some(0.01),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(args.audio_decode_error_policy, AudioDecodeErrorPolicy::Fail);
+        assert_eq!(args.audio_decode_error_max_packets, 50);
+        assert_eq!(args.audio_decode_error_max_ratio, 0.01);
+    }
+
+    #[test]
+    fn cli_audio_decode_error_settings_take_precedence_over_config() {
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--audio-decode-error-policy",
+            "tolerate",
+            "--audio-decode-error-max-packets",
+            "200",
+            "--audio-decode-error-max-ratio",
+            "0.1",
+        ]);
+        let cfg = config::Config {
+            audio_decode_error_policy: Some(AudioDecodeErrorPolicy::Fail),
+            audio_decode_error_max_packets: Some(50),
+            audio_decode_error_max_ratio: Some(0.01),
+            ..Default::default()
+        };
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert_eq!(
+            args.audio_decode_error_policy,
+            AudioDecodeErrorPolicy::Tolerate
+        );
+        assert_eq!(args.audio_decode_error_max_packets, 200);
+        assert_eq!(args.audio_decode_error_max_ratio, 0.1);
     }
 
     #[test]

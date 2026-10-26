@@ -25,6 +25,7 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) resize_backend: ResizeBackend,
     pub(crate) skip_codec_check: bool,
     pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
+    pub(crate) audio_decode_error_limits: AudioDecodeErrorLimits,
     pub(crate) hw_accel: HwAccel,
 }
 
@@ -56,8 +57,10 @@ pub(crate) fn convert_video_file(
         resize_backend,
         skip_codec_check,
         subtitle_failure_policy,
+        audio_decode_error_limits,
         hw_accel,
     } = params;
+    audio_decode_error_limits.validate()?;
 
     // H.264 profile/level checks are only meaningful when the output codec is H.264.
     let h264_constraints = if target_video_codec == ffi::AV_CODEC_ID_H264 {
@@ -680,6 +683,8 @@ pub(crate) fn convert_video_file(
             last_written_dts: None,
             skip_stream: false,
             subtitle_failure_policy,
+            audio_decode_error_limits,
+            audio_decode_errors: AudioDecodeErrorTracker::default(),
             hw_device_ctx: hw_device_ctx_ptr,
             decoder_name: decoder.name().to_string_lossy().into_owned(),
             resize_quality,
@@ -697,6 +702,7 @@ pub(crate) fn convert_video_file(
         &mut output_format_context,
         &mut progress_tracker,
     )?;
+    check_audio_decode_errors(&stream_contexts)?;
     flush_stream_contexts(&mut stream_contexts, &mut output_format_context)?;
 
     if let Some(progress) = progress_tracker.as_mut() {
@@ -899,6 +905,58 @@ fn process_packets(
                     unsupported_type
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+/// Reports dropped invalid audio packets per stream and applies the
+/// end-of-stream `--audio-decode-error-max-ratio` limit.
+///
+/// The per-packet count limit is enforced while decoding; the ratio can only be
+/// judged once every packet of the stream has been read. A ratio failure is a
+/// `DecoderError` so the caller does not retry the conversion with another
+/// encoder, which would hit the same damaged input.
+fn check_audio_decode_errors(stream_contexts: &[StreamProcessingContext]) -> Result<()> {
+    for context in stream_contexts {
+        if context.media_type != ffi::AVMEDIA_TYPE_AUDIO {
+            continue;
+        }
+        let errors = &context.audio_decode_errors;
+        if errors.gap_filled_samples > 0 {
+            warn!(
+                "Audio stream {} (decoder='{}'): filled {} samples ({:.1}s) of missing audio with silence to keep it in sync",
+                context.input_stream_index,
+                context.decoder_name,
+                errors.gap_filled_samples,
+                errors.gap_filled_samples as f64
+                    / f64::from(context.encode_context.sample_rate.max(1))
+            );
+        }
+        if errors.dropped == 0 {
+            continue;
+        }
+        warn!(
+            "Audio stream {} (decoder='{}'): dropped {} of {} packets ({:.2}%) as invalid data; inserted {} samples of silence",
+            context.input_stream_index,
+            context.decoder_name,
+            errors.dropped,
+            errors.packets,
+            errors.drop_ratio() * 100.0,
+            errors.padded_samples
+        );
+        if errors.exceeds_ratio(&context.audio_decode_error_limits) {
+            return Err(anyhow!(DecoderError::new(
+                context.decoder_name.clone(),
+                context.input_stream_index.as_i32(),
+                format!(
+                    "{} of {} packets ({:.2}%) were invalid, above --audio-decode-error-max-ratio={}",
+                    errors.dropped,
+                    errors.packets,
+                    errors.drop_ratio() * 100.0,
+                    context.audio_decode_error_limits.max_ratio
+                ),
+            )));
         }
     }
     Ok(())

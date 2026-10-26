@@ -32,6 +32,17 @@ pub(crate) enum SubtitleFailurePolicy {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+/// Policy for audio packets the decoder rejects as invalid data (`AVERROR_INVALIDDATA`).
+pub(crate) enum AudioDecodeErrorPolicy {
+    /// Drop the invalid packet, pad the gap with silence, and keep converting
+    /// until the per-stream drop limits are exceeded.
+    Tolerate,
+    /// Abort conversion on the first invalid audio packet.
+    Fail,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 /// OCR backend selector for bitmap-subtitle conversion.
 pub(crate) enum OcrEngine {

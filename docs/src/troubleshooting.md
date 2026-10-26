@@ -31,3 +31,14 @@ finalization. Existing compatible files may still take the skip path, so this
 change does not retroactively rewrite a library. Preserve the original when
 repairing a file, and verify the final client's actual playback mode, startup,
 and seeking before replacing more media.
+
+## Conversion fails with an audio decoder error
+
+`decoder '<codec>' for stream N failed: ... (-1094995529)` is
+`AVERROR_INVALIDDATA`: the source has corrupt audio packets. By default these
+packets are dropped and replaced by silence, and the log reports how many were
+dropped per stream. The error still appears when a stream exceeds
+`--audio-decode-error-max-packets` or `--audio-decode-error-max-ratio`, which
+usually means the audio is mostly undecodable and the source should be
+replaced. Raise the limits only if the result is acceptable when checked with
+`ffmpeg -v error -i <input> -map 0:a -f null -`.
