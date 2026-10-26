@@ -148,6 +148,10 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
   than `--audio-decode-error-max-packets` packets, or more than
   `--audio-decode-error-max-ratio` of its packets. `fail` aborts on the first
   invalid packet. Other audio decoder errors always abort.
+- Holes in the input audio timestamps (for example Matroska clusters lost to
+  file damage) longer than 50 ms are filled with silence so later audio stays
+  in sync with the video; jumps longer than 60 s are treated as broken
+  timestamps and only logged.
 - Audio conversion setup is fail-fast: if FFmpeg cannot initialize the required
   resampler, conversion aborts rather than writing suspect audio.
 - Hardware encoder/profile failures may retry with a safer software encoder
