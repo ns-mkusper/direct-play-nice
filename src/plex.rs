@@ -731,7 +731,11 @@ mod tests {
 
         fn fixture() -> Fixture {
             let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().canonicalize().unwrap();
+            // Plex reports plain paths; drop the Windows `\\?\` prefix that
+            // canonicalize adds.
+            let root = PathBuf::from(normalize_path_for_query(
+                &dir.path().canonicalize().unwrap(),
+            ));
             let season = root.join("Show").join("Season 1");
             std::fs::create_dir_all(&season).unwrap();
             let old_path = season.join("Show - S01E01.mkv");
