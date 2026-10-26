@@ -162,6 +162,9 @@ direct_play_nice [OPTIONS] [INPUT_FILE] [OUTPUT_FILE]
 - `--plex-refresh`
 - `--plex-url <PLEX_URL>`
 - `--plex-token <PLEX_TOKEN>`
+- `--plex-remove-replaced-versions [BOOL]` (default `true`): after refreshing
+  for a replaced file, remove the replaced file's dead media version from the
+  Plex item. See [Plex Refresh](plex-refresh.md).
 
 ## Full generated help
 
