@@ -560,6 +560,19 @@ pub(crate) struct Args {
     /// Plex API token used with --plex-refresh
     #[arg(long = "plex-token")]
     pub(crate) plex_token: Option<String>,
+
+    /// After a Plex refresh for a replaced file, remove the replaced file's dead media version
+    /// from the Plex item (only when the file is gone from disk and another version remains).
+    /// Defaults to true.
+    #[arg(
+        long = "plex-remove-replaced-versions",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        id = "plex_remove_replaced_versions"
+    )]
+    pub(crate) plex_remove_replaced_versions: Option<bool>,
 }
 
 impl Args {

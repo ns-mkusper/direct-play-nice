@@ -81,6 +81,17 @@ pub struct PlexSettings {
     pub refresh: Option<bool>,
     pub url: Option<String>,
     pub token: Option<String>,
+    /// After a refresh for a file that replaced another file (for example
+    /// `X.mkv` converted to `X.fixed.mp4` with the original removed), remove
+    /// the replaced file's media version from the Plex item once the scan has
+    /// picked up the change. Plex keeps such a version (marked deleted) while
+    /// "Empty trash automatically after every scan" is off, and clients can
+    /// select it and report the item as unavailable. Only versions whose files
+    /// are gone from disk are removed, and only while the item keeps another
+    /// available version. Defaults to `true`; overridden by
+    /// `--plex-remove-replaced-versions` and
+    /// `DIRECT_PLAY_NICE_PLEX_REMOVE_REPLACED_VERSIONS`.
+    pub remove_replaced_versions: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
