@@ -71,8 +71,11 @@ fn cli_fails_fast_on_corrupted_hevc_input() -> Result<(), Box<dyn std::error::Er
     make_hevc_input(&input);
     corrupt_middle_chunk(&input, 64 * 1024);
 
+    // Software decode: hardware decoders such as NVDEC conceal corrupt
+    // packets instead of reporting them, so on GPU hosts this would pass
+    // through the damage and succeed.
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
-    cmd.arg(&input).arg(&output);
+    cmd.args(["--hw-accel", "none"]).arg(&input).arg(&output);
 
     cmd.assert()
         .failure()
