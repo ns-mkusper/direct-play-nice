@@ -191,7 +191,9 @@ pub(crate) fn set_h264_video_codec_par(
         Some(h264_level),
     );
     encode_context.set_gop_size(decode_context.gop_size);
-    encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
+    encode_context
+        .set_sample_aspect_ratio(effective_sample_aspect_ratio(input_stream, decode_context));
+    apply_output_colour(decode_context, encode_context, input_stream);
     unsafe {
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
@@ -301,7 +303,9 @@ pub(crate) fn set_hevc_video_codec_par(
     );
     log_encoder_state("video setup", encode_context, encoder_name);
     encode_context.set_gop_size(decode_context.gop_size);
-    encode_context.set_sample_aspect_ratio(decode_context.sample_aspect_ratio);
+    encode_context
+        .set_sample_aspect_ratio(effective_sample_aspect_ratio(input_stream, decode_context));
+    apply_output_colour(decode_context, encode_context, input_stream);
     // Codec parameters are extracted after the encoder is opened.
 }
 
