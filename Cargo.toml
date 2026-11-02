@@ -157,3 +157,10 @@ dependencies = [
 # Keep the Rust-side ort 2.0.0-rc.10 API required by paddle-ocr-rs while
 # allowing deployments to load the older ONNX Runtime 1.16 shared library.
 ort = { git = "https://github.com/ns-mkusper/ort.git", rev = "16452198ebbbe0e7bd7a4bb2f6d488b4623f20b1" }
+# bindgen 0.71.1 (required by rusty_ffmpeg 0.16) emits FFmpeg structs that
+# have an earlier forward declaration, such as AVFormatContext, as opaque when
+# libclang is 22 or newer, because clang_getTypeDeclaration no longer returns
+# the definition. rsmpeg then fails to compile. This is 0.71.1 with the two
+# upstream fixes that shipped in bindgen 0.72.1 (58a87108, 2e067496). Drop it
+# once rsmpeg moves to a rusty_ffmpeg release that uses bindgen 0.72 or newer.
+bindgen = { git = "https://github.com/ns-mkusper/rust-bindgen.git", rev = "0ccb62f2b18787816a03fde7ff9e3320634ab413" }

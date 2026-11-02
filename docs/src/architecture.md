@@ -63,5 +63,9 @@ unless subtitle processing is skipped.
 Failures are intentionally policy-driven. Audio setup failures abort because
 they would risk invalid audio. Subtitle stream failures follow
 `--subtitle-failure-policy`: the default isolates the bad subtitle stream so
-A/V conversion can still complete, while strict mode aborts. Hardware encoder
-failures may retry with software when a safe fallback is available.
+A/V conversion can still complete, while strict mode aborts. Audio packets the
+decoder rejects as invalid data follow `--audio-decode-error-policy`: the
+default drops them and pads the gap with silence until a stream exceeds its
+drop limits (count or share of packets), while `fail` aborts on the first one.
+Hardware encoder failures may retry with software when a safe fallback is
+available.

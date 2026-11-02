@@ -3,9 +3,9 @@
 use crate::gpu::HwAccel;
 use crate::upscale::{AiUpscaleDevice, AiUpscaleModel};
 use crate::{
-    AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria, ResizeBackend, ResizeQuality,
-    ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy, SubMode, SubtitleFailurePolicy,
-    UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
+    AudioDecodeErrorPolicy, AudioQuality, OcrEngine, OcrFormat, PrimaryVideoCriteria,
+    ResizeBackend, ResizeQuality, ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy,
+    SubMode, SubtitleFailurePolicy, UnsupportedVideoPolicy, VideoCodecPreference, VideoQuality,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -30,6 +30,9 @@ pub struct Config {
     pub resize_backend: Option<ResizeBackend>,
     pub hw_accel: Option<HwAccel>,
     pub unsupported_video_policy: Option<UnsupportedVideoPolicy>,
+    pub audio_decode_error_policy: Option<AudioDecodeErrorPolicy>,
+    pub audio_decode_error_max_packets: Option<u64>,
+    pub audio_decode_error_max_ratio: Option<f64>,
     pub primary_video_stream_index: Option<usize>,
     pub primary_video_criteria: Option<PrimaryVideoCriteria>,
     pub servarr_output_extension: Option<String>,
@@ -84,6 +87,17 @@ pub struct PlexSettings {
     pub refresh: Option<bool>,
     pub url: Option<String>,
     pub token: Option<String>,
+    /// After a refresh for a file that replaced another file (for example
+    /// `X.mkv` converted to `X.fixed.mp4` with the original removed), remove
+    /// the replaced file's media version from the Plex item once the scan has
+    /// picked up the change. Plex keeps such a version (marked deleted) while
+    /// "Empty trash automatically after every scan" is off, and clients can
+    /// select it and report the item as unavailable. Only versions whose files
+    /// are gone from disk are removed, and only while the item keeps another
+    /// available version. Defaults to `true`; overridden by
+    /// `--plex-remove-replaced-versions` and
+    /// `DIRECT_PLAY_NICE_PLEX_REMOVE_REPLACED_VERSIONS`.
+    pub remove_replaced_versions: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +201,24 @@ mod tests {
         assert_eq!(plex.refresh, Some(true));
         assert_eq!(plex.url.as_deref(), Some("http://localhost:32400"));
         assert_eq!(plex.token.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn parses_audio_decode_error_settings() {
+        let cfg: Config = toml::from_str(
+            r#"
+            audio_decode_error_policy = "fail"
+            audio_decode_error_max_packets = 250
+            audio_decode_error_max_ratio = 0.02
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.audio_decode_error_policy,
+            Some(AudioDecodeErrorPolicy::Fail)
+        );
+        assert_eq!(cfg.audio_decode_error_max_packets, Some(250));
+        assert_eq!(cfg.audio_decode_error_max_ratio, Some(0.02));
     }
 
     #[test]
