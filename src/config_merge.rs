@@ -376,6 +376,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "ai_upscale_restore") {
+        if let Some(restore) = cfg.ai_upscale_restore {
+            args.ai_upscale_restore = restore;
+        }
+    }
+
     if !cli_value_provided(matches, "dry_run") {
         if let Some(dry_run) = cfg.dry_run {
             args.dry_run = dry_run;
@@ -726,9 +732,11 @@ mod tests {
             ai_upscale_model_path: Some(std::path::PathBuf::from("/m.onnx")),
             ai_upscale_device: Some(crate::upscale::AiUpscaleDevice::Cuda),
             ai_upscale_tile: Some(512),
+            ai_upscale_restore: Some(true),
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.ai_upscale_restore);
         assert_eq!(
             args.ai_upscale_model,
             crate::upscale::AiUpscaleModel::RealesrGeneralX4v3

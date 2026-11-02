@@ -103,6 +103,9 @@ pub(crate) struct UpscaleSettings {
     pub(crate) device: AiUpscaleDevice,
     /// Tile edge in source pixels; `0` runs the whole frame in one pass.
     pub(crate) tile: u32,
+    /// Run the model even when the output is not larger than the source,
+    /// fitting its result back to the output size (restoration only).
+    pub(crate) restore: bool,
 }
 
 impl UpscaleSettings {
@@ -111,9 +114,14 @@ impl UpscaleSettings {
     }
 
     pub(crate) fn describe(&self) -> String {
-        match (&self.model, &self.model_path) {
+        let model = match (&self.model, &self.model_path) {
             (AiUpscaleModel::Custom, Some(path)) => format!("custom ({})", path.display()),
             (model, _) => model.label().to_string(),
+        };
+        if self.restore {
+            format!("{model}, restore at source size")
+        } else {
+            model
         }
     }
 }
@@ -166,6 +174,7 @@ pub(crate) struct Upscaler {
     scale: u32,
     tile: u32,
     provider: &'static str,
+    restore: bool,
     frames: u64,
     inference_seconds: f64,
 }
@@ -238,6 +247,7 @@ impl Upscaler {
             scale: 1,
             tile: settings.tile,
             provider,
+            restore: settings.restore,
             frames: 0,
             inference_seconds: 0.0,
         };
@@ -301,6 +311,11 @@ impl Upscaler {
     /// Enlarges a software frame by the model's scale factor. The result is an
     /// 8-bit planar GBR frame (`AV_PIX_FMT_GBRP`) the resize step converts and
     /// fits to the target dimensions.
+    /// Whether frames that already match the output size still go through the model.
+    pub(crate) fn restores(&self) -> bool {
+        self.restore
+    }
+
     pub(crate) fn upscale_frame(&mut self, frame: &AVFrame) -> Result<AVFrame> {
         self.upscale_frame_inner(frame)
             .map_err(|err| anyhow::Error::new(UpscaleError(err)))
@@ -720,23 +735,30 @@ fn rgb_planar_to_frame(rgb: &[f32], width: u32, height: u32, source: &AVFrame) -
     Ok(out)
 }
 
-/// Fits `source` inside `cap` by enlarging when it is smaller, keeping aspect
-/// ratio and even dimensions. Returns the source size when it already meets
-/// or exceeds the cap on either axis.
+/// Fits `source` inside `cap` by enlarging when it is smaller, keeping its
+/// display aspect ratio and even dimensions. Enlarged sizes use square pixels:
+/// a 720x480 source at SAR 8:9 (4:3) becomes 1440x1080, not 1620x1080
+/// anamorphic. Returns the stored source size, unchanged, when it already
+/// meets or exceeds the cap on either axis.
 pub(crate) fn upscale_dimensions(
     source_width: i32,
     source_height: i32,
+    sample_aspect_ratio: (i32, i32),
     cap: (u32, u32),
 ) -> (i32, i32) {
     if source_width <= 0 || source_height <= 0 {
         return (source_width.max(2), source_height.max(2));
     }
+    let display_width = match sample_aspect_ratio {
+        (num, den) if num > 0 && den > 0 => source_width as f64 * num as f64 / den as f64,
+        _ => source_width as f64,
+    };
     let (cap_w, cap_h) = (cap.0.max(2) as f64, cap.1.max(2) as f64);
-    let scale = (cap_w / source_width as f64).min(cap_h / source_height as f64);
+    let scale = (cap_w / display_width).min(cap_h / source_height as f64);
     if scale <= 1.0 {
         return (source_width, source_height);
     }
-    let mut w = (source_width as f64 * scale).round() as i32;
+    let mut w = (display_width * scale).round() as i32;
     let mut h = (source_height as f64 * scale).round() as i32;
     // Sources such as 854x480 are rounded 16:9; snap to the cap when within a
     // couple of pixels so 480p lands on exactly 1920x1080.
@@ -765,16 +787,56 @@ mod tests {
 
     #[test]
     fn upscale_dimensions_enlarges_to_fit_cap_with_even_sizes() {
-        assert_eq!(upscale_dimensions(854, 480, (1920, 1080)), (1920, 1080));
-        assert_eq!(upscale_dimensions(640, 480, (1920, 1080)), (1440, 1080));
-        assert_eq!(upscale_dimensions(720, 576, (1920, 1080)), (1350, 1080));
+        assert_eq!(
+            upscale_dimensions(854, 480, (1, 1), (1920, 1080)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            upscale_dimensions(640, 480, (1, 1), (1920, 1080)),
+            (1440, 1080)
+        );
+        assert_eq!(
+            upscale_dimensions(720, 576, (0, 1), (1920, 1080)),
+            (1350, 1080)
+        );
+    }
+
+    #[test]
+    fn upscale_dimensions_square_anamorphic_sources() {
+        // NTSC DVD 4:3 and 16:9, PAL DVD 4:3
+        assert_eq!(
+            upscale_dimensions(720, 480, (8, 9), (1920, 1080)),
+            (1440, 1080)
+        );
+        assert_eq!(
+            upscale_dimensions(720, 480, (32, 27), (1920, 1080)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            upscale_dimensions(720, 576, (16, 15), (1920, 1080)),
+            (1440, 1080)
+        );
+        // anamorphic HD that already fills the cap stays as stored
+        assert_eq!(
+            upscale_dimensions(1440, 1080, (4, 3), (1920, 1080)),
+            (1440, 1080)
+        );
     }
 
     #[test]
     fn upscale_dimensions_keeps_sources_at_or_above_cap() {
-        assert_eq!(upscale_dimensions(1920, 1080, (1920, 1080)), (1920, 1080));
-        assert_eq!(upscale_dimensions(3840, 2160, (1920, 1080)), (3840, 2160));
-        assert_eq!(upscale_dimensions(1920, 800, (1920, 1080)), (1920, 800));
+        assert_eq!(
+            upscale_dimensions(1920, 1080, (1, 1), (1920, 1080)),
+            (1920, 1080)
+        );
+        assert_eq!(
+            upscale_dimensions(3840, 2160, (1, 1), (1920, 1080)),
+            (3840, 2160)
+        );
+        assert_eq!(
+            upscale_dimensions(1920, 800, (1, 1), (1920, 1080)),
+            (1920, 800)
+        );
     }
 
     #[test]
@@ -784,6 +846,7 @@ mod tests {
             model_path: Some(PathBuf::from("/models/x.onnx")),
             device: AiUpscaleDevice::Auto,
             tile: 0,
+            restore: false,
         };
         assert!(settings.enabled());
         assert_eq!(settings.describe(), "custom (/models/x.onnx)");
@@ -792,6 +855,7 @@ mod tests {
             model_path: None,
             device: AiUpscaleDevice::Auto,
             tile: 0,
+            restore: false,
         };
         assert!(!off.enabled());
     }

@@ -543,6 +543,14 @@ pub(crate) struct Args {
     )]
     pub(crate) ai_upscale_tile: u32,
 
+    /// Run the AI model even when the source already meets the resolution cap, then fit it back (restoration without enlargement)
+    #[arg(
+        long = "ai-upscale-restore",
+        default_value_t = false,
+        id = "ai_upscale_restore"
+    )]
+    pub(crate) ai_upscale_restore: bool,
+
     /// Trigger a Plex library refresh for the output directory after a successful conversion
     #[arg(long = "plex-refresh", default_value_t = false)]
     pub(crate) plex_refresh: bool,

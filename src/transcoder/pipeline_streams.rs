@@ -285,7 +285,8 @@ fn resize_software_frame(
     let frame = ensure_software_frame(frame)?;
     let frame = match stream_processing_context.upscaler.as_mut() {
         Some(upscaler)
-            if frame.width < stream_processing_context.encode_context.width
+            if upscaler.restores()
+                || frame.width < stream_processing_context.encode_context.width
                 || frame.height < stream_processing_context.encode_context.height =>
         {
             upscaler.upscale_frame(&frame)?

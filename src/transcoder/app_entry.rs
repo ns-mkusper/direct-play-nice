@@ -656,6 +656,7 @@ fn run_conversion(
             primary_video_stream_index: args.primary_video_stream_index,
             primary_criteria: args.primary_video_criteria,
             ai_upscale_model: ai_upscale.as_ref().map(|_| args.ai_upscale_model.label()),
+            ai_upscale_restore: ai_upscale.as_ref().is_some_and(|s| s.restore),
         },
     ) {
         Ok(assessment) => {
@@ -1069,6 +1070,7 @@ fn ai_upscale_settings(args: &Args) -> Option<crate::upscale::UpscaleSettings> {
         model_path: args.ai_upscale_model_path.clone(),
         device: args.ai_upscale_device,
         tile: args.ai_upscale_tile,
+        restore: args.ai_upscale_restore,
     };
     settings.enabled().then_some(settings)
 }

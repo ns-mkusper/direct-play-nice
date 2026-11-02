@@ -74,6 +74,9 @@ and benchmark results.
   with OpenVINO, `cpu` is the explicit slow fallback
 - `--ai-upscale-tile <PIXELS>` tile edge in source pixels; `0` runs whole
   frames, `256`-`512` fits 2-4 GB GPUs
+- `--ai-upscale-restore` also run the model on sources already at the cap
+  and fit the result back to the output size (restoration without
+  enlargement)
 
 ## Probe modes
 

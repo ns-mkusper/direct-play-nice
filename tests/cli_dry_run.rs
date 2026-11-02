@@ -369,3 +369,115 @@ fn custom_ai_upscale_model_requires_a_path() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+fn ffmpeg_fixture(path: &Path, video: &str, video_opts: &[&str]) {
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            video,
+        ])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=1",
+        ])
+        .args(video_opts)
+        .args(["-c:a", "aac", "-shortest"])
+        .arg(path)
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "ffmpeg fixture failed");
+}
+
+fn ai_upscale_dry_run(tmp: &TempDir, input: &Path, extra: &[&str]) -> serde_json::Value {
+    let mut cmd = isolated_cmd(tmp);
+    cmd.env("DPN_UPSCALE_MODEL_DIR", tmp.path().join("models"))
+        .args([
+            "-s",
+            "roku",
+            "--video-quality",
+            "1080p",
+            "--sub-mode",
+            "skip",
+        ])
+        .args(["--ai-upscale-model", "realesr-animevideov3"])
+        .args(extra)
+        .args(["--dry-run", "--output", "json"])
+        .arg(input)
+        .arg(tmp.path().join("out.mp4"));
+    serde_json::from_str(&run_and_capture(cmd)).expect("dry-run json")
+}
+
+#[test]
+fn ai_upscale_plans_square_pixels_for_anamorphic_sources() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("dvd.mkv");
+    ffmpeg_fixture(
+        &input,
+        "testsrc2=size=720x480:rate=24000/1001:duration=1",
+        &["-vf", "setsar=8/9", "-c:v", "mpeg2video"],
+    );
+    let report = ai_upscale_dry_run(&tmp, &input, &[]);
+    let reasons = report["reasons"].as_array().unwrap();
+    // 4:3 display fits 1440x1080, not the anamorphic 1620x1080
+    assert!(
+        reasons.iter().any(|r| r
+            .as_str()
+            .unwrap_or("")
+            .contains("720x480 is below the 1440x1080 target")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn ai_upscale_restore_converts_sources_already_at_the_cap() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    // Already direct-play compatible for Roku at 1080p.
+    let input = tmp.path().join("hd.mp4");
+    ffmpeg_fixture(
+        &input,
+        "testsrc2=size=1920x1080:rate=24:duration=1",
+        &[
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "high",
+            "-level",
+            "4.1",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    );
+
+    let without = ai_upscale_dry_run(&tmp, &input, &[]);
+    assert_eq!(
+        without["reasons"],
+        serde_json::json!([]),
+        "report: {without}"
+    );
+
+    let with = ai_upscale_dry_run(&tmp, &input, &["--ai-upscale-restore"]);
+    assert_eq!(with["action"], "transcode", "report: {with}");
+    assert_eq!(
+        with["ai_upscale"],
+        "realesr-animevideov3, restore at source size"
+    );
+    let reasons = with["reasons"].as_array().unwrap();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.as_str().unwrap_or("").contains("AI restore")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}

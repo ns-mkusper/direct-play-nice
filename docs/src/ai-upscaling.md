@@ -19,9 +19,15 @@ direct_play_nice --device roku --video-quality 1080p \
 3. The enlarged frame goes through the normal libswscale fit to the exact
    target size using your `--resize-quality` kernel, then to the encoder.
 
+The target keeps the source's display aspect ratio in square pixels. An
+anamorphic 720x480 DVD at SAR 8:9 (4:3) becomes 1440x1080, and the same
+frame at SAR 32:27 (16:9) becomes 1920x1080.
+
 Sources already at or above the cap are left alone and the model is never
-loaded. A `--dry-run` reports the planned enlargement without touching the
-model.
+loaded, unless `--ai-upscale-restore` is set: then the model runs at any size
+and its output is fit back to the output size, which cleans up a source
+without enlarging it. A `--dry-run` reports the planned enlargement or
+restoration without touching the model.
 
 ## Models
 

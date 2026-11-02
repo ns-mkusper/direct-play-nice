@@ -457,9 +457,10 @@ pub(crate) fn convert_video_file(
 
                 let enlarging = encode_context.width > input_stream_codecpar.width
                     || encode_context.height > input_stream_codecpar.height;
-                if let Some(settings) = ai_upscale.filter(|_| enlarging) {
+                if let Some(settings) = ai_upscale.filter(|s| enlarging || s.restore) {
                     info!(
-                        "AI upscale: enlarging {}x{} -> {}x{} with {} before the deterministic fit",
+                        "AI upscale: {} {}x{} -> {}x{} with {} before the deterministic fit",
+                        if enlarging { "enlarging" } else { "restoring" },
                         input_stream_codecpar.width,
                         input_stream_codecpar.height,
                         encode_context.width,

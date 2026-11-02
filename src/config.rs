@@ -74,6 +74,7 @@ pub struct Config {
     pub ai_upscale_model_path: Option<PathBuf>,
     pub ai_upscale_device: Option<AiUpscaleDevice>,
     pub ai_upscale_tile: Option<u32>,
+    pub ai_upscale_restore: Option<bool>,
     pub plex: Option<PlexSettings>,
 }
 
@@ -372,6 +373,7 @@ mod tests {
             ai_upscale_model_path = "/models/custom.onnx"
             ai_upscale_device = "cpu"
             ai_upscale_tile = 256
+            ai_upscale_restore = true
             "#
         )
         .unwrap();
@@ -387,6 +389,7 @@ mod tests {
         );
         assert_eq!(cfg.ai_upscale_device, Some(AiUpscaleDevice::Cpu));
         assert_eq!(cfg.ai_upscale_tile, Some(256));
+        assert_eq!(cfg.ai_upscale_restore, Some(true));
     }
 
     #[test]
