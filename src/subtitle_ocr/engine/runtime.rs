@@ -89,7 +89,9 @@ pub(in crate::subtitle_ocr) fn init_ort_environment() -> Result<bool> {
         return Ok(*ORT_ENV_GPU_AVAILABLE.get().unwrap_or(&false));
     }
     let selection = build_execution_providers()?;
-    match ort::init().commit() {
+    // Telemetry off: ONNX Runtime 1.21+ on macOS otherwise aborts at process
+    // exit when its telemetry thread touches an already destroyed mutex.
+    match ort::init().with_telemetry(false).commit() {
         Ok(true) => info!("Initialized ONNX Runtime environment for OCR execution providers"),
         Ok(false) => debug!("ONNX Runtime environment already initialized; skipping reconfigure"),
         Err(err) => {
@@ -101,6 +103,7 @@ pub(in crate::subtitle_ocr) fn init_ort_environment() -> Result<bool> {
     }
     let _ = ORT_ENV_INIT.set(());
     let _ = ORT_ENV_GPU_AVAILABLE.set(selection.gpu_available);
+    crate::upscale::mark_ort_initialised();
     Ok(selection.gpu_available)
 }
 

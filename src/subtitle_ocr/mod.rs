@@ -49,7 +49,9 @@ mod ocr_pipeline;
 mod text_render;
 
 use engine::*;
-pub(crate) use engine::{convert_bitmap_subtitles, OcrOptions};
+pub(crate) use engine::{
+    convert_bitmap_subtitles, ensure_model_file, resolve_model_dir, ModelSpec, OcrOptions,
+};
 pub(crate) use fixture_eval::{evaluate_ocr_fixture_accuracy, render_ocr_fixture_report_markdown};
 use language::*;
 pub(crate) use language::{subtitle_stream_facts, OcrSkipReason, OcrStreamFilter};

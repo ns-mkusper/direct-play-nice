@@ -17,6 +17,9 @@ Cargo.lock
 docs/book/
 
 # Private key / certificate material
+.env
+.env.*
+!.env.example
 *.pem
 *.key
 *.p8

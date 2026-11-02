@@ -292,3 +292,192 @@ fn direct_conversion_promotes_staged_output_and_leaves_no_temp() -> Result<(), B
     );
     Ok(())
 }
+
+#[test]
+fn dry_run_reports_ai_upscale_without_loading_a_model() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = gen_problem_input(&tmp);
+    let output = tmp.path().join("out.mp4");
+
+    let mut cmd = isolated_cmd(&tmp);
+    cmd.env("DPN_UPSCALE_MODEL_DIR", tmp.path().join("models"))
+        .arg("-s")
+        .arg("roku")
+        .arg("--video-quality")
+        .arg("1080p")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg("--ai-upscale-model")
+        .arg("realesr-animevideov3")
+        .arg("--dry-run")
+        .arg("--output")
+        .arg("json")
+        .arg(&input)
+        .arg(&output);
+
+    let before = snapshot(tmp.path());
+    let stdout = run_and_capture(cmd);
+    let after = snapshot(tmp.path());
+    assert_unchanged(&before, &after);
+
+    let report: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(report["ai_upscale"], "realesr-animevideov3");
+    let reasons = report["reasons"].as_array().unwrap();
+    assert!(
+        reasons.iter().any(|r| r
+            .as_str()
+            .unwrap_or("")
+            .contains("AI upscale (realesr-animevideov3) requested")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn custom_ai_upscale_model_requires_a_path() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let (input, _) = gen_problem_input(&tmp);
+    let output = tmp.path().join("out.mp4");
+
+    let mut cmd = isolated_cmd(&tmp);
+    cmd.arg("-s")
+        .arg("roku")
+        .arg("--video-quality")
+        .arg("1080p")
+        .arg("--sub-mode")
+        .arg("skip")
+        .arg("--ai-upscale-model")
+        .arg("custom")
+        .arg(&input)
+        .arg(&output);
+    let out = cmd.output()?;
+    assert!(
+        !out.status.success(),
+        "custom model without a path must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--ai-upscale-model-path"),
+        "error should name the missing flag:\n{stderr}"
+    );
+    assert!(!output.exists(), "no output must be written");
+    assert!(
+        !tmp.path().join("out.direct-play-nice.tmp.mp4").exists(),
+        "staged temp must be cleaned up"
+    );
+    Ok(())
+}
+
+fn ffmpeg_fixture(path: &Path, video: &str, video_opts: &[&str]) {
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            video,
+        ])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=1",
+        ])
+        .args(video_opts)
+        .args(["-c:a", "aac", "-shortest"])
+        .arg(path)
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "ffmpeg fixture failed");
+}
+
+fn ai_upscale_dry_run(tmp: &TempDir, input: &Path, extra: &[&str]) -> serde_json::Value {
+    let mut cmd = isolated_cmd(tmp);
+    cmd.env("DPN_UPSCALE_MODEL_DIR", tmp.path().join("models"))
+        .args([
+            "-s",
+            "roku",
+            "--video-quality",
+            "1080p",
+            "--sub-mode",
+            "skip",
+        ])
+        .args(["--ai-upscale-model", "realesr-animevideov3"])
+        .args(extra)
+        .args(["--dry-run", "--output", "json"])
+        .arg(input)
+        .arg(tmp.path().join("out.mp4"));
+    serde_json::from_str(&run_and_capture(cmd)).expect("dry-run json")
+}
+
+#[test]
+fn ai_upscale_plans_square_pixels_for_anamorphic_sources() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let input = tmp.path().join("dvd.mkv");
+    ffmpeg_fixture(
+        &input,
+        "testsrc2=size=720x480:rate=24000/1001:duration=1",
+        &["-vf", "setsar=8/9", "-c:v", "mpeg2video"],
+    );
+    let report = ai_upscale_dry_run(&tmp, &input, &[]);
+    let reasons = report["reasons"].as_array().unwrap();
+    // 4:3 display fits 1440x1080, not the anamorphic 1620x1080
+    assert!(
+        reasons.iter().any(|r| r
+            .as_str()
+            .unwrap_or("")
+            .contains("720x480 is below the 1440x1080 target")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn ai_upscale_restore_converts_sources_already_at_the_cap() -> Result<(), Box<dyn Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    // Already direct-play compatible for Roku at 1080p.
+    let input = tmp.path().join("hd.mp4");
+    ffmpeg_fixture(
+        &input,
+        "testsrc2=size=1920x1080:rate=24:duration=1",
+        &[
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "high",
+            "-level",
+            "4.1",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+    );
+
+    let without = ai_upscale_dry_run(&tmp, &input, &[]);
+    assert_eq!(
+        without["reasons"],
+        serde_json::json!([]),
+        "report: {without}"
+    );
+
+    let with = ai_upscale_dry_run(&tmp, &input, &["--ai-upscale-restore"]);
+    assert_eq!(with["action"], "transcode", "report: {with}");
+    assert_eq!(
+        with["ai_upscale"],
+        "realesr-animevideov3, restore at source size"
+    );
+    let reasons = with["reasons"].as_array().unwrap();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.as_str().unwrap_or("").contains("AI restore")),
+        "reasons: {reasons:?}"
+    );
+    Ok(())
+}

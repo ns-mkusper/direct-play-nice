@@ -630,6 +630,16 @@ fn run_conversion(
         None => (output_file, output_path),
     };
 
+    let ai_upscale = ai_upscale_settings(&args);
+    if let Some(settings) = &ai_upscale {
+        info!(
+            "AI upscale enabled: model {}, device {}, tile {}",
+            settings.describe(),
+            settings.device,
+            settings.tile
+        );
+    }
+
     let mut needs_conversion = true;
     let mut dry_run_action = DryRunAction::Transcode;
     let mut dry_run_reasons = Vec::new();
@@ -648,6 +658,8 @@ fn run_conversion(
             quality_limits: &quality_limits,
             primary_video_stream_index: args.primary_video_stream_index,
             primary_criteria: args.primary_video_criteria,
+            ai_upscale_model: ai_upscale.as_ref().map(|_| args.ai_upscale_model.label()),
+            ai_upscale_restore: ai_upscale.as_ref().is_some_and(|s| s.restore),
         },
     ) {
         Ok(assessment) => {
@@ -718,6 +730,7 @@ fn run_conversion(
             common_audio_codec,
             container: requested_container,
             should_ocr,
+            ai_upscale: ai_upscale.as_ref().map(|settings| settings.describe()),
         });
         println!("{}", report.render(args.output));
         return Ok(());
@@ -746,6 +759,7 @@ fn run_conversion(
             max_ratio: args.audio_decode_error_max_ratio,
         },
         hw_accel: args.hw_accel,
+        ai_upscale: ai_upscale.as_ref(),
     };
 
     let mut conversion_result = if needs_conversion {
@@ -773,7 +787,10 @@ fn run_conversion(
 
     if needs_conversion {
         if let Err(err0) = conversion_result {
-            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            if err0.is::<crate::upscale::UpscaleError>() {
+                // Model load or inference failures are final; no encoder retry can fix them.
+                conversion_result = Err(err0);
+            } else if target_video_codec == ffi::AV_CODEC_ID_H264 {
                 conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                     Ok(mismatch) => handle_hw_profile_mismatch(
                         mismatch,
@@ -993,6 +1010,7 @@ struct DryRunInputs<'a> {
     common_audio_codec: ffi::AVCodecID,
     container: ContainerFormat,
     should_ocr: bool,
+    ai_upscale: Option<String>,
 }
 
 /// Assembles the paths and decisions a real run would act on, without acting on them.
@@ -1013,6 +1031,7 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
         common_audio_codec,
         container,
         should_ocr,
+        ai_upscale,
     } = inputs;
 
     let mut temp_outputs = Vec::new();
@@ -1055,7 +1074,20 @@ fn build_dry_run_report(inputs: DryRunInputs<'_>) -> DryRunReport {
         audio_codec: describe_codec(common_audio_codec).to_string(),
         container: container.as_str().to_string(),
         subtitle_ocr_pass: should_ocr,
+        ai_upscale,
     }
+}
+
+/// Builds the opt-in AI upscale settings from CLI/config, or `None` when off.
+fn ai_upscale_settings(args: &Args) -> Option<crate::upscale::UpscaleSettings> {
+    let settings = crate::upscale::UpscaleSettings {
+        model: args.ai_upscale_model,
+        model_path: args.ai_upscale_model_path.clone(),
+        device: args.ai_upscale_device,
+        tile: args.ai_upscale_tile,
+        restore: args.ai_upscale_restore,
+    };
+    settings.enabled().then_some(settings)
 }
 
 fn ocr_multi_gpu_requested() -> bool {

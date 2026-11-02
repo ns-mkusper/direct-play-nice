@@ -49,10 +49,10 @@ ureq = { version = "2.9.7", features = ["tls"] }
 wordninja = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda", "openvino"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda", "directml"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda", "directml", "openvino"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["coreml"] }

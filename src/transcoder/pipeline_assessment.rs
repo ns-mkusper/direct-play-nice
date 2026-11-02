@@ -37,6 +37,11 @@ pub(crate) struct DirectPlayConstraints<'a> {
     pub(crate) quality_limits: &'a QualityLimits,
     pub(crate) primary_video_stream_index: Option<usize>,
     pub(crate) primary_criteria: PrimaryVideoCriteria,
+    /// Label of the AI upscale model when one is requested; forces conversion
+    /// for sources below the active resolution cap.
+    pub(crate) ai_upscale_model: Option<&'a str>,
+    /// Run the model even at source size; forces conversion whenever a model is set.
+    pub(crate) ai_upscale_restore: bool,
 }
 
 pub(crate) fn assess_direct_play_compatibility(
@@ -56,6 +61,8 @@ pub(crate) fn assess_direct_play_compatibility(
         quality_limits,
         primary_video_stream_index,
         primary_criteria,
+        ai_upscale_model,
+        ai_upscale_restore,
     } = constraints;
 
     let ictx = AVFormatContextInput::open(input_file)?;
@@ -135,6 +142,31 @@ pub(crate) fn assess_direct_play_compatibility(
                 "video resolution {}x{} exceeds requested quality limit {}x{}",
                 video_par.width, video_par.height, quality_w, quality_h
             ));
+        }
+    }
+
+    if let Some(model) = ai_upscale_model {
+        if video_par.width > 0 && video_par.height > 0 {
+            let cap = effective_resolution_cap(device_cap, quality_limits.max_video_dimensions);
+            let sar = source_sample_aspect_ratio(video_stream);
+            let target = crate::upscale::upscale_dimensions(
+                video_par.width,
+                video_par.height,
+                (sar.num, sar.den),
+                cap,
+            );
+            if target != (video_par.width, video_par.height) {
+                reasons.push(crate::upscale::upscale_reason(
+                    (video_par.width, video_par.height),
+                    target,
+                    model,
+                ));
+            } else if ai_upscale_restore {
+                reasons.push(format!(
+                    "AI restore ({model}) requested at source size {}x{}",
+                    video_par.width, video_par.height
+                ));
+            }
         }
     }
 
@@ -309,6 +341,28 @@ pub(crate) fn rational_to_f64(rational: ffi::AVRational) -> Option<f64> {
         None
     } else {
         Some(rational.num as f64 / rational.den as f64)
+    }
+}
+
+/// The tightest active resolution cap: device limit narrowed by the quality preset.
+pub(crate) fn effective_resolution_cap(
+    device_cap: (u32, u32),
+    quality_cap: Option<(u32, u32)>,
+) -> (u32, u32) {
+    match quality_cap {
+        Some((w, h)) => (device_cap.0.min(w.max(2)), device_cap.1.min(h.max(2))),
+        None => device_cap,
+    }
+}
+
+/// Sample aspect ratio as the container declares it, falling back to codec
+/// parameters (the order `av_guess_sample_aspect_ratio` uses).
+pub(crate) fn source_sample_aspect_ratio(stream: &AVStreamRef) -> ffi::AVRational {
+    let valid = |r: ffi::AVRational| r.num > 0 && r.den > 0;
+    if valid(stream.sample_aspect_ratio) {
+        stream.sample_aspect_ratio
+    } else {
+        stream.codecpar().sample_aspect_ratio
     }
 }
 

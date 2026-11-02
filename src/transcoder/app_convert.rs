@@ -27,6 +27,8 @@ pub(crate) struct ConversionParams<'a> {
     pub(crate) subtitle_failure_policy: SubtitleFailurePolicy,
     pub(crate) audio_decode_error_limits: AudioDecodeErrorLimits,
     pub(crate) hw_accel: HwAccel,
+    /// Opt-in AI super-resolution settings; `None` keeps deterministic resizing only.
+    pub(crate) ai_upscale: Option<&'a crate::upscale::UpscaleSettings>,
 }
 
 impl ConversionParams<'_> {
@@ -59,6 +61,7 @@ pub(crate) fn convert_video_file(
         subtitle_failure_policy,
         audio_decode_error_limits,
         hw_accel,
+        ai_upscale,
     } = params;
     audio_decode_error_limits.validate()?;
 
@@ -329,6 +332,7 @@ pub(crate) fn convert_video_file(
         let mut encoder_is_hw = false;
         let mut current_encoder_name: Option<String> = None;
         let mut active_resize_backend = ResizeBackend::Software;
+        let mut video_upscaler: Option<crate::upscale::Upscaler> = None;
 
         match decode_context.codec_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
@@ -434,6 +438,7 @@ pub(crate) fn convert_video_file(
                             source_bit_rate_hint: input_stream_codecpar.bit_rate,
                             encoder_name: &encoder_name_owned,
                             is_constant_quality_mode,
+                            upscale_to_cap: ai_upscale.is_some(),
                         },
                     );
                 } else {
@@ -448,7 +453,28 @@ pub(crate) fn convert_video_file(
                             source_bit_rate_hint: input_stream_codecpar.bit_rate,
                             encoder_name: &encoder_name_owned,
                             is_constant_quality_mode,
+                            upscale_to_cap: ai_upscale.is_some(),
                         },
+                    );
+                }
+
+                let enlarging = encode_context.width > input_stream_codecpar.width
+                    || encode_context.height > input_stream_codecpar.height;
+                if let Some(settings) = ai_upscale.filter(|s| enlarging || s.restore) {
+                    info!(
+                        "AI upscale: {} {}x{} -> {}x{} with {} before the deterministic fit",
+                        if enlarging { "enlarging" } else { "restoring" },
+                        input_stream_codecpar.width,
+                        input_stream_codecpar.height,
+                        encode_context.width,
+                        encode_context.height,
+                        settings.describe()
+                    );
+                    video_upscaler = Some(crate::upscale::Upscaler::load(settings)?);
+                } else if ai_upscale.is_some() {
+                    info!(
+                        "AI upscale: source {}x{} already meets the resolution cap; model not loaded",
+                        input_stream_codecpar.width, input_stream_codecpar.height
                     );
                 }
 
@@ -477,8 +503,14 @@ pub(crate) fn convert_video_file(
                         cuda_resize_prereqs.linked_scale_cuda_filter,
                     );
                 }
-                active_resize_backend =
-                    select_resize_backend(resize_backend, &cuda_resize_prereqs)?;
+                active_resize_backend = if video_upscaler.is_some() {
+                    if matches!(resize_backend, ResizeBackend::Cuda) {
+                        info!("AI upscale runs on software frames; ignoring --resize-backend cuda for this stream");
+                    }
+                    ResizeBackend::Software
+                } else {
+                    select_resize_backend(resize_backend, &cuda_resize_prereqs)?
+                };
                 if matches!(active_resize_backend, ResizeBackend::Cuda) {
                     info!(
                         "Resize backend selected: cuda (scale_cuda, quality {}, {}x{} -> {}x{})",
@@ -690,6 +722,7 @@ pub(crate) fn convert_video_file(
             resize_quality,
             resize_backend: active_resize_backend,
             cuda_resize_filter: None,
+            upscaler: video_upscaler.take(),
         };
 
         stream_contexts.push(stream_process_context);
