@@ -72,21 +72,30 @@ pub(crate) fn colour_aware_sws_context(
     dst_matrix: ffi::AVColorSpace,
 ) -> Option<SwsContext> {
     let src_full = is_full_range(frame.color_range, frame.format as ffi::AVPixelFormat);
+    // Configure through AVOptions rather than struct fields: the public
+    // SwsContext layout differs between FFmpeg releases, so field offsets in
+    // the generated bindings are not safe across library versions.
+    let options: [(&CStr, i64); 9] = [
+        (c"srcw", frame.width as i64),
+        (c"srch", frame.height as i64),
+        (c"src_format", frame.format as i64),
+        (c"dstw", dst_w as i64),
+        (c"dsth", dst_h as i64),
+        (c"dst_format", dst_format as i64),
+        (c"sws_flags", flags as i64),
+        (c"src_range", src_full as i64),
+        (c"dst_range", 0),
+    ];
     let mut context = unsafe {
         let raw = std::ptr::NonNull::new(ffi::sws_alloc_context())?;
-        let ctx = raw.as_ptr();
-        (*ctx).src_w = frame.width;
-        (*ctx).src_h = frame.height;
-        (*ctx).src_format = frame.format;
-        (*ctx).dst_w = dst_w;
-        (*ctx).dst_h = dst_h;
-        (*ctx).dst_format = dst_format;
-        (*ctx).flags = flags as _;
-        (*ctx).src_range = src_full as i32;
-        (*ctx).dst_range = 0;
-        // Owned from here on, so the context is freed if init fails.
+        // Owned from here on, so the context is freed on every early return.
         let context = SwsContext::from_raw(raw);
-        if ffi::sws_init_context(ctx, ptr::null_mut(), ptr::null_mut()) < 0 {
+        for (name, value) in options {
+            if ffi::av_opt_set_int(raw.as_ptr().cast(), name.as_ptr(), value, 0) < 0 {
+                return None;
+            }
+        }
+        if ffi::sws_init_context(raw.as_ptr(), ptr::null_mut(), ptr::null_mut()) < 0 {
             return None;
         }
         context
@@ -126,6 +135,17 @@ fn configure_sws_colour(
     }
 }
 
+/// `primary` unless it is the "unspecified" value, else `fallback`. Generic
+/// because bindgen gives FFmpeg's C enums different integer types per
+/// platform (unsigned on Linux and macOS, signed with MSVC).
+fn first_specified<T: PartialEq>(primary: T, fallback: T, unspecified: T) -> T {
+    if primary != unspecified {
+        primary
+    } else {
+        fallback
+    }
+}
+
 /// Copy the source's colour description onto the encoder. The matrix is the
 /// one `configure_sws_colour` keeps, and output is always limited range
 /// because the encoder receives `yuv420p`. Primaries, transfer and chroma
@@ -136,23 +156,22 @@ pub(crate) fn apply_output_colour(
     input_stream: &AVStreamRef,
 ) {
     let par = input_stream.codecpar();
-    let pick = |ctx: u32, par: u32, unspecified: u32| if ctx != unspecified { ctx } else { par };
-    let colorspace = pick(
+    let colorspace = first_specified(
         decode_context.colorspace,
         par.color_space,
         ffi::AVCOL_SPC_UNSPECIFIED,
     );
-    let primaries = pick(
+    let primaries = first_specified(
         decode_context.color_primaries,
         par.color_primaries,
         ffi::AVCOL_PRI_UNSPECIFIED,
     );
-    let trc = pick(
+    let trc = first_specified(
         decode_context.color_trc,
         par.color_trc,
         ffi::AVCOL_TRC_UNSPECIFIED,
     );
-    let chroma = pick(
+    let chroma = first_specified(
         decode_context.chroma_sample_location,
         par.chroma_location,
         ffi::AVCHROMA_LOC_UNSPECIFIED,
