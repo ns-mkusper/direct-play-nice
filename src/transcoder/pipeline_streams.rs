@@ -8,7 +8,6 @@ use rsmpeg::avformat::{AVFormatContextOutput, AVStreamRef};
 use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
-use rsmpeg::swscale::SwsContext;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -21,6 +20,7 @@ use crate::transcoder::ffmpeg_ext::copy_payload_into_packet;
 use crate::transcoder::h264::DecoderError;
 use crate::transcoder::pipeline_audio_errors::{AudioDecodeErrorAction, AudioTimelineAction};
 use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
+use crate::transcoder::pipeline_colour::colour_aware_sws_context;
 use crate::transcoder::timestamp::{
     best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
 };
@@ -293,11 +293,9 @@ fn resize_software_frame(
 
     let source_width = frame.width;
     let source_height = frame.height;
-    let source_pix_fmt = frame.format as ffi::AVPixelFormat;
-    let mut sws_context = SwsContext::get_context(
-        source_width,
-        source_height,
-        source_pix_fmt,
+    let dst_matrix = stream_processing_context.encode_context.colorspace;
+    let mut sws_context = colour_aware_sws_context(
+        &frame,
         stream_processing_context.encode_context.width,
         stream_processing_context.encode_context.height,
         stream_processing_context.encode_context.pix_fmt,
@@ -308,11 +306,16 @@ fn resize_software_frame(
             stream_processing_context.encode_context.width,
             stream_processing_context.encode_context.height,
         ),
-        None,
-        None,
-        None,
+        dst_matrix,
     )
     .context("Failed to create a swscale context.")?;
+    unsafe {
+        let out = new_frame.as_mut_ptr();
+        (*out).colorspace = dst_matrix;
+        (*out).color_range = ffi::AVCOL_RANGE_MPEG;
+        (*out).color_primaries = stream_processing_context.encode_context.color_primaries;
+        (*out).color_trc = stream_processing_context.encode_context.color_trc;
+    }
 
     new_frame.set_time_base(stream_processing_context.encode_context.time_base);
     if rescaled_pts != ffi::AV_NOPTS_VALUE {

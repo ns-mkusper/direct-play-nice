@@ -6,10 +6,13 @@ pub mod pipeline_assessment;
 pub mod pipeline_audio_errors;
 #[path = "pipeline_codec.rs"]
 pub mod pipeline_codec;
+#[path = "pipeline_colour.rs"]
+pub mod pipeline_colour;
 #[path = "pipeline_streams.rs"]
 pub mod pipeline_streams;
 
 pub(crate) use pipeline_assessment::*;
 pub(crate) use pipeline_audio_errors::*;
 pub(crate) use pipeline_codec::*;
+pub(crate) use pipeline_colour::*;
 pub(crate) use pipeline_streams::*;
