@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.1.0-beta.11] - 2026-11-03
 
-### Direct Play Reliability
+### Re-encode Fidelity
 
 - Re-encoded video keeps its display shape: the sample aspect ratio now comes
   from the container first, so Matroska and MP4 files that store it only at
@@ -28,7 +28,7 @@ All notable changes to this project will be documented in this file.
   `--audio-decode-error-max-packets` and `--audio-decode-error-max-ratio`
   bound how much damage is tolerated. (#210)
 
-### Servarr
+### Sonarr Import Safety
 
 - Sonarr language upgrades are imported with `ManualImport` before the
   current file is replaced, and only when the release resolves to the same
@@ -43,7 +43,7 @@ All notable changes to this project will be documented in this file.
   (`[plex] remove_replaced_versions`, default on). Whole items and section
   trash are never deleted. (#212)
 
-### Testing
+### Direct-Play Contract Testing
 
 - Added `cli_direct_play_contract`, which converts a matrix of sources for
   several devices on software and hardware paths and checks every output's
