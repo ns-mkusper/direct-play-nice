@@ -168,6 +168,11 @@ printf '\n' >>"$CMD_TXT"
   echo "MAX_SOURCE_SECONDS=${MAX_SOURCE_SECONDS:-}"
   echo "SAMPLE_MS=$SAMPLE_MS"
   echo "MIN_OCR_SPACE_RATE=${MIN_OCR_SPACE_RATE:-}"
+  echo "ALLOW_DROPPED_OCR_STREAMS=${ALLOW_DROPPED_OCR_STREAMS:-0}"
+  # Host load at start: other work on a shared box skews timings and can
+  # starve the GPUs of memory.
+  echo "HOST_LOADAVG=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)"
+  echo "HOST_GPU_APPS=$(nvidia-smi --query-compute-apps=process_name,used_memory --format=csv,noheader 2>/dev/null | tr '\n' ';' || true)"
   echo "START_HUMAN=$(date -Is)"
 } >"$META"
 
@@ -423,6 +428,12 @@ for ln in ocr_stream_lines:
         continue
     ocr_stream_cues.append({"stream_index": int(m.group(1)), "cues": int(m.group(2))})
 total_ocr_cues = sum(item["cues"] for item in ocr_stream_cues)
+# Streams DPN gave up on (--subtitle-failure-policy=skip-stream). The output
+# silently lacks them, so a run with any of these is not a valid benchmark.
+dropped_ocr_streams = [
+    {"stream_index": int(m.group(1)), "reason": m.group(2).strip()[:300]}
+    for m in re.finditer(r"Dropping subtitle stream (\d+) after OCR failed[^:]*:(.*)", log_text)
+]
 
 def extract_output_subtitle_text_metrics(path: Path):
     metrics = []
@@ -560,6 +571,9 @@ summary = {
     "ocr_stream_lines": ocr_stream_lines,
     "ocr_stream_cues": ocr_stream_cues,
     "total_ocr_cues": total_ocr_cues,
+    "dropped_ocr_streams": dropped_ocr_streams,
+    "host_loadavg": meta.get("HOST_LOADAVG", ""),
+    "host_gpu_apps": meta.get("HOST_GPU_APPS", ""),
     "output_subtitle_text_metrics": output_subtitle_text_metrics,
     "min_ocr_space_rate": float(meta.get("MIN_OCR_SPACE_RATE") or 0.0),
     "force_tess_non_english": meta.get("FORCE_TESS_NON_ENGLISH", ""),
@@ -650,6 +664,15 @@ if ocr_stream_lines:
         lines.append(f"- Total OCR cues emitted: `{total_ocr_cues}`")
 else:
     lines.append("- No OCR stream summary lines found in run.log")
+if dropped_ocr_streams:
+    lines.append("")
+    lines.append("### Dropped Streams")
+    lines.append("")
+    for item in dropped_ocr_streams:
+        lines.append(f"- Stream `{item['stream_index']}`: {item['reason']}")
+lines.append("")
+lines.append(f"- Host load at start: `{meta.get('HOST_LOADAVG', '') or 'n/a'}`")
+lines.append(f"- Other GPU processes at start: `{meta.get('HOST_GPU_APPS', '') or 'none'}`")
 lines.append("")
 lines.append("## Output Subtitle Text Quality")
 lines.append("")
@@ -695,6 +718,15 @@ if summary["worker_plan_lines"]:
 else:
     lines.append("- No OCR worker plan lines found in run.log")
 summary_md.write_text("\n".join(lines) + "\n")
+
+if dropped_ocr_streams and meta.get("ALLOW_DROPPED_OCR_STREAMS", "0") != "1":
+    details = ", ".join(str(item["stream_index"]) for item in dropped_ocr_streams)
+    print(
+        f"OCR benchmark invalid: stream(s) {details} were dropped after OCR failed; "
+        "see Dropped Streams in the summary (set ALLOW_DROPPED_OCR_STREAMS=1 to accept)",
+        file=sys.stderr,
+    )
+    sys.exit(4)
 
 min_space_rate = float(meta.get("MIN_OCR_SPACE_RATE") or 0.0)
 if min_space_rate > 0.0:
