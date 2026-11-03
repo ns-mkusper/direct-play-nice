@@ -205,3 +205,26 @@ fn full_range_yuv420p_is_converted_to_limited_range() {
         "black should map to limited-range 16, got {y:.1}"
     );
 }
+
+#[test]
+fn hdr_transfer_is_not_carried_onto_reencoded_output() {
+    common::ensure_ffmpeg_present();
+    let tmp = TempDir::new().unwrap();
+    let src = input(&tmp, "pq.mkv");
+    fixture(
+        "testsrc2=size=1280x720:rate=24:duration=1",
+        &[
+            "-vf",
+            "format=yuv420p10le,setparams=range=tv:colorspace=bt2020nc:color_primaries=bt2020:color_trc=smpte2084",
+            "-c:v",
+            "ffv1",
+        ],
+        &src,
+    );
+    assert_eq!(probe(&src)["color_transfer"], "smpte2084");
+    let out = input(&tmp, "out.mp4");
+    convert(&src, &out);
+    let p = probe(&out);
+    assert_ne!(p["color_transfer"], "smpte2084");
+    assert_ne!(p["color_primaries"], "bt2020");
+}

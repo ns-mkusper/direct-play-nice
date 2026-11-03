@@ -176,6 +176,16 @@ pub(crate) fn apply_output_colour(
         par.chroma_location,
         ffi::AVCHROMA_LOC_UNSPECIFIED,
     );
+    // DPN does not tone map, so an HDR source becomes 8-bit SDR-range H.264 or
+    // HEVC. Carrying PQ/HLG and BT.2020 tags over would ask displays to switch
+    // to HDR for a stream that is not HDR10/HLG, so leave them unset as before.
+    let hdr = matches!(trc, ffi::AVCOL_TRC_SMPTE2084 | ffi::AVCOL_TRC_ARIB_STD_B67);
+    let (primaries, trc) = if hdr {
+        debug!("HDR source re-encoded without tone mapping; not tagging output as HDR");
+        (ffi::AVCOL_PRI_UNSPECIFIED, ffi::AVCOL_TRC_UNSPECIFIED)
+    } else {
+        (primaries, trc)
+    };
     let matrix = resolved_matrix(colorspace, decode_context.height.max(par.height));
     unsafe {
         let enc = encode_context.as_mut_ptr();
