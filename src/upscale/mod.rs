@@ -19,7 +19,6 @@ use ort::session::Session;
 use ort::value::Tensor;
 use rsmpeg::avutil::AVFrame;
 use rsmpeg::ffi;
-use rsmpeg::swscale::SwsContext;
 use serde::Deserialize;
 
 use crate::subtitle_ocr::{ensure_model_file, resolve_model_dir, ModelSpec};
@@ -621,17 +620,17 @@ fn frame_to_rgb_planar(frame: &AVFrame) -> Result<Vec<f32>> {
     gbr.set_format(ffi::AV_PIX_FMT_GBRP);
     gbr.alloc_buffer()
         .context("allocating RGB frame for AI upscale")?;
-    let mut sws = SwsContext::get_context(
-        width,
-        height,
-        frame.format as ffi::AVPixelFormat,
+    // Read the source's own matrix and range so the model sees true RGB, and
+    // interpolate chroma instead of repeating it (SWS_POINT made blocky edges).
+    let matrix = crate::transcoder::pipeline::resolved_matrix(frame.colorspace, height);
+    let mut sws = crate::transcoder::pipeline::colour_aware_sws_context(
+        frame,
         width,
         height,
         ffi::AV_PIX_FMT_GBRP,
-        ffi::SWS_POINT,
-        None,
-        None,
-        None,
+        ffi::SWS_BILINEAR | ffi::SWS_ACCURATE_RND | ffi::SWS_FULL_CHR_H_INT,
+        matrix,
+        true,
     )
     .context("creating swscale context for AI upscale input")?;
     sws.scale_frame(frame, 0, height, &mut gbr)
@@ -727,10 +726,12 @@ fn rgb_planar_to_frame(rgb: &[f32], width: u32, height: u32, source: &AVFrame) -
         (*out.as_mut_ptr()).sample_aspect_ratio = source.sample_aspect_ratio;
         (*out.as_mut_ptr()).best_effort_timestamp = source.best_effort_timestamp;
         (*out.as_mut_ptr()).duration = source.duration;
-        (*out.as_mut_ptr()).color_range = source.color_range;
+        // Model output is full-range RGB; the encoder-side conversion reads
+        // these to pick range, and applies the encoder's matrix.
+        (*out.as_mut_ptr()).color_range = ffi::AVCOL_RANGE_JPEG;
+        (*out.as_mut_ptr()).colorspace = ffi::AVCOL_SPC_RGB;
         (*out.as_mut_ptr()).color_primaries = source.color_primaries;
         (*out.as_mut_ptr()).color_trc = source.color_trc;
-        (*out.as_mut_ptr()).colorspace = source.colorspace;
     }
     Ok(out)
 }
@@ -858,6 +859,77 @@ mod tests {
             restore: false,
         };
         assert!(!off.enabled());
+    }
+
+    /// A flat yuv420p frame with the given code values and colour tags.
+    fn flat_yuv_frame(
+        (y, u, v): (u8, u8, u8),
+        range: ffi::AVColorRange,
+        colorspace: ffi::AVColorSpace,
+    ) -> AVFrame {
+        let (w, h) = (16i32, 8i32);
+        let mut frame = AVFrame::new();
+        frame.set_width(w);
+        frame.set_height(h);
+        frame.set_format(ffi::AV_PIX_FMT_YUV420P);
+        frame.alloc_buffer().unwrap();
+        unsafe {
+            (*frame.as_mut_ptr()).color_range = range;
+            (*frame.as_mut_ptr()).colorspace = colorspace;
+            for (plane, value, rows, cols) in
+                [(0, y, h, w), (1, u, h / 2, w / 2), (2, v, h / 2, w / 2)]
+            {
+                for row in 0..rows as usize {
+                    let ptr = frame.data[plane].add(row * frame.linesize[plane] as usize);
+                    std::ptr::write_bytes(ptr, value, cols as usize);
+                }
+            }
+        }
+        frame
+    }
+
+    /// Mean of each RGB plane.
+    fn mean_rgb(rgb: &[f32]) -> [f32; 3] {
+        let n = rgb.len() / 3;
+        [0, 1, 2].map(|c| rgb[c * n..(c + 1) * n].iter().sum::<f32>() / n as f32)
+    }
+
+    #[test]
+    fn model_input_uses_the_source_matrix() {
+        // Pure red encoded with BT.709 coefficients, limited range.
+        let red = flat_yuv_frame((63, 102, 240), ffi::AVCOL_RANGE_MPEG, ffi::AVCOL_SPC_BT709);
+        let [r, g, b] = mean_rgb(&frame_to_rgb_planar(&red).unwrap());
+        // Decoding with BT.601 instead gives R ~0.92.
+        assert!(
+            r > 0.97 && g < 0.03 && b < 0.03,
+            "BT.709 red decoded as {r} {g} {b}"
+        );
+    }
+
+    #[test]
+    fn model_input_honours_full_range() {
+        let grey = flat_yuv_frame((128, 128, 128), ffi::AVCOL_RANGE_JPEG, ffi::AVCOL_SPC_BT709);
+        let [r, g, b] = mean_rgb(&frame_to_rgb_planar(&grey).unwrap());
+        // Full range maps 128 to 128/255; reading it as limited gives 0.511.
+        for v in [r, g, b] {
+            assert!(
+                (v - 128.0 / 255.0).abs() < 0.004,
+                "full-range grey decoded as {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn model_output_is_marked_full_range_rgb() {
+        let src = flat_yuv_frame(
+            (128, 128, 128),
+            ffi::AVCOL_RANGE_MPEG,
+            ffi::AVCOL_SPC_SMPTE170M,
+        );
+        let rgb = vec![0.5f32; 3 * 32 * 16];
+        let out = rgb_planar_to_frame(&rgb, 32, 16, &src).unwrap();
+        assert_eq!(out.color_range, ffi::AVCOL_RANGE_JPEG);
+        assert_eq!(out.colorspace, ffi::AVCOL_SPC_RGB);
     }
 
     #[test]

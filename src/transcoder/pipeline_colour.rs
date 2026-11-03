@@ -58,7 +58,7 @@ pub(crate) fn is_full_range(range: ffi::AVColorRange, pix_fmt: ffi::AVPixelForma
 
 /// Build a swscale context that converts `frame` to `dst_w`x`dst_h` in
 /// `dst_format`, reading the frame's own matrix and range and writing
-/// `dst_matrix` at limited range.
+/// `dst_matrix` at limited range, or full range when `dst_full` (RGB).
 ///
 /// Ranges must be known before `sws_init_context`: for same-size, same-format
 /// conversions swscale otherwise picks a plain copy and later colour details
@@ -70,6 +70,7 @@ pub(crate) fn colour_aware_sws_context(
     dst_format: ffi::AVPixelFormat,
     flags: ffi::SwsFlags,
     dst_matrix: ffi::AVColorSpace,
+    dst_full: bool,
 ) -> Option<SwsContext> {
     let src_full = is_full_range(frame.color_range, frame.format as ffi::AVPixelFormat);
     // Configure through AVOptions rather than struct fields: the public
@@ -84,7 +85,7 @@ pub(crate) fn colour_aware_sws_context(
         (c"dst_format", dst_format as i64),
         (c"sws_flags", flags as i64),
         (c"src_range", src_full as i64),
-        (c"dst_range", 0),
+        (c"dst_range", dst_full as i64),
     ];
     let mut context = unsafe {
         let raw = std::ptr::NonNull::new(ffi::sws_alloc_context())?;
@@ -100,7 +101,7 @@ pub(crate) fn colour_aware_sws_context(
         }
         context
     };
-    configure_sws_colour(&mut context, frame, src_full, dst_matrix);
+    configure_sws_colour(&mut context, frame, src_full, dst_matrix, dst_full);
     Some(context)
 }
 
@@ -111,6 +112,7 @@ fn configure_sws_colour(
     frame: &AVFrame,
     src_full: bool,
     dst_matrix: ffi::AVColorSpace,
+    dst_full: bool,
 ) {
     let src_matrix = resolved_matrix(frame.colorspace, frame.height);
     let rc = unsafe {
@@ -119,7 +121,7 @@ fn configure_sws_colour(
             ffi::sws_getCoefficients(sws_colorspace(src_matrix)),
             src_full as i32,
             ffi::sws_getCoefficients(sws_colorspace(dst_matrix)),
-            0,
+            dst_full as i32,
             0,
             1 << 16,
             1 << 16,

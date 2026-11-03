@@ -317,6 +317,7 @@ fn resize_software_frame(
             stream_processing_context.encode_context.height,
         ),
         dst_matrix,
+        false,
     )
     .context("Failed to create a swscale context.")?;
     unsafe {

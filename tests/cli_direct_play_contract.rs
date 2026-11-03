@@ -25,6 +25,27 @@ use tempfile::TempDir;
 const DEVICES: &[&str] = &["chromecast", "roku"];
 const HW_PATHS: &[&str] = &["none", "auto"];
 
+/// Extra conversion modes. AI upscaling needs ONNX Runtime and downloads a
+/// model, so it only joins the matrix when `DPN_CONTRACT_AI_UPSCALE` is set.
+fn modes() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut modes = vec![("default", vec![])];
+    if std::env::var_os("DPN_CONTRACT_AI_UPSCALE").is_some() {
+        let ai = vec![
+            "--ai-upscale-model",
+            "realesr-animevideov3",
+            "--ai-upscale-tile",
+            "256",
+            "--video-quality",
+            "1080p",
+        ];
+        let mut restore = ai.clone();
+        restore.push("--ai-upscale-restore");
+        modes.push(("ai-upscale", ai));
+        modes.push(("ai-restore", restore));
+    }
+    modes
+}
+
 struct Fixture {
     name: &'static str,
     file: &'static str,
@@ -281,28 +302,33 @@ fn every_output_honours_the_direct_play_contract() {
         let source = make_fixture(fixture, tmp.path());
         for device in DEVICES {
             for hw in HW_PATHS {
-                let case = format!("{} / {device} / --hw-accel {hw}", fixture.name);
-                let work = tmp.path().join(format!("{}-{device}-{hw}", fixture.file));
-                fs::create_dir_all(&work).unwrap();
-                let output = work.join("out.mp4");
-                let run = dpn(&work)
-                    .args(["--device", device, "--hw-accel", hw, "--sub-mode", "skip"])
-                    .arg(&source)
-                    .arg(&output)
-                    .output()
-                    .expect("run direct_play_nice");
-                if !run.status.success() || !output.is_file() {
-                    failures.push(format!(
-                        "{case}: conversion failed: {}",
-                        String::from_utf8_lossy(&run.stderr)
-                            .lines()
-                            .last()
-                            .unwrap_or("")
-                    ));
-                    continue;
-                }
-                for violation in contract_violations(fixture, &source, &output, device, &work) {
-                    failures.push(format!("{case}: {violation}"));
+                for (mode, extra) in modes() {
+                    let case = format!("{} / {device} / --hw-accel {hw} / {mode}", fixture.name);
+                    let work = tmp
+                        .path()
+                        .join(format!("{}-{device}-{hw}-{mode}", fixture.file));
+                    fs::create_dir_all(&work).unwrap();
+                    let output = work.join("out.mp4");
+                    let run = dpn(&work)
+                        .args(["--device", device, "--hw-accel", hw, "--sub-mode", "skip"])
+                        .args(&extra)
+                        .arg(&source)
+                        .arg(&output)
+                        .output()
+                        .expect("run direct_play_nice");
+                    if !run.status.success() || !output.is_file() {
+                        failures.push(format!(
+                            "{case}: conversion failed: {}",
+                            String::from_utf8_lossy(&run.stderr)
+                                .lines()
+                                .last()
+                                .unwrap_or("")
+                        ));
+                        continue;
+                    }
+                    for violation in contract_violations(fixture, &source, &output, device, &work) {
+                        failures.push(format!("{case}: {violation}"));
+                    }
                 }
             }
         }
