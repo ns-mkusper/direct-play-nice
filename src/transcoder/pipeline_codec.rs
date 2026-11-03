@@ -126,7 +126,7 @@ pub(crate) fn set_h264_video_codec_par(
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let source_sar = source_sample_aspect_ratio(input_stream);
+    let source_sar = effective_sample_aspect_ratio(input_stream, decode_context);
     let (target_width, target_height, enlarged) = target_dimensions(
         decode_context.width,
         decode_context.height,
@@ -201,8 +201,9 @@ pub(crate) fn set_h264_video_codec_par(
     encode_context.set_sample_aspect_ratio(if enlarged {
         ffi::AVRational { num: 1, den: 1 }
     } else {
-        decode_context.sample_aspect_ratio
+        effective_sample_aspect_ratio(input_stream, decode_context)
     });
+    apply_output_colour(decode_context, encode_context, input_stream);
     unsafe {
         (*encode_context.as_mut_ptr()).profile = h264_profile as i32;
         (*encode_context.as_mut_ptr()).level = h264_level as i32;
@@ -247,7 +248,7 @@ pub(crate) fn set_hevc_video_codec_par(
     } = params;
     encode_context.set_sample_rate(decode_context.sample_rate);
     let device_cap = device_max_resolution.to_dimensions();
-    let source_sar = source_sample_aspect_ratio(input_stream);
+    let source_sar = effective_sample_aspect_ratio(input_stream, decode_context);
     let (target_width, target_height, enlarged) = target_dimensions(
         decode_context.width,
         decode_context.height,
@@ -322,8 +323,9 @@ pub(crate) fn set_hevc_video_codec_par(
     encode_context.set_sample_aspect_ratio(if enlarged {
         ffi::AVRational { num: 1, den: 1 }
     } else {
-        decode_context.sample_aspect_ratio
+        effective_sample_aspect_ratio(input_stream, decode_context)
     });
+    apply_output_colour(decode_context, encode_context, input_stream);
     // Codec parameters are extracted after the encoder is opened.
 }
 

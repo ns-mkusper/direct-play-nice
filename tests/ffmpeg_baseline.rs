@@ -289,7 +289,13 @@ fn moov_before_mdat(path: &Path) -> bool {
     moov.expect("moov box") < mdat.expect("mdat box")
 }
 
+/// PSNR of stored samples. Matrix, primary and transfer tags are cleared on
+/// both inputs first: otherwise libavfilter converts one side to the other's
+/// matrix when only the output is tagged (e.g. untagged source, BT.709
+/// output), and the score measures that conversion instead of fidelity.
+/// Range tags are kept so a real range conversion still counts.
 fn video_psnr(output: &Path, source: &Path, width: u64, height: u64) -> f64 {
+    const UNTAG: &str = "setparams=colorspace=unknown:color_primaries=unknown:color_trc=unknown";
     let (_, stderr) = run(Command::new("ffmpeg")
         .args(["-hide_banner", "-nostdin"])
         .arg("-i")
@@ -299,7 +305,7 @@ fn video_psnr(output: &Path, source: &Path, width: u64, height: u64) -> f64 {
         .args([
             "-lavfi",
             &format!(
-                "[0:v:0]setpts=PTS-STARTPTS[out];[1:v:0]scale={width}:{height}:flags=bicubic,format=yuv420p,setpts=PTS-STARTPTS[ref];[out][ref]psnr"
+                "[0:v:0]{UNTAG},setpts=PTS-STARTPTS[out];[1:v:0]{UNTAG},scale={width}:{height}:flags=bicubic,format=yuv420p,setpts=PTS-STARTPTS[ref];[out][ref]psnr"
             ),
             "-f",
             "null",

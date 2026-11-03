@@ -135,6 +135,7 @@ pub(crate) fn validate_output_file(
     }
 
     validate_video_temporal_consistency(&input_ctx, &output_ctx)?;
+    validate_video_presentation(&input_ctx, &output_ctx)?;
 
     if options.visual_validate || options.visual_quality_report {
         options.validate_visual_settings()?;
@@ -146,6 +147,116 @@ pub(crate) fn validate_output_file(
         output_file.to_string_lossy()
     );
     Ok(())
+}
+
+/// Presentation invariants every output must keep, whatever path produced it
+/// (stream copy, software or hardware encode, resize, upscale):
+///
+/// - An 8-bit video stream never signals HDR. HDR10 and HLG need 10-bit
+///   samples, and DPN does not tone map, so PQ/HLG transfer or BT.2020
+///   primaries on 8-bit video would make displays switch to HDR for pixels
+///   that are not HDR.
+/// - The display aspect ratio matches the source's, so pictures are neither
+///   stretched nor squashed (lost or wrong sample aspect ratio).
+fn validate_video_presentation(
+    input_ctx: &AVFormatContextInput,
+    output_ctx: &AVFormatContextInput,
+) -> Result<()> {
+    let Some(output) = first_video_presentation(output_ctx) else {
+        return Ok(());
+    };
+    if let Some(message) =
+        hdr_signalling_violation(output.pix_fmt, output.transfer, output.primaries)
+    {
+        bail!(
+            "Output validation failed: video stream {} {message}",
+            output.index
+        );
+    }
+    let source_dar = first_video_presentation(input_ctx).and_then(|source| source.display_aspect);
+    if let (Some(source_dar), Some(output_dar)) = (source_dar, output.display_aspect) {
+        if aspect_changed(source_dar, output_dar) {
+            bail!(
+                "Output validation failed: display aspect ratio changed from {source_dar:.4} to {output_dar:.4}"
+            );
+        }
+    }
+    Ok(())
+}
+
+struct VideoPresentation {
+    index: i32,
+    pix_fmt: ffi::AVPixelFormat,
+    transfer: ffi::AVColorTransferCharacteristic,
+    primaries: ffi::AVColorPrimaries,
+    display_aspect: Option<f64>,
+}
+
+fn first_video_presentation(ctx: &AVFormatContextInput) -> Option<VideoPresentation> {
+    ctx.streams()
+        .iter()
+        .find(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_VIDEO)
+        .map(|stream| {
+            let par = stream.codecpar();
+            VideoPresentation {
+                index: stream.index,
+                pix_fmt: par.format as ffi::AVPixelFormat,
+                transfer: par.color_trc,
+                primaries: par.color_primaries,
+                display_aspect: display_aspect_ratio(stream),
+            }
+        })
+}
+
+/// Bits per luma sample for a pixel format, when FFmpeg knows it.
+fn luma_bit_depth(pix_fmt: ffi::AVPixelFormat) -> Option<i32> {
+    let desc = unsafe { ffi::av_pix_fmt_desc_get(pix_fmt) };
+    if desc.is_null() {
+        return None;
+    }
+    Some(unsafe { (*desc).comp[0].depth })
+}
+
+/// Why an output stream's colour signalling breaks the HDR rule, if it does.
+fn hdr_signalling_violation(
+    pix_fmt: ffi::AVPixelFormat,
+    transfer: ffi::AVColorTransferCharacteristic,
+    primaries: ffi::AVColorPrimaries,
+) -> Option<String> {
+    if luma_bit_depth(pix_fmt)? > 8 {
+        return None;
+    }
+    let hdr_transfer = matches!(
+        transfer,
+        ffi::AVCOL_TRC_SMPTE2084 | ffi::AVCOL_TRC_ARIB_STD_B67
+    );
+    let wide_gamut = primaries == ffi::AVCOL_PRI_BT2020;
+    if !hdr_transfer && !wide_gamut {
+        return None;
+    }
+    Some(format!(
+        "is 8-bit but signals HDR (transfer {}, primaries {})",
+        transfer, primaries
+    ))
+}
+
+/// Width / height as displayed, from the stream's sample aspect ratio
+/// (container first, then codec parameters, the order FFmpeg uses).
+fn display_aspect_ratio(stream: &AVStreamRef) -> Option<f64> {
+    let par = stream.codecpar();
+    if par.width <= 0 || par.height <= 0 {
+        return None;
+    }
+    let sar = rational_to_f64(stream.sample_aspect_ratio)
+        .or_else(|| rational_to_f64(par.sample_aspect_ratio))
+        .unwrap_or(1.0);
+    Some(par.width as f64 * sar / par.height as f64)
+}
+
+/// More than 1% apart. Even-dimension rounding and fitting to a resolution cap
+/// move the ratio by well under that; a lost 8:9 SAR moves it by 12.5%.
+fn aspect_changed(source: f64, output: f64) -> bool {
+    (output / source - 1.0).abs() > 0.01
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -779,5 +890,38 @@ mod tests {
         assert_eq!(fps_from_frame_count(Some(2400), Some(100.0)), Some(24.0));
         assert_eq!(fps_from_frame_count(Some(0), Some(100.0)), None);
         assert_eq!(fps_from_frame_count(Some(2400), Some(0.0)), None);
+    }
+
+    #[test]
+    fn eight_bit_video_must_not_signal_hdr() {
+        let pq = ffi::AVCOL_TRC_SMPTE2084;
+        let hlg = ffi::AVCOL_TRC_ARIB_STD_B67;
+        let sdr = ffi::AVCOL_TRC_BT709;
+        let p709 = ffi::AVCOL_PRI_BT709;
+        let p2020 = ffi::AVCOL_PRI_BT2020;
+        let yuv8 = ffi::AV_PIX_FMT_YUV420P;
+        let yuv10 = ffi::AV_PIX_FMT_YUV420P10LE;
+        assert!(hdr_signalling_violation(yuv8, pq, p2020).is_some());
+        assert!(hdr_signalling_violation(yuv8, hlg, p709).is_some());
+        assert!(hdr_signalling_violation(yuv8, sdr, p2020).is_some());
+        assert!(hdr_signalling_violation(yuv8, sdr, p709).is_none());
+        assert!(hdr_signalling_violation(
+            yuv8,
+            ffi::AVCOL_TRC_UNSPECIFIED,
+            ffi::AVCOL_PRI_UNSPECIFIED
+        )
+        .is_none());
+        // genuine HDR10 (10-bit) is allowed, e.g. a stream-copied HEVC source
+        assert!(hdr_signalling_violation(yuv10, pq, p2020).is_none());
+    }
+
+    #[test]
+    fn aspect_tolerates_rounding_but_not_lost_sar() {
+        let dvd = 720.0 * 8.0 / 9.0 / 480.0; // 4:3 shown from 720x480 @ 8:9
+        assert!(!aspect_changed(dvd, 4.0 / 3.0));
+        assert!(!aspect_changed(16.0 / 9.0, 1280.0 / 720.0));
+        assert!(!aspect_changed(1281.0 / 721.0, 1280.0 / 720.0)); // even-size rounding
+        assert!(aspect_changed(dvd, 720.0 / 480.0)); // SAR dropped: 4:3 shown at 3:2
+        assert!(aspect_changed(16.0 / 9.0, 4.0 / 3.0));
     }
 }

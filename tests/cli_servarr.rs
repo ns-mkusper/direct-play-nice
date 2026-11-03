@@ -603,10 +603,14 @@ fn sonarr_download_failure_restores_original_and_cleans_temp_files(
 
     let lock_dir = tmp.path().join("locks");
     fs::create_dir_all(&lock_dir)?;
+    // Software decode: hardware decoders conceal the corruption on GPU hosts.
+    let config = tmp.path().join("software-decode.toml");
+    fs::write(&config, "hw_accel = \"none\"\n")?;
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
     let status = cmd
         .env("DIRECT_PLAY_NICE_LOCK_DIR", &lock_dir)
+        .env("DIRECT_PLAY_NICE_CONFIG", &config)
         .env("sonarr_eventtype", "Download")
         .env("sonarr_episodefile_path", &input)
         .env("sonarr_series_title", "Example Series")
