@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.11] - 2026-11-03
+
+### Direct Play Reliability
+
+- Re-encoded video keeps its display shape: the sample aspect ratio now comes
+  from the container first, so Matroska and MP4 files that store it only at
+  container level (for example 720x480 DVD remuxes at 8:9) no longer play at
+  3:2. (#215)
+- Colour is converted and tagged explicitly. Full-range `yuv420p` input is
+  converted to limited range instead of passing through, the source matrix is
+  honoured (untagged video is treated as BT.601 below 720 lines and BT.709
+  from 720 up), and output is tagged with its matrix, range, primaries and
+  transfer. HDR sources, which are not tone mapped, are left untagged rather
+  than signalling HDR. (#215)
+- Output validation now rejects any conversion that writes 8-bit video with
+  HDR signalling or whose display aspect ratio drifts more than 1% from the
+  source, on every conversion path. (#215)
+- Corrupt audio packets that the decoder rejects are dropped and replaced
+  with silence instead of aborting the conversion, and audio timestamp holes
+  from damaged Matroska clusters are filled so audio stays in sync. Set
+  `--audio-decode-error-policy fail` for the previous fail-fast behaviour;
+  `--audio-decode-error-max-packets` and `--audio-decode-error-max-ratio`
+  bound how much damage is tolerated. (#210)
+
+### Servarr
+
+- Sonarr language upgrades are imported with `ManualImport` before the
+  current file is replaced, and only when the release resolves to the same
+  series. A failed or timed-out import leaves the current file in place. (#209)
+- Language audits tolerate queue items and episode files that disappear while
+  they run. (#207)
+
+### Plex
+
+- After a refresh, the dead media version left behind by a replaced file is
+  removed even when Plex does not empty trash automatically
+  (`[plex] remove_replaced_versions`, default on). Whole items and section
+  trash are never deleted. (#212)
+
+### Testing
+
+- Added `cli_direct_play_contract`, which converts a matrix of sources for
+  several devices on software and hardware paths and checks every output's
+  presentation and that DPN's own assessment finds nothing left to convert.
+  (#215)
+
 ## [1.1.0-beta.10] - 2026-10-22
 
 ### Subtitle OCR
