@@ -43,7 +43,12 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get --assume-yes install \
-            nasm ffmpeg autoconf autoconf-archive automake libtool libdrm-dev
+            nasm ffmpeg autoconf autoconf-archive automake libtool libdrm-dev \
+            libclang-18-dev
+          # `cargo publish` verifies against crates.io dependencies, where our
+          # bindgen [patch] does not apply. Stock bindgen 0.71.1 emits opaque
+          # FFmpeg structs with libclang 22+, so point it at libclang 18.
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache
