@@ -188,9 +188,13 @@ metric_summary() {
   local vmaf_json="$work_dir/vmaf_$(basename "$candidate").json"
   local vmaf psnr_line psnr_y psnr_u psnr_v psnr_avg psnr_min psnr_max
   local ssim_line ssim_y ssim_u ssim_v ssim_all ssim_db
+  # Compare stored samples. DPN tags outputs (e.g. BT.709) while the reference
+  # is untagged, and libavfilter would otherwise convert one side's matrix
+  # before scoring. Range tags are kept so a real range change still counts.
+  local untag="setparams=colorspace=unknown:color_primaries=unknown:color_trc=unknown"
 
   if ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
-    -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=log_fmt=json:log_path=$vmaf_json" \
+    -lavfi "[0:v]${untag},setpts=PTS-STARTPTS[dist];[1:v]${untag},setpts=PTS-STARTPTS[ref];[dist][ref]libvmaf=log_fmt=json:log_path=$vmaf_json" \
     -f null - >/dev/null 2>"$metric_log"; then
     vmaf="$(
       awk -F: '
@@ -227,7 +231,7 @@ metric_summary() {
   fi
 
   ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
-    -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]psnr=stats_file=-" \
+    -lavfi "[0:v]${untag},setpts=PTS-STARTPTS[dist];[1:v]${untag},setpts=PTS-STARTPTS[ref];[dist][ref]psnr=stats_file=-" \
     -f null - >/dev/null 2>"$metric_log" || true
   psnr_line="$(grep -o 'PSNR .*' "$metric_log" | tail -n1)"
   psnr_y="$(metric_field "$psnr_line" "y")"
@@ -238,7 +242,7 @@ metric_summary() {
   psnr_max="$(metric_field "$psnr_line" "max")"
 
   ffmpeg -hide_banner -y -i "$candidate" -i "$ref" \
-    -lavfi "[0:v]setpts=PTS-STARTPTS[dist];[1:v]setpts=PTS-STARTPTS[ref];[dist][ref]ssim=stats_file=-" \
+    -lavfi "[0:v]${untag},setpts=PTS-STARTPTS[dist];[1:v]${untag},setpts=PTS-STARTPTS[ref];[dist][ref]ssim=stats_file=-" \
     -f null - >/dev/null 2>"$metric_log" || true
   ssim_line="$(grep -o 'SSIM .*' "$metric_log" | tail -n1)"
   ssim_y="$(metric_field "$ssim_line" "Y")"

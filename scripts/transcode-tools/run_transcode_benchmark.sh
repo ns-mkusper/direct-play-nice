@@ -131,6 +131,9 @@ echo "$BIN --hw-accel none --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE -
 echo "$BIN --hw-accel $HW_ACCEL --video-quality $VIDEO_QUALITY --sub-mode $SUB_MODE --skip-codec-check --delete-source false '$BENCH_SOURCE' '$HW_OUT'" > "$HW_CMD"
 
 {
+  # Host load at start: other work on a shared box skews timings.
+  echo "HOST_LOADAVG=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)"
+  echo "HOST_GPU_APPS=$(nvidia-smi --query-compute-apps=process_name,used_memory --format=csv,noheader 2>/dev/null | tr '\n' ';' || true)"
   echo "START_HUMAN=$(date -Is)"
   echo "BIN=$BIN"
   echo "SOURCE_BASENAME=$(basename "$SOURCE")"
