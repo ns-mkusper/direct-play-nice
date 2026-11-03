@@ -482,7 +482,12 @@ fn target_dimensions(
         (source_sar.num, source_sar.den),
         cap,
     );
-    if enlarged.0 > clamped.0 || enlarged.1 > clamped.1 {
+    // `upscale_dimensions` returns the source size unchanged when the source
+    // already meets the cap. That is not an enlargement, and for sources above
+    // the device limit it is larger than the clamped size, so taking it would
+    // skip the required downscale.
+    let enlarges = enlarged != (source_width, source_height);
+    if enlarges && (enlarged.0 > clamped.0 || enlarged.1 > clamped.1) {
         (enlarged.0, enlarged.1, true)
     } else {
         (clamped.0, clamped.1, false)
@@ -491,6 +496,35 @@ fn target_dimensions(
 
 #[cfg(test)]
 mod tests {
+
+    const NO_SAR: ffi::AVRational = ffi::AVRational { num: 0, den: 1 };
+
+    #[test]
+    fn ai_upscale_never_exceeds_the_device_limit() {
+        // A 1080p source for a 720p device must still be downscaled.
+        assert_eq!(
+            target_dimensions(1920, 1080, NO_SAR, (1280, 720), Some((1920, 1080)), true),
+            (1280, 720, false)
+        );
+        assert_eq!(
+            target_dimensions(3840, 2160, NO_SAR, (1920, 1080), None, true),
+            (1920, 1080, false)
+        );
+    }
+
+    #[test]
+    fn ai_upscale_enlarges_small_sources_in_square_pixels() {
+        let dvd = ffi::AVRational { num: 8, den: 9 };
+        assert_eq!(
+            target_dimensions(720, 480, dvd, (1920, 1080), Some((1920, 1080)), true),
+            (1440, 1080, true)
+        );
+        assert_eq!(
+            target_dimensions(720, 480, dvd, (1920, 1080), Some((1920, 1080)), false),
+            (720, 480, false)
+        );
+    }
+
     use super::*;
 
     #[test]
