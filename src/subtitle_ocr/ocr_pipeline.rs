@@ -856,7 +856,8 @@ pub(super) fn extract_subtitle_lines(
                             color: rect_color,
                             italic: false,
                         }];
-                        restored_spacing = true;
+                        restored_spacing =
+                            !output_needs_spacing_after_postprocess(&output, params.language);
                         info!(
                             "{} spacing recovery: restored word boundaries using matching Tesseract text for subtitle stream {} packet {} rect {}",
                             ppocr_engine_label(ocr_engine), params.stream_index, params.packet_seq, i
@@ -1357,15 +1358,15 @@ fn transfer_agreed_spacing(lines: &[OcrLine], candidate: &str) -> Option<String>
     let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
     let left: Vec<char> = original_chars.chars().collect();
     let right: Vec<char> = candidate_chars.chars().collect();
-    if left.is_empty()
-        || left.len() != right.len()
-        || !original_boundaries.is_subset(&candidate_boundaries)
-    {
+    if left.is_empty() {
         return None;
     }
     let compatible = |a: char, b: char| a == b || matches!((a, b), ('I', '|') | ('l', '|'));
-    if !left.iter().zip(&right).all(|(&a, &b)| compatible(a, b)) {
-        return None;
+    if left.len() != right.len()
+        || !original_boundaries.is_subset(&candidate_boundaries)
+        || !left.iter().zip(&right).all(|(&a, &b)| compatible(a, b))
+    {
+        return transfer_anchored_spacing(&original, candidate);
     }
     let added: HashSet<_> = candidate_boundaries
         .difference(&original_boundaries)
@@ -1376,6 +1377,78 @@ fn transfer_agreed_spacing(lines: &[OcrLine], candidate: &str) -> Option<String>
             i == 0 || i >= left.len() || (left[i - 1] != right[i - 1] && left[i] != right[i])
         })
     {
+        return None;
+    }
+    let mut result = String::new();
+    let mut index = 0;
+    for ch in original.chars() {
+        if !ch.is_whitespace() {
+            if added.contains(&index) {
+                result.push(' ');
+            }
+            index += 1;
+        }
+        result.push(ch);
+    }
+    Some(result)
+}
+
+// Use only uniquely matching character runs around each proposed boundary. The
+// whole-text distance guard prevents an unrelated candidate from contributing a
+// coincidental local match; neither substitutions nor punctuation are copied.
+fn transfer_anchored_spacing(original: &str, candidate: &str) -> Option<String> {
+    const ANCHOR: usize = 4;
+    const MAX_CHARS: usize = 512;
+    let (original_chars, original_boundaries) = text_and_boundaries(original);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
+    let left: Vec<char> = original_chars.chars().collect();
+    let right: Vec<char> = candidate_chars.chars().collect();
+    if left.len() < ANCHOR * 2 || left.len() > MAX_CHARS || right.len() > MAX_CHARS {
+        return None;
+    }
+
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.iter().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            current[j + 1] = (previous[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(previous[j] + usize::from(a != b));
+        }
+        previous = current;
+    }
+    if previous[right.len()] > (left.len().max(right.len()) / 10).max(2) {
+        return None;
+    }
+
+    let mut added = HashSet::new();
+    for boundary in candidate_boundaries {
+        if boundary < ANCHOR || boundary + ANCHOR > right.len() {
+            continue;
+        }
+        let anchor = &right[boundary - ANCHOR..boundary + ANCHOR];
+        if !anchor[ANCHOR - 1].is_alphabetic() || !anchor[ANCHOR].is_alphabetic() {
+            continue;
+        }
+        if right
+            .windows(anchor.len())
+            .filter(|window| *window == anchor)
+            .count()
+            != 1
+        {
+            continue;
+        }
+        let mut matches = left
+            .windows(anchor.len())
+            .enumerate()
+            .filter_map(|(i, window)| (window == anchor).then_some(i + ANCHOR));
+        if let (Some(index), None) = (matches.next(), matches.next()) {
+            if !original_boundaries.contains(&index) {
+                added.insert(index);
+            }
+        }
+    }
+    if added.is_empty() {
         return None;
     }
     let mut result = String::new();
@@ -1795,7 +1868,50 @@ mod pgs_timing_tests {
             Some("I want the letter\nsent by tomorrow.")
         );
         assert!(transfer_agreed_spacing(&lines, "| want the letter\nsent by today.").is_none());
-        assert!(transfer_agreed_spacing(&lines, "| want the letter\nsent by tomorrow!").is_none());
+        let repaired = transfer_agreed_spacing(&lines, "| want the letter\nsent by tomorrow!")
+            .expect("matching anchors can recover spacing despite punctuation differences");
+        assert!(repaired.ends_with('.'));
+        assert_eq!(
+            text_and_boundaries(&repaired).0,
+            text_and_boundaries("Iwanttheletter\nsentbytomorrow.").0
+        );
+    }
+
+    #[test]
+    fn anchored_spacing_uses_sample_evidence_without_copying_glyphs() {
+        let original = "we found a note on the\nwindowsillbeforetheevening";
+        let candidate = "we found a note on the windowsill before the evening.";
+        let repaired = transfer_anchored_spacing(original, candidate).unwrap();
+        assert_eq!(
+            repaired,
+            "we found a note on the\nwindowsill before the evening"
+        );
+        assert_eq!(
+            text_and_boundaries(original).0,
+            text_and_boundaries(&repaired).0
+        );
+        assert!(preserves_existing_boundaries(original, &repaired));
+
+        let original = "Well, well... I should send thelettersbeforetomorrow.";
+        let candidate = "Well, well... | should send the letters before tomorrow.";
+        let repaired = transfer_anchored_spacing(original, candidate).unwrap();
+        assert!(repaired.contains("letters before tomorrow"));
+        assert!(repaired.contains("I should"));
+        assert_eq!(
+            text_and_boundaries(original).0,
+            text_and_boundaries(&repaired).0
+        );
+    }
+
+    #[test]
+    fn anchored_spacing_rejects_unrelated_or_ambiguous_evidence() {
+        assert!(
+            transfer_anchored_spacing("Thedoorisopenandready", "A different line entirely")
+                .is_none()
+        );
+        assert!(transfer_anchored_spacing("abcdabcdabcdabcd", "abcd abcd abcd abcd!").is_none());
+        assert!(transfer_anchored_spacing("short", "sh ort!").is_none());
+        assert!(transfer_anchored_spacing(&"a".repeat(513), &"a".repeat(513)).is_none());
     }
 
     #[test]
