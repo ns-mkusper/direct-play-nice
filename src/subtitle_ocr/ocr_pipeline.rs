@@ -126,14 +126,14 @@ pub(super) struct OcrStreamRequest<'a> {
 }
 
 /// Per-packet/per-subtitle context used when turning decoded subtitle data into cues.
-struct CueBuildParams<'a> {
-    language: &'a str,
-    stream_index: i32,
-    packet_seq: usize,
-    work_dir: &'a Path,
-    ocr_format: OcrFormat,
-    video_dimensions: Option<(u32, u32)>,
-    ocr_engine: OcrEngine,
+pub(super) struct CueBuildParams<'a> {
+    pub(super) language: &'a str,
+    pub(super) stream_index: i32,
+    pub(super) packet_seq: usize,
+    pub(super) work_dir: &'a Path,
+    pub(super) ocr_format: OcrFormat,
+    pub(super) video_dimensions: Option<(u32, u32)>,
+    pub(super) ocr_engine: OcrEngine,
 }
 
 #[derive(Debug)]
@@ -601,7 +601,7 @@ fn subtitle_to_cues(
     Ok(cues)
 }
 
-fn extract_subtitle_lines(
+pub(super) fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     params: &CueBuildParams<'_>,
     subtitle_start_ms: i64,
@@ -689,10 +689,64 @@ fn extract_subtitle_lines(
                 i
             );
         }
-        let ppocr_text = lines_text_for_quality(&output.lines);
-        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
-        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
-        quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
+        let raw_quality =
+            ocr_text_quality_score(&lines_text_for_quality(&output.lines), params.language);
+        let raw_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
+        quality_baseline.observe(raw_quality, raw_confidence, subtitle_start_ms);
+        let mut restored_spacing = false;
+        if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+            && language_uses_spaces(params.language)
+            && ppocr_spacing_needs_fallback(&output.lines)
+            && !disable_tesseract_quality_fallback()
+        {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
+                if let Ok(candidate) = run_tesseract_best_effort(&pgm_path, &fallback_language) {
+                    let original = lines_text_for_quality(&output.lines);
+                    if spacing_candidate_preserves_characters(&original, &candidate.text) {
+                        let bbox = output
+                            .lines
+                            .iter()
+                            .filter_map(|line| line.bbox.as_ref())
+                            .fold(None, |acc: Option<OcrBoundingBox>, b| match acc {
+                                Some(mut current) => {
+                                    current.left = current.left.min(b.left);
+                                    current.right = current.right.max(b.right);
+                                    current.top = current.top.min(b.top);
+                                    current.bottom = current.bottom.max(b.bottom);
+                                    Some(current)
+                                }
+                                None => Some(b.clone()),
+                            });
+                        let mut repaired_lines = Vec::new();
+                        for candidate_line in candidate.text.lines() {
+                            let processed = postprocess_ocr_text(candidate_line, params.language);
+                            if processed
+                                .chars()
+                                .filter(|ch| !ch.is_whitespace())
+                                .eq(candidate_line.chars().filter(|ch| !ch.is_whitespace()))
+                                && preserves_existing_boundaries(candidate_line, &processed)
+                            {
+                                repaired_lines.push(processed);
+                            } else {
+                                repaired_lines.push(candidate_line.to_string());
+                            }
+                        }
+                        output.lines = vec![OcrLine {
+                            text: repaired_lines.join("\n"),
+                            bbox,
+                            score: None,
+                            color: rect_color,
+                            italic: false,
+                        }];
+                        restored_spacing = true;
+                        info!(
+                            "{} spacing recovery: restored word boundaries using matching Tesseract text for subtitle stream {} packet {} rect {}",
+                            ppocr_engine_label(ocr_engine), params.stream_index, params.packet_seq, i
+                        );
+                    }
+                }
+            }
+        }
         let thresholds = quality_fallback_thresholds(quality_baseline);
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
             && !is_english_language(params.language)
@@ -712,7 +766,8 @@ fn extract_subtitle_lines(
                 )
             })
             .unwrap_or(true);
-        if spacing_fallback_requested
+        if !restored_spacing
+            && spacing_fallback_requested
             && raw_postprocess_needs_spacing_fallback
             && word_segmentation_enabled
         {
@@ -763,7 +818,8 @@ fn extract_subtitle_lines(
                 ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
             })
         };
-        if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+        if !restored_spacing
+            && matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
             && (force_tesseract_non_english
@@ -889,7 +945,9 @@ fn extract_subtitle_lines(
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
             }
-            line.text = postprocess_ocr_text(&line.text, params.language);
+            if !restored_spacing {
+                line.text = postprocess_ocr_text(&line.text, params.language);
+            }
             if line.color.is_none() {
                 line.color = rect_color;
             }
@@ -1134,6 +1192,41 @@ fn keep_ocr_intermediates() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+pub(super) fn spacing_candidate_preserves_characters(original: &str, candidate: &str) -> bool {
+    let (original_chars, original_boundaries) = text_and_boundaries(original);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
+    !original_chars.is_empty()
+        && original_chars == candidate_chars
+        && original_boundaries.is_subset(&candidate_boundaries)
+        && candidate_boundaries.len() > original_boundaries.len()
+}
+
+fn preserves_existing_boundaries(original: &str, candidate: &str) -> bool {
+    let (_, original_boundaries) = text_and_boundaries(original);
+    let (_, candidate_boundaries) = text_and_boundaries(candidate);
+    original_boundaries.is_subset(&candidate_boundaries)
+}
+
+fn text_and_boundaries(text: &str) -> (String, HashSet<usize>) {
+    let mut chars = String::new();
+    let mut boundaries = HashSet::new();
+    let mut count = 0;
+    let mut whitespace = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            whitespace = count > 0;
+        } else {
+            if whitespace {
+                boundaries.insert(count);
+            }
+            whitespace = false;
+            chars.push(ch);
+            count += 1;
+        }
+    }
+    (chars, boundaries)
 }
 
 fn output_quality_after_postprocess(output: &OcrOutput, language: &str) -> f32 {

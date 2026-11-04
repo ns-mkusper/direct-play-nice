@@ -110,7 +110,11 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     out = insert_space_between_letters_and_digits(&out);
     out = insert_space_before_opening_quote(&out);
 
-    out = split_fragmented_english_phrases(&out);
+    out = out
+        .lines()
+        .map(split_fragmented_english_phrases)
+        .collect::<Vec<_>>()
+        .join("\n");
     out = merge_common_fragmented_english_words(&out);
     out = split_glued_english_phrases(&out);
     out = merge_common_fragmented_english_words(&out);
@@ -2191,7 +2195,7 @@ mod tests {
 everyth. ing has changed s. ince then",
                 "eng"
             ),
-            "Listen, Proper Name everything has changed since then"
+            "Listen, Proper Name\neverything has changed since then"
         );
         assert_eq!(
             postprocess_ocr_text(
@@ -2199,7 +2203,7 @@ everyth. ing has changed s. ince then",
 Wh. ich one . it W. i-- be?",
                 "eng"
             ),
-            "but would you decide for me Which one will it be?"
+            "but would you decide for me\nWhich one will it be?"
         );
     }
 }

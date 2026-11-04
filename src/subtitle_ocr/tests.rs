@@ -1733,6 +1733,116 @@ fn test_multilang_prerendered_fixture_accuracy_and_performance() {
     }
 }
 
+const SYNTHETIC_NARROW_DIALOGUE: &str = "Please wait, the door is open.\nWe can leave now.";
+
+#[test]
+fn spacing_candidate_rejects_character_and_punctuation_changes() {
+    use super::ocr_pipeline::spacing_candidate_preserves_characters;
+
+    let glued = "Pleasewait,thedoorisopen.\nWecanleavenow.";
+    assert!(spacing_candidate_preserves_characters(
+        glued,
+        SYNTHETIC_NARROW_DIALOGUE
+    ));
+    for candidate in [
+        "Please wait, the door is open.\nWe can leave now!",
+        "Please wait, the door is open\nWe can leave now.",
+        "Please wait, the door is open.\nWe can leave now?",
+        "Please wait, the door is open.\nWe can leave now..!",
+        "Please wait, the Door is open.\nWe can leave now.",
+        glued,
+        "",
+    ] {
+        assert!(
+            !spacing_candidate_preserves_characters(glued, candidate),
+            "accepted altered candidate: {candidate:?}"
+        );
+    }
+    assert!(!spacing_candidate_preserves_characters("", " "));
+    assert!(!spacing_candidate_preserves_characters(
+        "I willlift it.",
+        "Iwill lift it."
+    ));
+}
+
+#[test]
+fn postprocess_preserves_multiline_narrow_dialogue_and_punctuation() {
+    for text in [
+        SYNTHETIC_NARROW_DIALOGUE,
+        "I will lift it, little by little.\nWill it fit",
+        "I will lift it\nWill it fit?",
+        "A line ends here.\nA little line follows.",
+    ] {
+        assert_eq!(postprocess_ocr_text(text, "eng"), text);
+    }
+}
+
+#[test]
+fn ppocr_v3_synthetic_narrow_dialogue_exact() {
+    if std::env::var("DPN_OCR_NARROW_DIALOGUE").ok().as_deref() != Some("1") {
+        eprintln!(
+            "Skipping PP-OCRv3 narrow dialogue test (set DPN_OCR_NARROW_DIALOGUE=1 to enable)."
+        );
+        return;
+    }
+
+    let image = image::open(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden_subs/narrow_dialogue/synthetic.png"),
+    )
+    .expect("load synthetic dialogue bitmap")
+    .to_luma8();
+    let (width, height) = image.dimensions();
+    // Encode the grayscale bitmap as an FFmpeg-style indexed subtitle rectangle:
+    // opaque white ink on transparent background with antialiased alpha.
+    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
+    let mut palette = vec![0u8; 256 * 4];
+    for alpha in 0..256 {
+        palette[alpha * 4..alpha * 4 + 3].fill(255);
+        palette[alpha * 4 + 3] = alpha as u8;
+    }
+    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+    rect.w = width as i32;
+    rect.h = height as i32;
+    rect.linesize[0] = width as i32;
+    rect.data[0] = indices.as_mut_ptr();
+    rect.data[1] = palette.as_mut_ptr();
+    rect.type_ = ffi::SUBTITLE_BITMAP;
+    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
+    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
+    subtitle.num_rects = 1;
+    subtitle.rects = &mut rect_ptr;
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let model_dir = resolve_model_dir().expect("resolve model directory");
+    init_ort_environment().expect("initialize ONNX runtime");
+    let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
+        .expect("initialize PP-OCRv3");
+    let params = super::ocr_pipeline::CueBuildParams {
+        language: "eng",
+        stream_index: 0,
+        packet_seq: 0,
+        work_dir: temp.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: None,
+        ocr_engine: OcrEngine::PpOcrV3,
+    };
+    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
+        &subtitle,
+        &params,
+        0,
+        &mut engine,
+        &mut OcrQualityBaseline::default(),
+    )
+    .expect("run production OCR");
+    assert!(visible);
+    let actual = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(actual, SYNTHETIC_NARROW_DIALOGUE);
+}
+
 #[test]
 #[ignore]
 fn test_manual_ppocr_v3_single_image_probe() {
