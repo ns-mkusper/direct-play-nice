@@ -105,9 +105,140 @@ pub(super) fn run_tesseract_with_psm(image_path: &Path, language: &str, psm: u8)
         );
     }
 
-    Ok(normalize_utf8_text(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    let text = normalize_utf8_text(&String::from_utf8_lossy(&output.stdout));
+    if !text.contains('"') || !text.contains(['“', '”']) {
+        return Ok(text);
+    }
+
+    // Tesseract can assign different quote characters to identical straight
+    // glyphs. Consult its character boxes and the source image before changing
+    // anything; a character-level match also prevents transferring bad boxes.
+    let boxes = Command::new("tesseract")
+        .arg(image_path)
+        .arg("stdout")
+        .arg("-l")
+        .arg(language)
+        .arg("--oem")
+        .arg("1")
+        .arg("--psm")
+        .arg(psm.to_string())
+        .arg("-c")
+        .arg("preserve_interword_spaces=1")
+        .arg("makebox")
+        .output();
+    if let Ok(boxes) = boxes {
+        if boxes.status.success() {
+            if let Ok(image) = image::open(image_path) {
+                return Ok(recover_straight_quote_from_boxes(
+                    &text,
+                    &String::from_utf8_lossy(&boxes.stdout),
+                    &image.to_luma8(),
+                ));
+            }
+        }
+    }
+    Ok(text)
+}
+
+fn recover_straight_quote_from_boxes(text: &str, boxes: &str, image: &image::GrayImage) -> String {
+    if text.contains(['\n', '\r']) {
+        return text.to_string();
+    }
+    let parsed: Option<Vec<(char, [u32; 4])>> = boxes
+        .lines()
+        .map(|line| {
+            let mut parts = line.split_whitespace();
+            let mut chars = parts.next()?.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            let bounds = [
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+            ];
+            if parts.next()? != "0" || parts.next().is_some() {
+                return None;
+            }
+            Some((ch, bounds))
+        })
+        .collect();
+    let Some(parsed) = parsed else {
+        return text.to_string();
+    };
+    if !text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .eq(parsed.iter().map(|(c, _)| *c))
+    {
+        return text.to_string();
+    }
+    let quotes: Vec<_> = parsed
+        .iter()
+        .filter(|(ch, _)| matches!(ch, '"' | '“' | '”'))
+        .collect();
+    if quotes.len() != 2 || quotes.iter().filter(|(ch, _)| *ch == '"').count() != 1 {
+        return text.to_string();
+    }
+    let Some(first) = straight_quote_mask(image, quotes[0].1) else {
+        return text.to_string();
+    };
+    let Some(second) = straight_quote_mask(image, quotes[1].1) else {
+        return text.to_string();
+    };
+    if first != second {
+        return text.to_string();
+    }
+    text.chars()
+        .map(|ch| if matches!(ch, '“' | '”') { '"' } else { ch })
+        .collect()
+}
+
+// A straight double quote has the same two vertical strokes in every row.
+// Trim box padding, then require matching masks for both recognized glyphs.
+fn straight_quote_mask(
+    image: &image::GrayImage,
+    [left, bottom, right, top]: [u32; 4],
+) -> Option<(usize, Vec<bool>)> {
+    if left >= right || bottom >= top || right > image.width() || top > image.height() {
+        return None;
+    }
+    let rows: Vec<Vec<bool>> = (image.height() - top..image.height() - bottom)
+        .map(|y| {
+            (left..right)
+                .map(|x| image.get_pixel(x, y)[0] < 128)
+                .collect()
+        })
+        .collect();
+    let first = rows.first()?;
+    let start = first.iter().position(|ink| *ink)?;
+    let end = first.iter().rposition(|ink| *ink)? + 1;
+    let mask = &first[start..end];
+    if rows.len() < 3
+        || rows.iter().any(|row| {
+            row[start..end] != *mask
+                || row[..start].iter().any(|v| *v)
+                || row[end..].iter().any(|v| *v)
+        })
+    {
+        return None;
+    }
+    let runs = mask
+        .iter()
+        .enumerate()
+        .filter(|(i, v)| **v && (*i == 0 || !mask[*i - 1]))
+        .count();
+    if runs != 2 {
+        return None;
+    }
+    // Include height so an unrelated taller glyph cannot match.
+    let mut result = Vec::with_capacity(mask.len() * rows.len());
+    for _ in &rows {
+        result.extend_from_slice(mask);
+    }
+    Some((mask.len(), result))
 }
 
 pub(super) fn run_external_ocr_command(
@@ -958,4 +1089,61 @@ fn merge_ocr_lines(lines: Vec<OcrLine>, separated_words: bool) -> Vec<OcrLine> {
 pub(super) fn load_image(path: &Path) -> Result<image::RgbImage> {
     let img = image::open(path).with_context(|| format!("loading image '{}'", path.display()))?;
     Ok(img.to_rgb8())
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::*;
+
+    fn image_with_quotes(curved: bool) -> image::GrayImage {
+        let mut image = image::GrayImage::from_pixel(20, 8, image::Luma([255]));
+        for y in 1..6 {
+            for x in [2, 4, 12, 14] {
+                image.put_pixel(x, y, image::Luma([0]));
+            }
+        }
+        if curved {
+            image.put_pixel(14, 5, image::Luma([255]));
+            image.put_pixel(15, 5, image::Luma([0]));
+        }
+        image
+    }
+
+    #[test]
+    fn straight_quote_recovery_requires_matching_source_glyphs() {
+        let boxes = "\" 2 2 5 7 0\nA 8 2 9 7 0\n” 12 2 15 7 0\n";
+        let straight = image_with_quotes(false);
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"A”", boxes, &straight),
+            "\"A\""
+        );
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"B”", boxes, &straight),
+            "\"B”"
+        );
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"A”", "bad", &straight),
+            "\"A”"
+        );
+        let curved = image_with_quotes(true);
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"A”", boxes, &curved),
+            "\"A”"
+        );
+        let curly_boxes = "“ 2 2 5 7 0\nA 8 2 9 7 0\n” 12 2 16 7 0\n";
+        assert_eq!(
+            recover_straight_quote_from_boxes("“A”", curly_boxes, &curved),
+            "“A”"
+        );
+        let mixed_boxes = "\" 2 2 5 7 0\nA 8 2 9 7 0\n” 12 2 16 7 0\n";
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"A”", mixed_boxes, &curved),
+            "\"A”"
+        );
+        let invalid_boxes = "\" 2 2 5 7 0\nA 8 2 9 7 0\n” 12 2 100 7 0\n";
+        assert_eq!(
+            recover_straight_quote_from_boxes("\"A”", invalid_boxes, &straight),
+            "\"A”"
+        );
+    }
 }

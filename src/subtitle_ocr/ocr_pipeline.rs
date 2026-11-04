@@ -808,8 +808,20 @@ pub(super) fn extract_subtitle_lines(
                 if let Ok(candidate) = cached_tesseract_attempt(&mut tesseract_attempt, || {
                     run_tesseract_best_effort(&pgm_path, &fallback_language)
                 }) {
+                    let mut spacing_lines = output.lines.clone();
+                    if !force_tesseract_non_english && spacing_lines.len() > 1 {
+                        if let Ok(alternate) =
+                            run_tesseract_with_psm(&pgm_path, &fallback_language, 11)
+                        {
+                            recover_line_terminal_punctuation(
+                                &mut spacing_lines,
+                                &candidate.text,
+                                &alternate,
+                            );
+                        }
+                    }
                     if let Some(transferred) = transfer_spacing_unless_forced(
-                        &output.lines,
+                        &spacing_lines,
                         &candidate.text,
                         force_tesseract_non_english,
                     ) {
@@ -1382,6 +1394,60 @@ fn recover_terminal_punctuation(lines: &mut [OcrLine], candidate: &str) -> bool 
     false
 }
 
+// Recover only a missing line-final mark when two independent page segmentation
+// modes agree on all glyphs for every line. Never move a line or replace a glyph.
+fn recover_line_terminal_punctuation(
+    lines: &mut [OcrLine],
+    candidate: &str,
+    alternate: &str,
+) -> bool {
+    let candidates: Vec<_> = candidate
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let alternates: Vec<_> = alternate
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() < 2 || candidates.len() != lines.len() || alternates.len() != lines.len() {
+        return false;
+    }
+    let compact = |s: &str| {
+        s.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+    };
+    let mut marks = Vec::with_capacity(lines.len());
+    for ((line, candidate), alternate) in lines.iter().zip(candidates).zip(alternates) {
+        let original = compact(&line.text);
+        let proposed = compact(candidate);
+        if proposed != compact(alternate) || original.is_empty() {
+            return false;
+        }
+        if original == proposed {
+            marks.push(None);
+        } else if let Some(mark @ ('.' | '?' | '!')) = proposed.chars().last() {
+            if proposed.strip_suffix(mark) != Some(original.as_str())
+                || !original.chars().last().is_some_and(char::is_alphanumeric)
+            {
+                return false;
+            }
+            marks.push(Some(mark));
+        } else {
+            return false;
+        }
+    }
+    let mut changed = false;
+    for (line, mark) in lines.iter_mut().zip(marks) {
+        if let Some(mark) = mark {
+            let end = line.text.trim_end().len();
+            line.text.insert(end, mark);
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn quoted_candidate_preserves_glyphs(lines: &[OcrLine], candidate: &str) -> bool {
     if lines.len() != 1 || lines[0].text.contains(['"', '\n', '\r']) {
         return false;
@@ -1927,6 +1993,56 @@ mod pgs_timing_tests {
             let mut lines = vec![line(original)];
             assert!(!recover_terminal_punctuation(&mut lines, candidate));
             assert_eq!(lines[0].text, original);
+        }
+    }
+
+    #[test]
+    fn multiline_punctuation_requires_matching_lines_and_independent_agreement() {
+        fn lines() -> Vec<OcrLine> {
+            ["Aquietplace", "Wearehome."]
+                .into_iter()
+                .map(|text| OcrLine {
+                    text: text.into(),
+                    bbox: None,
+                    score: None,
+                    color: None,
+                    italic: false,
+                })
+                .collect()
+        }
+        let mut original = lines();
+        assert!(recover_line_terminal_punctuation(
+            &mut original,
+            "A quiet place.\nWe are home.",
+            "A quiet place.\n\nWe are home."
+        ));
+        assert_eq!(original[0].text, "Aquietplace.");
+        assert_eq!(
+            transfer_agreed_spacing(&original, "A quiet place.\nWe are home.").as_deref(),
+            Some("A quiet place.\nWe are home.")
+        );
+        for (candidate, alternate) in [
+            (
+                "A quiet place.\nWe are home.",
+                "A quiet place!\nWe are home.",
+            ),
+            (
+                "A quiet places.\nWe are home.",
+                "A quiet places.\nWe are home.",
+            ),
+            ("A quiet place. We are home.", "A quiet place. We are home."),
+            (
+                "A quiet place.\nWe are home!",
+                "A quiet place.\nWe are home!",
+            ),
+        ] {
+            let mut original = lines();
+            assert!(!recover_line_terminal_punctuation(
+                &mut original,
+                candidate,
+                alternate
+            ));
+            assert_eq!(original[0].text, "Aquietplace");
         }
     }
 
