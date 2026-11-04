@@ -1843,6 +1843,103 @@ fn ppocr_v3_synthetic_narrow_dialogue_exact() {
     assert_eq!(actual, SYNTHETIC_NARROW_DIALOGUE);
 }
 
+// These bitmaps contain only newly authored synthetic text. Run both backends with
+// DPN_OCR_STRICT_SYNTHETIC=1 cargo test strict_synthetic -- --nocapture.
+fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
+    if std::env::var("DPN_OCR_STRICT_SYNTHETIC").ok().as_deref() != Some("1") {
+        eprintln!("Skipping strict synthetic OCR (set DPN_OCR_STRICT_SYNTHETIC=1 to enable).");
+        return;
+    }
+
+    let image_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden_subs/strict_synthetic")
+        .join(format!("{name}.png"));
+    let image = image::open(&image_path)
+        .unwrap_or_else(|err| panic!("load {}: {err}", image_path.display()))
+        .to_luma8();
+    let (width, height) = image.dimensions();
+    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
+    let mut palette = vec![0u8; 256 * 4];
+    for alpha in 0..256 {
+        palette[alpha * 4..alpha * 4 + 3].fill(255);
+        palette[alpha * 4 + 3] = alpha as u8;
+    }
+    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+    rect.w = width as i32;
+    rect.h = height as i32;
+    rect.linesize[0] = width as i32;
+    rect.data[0] = indices.as_mut_ptr();
+    rect.data[1] = palette.as_mut_ptr();
+    rect.type_ = ffi::SUBTITLE_BITMAP;
+    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
+    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
+    subtitle.num_rects = 1;
+    subtitle.rects = &mut rect_ptr;
+
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let mut engine: Box<dyn SubtitleConverter> = match backend {
+        OcrEngine::PpOcrV3 => {
+            let model_dir = resolve_model_dir().expect("resolve model directory");
+            init_ort_environment().expect("initialize ONNX runtime");
+            Box::new(
+                init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
+                    .expect("initialize PP-OCRv3"),
+            )
+        }
+        OcrEngine::Tesseract => Box::new(TesseractEngine),
+        _ => panic!("unsupported strict synthetic backend"),
+    };
+    let params = super::ocr_pipeline::CueBuildParams {
+        language: "eng",
+        stream_index: 0,
+        packet_seq: 0,
+        work_dir: temp.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: None,
+        ocr_engine: backend,
+    };
+    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
+        &subtitle,
+        &params,
+        0,
+        engine.as_mut(),
+        &mut OcrQualityBaseline::default(),
+    )
+    .unwrap_or_else(|err| panic!("production OCR failed for {name}: {err:#}"));
+    assert!(visible, "no visible pixels in {name}");
+    let actual = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(actual, expected, "strict synthetic fixture {name}");
+}
+
+macro_rules! strict_synthetic_tests {
+    ($($name:ident: $fixture:literal => $expected:literal),+ $(,)?) => {
+        mod strict_synthetic_ppocr_v3 {
+            use super::*;
+            $(#[test] fn $name() {
+                strict_synthetic_case($fixture, $expected, OcrEngine::PpOcrV3);
+            })+
+        }
+        mod strict_synthetic_tesseract {
+            use super::*;
+            $(#[test] fn $name() {
+                strict_synthetic_case($fixture, $expected, OcrEngine::Tesseract);
+            })+
+        }
+    };
+}
+
+strict_synthetic_tests! {
+    tight_spaces: "tight_spaces" => "We can go to the lake.",
+    quotes_punctuation: "quotes_punctuation" => "She said, \"Yes, please!\"",
+    title: "title" => "THE SILENT GARDEN",
+    multiline: "multiline" => "The moon is bright.\nWe will walk home.",
+    short_words: "short_words" => "I am on my way to you.",
+}
+
 #[test]
 #[ignore]
 fn test_manual_ppocr_v3_single_image_probe() {

@@ -797,6 +797,7 @@ pub(super) fn extract_subtitle_lines(
             && language_uses_spaces(params.language);
         let mut tesseract_attempt = None;
         let mut restored_spacing = false;
+        let mut replaced_with_tesseract = false;
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && (ppocr_spacing_needs_fallback(&output.lines)
@@ -973,6 +974,7 @@ pub(super) fn extract_subtitle_lines(
                                 && candidate.quality >= ppocr_postprocessed_quality + min_gain
                         };
                         if should_replace_with_tesseract {
+                            replaced_with_tesseract = true;
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -1058,9 +1060,7 @@ pub(super) fn extract_subtitle_lines(
             }
         }
         export_ocr_training_sample(&pgm_path, &output, params.language)?;
-        if !keep_ocr_intermediates() {
-            let _ = fs::remove_file(&pgm_path);
-        }
+        let mut rect_lines = Vec::new();
         for mut line in output.lines {
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
@@ -1072,9 +1072,37 @@ pub(super) fn extract_subtitle_lines(
                 line.color = rect_color;
             }
             if !line.text.is_empty() {
-                lines.push(line);
+                rect_lines.push(line);
             }
         }
+        if !replaced_with_tesseract
+            && !force_tesseract_non_english
+            && matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+            && language_uses_spaces(params.language)
+            && !disable_tesseract_quality_fallback()
+            && needs_terminal_punctuation_candidate(&rect_lines)
+        {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
+                if let Ok(candidate) = cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
+                    if !recover_terminal_punctuation(&mut rect_lines, &candidate.text)
+                        && quoted_candidate_preserves_glyphs(&rect_lines, &candidate.text)
+                    {
+                        let alternate_psm = if candidate.psm == 6 { 7 } else { 6 };
+                        if let Ok(alternate) =
+                            run_tesseract_with_psm(&pgm_path, &fallback_language, alternate_psm)
+                        {
+                            recover_balanced_quotes(&mut rect_lines, &candidate.text, &alternate);
+                        }
+                    }
+                }
+            }
+        }
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&pgm_path);
+        }
+        lines.extend(rect_lines);
     }
 
     Ok((lines, had_imagery))
@@ -1312,6 +1340,76 @@ fn keep_ocr_intermediates() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn needs_terminal_punctuation_candidate(lines: &[OcrLine]) -> bool {
+    let text = lines_text_for_quality(lines);
+    text.chars().filter(|ch| !ch.is_whitespace()).count() >= 8
+        && text
+            .trim_end()
+            .chars()
+            .last()
+            .is_some_and(char::is_alphanumeric)
+}
+
+// Only add a terminal mark when both recognizers agree on every other glyph.
+// In particular, never transfer punctuation across a conflicting apostrophe,
+// quote, or other pre-existing punctuation mark.
+fn recover_terminal_punctuation(lines: &mut [OcrLine], candidate: &str) -> bool {
+    if !needs_terminal_punctuation_candidate(lines) {
+        return false;
+    }
+    let original: String = lines_text_for_quality(lines)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let mut proposed: Vec<char> = candidate.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let Some(mark @ ('.' | '?' | '!')) = proposed.pop() else {
+        return false;
+    };
+    if !original.chars().eq(proposed) {
+        return false;
+    }
+    if let Some(line) = lines
+        .iter_mut()
+        .rev()
+        .find(|line| !line.text.trim().is_empty())
+    {
+        let end = line.text.trim_end().len();
+        line.text.insert(end, mark);
+        return true;
+    }
+    false
+}
+
+fn quoted_candidate_preserves_glyphs(lines: &[OcrLine], candidate: &str) -> bool {
+    if lines.len() != 1 || lines[0].text.contains(['"', '\n', '\r']) {
+        return false;
+    }
+    let original: String = lines[0]
+        .text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let proposed: String = candidate.chars().filter(|ch| !ch.is_whitespace()).collect();
+    original.chars().count() >= 8
+        && proposed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(original.as_str())
+}
+
+// A second page segmentation mode must independently see the same enclosing
+// quotes; neither recognizer may change, delete, or insert any other glyph.
+fn recover_balanced_quotes(lines: &mut [OcrLine], candidate: &str, alternate: &str) -> bool {
+    if !quoted_candidate_preserves_glyphs(lines, candidate)
+        || !quoted_candidate_preserves_glyphs(lines, alternate)
+    {
+        return false;
+    }
+    let line = &mut lines[0].text;
+    let start = line.len() - line.trim_start().len();
+    let end = line.trim_end().len();
+    line.insert(end, '"');
+    line.insert(start, '"');
+    true
 }
 
 fn crop_recovery_preserves_characters(original: &OcrOutput, candidate: &OcrOutput) -> bool {
@@ -1794,6 +1892,80 @@ mod pgs_timing_tests {
         sub.num_rects = 1;
         sub.rects = &mut rect_ptr;
         process_event(&sub, None, 0, codec, format, cues, timing);
+    }
+
+    #[test]
+    fn terminal_punctuation_recovery_requires_exact_glyph_agreement() {
+        fn line(text: &str) -> OcrLine {
+            OcrLine {
+                text: text.to_string(),
+                bbox: None,
+                score: Some(0.9),
+                color: None,
+                italic: true,
+            }
+        }
+
+        let mut lines = vec![line("A small"), line("example  ")];
+        assert!(recover_terminal_punctuation(&mut lines, "Asmall example!"));
+        assert_eq!(lines[0].text, "A small");
+        assert_eq!(lines[1].text, "example!  ");
+        assert!(lines[1].italic);
+        assert_eq!(lines[1].score, Some(0.9));
+
+        for (original, candidate) in [
+            ("A small example", "A small examples."),
+            ("A small example", "A smalI example."),
+            ("A small example", "A small example..."),
+            ("A small example?", "A small example!"),
+            ("A small example", "A small example,"),
+            ("A small example", "A small example"),
+            ("A short", "A short."),
+            ("Some 100", "Some 100."),
+            ("", "A small example."),
+        ] {
+            let mut lines = vec![line(original)];
+            assert!(!recover_terminal_punctuation(&mut lines, candidate));
+            assert_eq!(lines[0].text, original);
+        }
+    }
+
+    #[test]
+    fn balanced_quote_recovery_requires_two_matching_recognitions() {
+        fn line(text: &str) -> OcrLine {
+            OcrLine {
+                text: text.to_string(),
+                bbox: None,
+                score: None,
+                color: None,
+                italic: false,
+            }
+        }
+        let mut lines = vec![line("  Quiet harbor  ")];
+        assert!(recover_balanced_quotes(
+            &mut lines,
+            "\"Quiet harbor\"",
+            "\"Quiet harbor\""
+        ));
+        assert_eq!(lines[0].text, "  \"Quiet harbor\"  ");
+        for (original, candidate, alternate) in [
+            ("Quiet harbor", "\"Quiet harbor\"", "Quiet harbor"),
+            ("Quiet harbor", "\"Quiet harbor\"", "\"Quiet harbour\""),
+            ("Quiet harbor", "\"Quiet harbor 2\"", "\"Quiet harbor 2\""),
+            ("Quiet harbor", "\"Quiet harbor.\"", "\"Quiet harbor.\""),
+            ("Quiet \"harbor\"", "\"Quiet harbor\"", "\"Quiet harbor\""),
+            ("Quiet", "\"Quiet\"", "\"Quiet\""),
+        ] {
+            let mut lines = vec![line(original)];
+            assert!(!recover_balanced_quotes(&mut lines, candidate, alternate));
+            assert_eq!(lines[0].text, original);
+        }
+        let mut lines = vec![line("Quiet"), line("harbor")];
+        assert!(!recover_balanced_quotes(
+            &mut lines,
+            "\"Quiet harbor\"",
+            "\"Quiet harbor\""
+        ));
     }
 
     #[test]

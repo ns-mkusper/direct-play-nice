@@ -91,7 +91,34 @@ pub(super) fn ppocr_spacing_needs_fallback(lines: &[OcrLine]) -> bool {
     has_letters
         && (!has_any_space && long_alpha_tokens > 0
             || very_long_alpha_token
-            || long_alpha_tokens >= 2)
+            || long_alpha_tokens >= 2
+            || lines.iter().any(short_spacing_candidate))
+}
+
+// This only requests a second recognition pass; it must not itself insert
+// spaces. Line boxes cannot identify an internal gap, and a language model
+// alone can split names and valid words. The recovery path requires matching
+// characters before transferring a recognizer's boundaries.
+fn short_spacing_candidate(line: &OcrLine) -> bool {
+    let Some(bbox) = &line.bbox else {
+        return false;
+    };
+    let width = i64::from(bbox.right) - i64::from(bbox.left);
+    let height = i64::from(bbox.bottom) - i64::from(bbox.top);
+    if height <= 0 || width < height {
+        return false;
+    }
+    line.text
+        .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\'')
+        .filter(|token| {
+            (5..=11).contains(&token.len()) && token.bytes().all(|ch| ch.is_ascii_alphabetic())
+        })
+        .any(|token| {
+            let parts = wordninja::DEFAULT_MODEL.split(token);
+            parts.len() == 2
+                && parts.iter().all(|part| part.len() >= 2)
+                && parts.concat().eq_ignore_ascii_case(token)
+        })
 }
 
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
@@ -645,6 +672,16 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
         .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
     {
         return None;
+    }
+
+    // Short valid words are especially easy to over-segment with the local
+    // dictionary (for example, "together" as "to get her"). Preserve them
+    // when the independent frequency model recognizes the whole token.
+    if token.len() <= 11 && token.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        let parts = wordninja::DEFAULT_MODEL.split(token);
+        if parts.len() == 1 && parts[0].eq_ignore_ascii_case(token) {
+            return None;
+        }
     }
 
     let lower = token.to_ascii_lowercase();
@@ -2050,6 +2087,67 @@ mod tests {
     fn spacing_fallback_does_not_flag_short_single_word_cues() {
         let lines = vec![ocr_line("Kiba!"), ocr_line("Hello")];
         assert!(!ppocr_spacing_needs_fallback(&lines));
+    }
+
+    fn positioned_line(text: &str, width: i32, height: i32) -> OcrLine {
+        let mut line = ocr_line(text);
+        line.bbox = Some(crate::subtitle_ocr::OcrBoundingBox {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        });
+        line
+    }
+
+    #[test]
+    fn short_glue_requests_concordant_recognition_with_line_geometry() {
+        // Anonymized forms of short standalone and embedded sample failures.
+        for text in ["Waitup!", "Yourturn?", "Now, showme."] {
+            assert!(
+                ppocr_spacing_needs_fallback(&[positioned_line(text, 160, 30)]),
+                "{text}"
+            );
+        }
+        assert!(!ppocr_spacing_needs_fallback(&[ocr_line("Waitup!")]));
+        assert!(!short_spacing_candidate(&positioned_line(
+            "waitup's", 160, 30
+        )));
+        assert!(!short_spacing_candidate(&positioned_line(
+            "bonjour", 160, 30
+        )));
+        assert!(!ppocr_spacing_needs_fallback(&[positioned_line(
+            "Waitup!", 20, 30
+        )]));
+        assert!(!ppocr_spacing_needs_fallback(&[positioned_line(
+            "Waitup!", 160, 0
+        )]));
+    }
+
+    #[test]
+    fn short_candidates_do_not_split_without_recognizer_agreement() {
+        use crate::subtitle_ocr::ocr_pipeline::spacing_candidate_preserves_characters;
+
+        assert!(spacing_candidate_preserves_characters(
+            "Waitup!", "Wait up!"
+        ));
+        assert!(!spacing_candidate_preserves_characters(
+            "Waitup!", "Wake up!"
+        ));
+        assert!(!spacing_candidate_preserves_characters(
+            "Waitup!", "Waitup!"
+        ));
+        for text in ["hello", "notebook", "someone", "android", "together"] {
+            assert!(
+                !ppocr_spacing_needs_fallback(&[positioned_line(text, 160, 30)]),
+                "{text}"
+            );
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        // Even a valid word the language model segments is only a request for
+        // corroboration, not an instruction to change its text.
+        assert!(short_spacing_candidate(&positioned_line("inform", 160, 30)));
+        assert!(!spacing_candidate_preserves_characters("inform", "inform"));
     }
 
     #[test]
