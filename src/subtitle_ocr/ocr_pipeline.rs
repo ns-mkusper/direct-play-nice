@@ -799,7 +799,8 @@ pub(super) fn extract_subtitle_lines(
         let mut restored_spacing = false;
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
-            && ppocr_spacing_needs_fallback(&output.lines)
+            && (ppocr_spacing_needs_fallback(&output.lines)
+                || postprocessed_text_needs_quality_fallback(&output, params.language))
             && !disable_tesseract_quality_fallback()
         {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
