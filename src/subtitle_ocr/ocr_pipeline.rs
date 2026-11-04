@@ -906,12 +906,11 @@ pub(super) fn extract_subtitle_lines(
                 &pgm_path,
                 params.language,
                 rect_color,
+                &output,
             )? {
                 let segmented_quality =
                     output_quality_after_postprocess(&segmented, params.language);
-                if segmented_quality > raw_postprocess_quality + 0.03
-                    && crop_recovery_preserves_characters(&output, &segmented)
-                {
+                if segmented_quality > raw_postprocess_quality + 0.03 {
                     info!(
                         "{} spacing recovery: split subtitle stream {} packet {} rect {} into {} PP-OCR word crops (segmented_score={:.2}, ppocr_score={:.2})",
                         ppocr_engine_label(ocr_engine),
@@ -1486,6 +1485,27 @@ fn crop_recovery_preserves_characters(original: &OcrOutput, candidate: &OcrOutpu
     !original_chars.is_empty()
         && original_chars == candidate_chars
         && original_boundaries.is_subset(&candidate_boundaries)
+        && line_break_positions(original) == line_break_positions(candidate)
+}
+
+fn line_break_positions(output: &OcrOutput) -> Vec<usize> {
+    let text = output
+        .lines
+        .iter()
+        .map(|line| line.text.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut positions = Vec::new();
+    let mut count = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            positions.push(count);
+        } else if !ch.is_whitespace() {
+            count += 1;
+        }
+    }
+    positions
 }
 
 fn cached_tesseract_attempt(
@@ -1752,6 +1772,7 @@ fn try_ppocr_word_segmentation_recovery(
     pgm_path: &Path,
     language: &str,
     color: Option<(u8, u8, u8)>,
+    original: &OcrOutput,
 ) -> Result<Option<OcrOutput>> {
     let candidate_gaps = [None, Some(5usize), Some(8usize)];
     let mut best: Option<(f32, OcrOutput)> = None;
@@ -1761,17 +1782,28 @@ fn try_ppocr_word_segmentation_recovery(
         else {
             continue;
         };
-        let text = lines_text_for_quality(&candidate.lines);
-        let quality = ocr_text_quality_score(&text, language);
-        let replace = best
-            .as_ref()
-            .map(|(best_quality, _)| quality > *best_quality + 0.001)
-            .unwrap_or(true);
-        if replace {
-            best = Some((quality, candidate));
-        }
+        let quality = output_quality_after_postprocess(&candidate, language);
+        consider_crop_candidate(&mut best, original, candidate, quality);
     }
     Ok(best.map(|(_, output)| output))
+}
+
+fn consider_crop_candidate(
+    best: &mut Option<(f32, OcrOutput)>,
+    original: &OcrOutput,
+    candidate: OcrOutput,
+    quality: f32,
+) {
+    if !crop_recovery_preserves_characters(original, &candidate) {
+        return;
+    }
+    if best
+        .as_ref()
+        .map(|(best_quality, _)| quality > *best_quality + 0.001)
+        .unwrap_or(true)
+    {
+        *best = Some((quality, candidate));
+    }
 }
 
 fn recognize_ppocr_word_crops(
@@ -2232,6 +2264,43 @@ mod pgs_timing_tests {
             &original,
             &output("The door is opened.\nPlease wait.")
         ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is open. Please wait.")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is\nopen. Please wait.")
+        ));
+        let split_lines = OcrOutput {
+            lines: vec![
+                output("The door is open.").lines.remove(0),
+                output("Please wait.").lines.remove(0),
+            ],
+        };
+        assert!(crop_recovery_preserves_characters(&original, &split_lines));
+    }
+
+    #[test]
+    fn crop_selection_filters_before_ranking() {
+        fn output(text: &str) -> OcrOutput {
+            OcrOutput {
+                lines: vec![OcrLine {
+                    text: text.to_owned(),
+                    bbox: None,
+                    score: None,
+                    color: None,
+                    italic: false,
+                }],
+            }
+        }
+        let original = output("Thedoorisopen.");
+        let invalid = output("This is a fluent but different sentence.");
+        let valid = output("The door is open.");
+        let mut best = None;
+        consider_crop_candidate(&mut best, &original, invalid, 0.99);
+        consider_crop_candidate(&mut best, &original, valid, 0.70);
+        assert_eq!(best.unwrap().1.lines[0].text, "The door is open.");
     }
 
     #[test]
