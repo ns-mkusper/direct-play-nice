@@ -1297,7 +1297,7 @@ fn recognize_ppocr_word_crops(
         return Ok(None);
     }
     Ok(Some(OcrOutput {
-        lines: merge_ocr_lines_with_spacing(lines),
+        lines: merge_ocr_word_crops(lines),
     }))
 }
 

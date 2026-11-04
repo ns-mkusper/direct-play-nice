@@ -1196,6 +1196,44 @@ fn test_ppocr_spacing_keeps_compact_tokens() {
 }
 
 #[test]
+fn test_word_crop_recovery_preserves_spaces_after_padding() {
+    let width = 40;
+    let height = 28;
+    let mut pgm = format!("P5\n{width} {height}\n255\n").into_bytes();
+    let mut pixels = vec![255; width * height];
+    for (left, right, top, bottom) in [
+        (2, 10, 2, 10),
+        (15, 24, 2, 10),
+        (3, 12, 17, 25),
+        (17, 28, 17, 25),
+    ] {
+        for y in top..bottom {
+            for x in left..right {
+                pixels[y * width + x] = 0;
+            }
+        }
+    }
+    pgm.extend_from_slice(&pixels);
+    let crops = split_pgm_into_word_crops_with_gap(&pgm, Some(5));
+    assert_eq!(crops.len(), 4);
+    let lines = crops
+        .into_iter()
+        .zip(["Please", "wait.", "Come", "back."])
+        .map(|((_, bbox), text)| OcrLine {
+            text: text.to_string(),
+            bbox: Some(bbox),
+            score: Some(0.9),
+            color: None,
+            italic: false,
+        })
+        .collect();
+    let merged = merge_ocr_word_crops(lines);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].text, "Please wait.");
+    assert_eq!(merged[1].text, "Come back.");
+}
+
+#[test]
 fn test_ppocr_spacing_fallback_detection() {
     let lines = vec![OcrLine {
         text: "BythistimeIobserved".to_string(),

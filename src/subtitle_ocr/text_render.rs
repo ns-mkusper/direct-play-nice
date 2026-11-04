@@ -812,6 +812,14 @@ pub(super) fn sort_ocr_lines(a: &OcrLine, b: &OcrLine) -> std::cmp::Ordering {
 }
 
 pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> {
+    merge_ocr_lines(lines, false)
+}
+
+pub(super) fn merge_ocr_word_crops(lines: Vec<OcrLine>) -> Vec<OcrLine> {
+    merge_ocr_lines(lines, true)
+}
+
+fn merge_ocr_lines(lines: Vec<OcrLine>, separated_words: bool) -> Vec<OcrLine> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -914,7 +922,7 @@ pub(super) fn merge_ocr_lines_with_spacing(lines: Vec<OcrLine>) -> Vec<OcrLine> 
             };
             if let Some(prev) = prev_right {
                 let gap = bbox.left - prev;
-                if (gap as f32) > space_threshold {
+                if separated_words || (gap as f32) > space_threshold {
                     text.push(' ');
                 }
             }
