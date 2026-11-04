@@ -792,6 +792,10 @@ pub(super) fn extract_subtitle_lines(
             ocr_text_quality_score(&lines_text_for_quality(&output.lines), params.language);
         let raw_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
         quality_baseline.observe(raw_quality, raw_confidence, subtitle_start_ms);
+        let force_tesseract_non_english = force_tesseract_non_english_enabled()
+            && !is_english_language(params.language)
+            && language_uses_spaces(params.language);
+        let mut tesseract_attempt = None;
         let mut restored_spacing = false;
         if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
@@ -799,10 +803,14 @@ pub(super) fn extract_subtitle_lines(
             && !disable_tesseract_quality_fallback()
         {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
-                if let Ok(candidate) = run_tesseract_best_effort(&pgm_path, &fallback_language) {
-                    if let Some(transferred) =
-                        transfer_agreed_spacing(&output.lines, &candidate.text)
-                    {
+                if let Ok(candidate) = cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
+                    if let Some(transferred) = transfer_spacing_unless_forced(
+                        &output.lines,
+                        &candidate.text,
+                        force_tesseract_non_english,
+                    ) {
                         let bbox = output
                             .lines
                             .iter()
@@ -857,9 +865,6 @@ pub(super) fn extract_subtitle_lines(
             }
         }
         let thresholds = quality_fallback_thresholds(quality_baseline);
-        let force_tesseract_non_english = force_tesseract_non_english_enabled()
-            && !is_english_language(params.language)
-            && language_uses_spaces(params.language);
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
@@ -937,7 +942,9 @@ pub(super) fn extract_subtitle_lines(
                 || (should_try_quality_fallback && ppocr_confidence < 0.30))
         {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
-                match run_tesseract_best_effort(&pgm_path, &fallback_language) {
+                match cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // PP-OCR has language/profile routing for English, Latin,
                         // CJK, Japanese, Korean, and multilingual recognizers. Keep
@@ -979,7 +986,7 @@ pub(super) fn extract_subtitle_lines(
                                     None => Some(b.clone()),
                                 });
                             output.lines = vec![OcrLine {
-                                text: candidate.text,
+                                text: candidate.text.clone(),
                                 bbox,
                                 score: None,
                                 color: None,
@@ -1313,6 +1320,25 @@ fn crop_recovery_preserves_characters(original: &OcrOutput, candidate: &OcrOutpu
     !original_chars.is_empty()
         && original_chars == candidate_chars
         && original_boundaries.is_subset(&candidate_boundaries)
+}
+
+fn cached_tesseract_attempt(
+    attempt: &mut Option<Result<TesseractCandidate>>,
+    run: impl FnOnce() -> Result<TesseractCandidate>,
+) -> &Result<TesseractCandidate> {
+    attempt.get_or_insert_with(run)
+}
+
+fn transfer_spacing_unless_forced(
+    lines: &[OcrLine],
+    candidate: &str,
+    force_tesseract: bool,
+) -> Option<String> {
+    if force_tesseract {
+        None
+    } else {
+        transfer_agreed_spacing(lines, candidate)
+    }
 }
 
 fn transfer_agreed_spacing(lines: &[OcrLine], candidate: &str) -> Option<String> {
@@ -1694,6 +1720,61 @@ mod pgs_timing_tests {
         sub.num_rects = 1;
         sub.rects = &mut rect_ptr;
         process_event(&sub, None, 0, codec, format, cues, timing);
+    }
+
+    #[test]
+    fn forced_tesseract_takes_precedence_over_agreed_spacing() {
+        let lines = vec![OcrLine {
+            text: "Bonjourtoutlemonde".to_string(),
+            bbox: None,
+            score: Some(0.9),
+            color: None,
+            italic: false,
+        }];
+        let candidate = "Bonjour tout le monde";
+        assert_eq!(
+            transfer_spacing_unless_forced(&lines, candidate, false).as_deref(),
+            Some(candidate)
+        );
+        assert!(transfer_spacing_unless_forced(&lines, candidate, true).is_none());
+    }
+
+    #[test]
+    fn tesseract_attempt_is_reused_for_success_empty_and_failure() {
+        for result in [Some("Bonjour tout le monde"), Some(""), None] {
+            let mut attempt = None;
+            let mut calls = 0;
+            let first = cached_tesseract_attempt(&mut attempt, || {
+                calls += 1;
+                match result {
+                    Some(text) => Ok(TesseractCandidate {
+                        text: text.to_string(),
+                        psm: 6,
+                        quality: 0.8,
+                    }),
+                    None => Err(anyhow!("recognition failed")),
+                }
+            });
+            match result {
+                Some(text) => assert_eq!(first.as_ref().unwrap().text, text),
+                None => assert_eq!(
+                    first.as_ref().err().unwrap().to_string(),
+                    "recognition failed"
+                ),
+            }
+            let second = cached_tesseract_attempt(&mut attempt, || {
+                calls += 1;
+                panic!("must reuse the first result")
+            });
+            match result {
+                Some(text) => assert_eq!(second.as_ref().unwrap().text, text),
+                None => assert_eq!(
+                    second.as_ref().err().unwrap().to_string(),
+                    "recognition failed"
+                ),
+            }
+            assert_eq!(calls, 1);
+        }
     }
 
     #[test]
