@@ -126,14 +126,14 @@ pub(super) struct OcrStreamRequest<'a> {
 }
 
 /// Per-packet/per-subtitle context used when turning decoded subtitle data into cues.
-struct CueBuildParams<'a> {
-    language: &'a str,
-    stream_index: i32,
-    packet_seq: usize,
-    work_dir: &'a Path,
-    ocr_format: OcrFormat,
-    video_dimensions: Option<(u32, u32)>,
-    ocr_engine: OcrEngine,
+pub(super) struct CueBuildParams<'a> {
+    pub(super) language: &'a str,
+    pub(super) stream_index: i32,
+    pub(super) packet_seq: usize,
+    pub(super) work_dir: &'a Path,
+    pub(super) ocr_format: OcrFormat,
+    pub(super) video_dimensions: Option<(u32, u32)>,
+    pub(super) ocr_engine: OcrEngine,
 }
 
 #[derive(Debug)]
@@ -253,6 +253,7 @@ fn ocr_single_stream_once(
         );
     }
     decode_context.set_time_base(stream_time_base);
+    crate::transcoder::helpers::ensure_decoder_pkt_time_base(&mut decode_context, stream_time_base);
     apply_bitmap_subtitle_canvas_fallback(
         &mut decode_context,
         stream_codec_id,
@@ -264,6 +265,7 @@ fn ocr_single_stream_once(
     decode_context.open(None)?;
 
     let mut cues = Vec::new();
+    let mut pgs_timing = PgsCueTiming::default();
     let mut packet_seq: usize = 0;
     let mut subtitle_packet_count: usize = 0;
     let mut decoded_subtitle_count: usize = 0;
@@ -292,7 +294,7 @@ fn ocr_single_stream_once(
             let (rect_count, image_rect_count) = subtitle_rect_counts(subtitle.as_ptr());
             decoded_rect_count += rect_count;
             decoded_image_rect_count += image_rect_count;
-            let fallback_start_ms = timestamp_to_ms(src_pts, stream_time_base).unwrap_or(0);
+            let fallback_start_ms = timestamp_to_ms(src_pts, stream_time_base);
             let fallback_dur_ms = timestamp_to_ms(src_dur, stream_time_base)
                 .unwrap_or(0)
                 .max(0);
@@ -305,15 +307,17 @@ fn ocr_single_stream_once(
                 video_dimensions: request.video_dimensions,
                 ocr_engine: request.ocr_engine,
             };
-            let mut new_cues = subtitle_to_cues(
+            append_subtitle_cues(
                 subtitle.as_ptr(),
                 fallback_start_ms,
                 fallback_dur_ms,
+                stream_codec_id,
                 &cue_params,
                 engine,
                 &mut quality_baseline,
+                &mut cues,
+                &mut pgs_timing,
             )?;
-            cues.append(&mut new_cues);
             packet_seq += 1;
         }
     }
@@ -335,18 +339,21 @@ fn ocr_single_stream_once(
             video_dimensions: request.video_dimensions,
             ocr_engine: request.ocr_engine,
         };
-        let mut new_cues = subtitle_to_cues(
+        append_subtitle_cues(
             subtitle.as_ptr(),
+            None,
             0,
-            0,
+            stream_codec_id,
             &cue_params,
             engine,
             &mut quality_baseline,
+            &mut cues,
+            &mut pgs_timing,
         )?;
-        cues.append(&mut new_cues);
         packet_seq += 1;
     }
 
+    pgs_timing.finish(&mut cues);
     sanitize_cues(&mut cues, request.ocr_format);
 
     Ok(OcrDecodeOutcome {
@@ -505,9 +512,100 @@ pub(super) fn subtitle_rect_counts(subtitle: *const ffi::AVSubtitle) -> (usize, 
     (sub.num_rects as usize, image_rects)
 }
 
+fn subtitle_start_ms(subtitle: &ffi::AVSubtitle, fallback_start_ms: Option<i64>) -> Option<i64> {
+    let base_ms = if subtitle.pts != ffi::AV_NOPTS_VALUE {
+        Some(subtitle.pts / 1000)
+    } else {
+        fallback_start_ms
+    }?;
+    Some(
+        base_ms
+            .saturating_add(subtitle.start_display_time as i64)
+            .max(0),
+    )
+}
+
+#[derive(Default)]
+struct PgsCueTiming {
+    active: Option<(std::ops::Range<usize>, bool, i64)>,
+}
+
+impl PgsCueTiming {
+    fn finish_at(&mut self, cues: &mut [SubtitleCue], event_start_ms: Option<i64>) {
+        let Some((range, indefinite, fallback_duration_ms)) = self.active.take() else {
+            return;
+        };
+        for cue in &mut cues[range] {
+            let boundary = event_start_ms.filter(|&start| start >= cue.start_ms);
+            if indefinite {
+                // Match the existing one-second minimum while bounding unclosed PGS events.
+                cue.end_ms = boundary.unwrap_or_else(|| {
+                    cue.start_ms
+                        .saturating_add(fallback_duration_ms.clamp(1_000, 10_000))
+                });
+            } else if let Some(boundary) = boundary {
+                cue.end_ms = cue.end_ms.min(boundary);
+            }
+        }
+    }
+
+    fn finish(&mut self, cues: &mut [SubtitleCue]) {
+        self.finish_at(cues, None);
+    }
+
+    fn append(
+        &mut self,
+        cues: &mut Vec<SubtitleCue>,
+        mut new_cues: Vec<SubtitleCue>,
+        start_ms: Option<i64>,
+        indefinite: bool,
+        fallback_duration_ms: i64,
+    ) {
+        self.finish_at(cues, start_ms);
+        let start = cues.len();
+        cues.append(&mut new_cues);
+        self.active = Some((start..cues.len(), indefinite, fallback_duration_ms));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_subtitle_cues(
+    subtitle: *const ffi::AVSubtitle,
+    fallback_start_ms: Option<i64>,
+    fallback_duration_ms: i64,
+    stream_codec_id: ffi::AVCodecID,
+    params: &CueBuildParams<'_>,
+    engine: &mut dyn SubtitleConverter,
+    quality_baseline: &mut OcrQualityBaseline,
+    cues: &mut Vec<SubtitleCue>,
+    pgs_timing: &mut PgsCueTiming,
+) -> Result<()> {
+    let new_cues = subtitle_to_cues(
+        subtitle,
+        fallback_start_ms,
+        fallback_duration_ms,
+        params,
+        engine,
+        quality_baseline,
+    )?;
+    if stream_codec_id == ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE && !subtitle.is_null() {
+        let sub = unsafe { &*subtitle };
+        pgs_timing.append(
+            cues,
+            new_cues,
+            subtitle_start_ms(sub, fallback_start_ms),
+            sub.end_display_time == u32::MAX || sub.end_display_time <= sub.start_display_time,
+            fallback_duration_ms,
+        );
+    } else {
+        cues.extend(new_cues);
+    }
+    Ok(())
+}
+
 fn subtitle_to_cues(
     subtitle: *const ffi::AVSubtitle,
-    fallback_start_ms: i64,
+    fallback_start_ms: Option<i64>,
     fallback_duration_ms: i64,
     params: &CueBuildParams<'_>,
     engine: &mut dyn SubtitleConverter,
@@ -523,10 +621,11 @@ fn subtitle_to_cues(
     let base_ms = if sub.pts != ffi::AV_NOPTS_VALUE {
         sub.pts / 1000
     } else {
-        fallback_start_ms
+        fallback_start_ms.unwrap_or(0)
     };
 
-    let start_ms = base_ms.saturating_add(sub.start_display_time as i64).max(0);
+    let start_ms = subtitle_start_ms(sub, fallback_start_ms)
+        .unwrap_or_else(|| (sub.start_display_time as i64).max(0));
     end_ms = base_ms
         .saturating_add(sub.end_display_time as i64)
         .max(start_ms);
@@ -601,7 +700,7 @@ fn subtitle_to_cues(
     Ok(cues)
 }
 
-fn extract_subtitle_lines(
+pub(super) fn extract_subtitle_lines(
     subtitle: &ffi::AVSubtitle,
     params: &CueBuildParams<'_>,
     subtitle_start_ms: i64,
@@ -689,14 +788,98 @@ fn extract_subtitle_lines(
                 i
             );
         }
-        let ppocr_text = lines_text_for_quality(&output.lines);
-        let ppocr_quality = ocr_text_quality_score(&ppocr_text, params.language);
-        let ppocr_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
-        quality_baseline.observe(ppocr_quality, ppocr_confidence, subtitle_start_ms);
-        let thresholds = quality_fallback_thresholds(quality_baseline);
+        let raw_quality =
+            ocr_text_quality_score(&lines_text_for_quality(&output.lines), params.language);
+        let raw_confidence = ppocr_average_confidence(&output.lines).unwrap_or(0.0);
+        quality_baseline.observe(raw_quality, raw_confidence, subtitle_start_ms);
         let force_tesseract_non_english = force_tesseract_non_english_enabled()
             && !is_english_language(params.language)
             && language_uses_spaces(params.language);
+        let mut tesseract_attempt = None;
+        let mut restored_spacing = false;
+        let mut replaced_with_tesseract = false;
+        if matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+            && language_uses_spaces(params.language)
+            && (ppocr_spacing_needs_fallback(&output.lines)
+                || postprocessed_text_needs_quality_fallback(&output, params.language))
+            && !disable_tesseract_quality_fallback()
+        {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
+                if let Ok(candidate) = cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
+                    let mut spacing_lines = output.lines.clone();
+                    if !force_tesseract_non_english && spacing_lines.len() > 1 {
+                        if let Ok(alternate) =
+                            run_tesseract_with_psm(&pgm_path, &fallback_language, 11)
+                        {
+                            recover_line_terminal_punctuation(
+                                &mut spacing_lines,
+                                &candidate.text,
+                                &alternate,
+                            );
+                        }
+                    }
+                    if let Some(transferred) = transfer_spacing_unless_forced(
+                        &spacing_lines,
+                        &candidate.text,
+                        force_tesseract_non_english,
+                    ) {
+                        let bbox = output
+                            .lines
+                            .iter()
+                            .filter_map(|line| line.bbox.as_ref())
+                            .fold(None, |acc: Option<OcrBoundingBox>, b| match acc {
+                                Some(mut current) => {
+                                    current.left = current.left.min(b.left);
+                                    current.right = current.right.max(b.right);
+                                    current.top = current.top.min(b.top);
+                                    current.bottom = current.bottom.max(b.bottom);
+                                    Some(current)
+                                }
+                                None => Some(b.clone()),
+                            });
+                        let mut repaired_lines = Vec::new();
+                        for candidate_line in transferred.lines() {
+                            let has_glued_words = candidate_line.split_whitespace().any(|word| {
+                                word.chars()
+                                    .filter(|ch| ch.is_alphabetic() || *ch == '\'')
+                                    .count()
+                                    >= 9
+                                    && word.chars().any(|ch| ch == '\'')
+                                    || word.chars().filter(|ch| ch.is_alphabetic()).count() >= 12
+                            });
+                            let processed = postprocess_ocr_text(candidate_line, params.language);
+                            if has_glued_words
+                                && processed
+                                    .chars()
+                                    .filter(|ch| !ch.is_whitespace())
+                                    .eq(candidate_line.chars().filter(|ch| !ch.is_whitespace()))
+                                && preserves_existing_boundaries(candidate_line, &processed)
+                            {
+                                repaired_lines.push(processed);
+                            } else {
+                                repaired_lines.push(candidate_line.to_string());
+                            }
+                        }
+                        output.lines = vec![OcrLine {
+                            text: repaired_lines.join("\n"),
+                            bbox,
+                            score: None,
+                            color: rect_color,
+                            italic: false,
+                        }];
+                        restored_spacing =
+                            !output_needs_spacing_after_postprocess(&output, params.language);
+                        info!(
+                            "{} spacing recovery: restored word boundaries using matching Tesseract text for subtitle stream {} packet {} rect {}",
+                            ppocr_engine_label(ocr_engine), params.stream_index, params.packet_seq, i
+                        );
+                    }
+                }
+            }
+        }
+        let thresholds = quality_fallback_thresholds(quality_baseline);
         let spacing_fallback_requested = ppocr_spacing_needs_fallback(&output.lines);
         let quality_fallback_requested =
             ppocr_needs_quality_fallback(&output.lines, params.language);
@@ -712,7 +895,8 @@ fn extract_subtitle_lines(
                 )
             })
             .unwrap_or(true);
-        if spacing_fallback_requested
+        if !restored_spacing
+            && spacing_fallback_requested
             && raw_postprocess_needs_spacing_fallback
             && word_segmentation_enabled
         {
@@ -722,6 +906,7 @@ fn extract_subtitle_lines(
                 &pgm_path,
                 params.language,
                 rect_color,
+                &output,
             )? {
                 let segmented_quality =
                     output_quality_after_postprocess(&segmented, params.language);
@@ -763,14 +948,17 @@ fn extract_subtitle_lines(
                 ppocr_quality < thresholds.quality || ppocr_confidence < thresholds.confidence
             })
         };
-        if matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+        if !restored_spacing
+            && matches!(params.ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
             && language_uses_spaces(params.language)
             && !disable_tesseract_quality_fallback()
             && (force_tesseract_non_english
                 || (should_try_quality_fallback && ppocr_confidence < 0.30))
         {
             if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
-                match run_tesseract_best_effort(&pgm_path, &fallback_language) {
+                match cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
                     Ok(candidate) if !candidate.text.is_empty() => {
                         // PP-OCR has language/profile routing for English, Latin,
                         // CJK, Japanese, Korean, and multilingual recognizers. Keep
@@ -797,6 +985,7 @@ fn extract_subtitle_lines(
                                 && candidate.quality >= ppocr_postprocessed_quality + min_gain
                         };
                         if should_replace_with_tesseract {
+                            replaced_with_tesseract = true;
                             let bbox: Option<OcrBoundingBox> = output
                                 .lines
                                 .iter()
@@ -812,7 +1001,7 @@ fn extract_subtitle_lines(
                                     None => Some(b.clone()),
                                 });
                             output.lines = vec![OcrLine {
-                                text: candidate.text,
+                                text: candidate.text.clone(),
                                 bbox,
                                 score: None,
                                 color: None,
@@ -882,21 +1071,49 @@ fn extract_subtitle_lines(
             }
         }
         export_ocr_training_sample(&pgm_path, &output, params.language)?;
-        if !keep_ocr_intermediates() {
-            let _ = fs::remove_file(&pgm_path);
-        }
+        let mut rect_lines = Vec::new();
         for mut line in output.lines {
             if let Some(bbox) = line.bbox.as_mut() {
                 offset_bbox(bbox, rect.x, rect.y);
             }
-            line.text = postprocess_ocr_text(&line.text, params.language);
+            if !restored_spacing {
+                line.text = postprocess_ocr_text(&line.text, params.language);
+            }
             if line.color.is_none() {
                 line.color = rect_color;
             }
             if !line.text.is_empty() {
-                lines.push(line);
+                rect_lines.push(line);
             }
         }
+        if !replaced_with_tesseract
+            && !force_tesseract_non_english
+            && matches!(ocr_engine, OcrEngine::PpOcrV4 | OcrEngine::PpOcrV3)
+            && language_uses_spaces(params.language)
+            && !disable_tesseract_quality_fallback()
+            && needs_terminal_punctuation_candidate(&rect_lines)
+        {
+            if let Some(fallback_language) = resolve_tesseract_fallback_language(params.language) {
+                if let Ok(candidate) = cached_tesseract_attempt(&mut tesseract_attempt, || {
+                    run_tesseract_best_effort(&pgm_path, &fallback_language)
+                }) {
+                    if !recover_terminal_punctuation(&mut rect_lines, &candidate.text)
+                        && quoted_candidate_preserves_glyphs(&rect_lines, &candidate.text)
+                    {
+                        let alternate_psm = if candidate.psm == 6 { 7 } else { 6 };
+                        if let Ok(alternate) =
+                            run_tesseract_with_psm(&pgm_path, &fallback_language, alternate_psm)
+                        {
+                            recover_balanced_quotes(&mut rect_lines, &candidate.text, &alternate);
+                        }
+                    }
+                }
+            }
+        }
+        if !keep_ocr_intermediates() {
+            let _ = fs::remove_file(&pgm_path);
+        }
+        lines.extend(rect_lines);
     }
 
     Ok((lines, had_imagery))
@@ -1136,6 +1353,337 @@ fn keep_ocr_intermediates() -> bool {
         .unwrap_or(false)
 }
 
+fn needs_terminal_punctuation_candidate(lines: &[OcrLine]) -> bool {
+    let text = lines_text_for_quality(lines);
+    text.chars().filter(|ch| !ch.is_whitespace()).count() >= 8
+        && text
+            .trim_end()
+            .chars()
+            .last()
+            .is_some_and(char::is_alphanumeric)
+}
+
+// Only add a terminal mark when both recognizers agree on every other glyph.
+// In particular, never transfer punctuation across a conflicting apostrophe,
+// quote, or other pre-existing punctuation mark.
+fn recover_terminal_punctuation(lines: &mut [OcrLine], candidate: &str) -> bool {
+    if !needs_terminal_punctuation_candidate(lines) {
+        return false;
+    }
+    let original: String = lines_text_for_quality(lines)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let mut proposed: Vec<char> = candidate.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let Some(mark @ ('.' | '?' | '!')) = proposed.pop() else {
+        return false;
+    };
+    if !original.chars().eq(proposed) {
+        return false;
+    }
+    if let Some(line) = lines
+        .iter_mut()
+        .rev()
+        .find(|line| !line.text.trim().is_empty())
+    {
+        let end = line.text.trim_end().len();
+        line.text.insert(end, mark);
+        return true;
+    }
+    false
+}
+
+// Recover only a missing line-final mark when two independent page segmentation
+// modes agree on all glyphs for every line. Never move a line or replace a glyph.
+fn recover_line_terminal_punctuation(
+    lines: &mut [OcrLine],
+    candidate: &str,
+    alternate: &str,
+) -> bool {
+    let candidates: Vec<_> = candidate
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let alternates: Vec<_> = alternate
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() < 2 || candidates.len() != lines.len() || alternates.len() != lines.len() {
+        return false;
+    }
+    let compact = |s: &str| {
+        s.chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>()
+    };
+    let mut marks = Vec::with_capacity(lines.len());
+    for ((line, candidate), alternate) in lines.iter().zip(candidates).zip(alternates) {
+        let original = compact(&line.text);
+        let proposed = compact(candidate);
+        if proposed != compact(alternate) || original.is_empty() {
+            return false;
+        }
+        if original == proposed {
+            marks.push(None);
+        } else if let Some(mark @ ('.' | '?' | '!')) = proposed.chars().last() {
+            if proposed.strip_suffix(mark) != Some(original.as_str())
+                || !original.chars().last().is_some_and(char::is_alphanumeric)
+            {
+                return false;
+            }
+            marks.push(Some(mark));
+        } else {
+            return false;
+        }
+    }
+    let mut changed = false;
+    for (line, mark) in lines.iter_mut().zip(marks) {
+        if let Some(mark) = mark {
+            let end = line.text.trim_end().len();
+            line.text.insert(end, mark);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn quoted_candidate_preserves_glyphs(lines: &[OcrLine], candidate: &str) -> bool {
+    if lines.len() != 1 || lines[0].text.contains(['"', '\n', '\r']) {
+        return false;
+    }
+    let original: String = lines[0]
+        .text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    let proposed: String = candidate.chars().filter(|ch| !ch.is_whitespace()).collect();
+    original.chars().count() >= 8
+        && proposed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(original.as_str())
+}
+
+// A second page segmentation mode must independently see the same enclosing
+// quotes; neither recognizer may change, delete, or insert any other glyph.
+fn recover_balanced_quotes(lines: &mut [OcrLine], candidate: &str, alternate: &str) -> bool {
+    if !quoted_candidate_preserves_glyphs(lines, candidate)
+        || !quoted_candidate_preserves_glyphs(lines, alternate)
+    {
+        return false;
+    }
+    let line = &mut lines[0].text;
+    let start = line.len() - line.trim_start().len();
+    let end = line.trim_end().len();
+    line.insert(end, '"');
+    line.insert(start, '"');
+    true
+}
+
+fn crop_recovery_preserves_characters(original: &OcrOutput, candidate: &OcrOutput) -> bool {
+    let original_text = lines_text_for_quality(&original.lines);
+    let candidate_text = lines_text_for_quality(&candidate.lines);
+    let (original_chars, original_boundaries) = text_and_boundaries(&original_text);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(&candidate_text);
+    !original_chars.is_empty()
+        && original_chars == candidate_chars
+        && original_boundaries.is_subset(&candidate_boundaries)
+        && line_break_positions(original) == line_break_positions(candidate)
+}
+
+fn line_break_positions(output: &OcrOutput) -> Vec<usize> {
+    let text = output
+        .lines
+        .iter()
+        .map(|line| line.text.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut positions = Vec::new();
+    let mut count = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            positions.push(count);
+        } else if !ch.is_whitespace() {
+            count += 1;
+        }
+    }
+    positions
+}
+
+fn cached_tesseract_attempt(
+    attempt: &mut Option<Result<TesseractCandidate>>,
+    run: impl FnOnce() -> Result<TesseractCandidate>,
+) -> &Result<TesseractCandidate> {
+    attempt.get_or_insert_with(run)
+}
+
+fn transfer_spacing_unless_forced(
+    lines: &[OcrLine],
+    candidate: &str,
+    force_tesseract: bool,
+) -> Option<String> {
+    if force_tesseract {
+        None
+    } else {
+        transfer_agreed_spacing(lines, candidate)
+    }
+}
+
+fn transfer_agreed_spacing(lines: &[OcrLine], candidate: &str) -> Option<String> {
+    let flattened = lines_text_for_quality(lines);
+    if spacing_candidate_preserves_characters(&flattened, candidate) {
+        return Some(candidate.to_string());
+    }
+    let original = lines
+        .iter()
+        .map(|line| line.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (original_chars, original_boundaries) = text_and_boundaries(&original);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
+    let left: Vec<char> = original_chars.chars().collect();
+    let right: Vec<char> = candidate_chars.chars().collect();
+    if left.is_empty() {
+        return None;
+    }
+    let compatible = |a: char, b: char| a == b || matches!((a, b), ('I', '|') | ('l', '|'));
+    if left.len() != right.len()
+        || !original_boundaries.is_subset(&candidate_boundaries)
+        || !left.iter().zip(&right).all(|(&a, &b)| compatible(a, b))
+    {
+        return transfer_anchored_spacing(&original, candidate);
+    }
+    let added: HashSet<_> = candidate_boundaries
+        .difference(&original_boundaries)
+        .copied()
+        .collect();
+    if added.is_empty()
+        || added.iter().any(|&i| {
+            i == 0 || i >= left.len() || (left[i - 1] != right[i - 1] && left[i] != right[i])
+        })
+    {
+        return None;
+    }
+    let mut result = String::new();
+    let mut index = 0;
+    for ch in original.chars() {
+        if !ch.is_whitespace() {
+            if added.contains(&index) {
+                result.push(' ');
+            }
+            index += 1;
+        }
+        result.push(ch);
+    }
+    Some(result)
+}
+
+// Use only uniquely matching character runs around each proposed boundary. The
+// whole-text distance guard prevents an unrelated candidate from contributing a
+// coincidental local match; neither substitutions nor punctuation are copied.
+fn transfer_anchored_spacing(original: &str, candidate: &str) -> Option<String> {
+    const ANCHOR: usize = 4;
+    const MAX_CHARS: usize = 512;
+    let (original_chars, original_boundaries) = text_and_boundaries(original);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
+    let left: Vec<char> = original_chars.chars().collect();
+    let right: Vec<char> = candidate_chars.chars().collect();
+    if left.len() < ANCHOR * 2 || left.len() > MAX_CHARS || right.len() > MAX_CHARS {
+        return None;
+    }
+
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.iter().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            current[j + 1] = (previous[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(previous[j] + usize::from(a != b));
+        }
+        previous = current;
+    }
+    if previous[right.len()] > (left.len().max(right.len()) / 10).max(2) {
+        return None;
+    }
+
+    let mut added = HashSet::new();
+    for boundary in candidate_boundaries {
+        if boundary < ANCHOR || boundary + ANCHOR > right.len() {
+            continue;
+        }
+        let anchor = &right[boundary - ANCHOR..boundary + ANCHOR];
+        if !anchor[ANCHOR - 1].is_alphabetic() || !anchor[ANCHOR].is_alphabetic() {
+            continue;
+        }
+        if right
+            .windows(anchor.len())
+            .filter(|window| *window == anchor)
+            .count()
+            != 1
+        {
+            continue;
+        }
+        let mut matches = left
+            .windows(anchor.len())
+            .enumerate()
+            .filter_map(|(i, window)| (window == anchor).then_some(i + ANCHOR));
+        if let (Some(index), None) = (matches.next(), matches.next()) {
+            if !original_boundaries.contains(&index) {
+                added.insert(index);
+            }
+        }
+    }
+    if added.is_empty() {
+        return None;
+    }
+    let mut result = String::new();
+    let mut index = 0;
+    for ch in original.chars() {
+        if !ch.is_whitespace() {
+            if added.contains(&index) {
+                result.push(' ');
+            }
+            index += 1;
+        }
+        result.push(ch);
+    }
+    Some(result)
+}
+
+pub(super) fn spacing_candidate_preserves_characters(original: &str, candidate: &str) -> bool {
+    let (original_chars, original_boundaries) = text_and_boundaries(original);
+    let (candidate_chars, candidate_boundaries) = text_and_boundaries(candidate);
+    !original_chars.is_empty()
+        && original_chars == candidate_chars
+        && original_boundaries.is_subset(&candidate_boundaries)
+        && candidate_boundaries.len() > original_boundaries.len()
+}
+
+fn preserves_existing_boundaries(original: &str, candidate: &str) -> bool {
+    let (_, original_boundaries) = text_and_boundaries(original);
+    let (_, candidate_boundaries) = text_and_boundaries(candidate);
+    original_boundaries.is_subset(&candidate_boundaries)
+}
+
+fn text_and_boundaries(text: &str) -> (String, HashSet<usize>) {
+    let mut chars = String::new();
+    let mut boundaries = HashSet::new();
+    let mut count = 0;
+    let mut whitespace = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            whitespace = count > 0;
+        } else {
+            if whitespace {
+                boundaries.insert(count);
+            }
+            whitespace = false;
+            chars.push(ch);
+            count += 1;
+        }
+    }
+    (chars, boundaries)
+}
+
 fn output_quality_after_postprocess(output: &OcrOutput, language: &str) -> f32 {
     let processed = output
         .lines
@@ -1224,6 +1772,7 @@ fn try_ppocr_word_segmentation_recovery(
     pgm_path: &Path,
     language: &str,
     color: Option<(u8, u8, u8)>,
+    original: &OcrOutput,
 ) -> Result<Option<OcrOutput>> {
     let candidate_gaps = [None, Some(5usize), Some(8usize)];
     let mut best: Option<(f32, OcrOutput)> = None;
@@ -1233,17 +1782,28 @@ fn try_ppocr_word_segmentation_recovery(
         else {
             continue;
         };
-        let text = lines_text_for_quality(&candidate.lines);
-        let quality = ocr_text_quality_score(&text, language);
-        let replace = best
-            .as_ref()
-            .map(|(best_quality, _)| quality > *best_quality + 0.001)
-            .unwrap_or(true);
-        if replace {
-            best = Some((quality, candidate));
-        }
+        let quality = output_quality_after_postprocess(&candidate, language);
+        consider_crop_candidate(&mut best, original, candidate, quality);
     }
     Ok(best.map(|(_, output)| output))
+}
+
+fn consider_crop_candidate(
+    best: &mut Option<(f32, OcrOutput)>,
+    original: &OcrOutput,
+    candidate: OcrOutput,
+    quality: f32,
+) {
+    if !crop_recovery_preserves_characters(original, &candidate) {
+        return;
+    }
+    if best
+        .as_ref()
+        .map(|(best_quality, _)| quality > *best_quality + 0.001)
+        .unwrap_or(true)
+    {
+        *best = Some((quality, candidate));
+    }
 }
 
 fn recognize_ppocr_word_crops(
@@ -1297,7 +1857,7 @@ fn recognize_ppocr_word_crops(
         return Ok(None);
     }
     Ok(Some(OcrOutput {
-        lines: merge_ocr_lines_with_spacing(lines),
+        lines: merge_ocr_word_crops(lines),
     }))
 }
 
@@ -1350,4 +1910,644 @@ pub(super) fn quality_fallback_thresholds(
         quality: dynamic_quality.clamp(0.0, 1.0),
         confidence: dynamic_confidence.clamp(0.0, 1.0),
     })
+}
+
+#[cfg(test)]
+mod pgs_timing_tests {
+    use super::*;
+
+    struct NoOcr;
+
+    impl SubtitleConverter for NoOcr {
+        fn extract_lines(&mut self, _: &Path, _: &str) -> Result<OcrOutput> {
+            panic!("text and clear events must not invoke OCR")
+        }
+    }
+
+    fn cue(start_ms: i64, end_ms: i64, text: &str) -> SubtitleCue {
+        SubtitleCue {
+            start_ms,
+            end_ms,
+            text: text.to_owned(),
+        }
+    }
+
+    fn subtitle(pts_ms: Option<i64>, start_offset: u32, end_offset: u32) -> ffi::AVSubtitle {
+        let mut sub: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
+        sub.pts = pts_ms.map_or(ffi::AV_NOPTS_VALUE, |pts| pts * 1_000);
+        sub.start_display_time = start_offset;
+        sub.end_display_time = end_offset;
+        sub
+    }
+
+    fn process_event(
+        sub: &ffi::AVSubtitle,
+        fallback_start: Option<i64>,
+        fallback_duration: i64,
+        codec: ffi::AVCodecID,
+        format: OcrFormat,
+        cues: &mut Vec<SubtitleCue>,
+        timing: &mut PgsCueTiming,
+    ) {
+        let params = CueBuildParams {
+            language: "eng",
+            stream_index: 0,
+            packet_seq: 0,
+            work_dir: Path::new("."),
+            ocr_format: format,
+            video_dimensions: None,
+            ocr_engine: OcrEngine::External,
+        };
+        append_subtitle_cues(
+            sub,
+            fallback_start,
+            fallback_duration,
+            codec,
+            &params,
+            &mut NoOcr,
+            &mut OcrQualityBaseline::default(),
+            cues,
+            timing,
+        )
+        .unwrap();
+    }
+
+    fn process_text_event(
+        pts_ms: i64,
+        end_offset: u32,
+        text: &str,
+        codec: ffi::AVCodecID,
+        format: OcrFormat,
+        cues: &mut Vec<SubtitleCue>,
+        timing: &mut PgsCueTiming,
+    ) {
+        let text = CString::new(text).unwrap();
+        let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+        rect.type_ = ffi::SUBTITLE_TEXT;
+        rect.text = text.as_ptr().cast_mut();
+        let mut rect_ptr = &mut rect as *mut _;
+        let mut sub = subtitle(Some(pts_ms), 0, end_offset);
+        sub.num_rects = 1;
+        sub.rects = &mut rect_ptr;
+        process_event(&sub, None, 0, codec, format, cues, timing);
+    }
+
+    #[test]
+    fn terminal_punctuation_recovery_requires_exact_glyph_agreement() {
+        fn line(text: &str) -> OcrLine {
+            OcrLine {
+                text: text.to_string(),
+                bbox: None,
+                score: Some(0.9),
+                color: None,
+                italic: true,
+            }
+        }
+
+        let mut lines = vec![line("A small"), line("example  ")];
+        assert!(recover_terminal_punctuation(&mut lines, "Asmall example!"));
+        assert_eq!(lines[0].text, "A small");
+        assert_eq!(lines[1].text, "example!  ");
+        assert!(lines[1].italic);
+        assert_eq!(lines[1].score, Some(0.9));
+
+        for (original, candidate) in [
+            ("A small example", "A small examples."),
+            ("A small example", "A smalI example."),
+            ("A small example", "A small example..."),
+            ("A small example?", "A small example!"),
+            ("A small example", "A small example,"),
+            ("A small example", "A small example"),
+            ("A short", "A short."),
+            ("Some 100", "Some 100."),
+            ("", "A small example."),
+        ] {
+            let mut lines = vec![line(original)];
+            assert!(!recover_terminal_punctuation(&mut lines, candidate));
+            assert_eq!(lines[0].text, original);
+        }
+    }
+
+    #[test]
+    fn multiline_punctuation_requires_matching_lines_and_independent_agreement() {
+        fn lines() -> Vec<OcrLine> {
+            ["Aquietplace", "Wearehome."]
+                .into_iter()
+                .map(|text| OcrLine {
+                    text: text.into(),
+                    bbox: None,
+                    score: None,
+                    color: None,
+                    italic: false,
+                })
+                .collect()
+        }
+        let mut original = lines();
+        assert!(recover_line_terminal_punctuation(
+            &mut original,
+            "A quiet place.\nWe are home.",
+            "A quiet place.\n\nWe are home."
+        ));
+        assert_eq!(original[0].text, "Aquietplace.");
+        assert_eq!(
+            transfer_agreed_spacing(&original, "A quiet place.\nWe are home.").as_deref(),
+            Some("A quiet place.\nWe are home.")
+        );
+        for (candidate, alternate) in [
+            (
+                "A quiet place.\nWe are home.",
+                "A quiet place!\nWe are home.",
+            ),
+            (
+                "A quiet places.\nWe are home.",
+                "A quiet places.\nWe are home.",
+            ),
+            ("A quiet place. We are home.", "A quiet place. We are home."),
+            (
+                "A quiet place.\nWe are home!",
+                "A quiet place.\nWe are home!",
+            ),
+        ] {
+            let mut original = lines();
+            assert!(!recover_line_terminal_punctuation(
+                &mut original,
+                candidate,
+                alternate
+            ));
+            assert_eq!(original[0].text, "Aquietplace");
+        }
+    }
+
+    #[test]
+    fn balanced_quote_recovery_requires_two_matching_recognitions() {
+        fn line(text: &str) -> OcrLine {
+            OcrLine {
+                text: text.to_string(),
+                bbox: None,
+                score: None,
+                color: None,
+                italic: false,
+            }
+        }
+        let mut lines = vec![line("  Quiet harbor  ")];
+        assert!(recover_balanced_quotes(
+            &mut lines,
+            "\"Quiet harbor\"",
+            "\"Quiet harbor\""
+        ));
+        assert_eq!(lines[0].text, "  \"Quiet harbor\"  ");
+        for (original, candidate, alternate) in [
+            ("Quiet harbor", "\"Quiet harbor\"", "Quiet harbor"),
+            ("Quiet harbor", "\"Quiet harbor\"", "\"Quiet harbour\""),
+            ("Quiet harbor", "\"Quiet harbor 2\"", "\"Quiet harbor 2\""),
+            ("Quiet harbor", "\"Quiet harbor.\"", "\"Quiet harbor.\""),
+            ("Quiet \"harbor\"", "\"Quiet harbor\"", "\"Quiet harbor\""),
+            ("Quiet", "\"Quiet\"", "\"Quiet\""),
+        ] {
+            let mut lines = vec![line(original)];
+            assert!(!recover_balanced_quotes(&mut lines, candidate, alternate));
+            assert_eq!(lines[0].text, original);
+        }
+        let mut lines = vec![line("Quiet"), line("harbor")];
+        assert!(!recover_balanced_quotes(
+            &mut lines,
+            "\"Quiet harbor\"",
+            "\"Quiet harbor\""
+        ));
+    }
+
+    #[test]
+    fn forced_tesseract_takes_precedence_over_agreed_spacing() {
+        let lines = vec![OcrLine {
+            text: "Bonjourtoutlemonde".to_string(),
+            bbox: None,
+            score: Some(0.9),
+            color: None,
+            italic: false,
+        }];
+        let candidate = "Bonjour tout le monde";
+        assert_eq!(
+            transfer_spacing_unless_forced(&lines, candidate, false).as_deref(),
+            Some(candidate)
+        );
+        assert!(transfer_spacing_unless_forced(&lines, candidate, true).is_none());
+    }
+
+    #[test]
+    fn tesseract_attempt_is_reused_for_success_empty_and_failure() {
+        for result in [Some("Bonjour tout le monde"), Some(""), None] {
+            let mut attempt = None;
+            let mut calls = 0;
+            let first = cached_tesseract_attempt(&mut attempt, || {
+                calls += 1;
+                match result {
+                    Some(text) => Ok(TesseractCandidate {
+                        text: text.to_string(),
+                        psm: 6,
+                        quality: 0.8,
+                    }),
+                    None => Err(anyhow!("recognition failed")),
+                }
+            });
+            match result {
+                Some(text) => assert_eq!(first.as_ref().unwrap().text, text),
+                None => assert_eq!(
+                    first.as_ref().err().unwrap().to_string(),
+                    "recognition failed"
+                ),
+            }
+            let second = cached_tesseract_attempt(&mut attempt, || {
+                calls += 1;
+                panic!("must reuse the first result")
+            });
+            match result {
+                Some(text) => assert_eq!(second.as_ref().unwrap().text, text),
+                None => assert_eq!(
+                    second.as_ref().err().unwrap().to_string(),
+                    "recognition failed"
+                ),
+            }
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn transfer_spacing_preserves_ambiguous_glyphs_and_lines() {
+        fn line(text: &str) -> OcrLine {
+            OcrLine {
+                text: text.to_owned(),
+                bbox: None,
+                score: None,
+                color: None,
+                italic: false,
+            }
+        }
+        let lines = vec![line("Iwanttheletter"), line("sentbytomorrow.")];
+        assert_eq!(
+            transfer_agreed_spacing(&lines, "| want the letter\nsent by tomorrow.").as_deref(),
+            Some("I want the letter\nsent by tomorrow.")
+        );
+        assert!(transfer_agreed_spacing(&lines, "| want the letter\nsent by today.").is_none());
+        let repaired = transfer_agreed_spacing(&lines, "| want the letter\nsent by tomorrow!")
+            .expect("matching anchors can recover spacing despite punctuation differences");
+        assert!(repaired.ends_with('.'));
+        assert_eq!(
+            text_and_boundaries(&repaired).0,
+            text_and_boundaries("Iwanttheletter\nsentbytomorrow.").0
+        );
+    }
+
+    #[test]
+    fn anchored_spacing_uses_sample_evidence_without_copying_glyphs() {
+        let original = "we found a note on the\nwindowsillbeforetheevening";
+        let candidate = "we found a note on the windowsill before the evening.";
+        let repaired = transfer_anchored_spacing(original, candidate).unwrap();
+        assert_eq!(
+            repaired,
+            "we found a note on the\nwindowsill before the evening"
+        );
+        assert_eq!(
+            text_and_boundaries(original).0,
+            text_and_boundaries(&repaired).0
+        );
+        assert!(preserves_existing_boundaries(original, &repaired));
+
+        let original = "Well, well... I should send thelettersbeforetomorrow.";
+        let candidate = "Well, well... | should send the letters before tomorrow.";
+        let repaired = transfer_anchored_spacing(original, candidate).unwrap();
+        assert!(repaired.contains("letters before tomorrow"));
+        assert!(repaired.contains("I should"));
+        assert_eq!(
+            text_and_boundaries(original).0,
+            text_and_boundaries(&repaired).0
+        );
+    }
+
+    #[test]
+    fn anchored_spacing_rejects_unrelated_or_ambiguous_evidence() {
+        assert!(
+            transfer_anchored_spacing("Thedoorisopenandready", "A different line entirely")
+                .is_none()
+        );
+        assert!(transfer_anchored_spacing("abcdabcdabcdabcd", "abcd abcd abcd abcd!").is_none());
+        assert!(transfer_anchored_spacing("short", "sh ort!").is_none());
+        assert!(transfer_anchored_spacing(&"a".repeat(513), &"a".repeat(513)).is_none());
+    }
+
+    #[test]
+    fn crop_recovery_rejects_lost_or_altered_characters() {
+        fn output(text: &str) -> OcrOutput {
+            OcrOutput {
+                lines: vec![OcrLine {
+                    text: text.to_owned(),
+                    bbox: None,
+                    score: None,
+                    color: None,
+                    italic: false,
+                }],
+            }
+        }
+        let original = output("Thedoorisopen.\nPleasewait.");
+        assert!(crop_recovery_preserves_characters(
+            &original,
+            &output("The door is open.\nPlease wait.")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The d o or is open.\nPlease wai t")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is open.")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is opened.\nPlease wait.")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is open. Please wait.")
+        ));
+        assert!(!crop_recovery_preserves_characters(
+            &original,
+            &output("The door is\nopen. Please wait.")
+        ));
+        let split_lines = OcrOutput {
+            lines: vec![
+                output("The door is open.").lines.remove(0),
+                output("Please wait.").lines.remove(0),
+            ],
+        };
+        assert!(crop_recovery_preserves_characters(&original, &split_lines));
+    }
+
+    #[test]
+    fn crop_selection_filters_before_ranking() {
+        fn output(text: &str) -> OcrOutput {
+            OcrOutput {
+                lines: vec![OcrLine {
+                    text: text.to_owned(),
+                    bbox: None,
+                    score: None,
+                    color: None,
+                    italic: false,
+                }],
+            }
+        }
+        let original = output("Thedoorisopen.");
+        let invalid = output("This is a fluent but different sentence.");
+        let valid = output("The door is open.");
+        let mut best = None;
+        consider_crop_candidate(&mut best, &original, invalid, 0.99);
+        consider_crop_candidate(&mut best, &original, valid, 0.70);
+        assert_eq!(best.unwrap().1.lines[0].text, "The door is open.");
+    }
+
+    #[test]
+    fn pgs_clear_events_preserve_gaps_in_srt_and_ass() {
+        for format in [OcrFormat::Srt, OcrFormat::Ass] {
+            let mut cues = Vec::new();
+            let mut timing = PgsCueTiming::default();
+            for (start, clear) in [(317, 2652), (3186, 8124)] {
+                process_text_event(
+                    start,
+                    u32::MAX,
+                    "line",
+                    ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+                    format,
+                    &mut cues,
+                    &mut timing,
+                );
+                process_event(
+                    &subtitle(Some(clear), 0, u32::MAX),
+                    None,
+                    0,
+                    ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+                    format,
+                    &mut cues,
+                    &mut timing,
+                );
+            }
+            process_text_event(
+                9326,
+                u32::MAX,
+                "last",
+                ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+                format,
+                &mut cues,
+                &mut timing,
+            );
+            timing.finish(&mut cues);
+            sanitize_cues(&mut cues, format);
+            assert_eq!(
+                cues.iter()
+                    .map(|c| (c.start_ms, c.end_ms))
+                    .collect::<Vec<_>>(),
+                [(317, 2652), (3186, 8124), (9326, 10326)]
+            );
+        }
+    }
+
+    #[test]
+    fn pgs_closes_all_ass_cues_on_replacement_even_when_ocr_is_empty() {
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        timing.append(
+            &mut cues,
+            vec![cue(317, i64::MAX, "one"), cue(317, i64::MAX, "two")],
+            Some(317),
+            true,
+            0,
+        );
+        timing.append(&mut cues, Vec::new(), Some(2652), true, 0);
+        timing.finish(&mut cues);
+        sanitize_cues(&mut cues, OcrFormat::Ass);
+        assert_eq!(cues.len(), 2);
+        assert!(cues.iter().all(|c| c.end_ms == 2652));
+    }
+
+    #[test]
+    fn pgs_replacement_and_finite_durations_are_handled() {
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        process_text_event(
+            1000,
+            u32::MAX,
+            "one",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        process_text_event(
+            2500,
+            800,
+            "two",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        process_text_event(
+            4000,
+            3000,
+            "three",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        process_event(
+            &subtitle(Some(5000), 0, u32::MAX),
+            None,
+            0,
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        timing.finish(&mut cues);
+        assert_eq!(
+            cues.iter()
+                .map(|c| (c.start_ms, c.end_ms))
+                .collect::<Vec<_>>(),
+            [(1000, 2500), (2500, 3300), (4000, 5000)]
+        );
+    }
+
+    #[test]
+    fn pgs_missing_or_non_monotonic_boundary_uses_finite_fallback() {
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        process_event(
+            &subtitle(Some(10), 0, u32::MAX),
+            None,
+            0,
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            &mut cues,
+            &mut timing,
+        );
+        timing.append(
+            &mut cues,
+            vec![cue(1000, i64::MAX, "one")],
+            Some(1000),
+            true,
+            2400,
+        );
+        process_event(
+            &subtitle(None, 0, u32::MAX),
+            None,
+            0,
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            &mut cues,
+            &mut timing,
+        );
+        assert_eq!(cues[0].end_ms, 3400);
+        timing.append(
+            &mut cues,
+            vec![cue(5000, i64::MAX, "two")],
+            Some(5000),
+            true,
+            0,
+        );
+        process_event(
+            &subtitle(Some(4500), 0, u32::MAX),
+            None,
+            0,
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            &mut cues,
+            &mut timing,
+        );
+        assert_eq!(cues[1].end_ms, 6000);
+    }
+
+    #[test]
+    fn pgs_same_timestamp_clears_and_unclosed_fallback_is_bounded() {
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        timing.append(
+            &mut cues,
+            vec![cue(1000, i64::MAX, "one")],
+            Some(1000),
+            true,
+            0,
+        );
+        timing.append(&mut cues, Vec::new(), Some(1000), true, 0);
+        assert_eq!(cues[0].end_ms, 1000);
+        timing.append(
+            &mut cues,
+            vec![cue(2000, i64::MAX, "two")],
+            Some(2000),
+            true,
+            999_999,
+        );
+        timing.finish(&mut cues);
+        assert_eq!(cues[1].end_ms, 12_000);
+        sanitize_cues(&mut cues, OcrFormat::Ass);
+        assert_eq!(cues.len(), 1);
+    }
+
+    #[test]
+    fn pgs_timestamps_use_subtitle_pts_then_packet_fallback_and_display_offset() {
+        assert_eq!(
+            subtitle_start_ms(&subtitle(Some(1000), 125, u32::MAX), Some(2000)),
+            Some(1125)
+        );
+        assert_eq!(
+            subtitle_start_ms(&subtitle(None, 125, u32::MAX), Some(2000)),
+            Some(2125)
+        );
+        assert_eq!(
+            subtitle_start_ms(&subtitle(None, 125, u32::MAX), None),
+            None
+        );
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        timing.append(
+            &mut cues,
+            vec![cue(1000, i64::MAX, "one")],
+            Some(1000),
+            true,
+            0,
+        );
+        process_event(
+            &subtitle(None, 125, u32::MAX),
+            Some(2000),
+            0,
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        assert_eq!(cues[0].end_ms, 2125);
+    }
+
+    #[test]
+    fn non_pgs_events_keep_existing_timing() {
+        let mut cues = Vec::new();
+        let mut timing = PgsCueTiming::default();
+        process_text_event(
+            1000,
+            5000,
+            "one",
+            ffi::AV_CODEC_ID_DVD_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        process_event(
+            &subtitle(Some(2000), 0, 0),
+            None,
+            0,
+            ffi::AV_CODEC_ID_DVD_SUBTITLE,
+            OcrFormat::Ass,
+            &mut cues,
+            &mut timing,
+        );
+        timing.finish(&mut cues);
+        assert_eq!(cues[0].end_ms, 6000);
+    }
 }
