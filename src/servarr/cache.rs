@@ -38,6 +38,51 @@ struct NoCandidateRecord {
     reason: String,
 }
 
+/// A replacement the language audit grabbed, kept until a later audit run
+/// has checked the imported file. The audit and the Arr import hooks run as
+/// different users, so the audit verifies its own grabs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingGrab {
+    pub kind: String,
+    pub target_noun: String,
+    pub target_id: i64,
+    pub release_title: String,
+    #[serde(default)]
+    pub guid: Option<String>,
+    #[serde(default)]
+    pub download_id: Option<String>,
+    pub grabbed_at_unix: u64,
+    pub requirements: LanguageRequirements,
+}
+
+impl PendingGrab {
+    pub fn new(
+        kind: IntegrationKind,
+        target_noun: &str,
+        target_id: i64,
+        release_title: &str,
+        guid: Option<String>,
+        requirements: &LanguageRequirements,
+    ) -> Self {
+        Self {
+            kind: format!("{:?}", kind),
+            target_noun: target_noun.to_string(),
+            target_id,
+            release_title: release_title.to_string(),
+            guid,
+            download_id: None,
+            grabbed_at_unix: now_unix_secs(),
+            requirements: requirements.clone(),
+        }
+    }
+
+    fn is_for(&self, kind: IntegrationKind, target_noun: &str, target_id: i64) -> bool {
+        self.kind == format!("{:?}", kind)
+            && self.target_noun == target_noun
+            && self.target_id == target_id
+    }
+}
+
 /// Process-wide switch that turns every cache write into a no-op. Set once by `--dry-run`.
 static WRITES_DISABLED: AtomicBool = AtomicBool::new(false);
 
@@ -117,6 +162,123 @@ pub fn record_no_candidate(
         requirements,
         reason,
     )
+}
+
+/// Removes the no-candidate cooldown of a target, so the next search is not
+/// skipped.
+pub fn clear_no_candidate(kind: IntegrationKind, target_noun: &str, target_id: i64) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
+    let Some(cache_path) = resolve_no_candidate_cache_path() else {
+        return Ok(());
+    };
+    with_cache_lock(&cache_path, "language no-candidate cache", || {
+        let key = no_candidate_key(kind, target_noun, target_id);
+        let mut records = read_no_candidate_records(&cache_path)?;
+        let before = records.len();
+        records.retain(|record| record.key != key);
+        if records.len() == before {
+            return Ok(());
+        }
+        write_json_atomically(&cache_path, "language no-candidate cache", &records)
+    })
+}
+
+/// Remembers a replacement grabbed by the audit; replaces any earlier
+/// pending grab of the same target.
+pub fn record_pending_grab(grab: PendingGrab) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
+    let Some(cache_path) = resolve_pending_grab_cache_path() else {
+        return Ok(());
+    };
+    with_cache_lock(&cache_path, "language pending-grab cache", || {
+        let mut records = read_pending_grabs(&cache_path)?;
+        records.retain(|record| {
+            record.kind != grab.kind
+                || record.target_noun != grab.target_noun
+                || record.target_id != grab.target_id
+        });
+        records.push(grab);
+        write_json_atomically(&cache_path, "language pending-grab cache", &records)
+    })
+}
+
+/// Pending grabs of `kind`, oldest first.
+pub fn pending_grabs(kind: IntegrationKind) -> Result<Vec<PendingGrab>> {
+    let Some(cache_path) = resolve_pending_grab_cache_path() else {
+        return Ok(Vec::new());
+    };
+    let kind = format!("{:?}", kind);
+    let mut records = read_pending_grabs(&cache_path)?;
+    records.retain(|record| record.kind == kind);
+    records.sort_by_key(|record| record.grabbed_at_unix);
+    Ok(records)
+}
+
+/// Drops the pending grab of a target if it is still the one recorded at
+/// `grabbed_at_unix` (a newer grab of the same target is kept).
+pub fn remove_pending_grab(
+    kind: IntegrationKind,
+    target_noun: &str,
+    target_id: i64,
+    grabbed_at_unix: u64,
+) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
+    let Some(cache_path) = resolve_pending_grab_cache_path() else {
+        return Ok(());
+    };
+    with_cache_lock(&cache_path, "language pending-grab cache", || {
+        let mut records = read_pending_grabs(&cache_path)?;
+        records.retain(|record| {
+            !(record.is_for(kind, target_noun, target_id)
+                && record.grabbed_at_unix == grabbed_at_unix)
+        });
+        write_json_atomically(&cache_path, "language pending-grab cache", &records)
+    })
+}
+
+/// Reads pending grabs, skipping entries this version cannot parse instead of
+/// discarding the whole file.
+fn read_pending_grabs(path: &Path) -> Result<Vec<PendingGrab>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("reading language pending-grab cache '{}'", path.display())
+            })
+        }
+    };
+    let entries = match serde_json::from_str::<Vec<serde_json::Value>>(&contents) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(
+                "Ignoring corrupt language pending-grab cache '{}': {}",
+                path.display(),
+                err
+            );
+            return Ok(Vec::new());
+        }
+    };
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match serde_json::from_value(entry) {
+            Ok(record) => Some(record),
+            Err(err) => {
+                warn!(
+                    "Ignoring unreadable entry in language pending-grab cache '{}': {}",
+                    path.display(),
+                    err
+                );
+                None
+            }
+        })
+        .collect())
 }
 
 fn record_no_candidate_at_path(
@@ -246,7 +408,38 @@ fn unique_tmp_path(cache_path: &Path) -> PathBuf {
     crate::staging::unique_path(cache_path)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test cache locations. Tests run on their own threads, so audits
+    /// under test never read or write the real cache or each other's state.
+    static TEST_CACHE_PATHS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Points this test thread's pending-grab and no-candidate caches at the
+/// given files.
+#[cfg(test)]
+pub fn use_test_cache_paths(pending_grabs: PathBuf, no_candidates: PathBuf) {
+    TEST_CACHE_PATHS.with(|paths| *paths.borrow_mut() = Some((pending_grabs, no_candidates)));
+}
+
+#[cfg(test)]
+fn test_cache_paths() -> Option<(PathBuf, PathBuf)> {
+    TEST_CACHE_PATHS.with(|paths| paths.borrow().clone())
+}
+
+fn resolve_pending_grab_cache_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    return test_cache_paths().map(|(pending, _)| pending);
+    #[cfg(not(test))]
+    resolve_cache_path().map(|path| path.with_file_name("servarr-language-pending-grabs.json"))
+}
+
 fn resolve_no_candidate_cache_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some((_, no_candidates)) = test_cache_paths() {
+        return Some(no_candidates);
+    }
     if let Some(path) = env::var_os("DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE") {
         return Some(PathBuf::from(path));
     }
@@ -486,5 +679,44 @@ mod tests {
         );
 
         std::env::remove_var("DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE");
+    }
+
+    #[test]
+    fn pending_grabs_skip_unreadable_entries() {
+        let tmp = TempDir::new().unwrap();
+        let pending_path = tmp.path().join("pending-grabs.json");
+        use_test_cache_paths(pending_path.clone(), tmp.path().join("no-candidates.json"));
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        // Entries from other versions may lack fields or carry extra ones.
+        fs::write(
+            &pending_path,
+            serde_json::json!([
+                { "kind": "Sonarr", "target_id": 1 },
+                {
+                    "kind": "Sonarr",
+                    "target_noun": "episode",
+                    "target_id": 2,
+                    "release_title": "Show S01E02",
+                    "grabbed_at_unix": 10,
+                    "requirements": requirements,
+                    "added_by_newer_version": true
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let pending = pending_grabs(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target_id, 2);
+        assert_eq!(pending[0].guid, None);
+        assert!(pending_grabs(IntegrationKind::Radarr).unwrap().is_empty());
+
+        fs::write(&pending_path, "not json").unwrap();
+        assert!(pending_grabs(IntegrationKind::Sonarr).unwrap().is_empty());
     }
 }
