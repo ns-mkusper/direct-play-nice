@@ -1109,6 +1109,7 @@ impl ApiClient {
                 prefer_non_torrent,
             ),
             target,
+            history,
         );
         let Some(mut release) = candidates.next() else {
             return Ok(RedownloadOutcome::NoVerifiedRelease {
@@ -1532,6 +1533,108 @@ impl ApiClient {
                 Ok(self.get(&endpoint)?.as_array().cloned().unwrap_or_default())
             }
         }
+    }
+
+    /// Core titles of the release behind the target's current file: the
+    /// history records of the download that imported it (its import and grab
+    /// records) and the file's scene name.
+    fn current_release_titles(&self, target: Target, history: HistoryToFail) -> BTreeSet<String> {
+        let label = self.kind.label();
+        let mut titles = Vec::new();
+        match self.target_history_records(target) {
+            Ok(records) => {
+                let current_download_id = match history {
+                    HistoryToFail::Id(id) => records
+                        .iter()
+                        .find(|record| record.get("id").and_then(Value::as_i64) == Some(id))
+                        .and_then(|record| {
+                            titles.extend(
+                                record
+                                    .get("sourceTitle")
+                                    .and_then(Value::as_str)
+                                    .map(ToOwned::to_owned),
+                            );
+                            record.get("downloadId").and_then(Value::as_str)
+                        })
+                        .map(ToOwned::to_owned),
+                    HistoryToFail::CurrentDownload => download_id(self.kind),
+                };
+                if let Some(download_id) = current_download_id.filter(|id| !id.is_empty()) {
+                    titles.extend(
+                        records
+                            .iter()
+                            .filter(|record| {
+                                record
+                                    .get("downloadId")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|id| id.eq_ignore_ascii_case(&download_id))
+                            })
+                            .filter_map(|record| record.get("sourceTitle").and_then(Value::as_str))
+                            .map(ToOwned::to_owned),
+                    );
+                }
+            }
+            Err(err) => warn!(
+                "{} language audit could not load history of {} {} to identify its current release: {:#}",
+                label,
+                target.noun(),
+                target.id(),
+                err
+            ),
+        }
+        if let HistoryToFail::CurrentDownload = history {
+            titles.extend(match self.kind {
+                IntegrationKind::Sonarr => first_env(&["sonarr_episodefile_scenename"]),
+                IntegrationKind::Radarr => first_env(&["radarr_moviefile_scenename"]),
+            });
+        }
+        match self.current_file_scene_name(target) {
+            Ok(scene_name) => titles.extend(scene_name),
+            Err(err) => warn!(
+                "{} language audit could not load the current file of {} {} to identify its release: {:#}",
+                label,
+                target.noun(),
+                target.id(),
+                err
+            ),
+        }
+        titles
+            .iter()
+            .map(|title| core_release_title(title))
+            .filter(|core| !core.is_empty())
+            .collect()
+    }
+
+    fn current_file_scene_name(&self, target: Target) -> Result<Option<String>> {
+        let file = match target {
+            Target::SonarrEpisode { episode_id } => {
+                match self
+                    .sonarr_episode(episode_id)?
+                    .get("episodeFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                {
+                    Some(file_id) => self.sonarr_episode_file(file_id)?,
+                    None => return Ok(None),
+                }
+            }
+            Target::RadarrMovie { movie_id } => {
+                match self
+                    .radarr_movie(movie_id)?
+                    .get("movieFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                {
+                    Some(file_id) => self.radarr_movie_file(file_id)?,
+                    None => return Ok(None),
+                }
+            }
+        };
+        Ok(file
+            .get("sceneName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(ToOwned::to_owned))
     }
 
     /// Core titles (see `core_release_title`) Arr has blocklisted for `target`. Arr matches
@@ -3535,29 +3638,50 @@ struct ReplacementCandidates<'a> {
     client: &'a ApiClient,
     ranked: std::vec::IntoIter<&'a Value>,
     target: Target,
+    history: HistoryToFail,
     blocklisted_titles: Option<BTreeSet<String>>,
+    /// Core titles of the release behind the current file. The old release
+    /// is only blocklisted after the replacement is grabbed, so the blocklist
+    /// cannot keep the same release on another indexer from being chosen.
+    current_titles: Option<BTreeSet<String>>,
     skipped_blocklisted: usize,
+    skipped_current: usize,
 }
 
 impl<'a> ReplacementCandidates<'a> {
-    fn new(client: &'a ApiClient, ranked: Vec<&'a Value>, target: Target) -> Self {
+    fn new(
+        client: &'a ApiClient,
+        ranked: Vec<&'a Value>,
+        target: Target,
+        history: HistoryToFail,
+    ) -> Self {
         Self {
             client,
             ranked: ranked.into_iter(),
             target,
+            history,
             blocklisted_titles: None,
+            current_titles: None,
             skipped_blocklisted: 0,
+            skipped_current: 0,
         }
     }
 
     fn skipped_summary(&self) -> String {
-        if self.skipped_blocklisted == 0 {
+        let mut parts = Vec::new();
+        if self.skipped_current > 0 {
+            parts.push(format!(
+                "{} same release as the current file",
+                self.skipped_current
+            ));
+        }
+        if self.skipped_blocklisted > 0 {
+            parts.push(format!("{} already blocklisted", self.skipped_blocklisted));
+        }
+        if parts.is_empty() {
             String::new()
         } else {
-            format!(
-                " (skipped {} already blocklisted)",
-                self.skipped_blocklisted
-            )
+            format!(" (skipped {})", parts.join(", "))
         }
     }
 }
@@ -3569,11 +3693,26 @@ impl<'a> Iterator for ReplacementCandidates<'a> {
         let label = self.client.kind.label();
         for release in self.ranked.by_ref() {
             let title = release_title(release).unwrap_or_default();
-            let (client, target) = (self.client, self.target);
+            let core = core_release_title(&title);
+            let (client, target, history) = (self.client, self.target, self.history);
+            let current = self
+                .current_titles
+                .get_or_insert_with(|| client.current_release_titles(target, history));
+            if current.contains(&core) {
+                info!(
+                    "{} language audit skipped candidate '{}' for {} {}: same release as the current file.",
+                    label,
+                    title,
+                    target.noun(),
+                    target.id()
+                );
+                self.skipped_current += 1;
+                continue;
+            }
             let blocklisted = self
                 .blocklisted_titles
                 .get_or_insert_with(|| client.blocklisted_release_titles(target, release));
-            if blocklisted.contains(&core_release_title(&title)) {
+            if blocklisted.contains(&core) {
                 info!(
                     "{} language audit skipped candidate '{}' for {} {}: it is already blocklisted.",
                     label,
@@ -4504,6 +4643,8 @@ mod tests {
             .match_query(Matcher::Any)
             .with_status(200)
             .with_body(json!({ "records": [] }).to_string())
+            // Read for the import record and the current release's titles.
+            .expect(2)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -4603,8 +4744,9 @@ mod tests {
                 })
                 .to_string(),
             )
-            // Once for the import record, once to look for its grab record.
-            .expect(2)
+            // For the import record, the current release's titles and the
+            // import's grab record.
+            .expect(3)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -5049,9 +5191,9 @@ mod tests {
             .mock("GET", "/api/v3/episode/77")
             .with_status(200)
             .with_body(json!({ "id": 77, "episodeFileId": 555 }).to_string())
-            // Once for the audit, once for the release search's series-title
-            // check and once for the series id of the blocklist lookup.
-            .expect(3)
+            // For the audit, the release search's series-title check, the
+            // current file's scene name and the series id of the blocklist.
+            .expect(4)
             .create();
         let episode_file = server
             .mock("GET", "/api/v3/episodefile/555")
@@ -5064,12 +5206,16 @@ mod tests {
                 })
                 .to_string(),
             )
+            // For the audit and the current file's scene name.
+            .expect(2)
             .create();
         let history = server
             .mock("GET", "/api/v3/history")
             .match_query(Matcher::Any)
             .with_status(200)
             .with_body(json!({ "records": [] }).to_string())
+            // For the import record and the current release's titles.
+            .expect(2)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -6744,7 +6890,8 @@ mod tests {
             json!([multi_audio_release("Show S01E01 Multi-Audio", 10, "aaa")]),
         );
         let blocklist = mock_sonarr_blocklist(&mut server, json!([]));
-        let history = mock_sonarr_episode_history(&mut server, import_and_grab_records());
+        // Read for the current release's titles and for the grab record.
+        let history = mock_sonarr_episode_history(&mut server, import_and_grab_records()).expect(2);
         let grab = mock_grab(&mut server, "Show S01E01 Multi-Audio", 200);
         let mark_grab = mock_mark_failed(&mut server, 1200);
         let mark_import = mock_mark_failed(&mut server, 1234).expect(0);
@@ -6845,6 +6992,8 @@ mod tests {
                 ])
                 .to_string(),
             )
+            // Read for the current release's titles and for the grab record.
+            .expect(2)
             .create();
         let skipped_grab = mock_grab(&mut server, "Movie.2020.Multi-Audio-GRP", 200).expect(0);
         let grab = mock_grab(&mut server, "Movie 2020 Dual-Audio GRP2", 200);
@@ -7346,5 +7495,188 @@ mod tests {
             Some(1_794_031_954)
         );
         assert_eq!(iso_unix_secs("not a date"), None);
+    }
+
+    const MULTI_DOTTED_TITLE: &str = "Show.S02E04.REPACK.1080p.CR.WEB-DL.MULTi.AAC2.0.H.264-GRP";
+
+    fn current_release_history() -> Value {
+        json!([
+            {
+                "id": 1234,
+                "eventType": "downloadFolderImported",
+                "episodeId": 77,
+                "downloadId": "ABC123",
+                "sourceTitle": MULTI_TITLE
+            },
+            {
+                "id": 1200,
+                "eventType": "grabbed",
+                "episodeId": 77,
+                "downloadId": "ABC123",
+                "sourceTitle": MULTI_DOTTED_TITLE
+            }
+        ])
+    }
+
+    fn current_release_candidates() -> Value {
+        let mut dotted = multi_audio_release(MULTI_DOTTED_TITLE, 35, "eee");
+        dotted["customFormats"] = json!([{ "name": "Multi-Audio" }]);
+        json!([
+            multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd"),
+            dotted,
+            multi_audio_release(DUAL_TITLE, 20, "bbb")
+        ])
+    }
+
+    #[test]
+    fn redownload_skips_candidates_that_are_the_current_release() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(&mut server, current_release_candidates());
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let variant_grab = mock_grab(&mut server, MULTI_VARIANT_TITLE, 200).expect(0);
+        let dotted_grab = mock_grab(&mut server, MULTI_DOTTED_TITLE, 200).expect(0);
+        let grab = mock_grab(&mut server, DUAL_TITLE, 200);
+        let mark = mock_mark_failed(&mut server, 1200);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            RedownloadOutcome::Grabbed {
+                title: DUAL_TITLE.to_string()
+            }
+        );
+        variant_grab.assert();
+        dotted_grab.assert();
+        grab.assert();
+        mark.assert();
+    }
+
+    #[test]
+    fn dry_run_skips_candidates_that_are_the_current_release() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(&mut server, current_release_candidates());
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let posts = server.mock("POST", Matcher::Any).expect(0).create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                RedownloadOptions {
+                    dry_run: true,
+                    ..apply_options()
+                },
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::DryRun { summary } = outcome else {
+            panic!("expected dry-run outcome, got {outcome:?}");
+        };
+        assert!(summary.contains(DUAL_TITLE), "{summary}");
+        posts.assert();
+    }
+
+    #[test]
+    fn radarr_skips_candidate_matching_current_file_scene_name() {
+        let mut server = mockito::Server::new();
+        let _search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+            .with_status(200)
+            .with_body(
+                json!([
+                    { "title": "Movie 2020 MULTi-GRP (Multi-Audio) [h264]", "rejected": false, "customFormatScore": 50 },
+                    { "title": "Movie 2020 DUAL-GRP (Dual-Audio)", "rejected": false, "customFormatScore": 10 }
+                ])
+                .to_string(),
+            )
+            .create();
+        let _blocklist = server
+            .mock("GET", "/api/v3/blocklist/movie")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history/movie")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create();
+        let movie = server
+            .mock("GET", "/api/v3/movie/5")
+            .with_status(200)
+            .with_body(json!({ "id": 5, "movieFileId": 9 }).to_string())
+            .create();
+        let movie_file = server
+            .mock("GET", "/api/v3/moviefile/9")
+            .with_status(200)
+            .with_body(json!({ "id": 9, "sceneName": "Movie.2020.MULTi-GRP" }).to_string())
+            .create();
+        let client = test_client(IntegrationKind::Radarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::RadarrMovie { movie_id: 5 },
+                70,
+                &english_audio(),
+                RedownloadOptions {
+                    dry_run: true,
+                    ..apply_options()
+                },
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::DryRun { summary } = outcome else {
+            panic!("expected dry-run outcome, got {outcome:?}");
+        };
+        assert!(summary.contains("Movie 2020 DUAL-GRP"), "{summary}");
+        movie.assert();
+        movie_file.assert();
+    }
+
+    #[test]
+    fn no_candidate_reason_counts_current_release_skips() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd")]),
+        );
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::NoVerifiedRelease { reason } = outcome else {
+            panic!("expected no verified release, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("1 same release as the current file"),
+            "{reason}"
+        );
     }
 }
