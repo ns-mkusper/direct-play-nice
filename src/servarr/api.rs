@@ -3,13 +3,13 @@
 use super::cache::{self, PendingGrab};
 use super::env_helpers::get_env_ignore_case;
 use super::language::{
-    normalize_language_tag, parse_language_tokens, report_from_present, LanguageCheckReport,
-    LanguageRequirements, UntaggedRetagOptions,
+    check_file, normalize_language_tag, parse_language_tokens, report_from_present,
+    LanguageCheckReport, LanguageRequirements, UntaggedRetagOptions,
 };
 use super::IntegrationKind;
 use crate::{ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy};
 use anyhow::{anyhow, bail, Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -2188,7 +2188,8 @@ impl ApiClient {
             };
             let Some(item) = manual_items.into_iter().find(|item| {
                 sonarr_manual_import_item_matches_episode(item, episode_id)
-                    && manual_import_item_satisfies(
+                    && pending_import_satisfies(
+                        IntegrationKind::Sonarr,
                         item,
                         queue_item,
                         requirements,
@@ -2588,7 +2589,8 @@ impl ApiClient {
             }
             let manual_items = self.radarr_manual_import_items(&download_id, movie_id)?;
             let Some(item) = manual_items.into_iter().find(|item| {
-                manual_import_item_satisfies(
+                pending_import_satisfies(
+                    IntegrationKind::Radarr,
                     item,
                     &queue_item,
                     requirements,
@@ -3276,6 +3278,81 @@ fn radarr_active_queue_movie_ids(records: &[Value]) -> BTreeSet<i64> {
         .iter()
         .filter_map(radarr_queue_item_movie_id)
         .collect()
+}
+
+/// Whether a pending download fixes the missing languages. The downloaded
+/// file's own audio and subtitle tracks decide when DPN can read it (the
+/// manual-import item's path, else the queue item's output path); release
+/// titles and Arr's parsed languages often understate what a release carries.
+/// When the file cannot be read, the title and custom-format evidence decide.
+fn pending_import_satisfies(
+    kind: IntegrationKind,
+    item: &Value,
+    queue_item: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    let title = queue_item
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("<pending import>");
+    let paths = [item.get("path"), queue_item.get("outputPath")]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| !path.is_empty());
+    for path in paths {
+        let report = match probe_download_languages(Path::new(path), requirements) {
+            Ok(report) => report,
+            Err(err) => {
+                debug!(
+                    "{} language audit could not read pending download '{}': {:#}",
+                    kind.label(),
+                    path,
+                    err
+                );
+                continue;
+            }
+        };
+        let found = format!(
+            "audio [{}], subtitles [{}]",
+            report.present_audio.join(", "),
+            report.present_subtitles.join(", ")
+        );
+        if report.satisfied() {
+            info!(
+                "{} language audit: pending download '{}' has the required languages ({}) in '{}'.",
+                kind.label(),
+                title,
+                found,
+                path
+            );
+        } else {
+            info!(
+                "{} language audit will not force-import '{}': its file '{}' lacks {} ({}).",
+                kind.label(),
+                title,
+                path,
+                report.describe_missing(),
+                found
+            );
+        }
+        return report.satisfied();
+    }
+    manual_import_item_satisfies(item, queue_item, requirements, policy)
+}
+
+/// Reads the stream languages of a downloaded file with the same probe the
+/// per-import language check uses.
+fn probe_download_languages(
+    path: &Path,
+    requirements: &LanguageRequirements,
+) -> Result<LanguageCheckReport> {
+    #[cfg(test)]
+    if let Some(report) = tests::stubbed_probe(path, requirements) {
+        return Ok(report);
+    }
+    check_file(path, requirements)
 }
 
 fn manual_import_item_satisfies(
@@ -7678,5 +7755,254 @@ mod tests {
             reason.contains("1 same release as the current file"),
             "{reason}"
         );
+    }
+
+    /// A stubbed probe result: path, audio languages, subtitle languages.
+    type ProbedDownload = (PathBuf, Vec<String>, Vec<String>);
+
+    thread_local! {
+        /// Stream languages the pending-download probe reports in this test
+        /// thread, by path; other paths are probed for real.
+        static PROBED_DOWNLOADS: RefCell<Vec<ProbedDownload>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn stubbed_probe(
+        path: &Path,
+        requirements: &LanguageRequirements,
+    ) -> Option<LanguageCheckReport> {
+        PROBED_DOWNLOADS.with(|probed| {
+            probed
+                .borrow()
+                .iter()
+                .find(|(probed_path, _, _)| probed_path == path)
+                .map(|(_, audio, subtitles)| {
+                    report_from_present(audio.clone(), subtitles.clone(), requirements)
+                })
+        })
+    }
+
+    fn stub_probe(path: &str, audio: &[&str], subtitles: &[&str]) {
+        PROBED_DOWNLOADS.with(|probed| {
+            probed.borrow_mut().push((
+                PathBuf::from(path),
+                audio.iter().map(|lang| lang.to_string()).collect(),
+                subtitles.iter().map(|lang| lang.to_string()).collect(),
+            ))
+        });
+    }
+
+    /// Runs a Sonarr audit over one pending download whose manual-import item
+    /// reports `item_languages`, expecting `imports` ManualImport commands.
+    fn run_sonarr_probe_force_import(
+        item_languages: Value,
+        queue_output_path: Option<&str>,
+        dry_run: bool,
+        imports: usize,
+    ) -> AuditSummary {
+        let mut server = mockito::Server::new();
+        let mut queue_item = sonarr_pending_queue_item();
+        queue_item["title"] = json!("Show.S01E01.1080p.WEB-DL.MULTi.AAC2.0.H.264.MSubs-GRP");
+        if let Some(path) = queue_output_path {
+            queue_item["outputPath"] = json!(path);
+        }
+        let _queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [queue_item] }).to_string())
+            .create();
+        let _current_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show");
+        let _manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/show-s01e01.mkv",
+                    "episodes": [{"id": 77}],
+                    "series": {"id": 1},
+                    "languages": item_languages
+                }])
+                .to_string(),
+            )
+            .create();
+        let import_command = server
+            .mock("POST", "/api/v3/command")
+            .match_body(Matcher::PartialJson(json!({"name": "ManualImport"})))
+            .with_status(201)
+            .with_body(json!({"id": 9, "status": "queued"}).to_string())
+            .expect(imports)
+            .create();
+        let _command_status = server
+            .mock("GET", "/api/v3/command/9")
+            .with_status(200)
+            .with_body(json!({"id": 9, "status": "completed"}).to_string())
+            .create();
+        let _episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_status(200)
+            .with_body(json!({"id": 77, "seriesId": 1, "episodeFileId": 556}).to_string())
+            .create();
+        let _delete_queue = server
+            .mock("DELETE", "/api/v3/queue/321")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run,
+                candidate_policy: ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                ..AuditOptions::default()
+            },
+        )
+        .unwrap();
+        import_command.assert();
+        summary
+    }
+
+    #[test]
+    fn force_import_follows_downloaded_file_with_required_languages() {
+        stub_probe("/downloads/show-s01e01.mkv", &["eng", "jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, false, 1);
+
+        assert_eq!(summary.grabbed, 1);
+        assert_eq!(summary.errors, 0);
+    }
+
+    #[test]
+    fn force_import_skips_downloaded_file_missing_required_languages() {
+        stub_probe("/downloads/show-s01e01.mkv", &["jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(
+            json!([{"name": "English"}, {"name": "Japanese"}]),
+            None,
+            false,
+            0,
+        );
+
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.missing, 0);
+    }
+
+    #[test]
+    fn force_import_probes_queue_output_path_when_item_path_is_unreadable() {
+        stub_probe(
+            "/downloads/complete/show-s01e01.mkv",
+            &["eng", "jpn"],
+            &["eng"],
+        );
+
+        let summary = run_sonarr_probe_force_import(
+            json!([{"name": "Japanese"}]),
+            Some("/downloads/complete/show-s01e01.mkv"),
+            false,
+            1,
+        );
+
+        assert_eq!(summary.grabbed, 1);
+    }
+
+    #[test]
+    fn force_import_falls_back_to_release_evidence_when_file_is_unreadable() {
+        let weak = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, false, 0);
+        assert_eq!(weak.grabbed, 0);
+
+        let strong = run_sonarr_probe_force_import(
+            json!([{"name": "English"}, {"name": "Japanese"}]),
+            None,
+            false,
+            1,
+        );
+        assert_eq!(strong.grabbed, 1);
+    }
+
+    #[test]
+    fn force_import_dry_run_reports_probed_decision_without_importing() {
+        stub_probe("/downloads/show-s01e01.mkv", &["eng", "jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, true, 0);
+
+        assert_eq!(summary.dry_run, 1);
+        assert_eq!(summary.grabbed, 0);
+    }
+
+    #[test]
+    fn radarr_force_import_follows_downloaded_file() {
+        stub_probe("/downloads/movie.mkv", &["jpn"], &["eng"]);
+        let mut server = mockito::Server::new();
+        let _queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [radarr_pending_queue_item()] }).to_string())
+            .create();
+        let _manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/movie.mkv",
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_radarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &radarr_requirements(),
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                ..AuditOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.dry_run, 0);
+        assert_eq!(summary.missing, 0);
     }
 }
