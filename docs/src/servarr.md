@@ -221,8 +221,9 @@ cannot blocklist a release from its import record.
 
 Candidates whose title is already on the item's Arr blocklist are skipped, since
 Arr matches its blocklist per indexer and would otherwise grab the same release
-from another indexer. If Arr refuses a grab, DPN tries the next candidate (up to
-three).
+from another indexer. Candidates that are the release behind the current file,
+identified from its Arr history and scene name, are skipped as well. If Arr
+refuses a grab, DPN tries the next candidate (up to three).
 
 Release titles do not always list every audio track, so the audit checks its own
 grabs after Arr imports them. Each grab is remembered in DPN's cache next to the
