@@ -240,7 +240,9 @@ For Sonarr/Radarr, a language-better file can be stuck as a completed queue item
 when Arr considers it a quality downgrade. Audit mode checks those pending
 imports; when the pending file satisfies DPN's language policy, apply mode
 deletes the old episode/movie-file entry, posts manual import, and removes the
-completed queue item without deleting the downloaded replacement.
+completed queue item without deleting the downloaded replacement. DPN decides
+from the audio and subtitle tracks of the downloaded file when it can read it,
+and from the release title and custom formats otherwise.
 
 The default examples above require English audio only. Extra audio languages are
 allowed; a file with English plus Japanese audio still satisfies
