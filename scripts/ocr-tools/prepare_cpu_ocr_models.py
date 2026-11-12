@@ -2,45 +2,66 @@
 """Download pinned CI OCR models into a new, isolated directory."""
 
 import argparse
-import hashlib
 import subprocess
 import sys
 from pathlib import Path
 
-from validate_cpu_fixture_report import MODELS
+from validate_cpu_fixture_report import MODELS, sha256_file
 
 # Same model sources as src/subtitle_ocr/engine/models.rs. The independent
 # hashes in MODELS are verified before any CI test can initialize an engine.
+_HUGGINGFACE = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/"
+_MODELSCOPE = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/"
+    "onnx/PP-OCRv4/rec/"
+)
 URLS = {
-    "ch_PP-OCRv3_det_infer.onnx": "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_PP-OCRv3_det_infer.onnx?download=true",
-    "ch_ppocr_mobile_v2.0_cls_train.onnx": "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_ppocr_mobile_v2.0_cls_train.onnx?download=true",
-    "en_PP-OCRv3_rec_infer.onnx": "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/en_PP-OCRv3_rec_infer.onnx?download=true",
-    "latin_PP-OCRv3_rec_mobile.onnx": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/latin_PP-OCRv3_rec_mobile.onnx",
-    "japan_PP-OCRv4_rec_mobile.onnx": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
-    "korean_PP-OCRv4_rec_mobile.onnx": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/korean_PP-OCRv4_rec_mobile.onnx",
-    "chinese_cht_PP-OCRv3_rec_mobile.onnx": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/chinese_cht_PP-OCRv3_rec_mobile.onnx",
+    **{
+        name: f"{_HUGGINGFACE}{name}?download=true"
+        for name in (
+            "ch_PP-OCRv3_det_infer.onnx",
+            "ch_ppocr_mobile_v2.0_cls_train.onnx",
+            "en_PP-OCRv3_rec_infer.onnx",
+        )
+    },
+    **{
+        name: f"{_MODELSCOPE}{name}"
+        for name in (
+            "latin_PP-OCRv3_rec_mobile.onnx",
+            "japan_PP-OCRv4_rec_mobile.onnx",
+            "korean_PP-OCRv4_rec_mobile.onnx",
+            "chinese_cht_PP-OCRv3_rec_mobile.onnx",
+        )
+    },
 }
 
 
 def prepare_models(destination):
+    """Download every pinned model into ``destination`` and verify it.
+
+    ``destination`` must not exist yet: existing directories or cached models
+    are never reused, overwritten or removed.
+    """
     if set(URLS) != set(MODELS):
         raise ValueError("model URLs and pinned hashes do not match")
-    # Never reuse, overwrite, or remove an existing directory or cached model.
     destination.mkdir()
     for name, expected in MODELS.items():
         path = destination / name
         subprocess.run(
-            ["curl", "--fail", "--location", "--retry", "3", "--silent", "--show-error", "--output", str(path), URLS[name]],
+            [
+                "curl", "--fail", "--location", "--retry", "3",
+                "--silent", "--show-error",
+                "--output", str(path), URLS[name],
+            ],
             check=True,
         )
-        with path.open("rb") as model:
-            actual = hashlib.file_digest(model, "sha256").hexdigest()
-        if actual != expected:
+        if sha256_file(path) != expected:
             raise ValueError(f"model hash mismatch: {name}")
         print(f"Verified {name}", flush=True)
 
 
 def main():
+    """Prepare models in the directory given on the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     args = parser.parse_args()

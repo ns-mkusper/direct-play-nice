@@ -4,7 +4,9 @@
 //! PP-OCR, including language/script to recognizer-profile routing.
 
 use anyhow::{anyhow, Result};
+use paddle_ocr_rs::ocr_error::OcrError;
 use paddle_ocr_rs::ocr_lite::OcrLite;
+use paddle_ocr_rs::ocr_result::OcrResult;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -88,6 +90,21 @@ struct PpOcrDetectParams {
     most_angle: bool,
 }
 
+impl PpOcrDetectParams {
+    fn detect(self, ocr: &mut OcrLite, img: &image::RgbImage) -> Result<OcrResult, OcrError> {
+        ocr.detect(
+            img,
+            self.padding,
+            self.max_side_len,
+            self.box_score_thresh,
+            self.box_thresh,
+            self.un_clip_ratio,
+            self.do_angle,
+            self.most_angle,
+        )
+    }
+}
+
 fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
     fn env_u32(key: &str, default: u32) -> u32 {
         env::var(key)
@@ -156,22 +173,17 @@ impl SubtitleConverter for PpOcrEngine {
         language: &str,
         context: BitmapLineContext,
     ) -> Result<Option<OcrLine>> {
-        if !bitmap_line_route(
-            self.experimental_lines.is_some(),
-            language,
-            rec_profile_for_language(language),
-        ) || !super::whole_line::supports_crop_dimensions(image.width(), image.height())
+        if !self.supports_bitmap_line_recognition(language)
+            || !super::whole_line::supports_crop_dimensions(image.width(), image.height())
         {
             return Ok(None);
         }
         let Some(recognizer) = self.experimental_lines.as_mut() else {
             return Ok(None);
         };
-        let result = if context == BitmapLineContext::SingleRectangleSingleBand {
-            recognizer.recognize_with_spacing_probe(image, true)?
-        } else {
-            recognizer.recognize(image)?
-        };
+        // The spacing probe assumes the crop holds exactly one text band.
+        let allow_probe = context == BitmapLineContext::SingleRectangleSingleBand;
+        let result = recognizer.recognize_with_spacing_probe(image, allow_probe)?;
         Ok(Some(OcrLine {
             text: result.text,
             score: result.score,
@@ -230,27 +242,16 @@ impl SubtitleConverter for PpOcrEngine {
 
         let img = load_image(image_path)?;
         let params = ppocr_detect_params_from_env();
-        let result = ocr
-            .detect(
-                &img,
-                params.padding,
-                params.max_side_len,
-                params.box_score_thresh,
-                params.box_thresh,
-                params.un_clip_ratio,
-                params.do_angle,
-                params.most_angle,
+        let result = params.detect(ocr, &img).map_err(|err| {
+            anyhow!(
+                "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
+                variant.label(),
+                rec_label,
+                language,
+                err,
+                err
             )
-            .map_err(|err| {
-                anyhow!(
-                    "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
-                    variant.label(),
-                    rec_label,
-                    language,
-                    err,
-                    err
-                )
-            })?;
+        })?;
 
         let mut lines = Vec::with_capacity(result.text_blocks.len());
         for block in &result.text_blocks {
@@ -269,59 +270,63 @@ impl SubtitleConverter for PpOcrEngine {
         }
 
         let mut lines = merge_ocr_lines_with_spacing(lines);
-        let mut seam_corrected = false;
-        if rec_profile == OcrRecProfile::English
+        let seam_corrected = rec_profile == OcrRecProfile::English
             && is_english_language(language)
             && !disable_tesseract_quality_fallback()
-        {
-            if let Some(seam) = prepare_overlapping_seam(&result.text_blocks, &lines, &img) {
-                if let Some(alternatives) = seam_detect_env_valid()
-                    .then(|| seam_detect_variations(params, img.width(), img.height()))
-                    .flatten()
-                {
-                    for alternate in alternatives {
-                        let Ok(retry) = ocr.detect(
-                            &img,
-                            alternate.padding,
-                            alternate.max_side_len,
-                            alternate.box_score_thresh,
-                            alternate.box_thresh,
-                            alternate.un_clip_ratio,
-                            alternate.do_angle,
-                            alternate.most_angle,
-                        ) else {
-                            continue;
-                        };
-                        if retry.text_blocks.len() != 1 {
-                            continue;
-                        }
-                        let block = &retry.text_blocks[0];
-                        if !full_line_ink_coverage(&img, &block.box_points) {
-                            continue;
-                        }
-                        let Some(glyphs) = seam_glyph_stream(&block.text) else {
-                            continue;
-                        };
-                        if glyphs == seam.original_glyphs {
-                            break;
-                        }
-                        if glyphs == seam.corrected_glyphs {
-                            if tesseract_seam_evidence(image_path, &img, &seam) {
-                                apply_overlapping_seam(&mut lines[0], &seam);
-                                seam_corrected = true;
-                                log::debug!("Corrected an overlapping PP-OCR detector seam");
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+            && correct_overlapping_seam(ocr, params, image_path, &img, &result, &mut lines);
         Ok(OcrOutput {
             lines,
             seam_corrected,
         })
     }
+}
+
+/// Splits an overlapping two-box detector seam back into one line when a retry
+/// with relaxed detector settings and Tesseract both agree on the corrected glyphs.
+fn correct_overlapping_seam(
+    ocr: &mut OcrLite,
+    params: PpOcrDetectParams,
+    image_path: &Path,
+    img: &image::RgbImage,
+    result: &OcrResult,
+    lines: &mut [OcrLine],
+) -> bool {
+    let Some(seam) = prepare_overlapping_seam(&result.text_blocks, lines, img) else {
+        return false;
+    };
+    if !seam_detect_env_valid() {
+        return false;
+    }
+    let Some(alternatives) = seam_detect_variations(params, img.width(), img.height()) else {
+        return false;
+    };
+    for alternate in alternatives {
+        let Ok(retry) = alternate.detect(ocr, img) else {
+            continue;
+        };
+        let [block] = retry.text_blocks.as_slice() else {
+            continue;
+        };
+        if !full_line_ink_coverage(img, &block.box_points) {
+            continue;
+        }
+        let Some(glyphs) = seam_glyph_stream(&block.text) else {
+            continue;
+        };
+        if glyphs == seam.original_glyphs {
+            return false;
+        }
+        if glyphs != seam.corrected_glyphs {
+            continue;
+        }
+        if !tesseract_seam_evidence(image_path, img, &seam) {
+            return false;
+        }
+        apply_overlapping_seam(&mut lines[0], &seam);
+        log::debug!("Corrected an overlapping PP-OCR detector seam");
+        return true;
+    }
+    false
 }
 
 fn seam_detect_env_valid() -> bool {

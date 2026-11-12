@@ -1777,118 +1777,80 @@ fn postprocess_preserves_multiline_narrow_dialogue_and_punctuation() {
     }
 }
 
-#[test]
-fn ppocr_v3_synthetic_narrow_dialogue_exact() {
-    if std::env::var("DPN_OCR_NARROW_DIALOGUE").ok().as_deref() != Some("1") {
-        eprintln!(
-            "Skipping PP-OCRv3 narrow dialogue test (set DPN_OCR_NARROW_DIALOGUE=1 to enable)."
-        );
-        return;
+/// A grayscale fixture encoded as an FFmpeg-style indexed subtitle rectangle:
+/// opaque white ink on a transparent background with antialiased alpha.
+struct IndexedSubtitleBitmap {
+    width: u32,
+    height: u32,
+    indices: Vec<u8>,
+    palette: Vec<u8>,
+}
+
+impl IndexedSubtitleBitmap {
+    fn load(path: &Path) -> Self {
+        let image = image::open(path)
+            .unwrap_or_else(|err| panic!("load {}: {err}", path.display()))
+            .to_luma8();
+        let (width, height) = image.dimensions();
+        let indices = image.pixels().map(|pixel| 255 - pixel[0]).collect();
+        let mut palette = vec![0u8; 256 * 4];
+        for (alpha, entry) in palette.chunks_exact_mut(4).enumerate() {
+            entry[..3].fill(255);
+            entry[3] = alpha as u8;
+        }
+        Self {
+            width,
+            height,
+            indices,
+            palette,
+        }
     }
 
-    let image = image::open(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/golden_subs/narrow_dialogue/synthetic.png"),
-    )
-    .expect("load synthetic dialogue bitmap")
-    .to_luma8();
-    let (width, height) = image.dimensions();
-    // Encode the grayscale bitmap as an FFmpeg-style indexed subtitle rectangle:
-    // opaque white ink on transparent background with antialiased alpha.
-    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
-    let mut palette = vec![0u8; 256 * 4];
-    for alpha in 0..256 {
-        palette[alpha * 4..alpha * 4 + 3].fill(255);
-        palette[alpha * 4 + 3] = alpha as u8;
+    /// The returned rectangle points into this bitmap's buffers.
+    fn rect(&mut self) -> ffi::AVSubtitleRect {
+        let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+        rect.w = self.width as i32;
+        rect.h = self.height as i32;
+        rect.linesize[0] = self.width as i32;
+        rect.data[0] = self.indices.as_mut_ptr();
+        rect.data[1] = self.palette.as_mut_ptr();
+        rect.nb_colors = 256;
+        rect.type_ = ffi::SUBTITLE_BITMAP;
+        rect
     }
-    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
-    rect.w = width as i32;
-    rect.h = height as i32;
-    rect.linesize[0] = width as i32;
-    rect.data[0] = indices.as_mut_ptr();
-    rect.data[1] = palette.as_mut_ptr();
-    rect.nb_colors = 256;
-    rect.type_ = ffi::SUBTITLE_BITMAP;
-    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
-    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
-    subtitle.num_rects = 1;
-    subtitle.rects = &mut rect_ptr;
-    let temp = tempfile::tempdir().expect("create temporary directory");
+}
+
+fn strict_synthetic_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden_subs/strict_synthetic")
+        .join(format!("{name}.png"))
+}
+
+fn init_ppocr_v3_engine() -> PpOcrEngine {
     let model_dir = resolve_model_dir().expect("resolve model directory");
     init_ort_environment().expect("initialize ONNX runtime");
-    let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
-        .expect("initialize PP-OCRv3");
-    let params = super::ocr_pipeline::CueBuildParams {
-        language: "eng",
-        stream_index: 0,
-        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
-        packet_seq: 0,
-        work_dir: temp.path(),
-        ocr_format: OcrFormat::Srt,
-        video_dimensions: None,
-        ocr_engine: OcrEngine::PpOcrV3,
-    };
-    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
-        &subtitle,
-        &params,
-        0,
-        &mut engine,
-        &mut OcrQualityBaseline::default(),
-    )
-    .expect("run production OCR");
-    assert!(visible);
-    let actual = lines
+    init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3).expect("initialize PP-OCRv3")
+}
+
+fn joined_line_text(lines: &[OcrLine]) -> String {
+    lines
         .iter()
         .map(|line| line.text.as_str())
         .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(actual, SYNTHETIC_NARROW_DIALOGUE);
+        .join("\n")
 }
 
-// These bitmaps contain only newly authored synthetic text. Run the standard
-// fixtures with `cargo test --bin direct_play_nice strict_synthetic -- --ignored
-// --test-threads=1`. Run the quarantined wide-gap stress fixture separately with
-// `cargo test --bin direct_play_nice wide_gap_stress -- --ignored --test-threads=1`.
-fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
-    let image_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden_subs/strict_synthetic")
-        .join(format!("{name}.png"));
-    let image = image::open(&image_path)
-        .unwrap_or_else(|err| panic!("load {}: {err}", image_path.display()))
-        .to_luma8();
-    let (width, height) = image.dimensions();
-    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
-    let mut palette = vec![0u8; 256 * 4];
-    for alpha in 0..256 {
-        palette[alpha * 4..alpha * 4 + 3].fill(255);
-        palette[alpha * 4 + 3] = alpha as u8;
-    }
-    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
-    rect.w = width as i32;
-    rect.h = height as i32;
-    rect.linesize[0] = width as i32;
-    rect.data[0] = indices.as_mut_ptr();
-    rect.data[1] = palette.as_mut_ptr();
-    rect.nb_colors = 256;
-    rect.type_ = ffi::SUBTITLE_BITMAP;
-    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
+/// Runs one English PGS rectangle through the production OCR route.
+fn ocr_bitmap_rect(
+    rect: &mut ffi::AVSubtitleRect,
+    backend: OcrEngine,
+    engine: &mut dyn SubtitleConverter,
+) -> String {
+    let mut rect_ptr = rect as *mut ffi::AVSubtitleRect;
     let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
     subtitle.num_rects = 1;
     subtitle.rects = &mut rect_ptr;
-
     let temp = tempfile::tempdir().expect("create temporary directory");
-    let mut engine: Box<dyn SubtitleConverter> = match backend {
-        OcrEngine::PpOcrV3 => {
-            let model_dir = resolve_model_dir().expect("resolve model directory");
-            init_ort_environment().expect("initialize ONNX runtime");
-            Box::new(
-                init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
-                    .expect("initialize PP-OCRv3"),
-            )
-        }
-        OcrEngine::Tesseract => Box::new(TesseractEngine),
-        _ => panic!("unsupported strict synthetic backend"),
-    };
     let params = super::ocr_pipeline::CueBuildParams {
         language: "eng",
         stream_index: 0,
@@ -1903,16 +1865,47 @@ fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
         &subtitle,
         &params,
         0,
-        engine.as_mut(),
+        engine,
         &mut OcrQualityBaseline::default(),
     )
-    .unwrap_or_else(|err| panic!("production OCR failed for {name}: {err:#}"));
-    assert!(visible, "no visible pixels in {name}");
-    let actual = lines
-        .iter()
-        .map(|line| line.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    .unwrap_or_else(|err| panic!("production OCR failed: {err:#}"));
+    assert!(visible, "fixture has no visible pixels");
+    joined_line_text(&lines)
+}
+
+#[test]
+fn ppocr_v3_synthetic_narrow_dialogue_exact() {
+    if std::env::var("DPN_OCR_NARROW_DIALOGUE").ok().as_deref() != Some("1") {
+        eprintln!(
+            "Skipping PP-OCRv3 narrow dialogue test (set DPN_OCR_NARROW_DIALOGUE=1 to enable)."
+        );
+        return;
+    }
+
+    let mut bitmap = IndexedSubtitleBitmap::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden_subs/narrow_dialogue/synthetic.png"),
+    );
+    let actual = ocr_bitmap_rect(
+        &mut bitmap.rect(),
+        OcrEngine::PpOcrV3,
+        &mut init_ppocr_v3_engine(),
+    );
+    assert_eq!(actual, SYNTHETIC_NARROW_DIALOGUE);
+}
+
+// These bitmaps contain only newly authored synthetic text. Run the standard
+// fixtures with `cargo test --bin direct_play_nice strict_synthetic -- --ignored
+// --test-threads=1`. Run the quarantined wide-gap stress fixture separately with
+// `cargo test --bin direct_play_nice wide_gap_stress -- --ignored --test-threads=1`.
+fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
+    let mut engine: Box<dyn SubtitleConverter> = match backend {
+        OcrEngine::PpOcrV3 => Box::new(init_ppocr_v3_engine()),
+        OcrEngine::Tesseract => Box::new(TesseractEngine),
+        _ => panic!("unsupported strict synthetic backend"),
+    };
+    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture(name));
+    let actual = ocr_bitmap_rect(&mut bitmap.rect(), backend, engine.as_mut());
     assert_eq!(actual, expected, "strict synthetic fixture {name}");
 }
 
@@ -1965,36 +1958,7 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
         Ok("1")
     );
 
-    let image = image::open(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/golden_subs/strict_synthetic/short_words.png"),
-    )
-    .expect("load synthetic fixture")
-    .to_luma8();
-    let (width, height) = image.dimensions();
-    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
-    let mut palette = vec![0u8; 256 * 4];
-    for alpha in 0..256 {
-        palette[alpha * 4..alpha * 4 + 3].fill(255);
-        palette[alpha * 4 + 3] = alpha as u8;
-    }
-    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
-    rect.w = width as i32;
-    rect.h = height as i32;
-    rect.linesize[0] = width as i32;
-    rect.data[0] = indices.as_mut_ptr();
-    rect.data[1] = palette.as_mut_ptr();
-    rect.nb_colors = 256;
-    rect.type_ = ffi::SUBTITLE_BITMAP;
-    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
-    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
-    subtitle.num_rects = 1;
-    subtitle.rects = &mut rect_ptr;
-
-    let model_dir = resolve_model_dir().expect("resolve model directory");
-    init_ort_environment().expect("initialize ONNX runtime");
-    let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
-        .expect("initialize PP-OCRv3");
+    let mut engine = init_ppocr_v3_engine();
     let mut recorder = RouteRecorder {
         engine: &mut engine,
         direct_lines: Vec::new(),
@@ -2005,32 +1969,9 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
         recorder.supports_bitmap_line_recognition("eng"),
         expect_direct
     );
-    let temp = tempfile::tempdir().expect("create temporary directory");
-    let params = super::ocr_pipeline::CueBuildParams {
-        language: "eng",
-        stream_index: 0,
-        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
-        packet_seq: 0,
-        work_dir: temp.path(),
-        ocr_format: OcrFormat::Srt,
-        video_dimensions: None,
-        ocr_engine: OcrEngine::PpOcrV3,
-    };
-    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
-        &subtitle,
-        &params,
-        0,
-        &mut recorder,
-        &mut OcrQualityBaseline::default(),
-    )
-    .expect("run production OCR");
-    assert!(visible, "synthetic fixture has no visible pixels");
+    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture("short_words"));
+    let actual = ocr_bitmap_rect(&mut bitmap.rect(), OcrEngine::PpOcrV3, &mut recorder);
     let expected = "I am on my way to you.";
-    let actual = lines
-        .iter()
-        .map(|line| line.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
     assert_eq!(actual, expected);
     if expect_direct {
         assert_eq!(recorder.direct_calls, 1);
@@ -2119,6 +2060,26 @@ fn synthetic_stage_comparison_marks_incomparable_boundaries() {
     );
 }
 
+/// Detector tuning variables that raw-detector diagnostics require at defaults.
+const DETECTOR_TUNING_ENV: [&str; 7] = [
+    "DPN_OCR_DET_PADDING",
+    "DPN_OCR_DET_MAX_SIDE",
+    "DPN_OCR_DET_BOX_SCORE",
+    "DPN_OCR_DET_BOX_THRESH",
+    "DPN_OCR_DET_UNCLIP",
+    "DPN_OCR_DET_DO_ANGLE",
+    "DPN_OCR_DET_MOST_ANGLE",
+];
+
+fn assert_env_unset(keys: &[&str], context: &str) {
+    for key in keys {
+        assert!(
+            std::env::var_os(key).is_none(),
+            "{context} requires default {key}"
+        );
+    }
+}
+
 // Run with: cargo test --bin direct_play_nice synthetic_stage_diagnostic -- --ignored --nocapture --test-threads=1.
 // Only the fixed synthetic fixtures are read. Boundary differences are null when
 // glyphs differ; the first recorded converter call is the full production input.
@@ -2132,12 +2093,7 @@ fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
     impl SubtitleConverter for RecordingConverter<'_> {
         fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
             let output = self.inner.extract_lines(image_path, language)?;
-            let text = output
-                .lines
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = joined_line_text(&output.lines);
             self.calls.push(serde_json::json!({
                 "full_fixture_comparison": self.calls.is_empty().then(|| synthetic_stage_comparison(&text, self.expected)),
                 "lines": output.lines.iter().map(|line| serde_json::json!({
@@ -2152,58 +2108,23 @@ fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
         }
     }
 
-    for key in [
-        "DPN_OCR_DET_PADDING",
-        "DPN_OCR_DET_MAX_SIDE",
-        "DPN_OCR_DET_BOX_SCORE",
-        "DPN_OCR_DET_BOX_THRESH",
-        "DPN_OCR_DET_UNCLIP",
-        "DPN_OCR_DET_DO_ANGLE",
-        "DPN_OCR_DET_MOST_ANGLE",
-        "DPN_OCR_REC_PROFILE_OVERRIDES",
-        "DPN_OCR_LANGUAGE_SCRIPT_HINTS",
-        "DPN_OCR_ROUTING_MANIFEST",
-    ] {
-        assert!(
-            std::env::var_os(key).is_none(),
-            "diagnostic requires default {key}"
-        );
-    }
-    let model_dir = resolve_model_dir().expect("resolve model directory");
-    init_ort_environment().expect("initialize ONNX runtime");
-    let mut ppocr = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
-        .expect("initialize PP-OCRv3");
+    assert_env_unset(&DETECTOR_TUNING_ENV, "diagnostic");
+    assert_env_unset(
+        &[
+            "DPN_OCR_REC_PROFILE_OVERRIDES",
+            "DPN_OCR_LANGUAGE_SCRIPT_HINTS",
+            "DPN_OCR_ROUTING_MANIFEST",
+        ],
+        "diagnostic",
+    );
+    let mut ppocr = init_ppocr_v3_engine();
     let mut tesseract = TesseractEngine;
     let temp = tempfile::tempdir().expect("create temporary directory");
     eprintln!("synthetic stage diagnostic: raw detector is a separate default-parameter rerun; converter calls are captured from production");
 
     for &(name, expected) in cases {
-        let image = image::open(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/golden_subs/strict_synthetic")
-                .join(format!("{name}.png")),
-        )
-        .unwrap_or_else(|err| panic!("load synthetic fixture {name}: {err}"))
-        .to_luma8();
-        let (width, height) = image.dimensions();
-        let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
-        let mut palette = vec![0u8; 256 * 4];
-        for alpha in 0..256 {
-            palette[alpha * 4..alpha * 4 + 3].fill(255);
-            palette[alpha * 4 + 3] = alpha as u8;
-        }
-        let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
-        rect.w = width as i32;
-        rect.h = height as i32;
-        rect.linesize[0] = width as i32;
-        rect.data[0] = indices.as_mut_ptr();
-        rect.data[1] = palette.as_mut_ptr();
-        rect.nb_colors = 256;
-        rect.type_ = ffi::SUBTITLE_BITMAP;
-        let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
-        let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
-        subtitle.num_rects = 1;
-        subtitle.rects = &mut rect_ptr;
+        let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture(name));
+        let mut rect = bitmap.rect();
 
         let mut rasters = Vec::new();
         for backend in [OcrEngine::PpOcrV3, OcrEngine::Tesseract] {
@@ -2235,44 +2156,26 @@ fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
         }).collect::<Vec<_>>();
 
         let mut production = Vec::new();
-        for (backend, engine) in [
-            (OcrEngine::PpOcrV3, &mut ppocr as &mut dyn SubtitleConverter),
+        for (backend, label, engine) in [
+            (
+                OcrEngine::PpOcrV3,
+                "ppocr_v3",
+                &mut ppocr as &mut dyn SubtitleConverter,
+            ),
             (
                 OcrEngine::Tesseract,
+                "tesseract",
                 &mut tesseract as &mut dyn SubtitleConverter,
             ),
         ] {
-            let params = super::ocr_pipeline::CueBuildParams {
-                language: "eng",
-                stream_index: 0,
-                stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
-                packet_seq: 0,
-                work_dir: temp.path(),
-                ocr_format: OcrFormat::Srt,
-                video_dimensions: None,
-                ocr_engine: backend,
-            };
             let mut recording = RecordingConverter {
                 inner: engine,
                 expected,
                 calls: Vec::new(),
             };
-            let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
-                &subtitle,
-                &params,
-                0,
-                &mut recording,
-                &mut OcrQualityBaseline::default(),
-            )
-            .expect("run production OCR");
-            assert!(visible, "synthetic fixture {name} has no visible pixels");
-            let text = lines
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = ocr_bitmap_rect(&mut rect, backend, &mut recording);
             production.push(serde_json::json!({
-                "backend": if backend == OcrEngine::PpOcrV3 { "ppocr_v3" } else { "tesseract" },
+                "backend": label,
                 "converter_calls": recording.calls,
                 "final": synthetic_stage_comparison(&text, expected),
             }));
@@ -2291,50 +2194,49 @@ fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
 }
 
 macro_rules! strict_synthetic_tests {
-    ($($name:ident: $fixture:literal => $expected:literal),+ $(,)?) => {
+    ($($fixture:ident => $expected:literal),+ $(,)?) => {
         #[test]
         #[ignore = "diagnostic requires OCR models and Tesseract"]
         fn synthetic_stage_diagnostic() {
-            synthetic_stage_diagnostic_cases(&[$(($fixture, $expected)),+]);
+            synthetic_stage_diagnostic_cases(&[$((stringify!($fixture), $expected)),+]);
         }
         mod strict_synthetic_ppocr_v3 {
             use super::*;
             $(#[test]
             #[ignore = "requires OCR models and Tesseract"]
-            fn $name() {
-                strict_synthetic_case($fixture, $expected, OcrEngine::PpOcrV3);
+            fn $fixture() {
+                strict_synthetic_case(stringify!($fixture), $expected, OcrEngine::PpOcrV3);
             })+
         }
         mod strict_synthetic_tesseract {
             use super::*;
             $(#[test]
             #[ignore = "requires OCR models and Tesseract"]
-            fn $name() {
-                strict_synthetic_case($fixture, $expected, OcrEngine::Tesseract);
+            fn $fixture() {
+                strict_synthetic_case(stringify!($fixture), $expected, OcrEngine::Tesseract);
             })+
         }
     };
 }
 
 strict_synthetic_tests! {
-    tight_spaces: "tight_spaces" => "We can go to the lake.",
-    quotes_punctuation: "quotes_punctuation" => "She said, \"Yes, please!\"",
-    title: "title" => "THE SILENT GARDEN",
-    multiline: "multiline" => "The moon is bright.\nWe will walk home.",
-    short_words: "short_words" => "I am on my way to you.",
-    ellipsis_pause: "ellipsis_pause" => "Wait... perhaps later.",
-    compact_short_pairs: "compact_short_pairs" => "We can go in to see it.",
-    capital_i_lower_l: "capital_i_lower_l" => "I will polish a little lid.",
-    name_initial: "name_initial" => "Mira R. found it.",
-    overlapping_single: "overlapping_single" => "Saffron tango thimble magnet.",
-    overlapping_double: "overlapping_double" => "Saffron tango tthimble magnet.",
+    tight_spaces => "We can go to the lake.",
+    quotes_punctuation => "She said, \"Yes, please!\"",
+    title => "THE SILENT GARDEN",
+    multiline => "The moon is bright.\nWe will walk home.",
+    short_words => "I am on my way to you.",
+    ellipsis_pause => "Wait... perhaps later.",
+    compact_short_pairs => "We can go in to see it.",
+    capital_i_lower_l => "I will polish a little lid.",
+    name_initial => "Mira R. found it.",
+    overlapping_single => "Saffron tango thimble magnet.",
+    overlapping_double => "Saffron tango tthimble magnet.",
     // Control: valid words and punctuation must survive without correction.
-    valid_words_punctuation: "valid_words_punctuation" => "A cabin has a lamp, not a map!",
+    valid_words_punctuation => "A cabin has a lamp, not a map!",
 }
 
 // This intentionally extreme internal gap is kept as a separate stress case;
 // it is not evidence of an identical raster with contradictory labels.
-#[cfg(test)]
 mod wide_gap_stress {
     use super::*;
 
@@ -2469,20 +2371,7 @@ fn synthetic_corpus_converter_probe() {
         .as_deref()
         == Some("1");
     if inspect_blocks {
-        for key in [
-            "DPN_OCR_DET_PADDING",
-            "DPN_OCR_DET_MAX_SIDE",
-            "DPN_OCR_DET_BOX_SCORE",
-            "DPN_OCR_DET_BOX_THRESH",
-            "DPN_OCR_DET_UNCLIP",
-            "DPN_OCR_DET_DO_ANGLE",
-            "DPN_OCR_DET_MOST_ANGLE",
-        ] {
-            assert!(
-                std::env::var_os(key).is_none(),
-                "block inspection requires default detector settings"
-            );
-        }
+        assert_env_unset(&DETECTOR_TUNING_ENV, "block inspection");
     }
     let det = std::env::var_os("DPN_OCR_CORPUS_DET").expect("detector model");
     let cls = std::env::var_os("DPN_OCR_CORPUS_CLS").expect("classifier model");
@@ -2541,14 +2430,7 @@ fn synthetic_corpus_converter_probe() {
         let (matches_expected, matches_baseline, matches_candidate, corrected, lines, failed) =
             match engine.extract_lines(&case.path, "eng") {
                 Ok(output) => {
-                    let actual = glyphs(
-                        &output
-                            .lines
-                            .iter()
-                            .map(|line| line.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    );
+                    let actual = glyphs(&joined_line_text(&output.lines));
                     (
                         actual == glyphs(&case.expected),
                         actual == glyphs(&case.baseline),

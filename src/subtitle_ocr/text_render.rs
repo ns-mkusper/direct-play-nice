@@ -79,8 +79,10 @@ pub(super) fn run_tesseract_best_effort(
     })
 }
 
-fn run_tesseract_raw(image_path: &Path, language: &str, psm: u8) -> Result<String> {
-    let output = Command::new("tesseract")
+/// Base LSTM invocation that writes recognized text to stdout.
+fn tesseract_command(image_path: &Path, language: &str, psm: u8) -> Command {
+    let mut command = Command::new("tesseract");
+    command
         .arg(image_path)
         .arg("stdout")
         .arg("-l")
@@ -90,7 +92,12 @@ fn run_tesseract_raw(image_path: &Path, language: &str, psm: u8) -> Result<Strin
         .arg("--psm")
         .arg(psm.to_string())
         .arg("-c")
-        .arg("preserve_interword_spaces=1")
+        .arg("preserve_interword_spaces=1");
+    command
+}
+
+fn run_tesseract_raw(image_path: &Path, language: &str, psm: u8) -> Result<String> {
+    let output = tesseract_command(image_path, language, psm)
         .output()
         .with_context(|| {
             format!(
@@ -125,34 +132,19 @@ pub(super) fn run_tesseract_with_psm(image_path: &Path, language: &str, psm: u8)
     // Tesseract can assign different quote characters to identical straight
     // glyphs. Consult its character boxes and the source image before changing
     // anything; a character-level match also prevents transferring bad boxes.
-    if let (Ok(boxes), Ok(image)) = (
-        run_tesseract_boxes(image_path, language, psm),
-        image::open(image_path),
-    ) {
-        return Ok(recover_straight_quote_from_boxes(
-            &text,
-            &boxes,
-            &image.to_luma8(),
-        ));
-    }
-    Ok(text)
+    Ok(
+        with_tesseract_boxes(image_path, language, psm, |boxes, image| {
+            recover_straight_quote_from_boxes(&text, boxes, image)
+        })
+        .unwrap_or(text),
+    )
 }
 
+/// Same invocation as [`tesseract_command`], with character boxes on stdout
+/// instead of text. No `makebox` config file is required.
 fn tesseract_boxes_command(image_path: &Path, language: &str, psm: u8) -> Command {
-    let mut command = Command::new("tesseract");
-    command
-        .arg(image_path)
-        .arg("stdout")
-        .arg("-l")
-        .arg(language)
-        .arg("--oem")
-        .arg("1")
-        .arg("--psm")
-        .arg(psm.to_string())
-        .arg("-c")
-        .arg("preserve_interword_spaces=1")
-        .arg("-c")
-        .arg("tessedit_create_boxfile=1");
+    let mut command = tesseract_command(image_path, language, psm);
+    command.arg("-c").arg("tessedit_create_boxfile=1");
     command
 }
 
@@ -164,7 +156,24 @@ fn run_tesseract_boxes(image_path: &Path, language: &str, psm: u8) -> Result<Str
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn parse_tesseract_boxes(boxes: &str) -> Option<Vec<(char, [u32; 4])>> {
+/// Runs `check` on Tesseract's character boxes and the grayscale source image.
+/// Returns `None` when either is unavailable, so callers can abstain.
+fn with_tesseract_boxes<T>(
+    image_path: &Path,
+    language: &str,
+    psm: u8,
+    check: impl FnOnce(&str, &image::GrayImage) -> T,
+) -> Option<T> {
+    let boxes = run_tesseract_boxes(image_path, language, psm).ok()?;
+    let image = image::open(image_path).ok()?.to_luma8();
+    Some(check(&boxes, &image))
+}
+
+/// One Tesseract character box: `[left, bottom, right, top]` in bottom-origin
+/// pixel coordinates.
+type CharBox = (char, [u32; 4]);
+
+fn parse_tesseract_boxes(boxes: &str) -> Option<Vec<CharBox>> {
     boxes
         .lines()
         .map(|line| {
@@ -186,6 +195,231 @@ fn parse_tesseract_boxes(boxes: &str) -> Option<Vec<(char, [u32; 4])>> {
             Some((ch, bounds))
         })
         .collect()
+}
+
+/// Parses `boxes` only when its characters are exactly the non-whitespace
+/// characters of `text`, so each box can be attributed to a recognized glyph.
+fn parse_boxes_matching_text(text: &str, boxes: &str) -> Option<Vec<CharBox>> {
+    let parsed = parse_tesseract_boxes(boxes)?;
+    text.chars()
+        .filter(|ch| !ch.is_whitespace())
+        .eq(parsed.iter().map(|(ch, _)| *ch))
+        .then_some(parsed)
+}
+
+/// Whether every box is non-degenerate and lies within a `width` x `height` image.
+fn boxes_fit_image(boxes: &[CharBox], width: u32, height: u32) -> bool {
+    boxes.iter().all(|(_, [left, bottom, right, top])| {
+        left < right && bottom < top && *right <= width && *top <= height
+    })
+}
+
+/// Pixel-evidence checks scan whole images and abstain above this area.
+const MAX_EVIDENCE_PIXELS: u64 = 4_000_000;
+
+fn exceeds_evidence_area(image: &image::GrayImage) -> bool {
+    u64::from(image.width()) * u64::from(image.height()) > MAX_EVIDENCE_PIXELS
+}
+
+/// Whether any pixel in the (top-origin) region is darker than `threshold`.
+fn region_has_ink(
+    image: &image::GrayImage,
+    columns: std::ops::Range<u32>,
+    rows: std::ops::Range<u32>,
+    threshold: u8,
+) -> bool {
+    columns
+        .into_iter()
+        .any(|x| rows.clone().any(|y| image.get_pixel(x, y)[0] < threshold))
+}
+
+/// Sorts `values` and returns the upper median; `values` must be non-empty.
+fn upper_median(values: &mut [u32]) -> u32 {
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
+/// A maximal run of adjacent columns that each contain ink in the scanned rows.
+#[derive(Clone, Copy)]
+struct ColumnInkRun {
+    left: u32,
+    /// Exclusive.
+    right: u32,
+    /// First row with ink (top-origin).
+    first_row: u32,
+    /// Last row with ink, inclusive.
+    last_row: u32,
+    ink: u32,
+}
+
+impl ColumnInkRun {
+    fn width(&self) -> u32 {
+        self.right - self.left
+    }
+
+    fn height(&self) -> u32 {
+        self.last_row - self.first_row + 1
+    }
+}
+
+fn column_ink_runs(
+    image: &image::GrayImage,
+    rows: std::ops::Range<u32>,
+    threshold: u8,
+) -> Vec<ColumnInkRun> {
+    let mut runs: Vec<ColumnInkRun> = Vec::new();
+    for x in 0..image.width() {
+        let mut first = u32::MAX;
+        let mut last = 0;
+        let mut ink = 0;
+        for y in rows.clone() {
+            if image.get_pixel(x, y)[0] < threshold {
+                first = first.min(y);
+                last = y;
+                ink += 1;
+            }
+        }
+        if ink == 0 {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if run.right == x => {
+                run.right = x + 1;
+                run.first_row = run.first_row.min(first);
+                run.last_row = run.last_row.max(last);
+                run.ink += ink;
+            }
+            _ => runs.push(ColumnInkRun {
+                left: x,
+                right: x + 1,
+                first_row: first,
+                last_row: last,
+                ink,
+            }),
+        }
+    }
+    runs
+}
+
+/// Splits the box list by text line, returning `(start, end, bottom, top)` for
+/// each line. Abstains on blank lines or vertically overlapping lines.
+fn line_box_ranges(text: &str, parsed: &[CharBox]) -> Option<Vec<(usize, usize, u32, u32)>> {
+    let mut ranges = Vec::new();
+    let mut offset = 0usize;
+    for line in text.lines() {
+        let count = line.chars().filter(|ch| !ch.is_whitespace()).count();
+        if count == 0 || offset + count > parsed.len() {
+            return None;
+        }
+        let line_boxes = &parsed[offset..offset + count];
+        let bottom = line_boxes.iter().map(|(_, b)| b[1]).min()?;
+        let top = line_boxes.iter().map(|(_, b)| b[3]).max()?;
+        ranges.push((offset, offset + count, bottom, top));
+        offset += count;
+    }
+    // Tesseract uses bottom-origin coordinates, so upper lines have larger y.
+    if offset != parsed.len() || ranges.windows(2).any(|pair| pair[0].2 < pair[1].3) {
+        return None;
+    }
+    Some(ranges)
+}
+
+#[cfg(test)]
+mod box_evidence_helper_tests {
+    use super::*;
+
+    #[test]
+    fn boxes_must_match_non_whitespace_text_exactly() {
+        let boxes = "A 0 0 2 4 0\nB 3 0 5 4 0\n";
+        assert_eq!(
+            parse_boxes_matching_text("A B", boxes),
+            Some(vec![('A', [0, 0, 2, 4]), ('B', [3, 0, 5, 4])])
+        );
+        assert!(parse_boxes_matching_text("AB C", boxes).is_none());
+        assert!(parse_boxes_matching_text("A", boxes).is_none());
+        assert!(parse_boxes_matching_text("A B", "A 0 0 2 4 1\nB 3 0 5 4 0\n").is_none());
+    }
+
+    #[test]
+    fn boxes_fit_rejects_degenerate_and_out_of_bounds() {
+        assert!(boxes_fit_image(&[('A', [0, 0, 4, 4])], 4, 4));
+        assert!(boxes_fit_image(&[], 0, 0));
+        for bounds in [[2, 0, 2, 4], [0, 4, 4, 4], [0, 0, 5, 4], [0, 0, 4, 5]] {
+            assert!(!boxes_fit_image(&[('A', bounds)], 4, 4), "{bounds:?}");
+        }
+    }
+
+    #[test]
+    fn region_ink_threshold_is_strict_and_ranges_are_exclusive() {
+        let mut image = image::GrayImage::from_pixel(4, 4, image::Luma([255]));
+        image.put_pixel(2, 1, image::Luma([128]));
+        assert!(region_has_ink(&image, 0..4, 0..4, 129));
+        assert!(!region_has_ink(&image, 0..4, 0..4, 128));
+        assert!(!region_has_ink(&image, 0..2, 0..4, 255));
+        assert!(!region_has_ink(&image, 0..4, 2..4, 255));
+    }
+
+    #[test]
+    fn column_runs_join_adjacent_columns_and_track_rows() {
+        let mut image = image::GrayImage::from_pixel(8, 6, image::Luma([255]));
+        for (x, y) in [(1, 1), (2, 3), (2, 4), (5, 0), (5, 5)] {
+            image.put_pixel(x, y, image::Luma([0]));
+        }
+        let runs = column_ink_runs(&image, 1..5, 128);
+        let summary: Vec<_> = runs
+            .iter()
+            .map(|run| (run.left, run.right, run.first_row, run.last_row, run.ink))
+            .collect();
+        // Column 5 has ink only outside the scanned rows.
+        assert_eq!(summary, [(1, 3, 1, 4, 3)]);
+        assert_eq!((runs[0].width(), runs[0].height()), (2, 4));
+        assert!(column_ink_runs(&image, 0..0, 128).is_empty());
+    }
+
+    #[test]
+    fn line_ranges_split_boxes_per_line_and_reject_overlap() {
+        let boxes = [
+            ('A', [0, 20, 4, 30]),
+            ('B', [5, 18, 9, 31]),
+            ('C', [0, 0, 4, 10]),
+        ];
+        assert_eq!(
+            line_box_ranges("A B\nC", &boxes),
+            Some(vec![(0, 2, 18, 31), (2, 3, 0, 10)])
+        );
+        assert!(line_box_ranges("A\n\nBC", &boxes).is_none());
+        assert!(line_box_ranges("AB", &boxes).is_none());
+        let overlapping = [('A', [0, 5, 4, 15]), ('B', [0, 0, 4, 10])];
+        assert!(line_box_ranges("A\nB", &overlapping).is_none());
+    }
+
+    #[test]
+    fn upper_median_sorts_and_picks_upper_middle() {
+        assert_eq!(upper_median(&mut [7]), 7);
+        assert_eq!(upper_median(&mut [9, 1, 5, 3]), 5);
+        assert_eq!(upper_median(&mut [9, 1, 5]), 5);
+    }
+
+    #[test]
+    fn neighbors_exclude_center_and_respect_bounds() {
+        assert_eq!(neighbors8(5, 5, 0..10, 0..10).count(), 8);
+        let mut corner: Vec<_> = neighbors8(0, 0, 0..10, 0..10).collect();
+        corner.sort_unstable();
+        assert_eq!(corner, [(0, 1), (1, 0), (1, 1)]);
+        assert_eq!(neighbors8(4, 0, 4..5, 0..1).count(), 0);
+        assert_eq!(neighbors8(u32::MAX - 1, 0, 0..u32::MAX, 0..2).count(), 3);
+    }
+
+    #[test]
+    fn exclamation_recovery_rejects_wrong_alternate_without_further_work() {
+        let recovered = recover_terminal_exclamation_with(
+            "Really?\"",
+            || Ok("Really?".to_string()),
+            || panic!("boxes must not run for a mismatched alternate"),
+            || panic!("image must not load for a mismatched alternate"),
+        );
+        assert_eq!(recovered, "Really?\"");
+    }
 }
 
 #[cfg(test)]
@@ -310,31 +544,23 @@ fn recover_terminal_exclamation_with(
     boxes: impl FnOnce() -> Result<String>,
     image: impl FnOnce() -> Result<image::GrayImage>,
 ) -> String {
-    if text.contains(['\n', '\r']) {
-        return text.to_string();
-    }
-    let Some(prefix) = text.strip_suffix("?\"") else {
-        return text.to_string();
+    let recovered = || {
+        if text.contains(['\n', '\r']) {
+            return None;
+        }
+        let prefix = text.strip_suffix("?\"")?;
+        if !balanced_quote_context(prefix) {
+            return None;
+        }
+        let alternate = alternate().ok()?;
+        if alternate.strip_suffix("?!") != Some(prefix) {
+            return None;
+        }
+        let boxes = boxes().ok()?;
+        let image = image().ok()?;
+        terminal_exclamation_mask(text, &boxes, &image).then_some(alternate)
     };
-    if !balanced_quote_context(prefix) {
-        return text.to_string();
-    }
-    let Ok(alternate) = alternate() else {
-        return text.to_string();
-    };
-    if alternate != format!("{prefix}?!") {
-        return text.to_string();
-    }
-    let Ok(boxes) = boxes() else {
-        return text.to_string();
-    };
-    let Ok(image) = image() else {
-        return text.to_string();
-    };
-    if terminal_exclamation_mask(text, &boxes, &image) {
-        return alternate;
-    }
-    text.to_string()
+    recovered().unwrap_or_else(|| text.to_string())
 }
 
 fn balanced_quote_context(text: &str) -> bool {
@@ -382,29 +608,19 @@ fn balanced_quote_context(text: &str) -> bool {
 }
 
 fn terminal_exclamation_mask(text: &str, boxes: &str, image: &image::GrayImage) -> bool {
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
+    let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return false;
     };
-    if parsed.len() < 2
-        || !text
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .eq(parsed.iter().map(|(c, _)| *c))
-        || parsed.iter().any(|(_, [left, bottom, right, top])| {
-            left >= right || bottom >= top || *right > image.width() || *top > image.height()
-        })
-    {
+    if !boxes_fit_image(&parsed, image.width(), image.height()) {
         return false;
     }
-    let ('?', [_, qbottom, qright, qtop]) = parsed[parsed.len() - 2] else {
-        return false;
-    };
-    let ('"', [left, bottom, right, top]) = parsed[parsed.len() - 1] else {
+    let [.., ('?', [_, qbottom, qright, qtop]), ('"', [left, bottom, right, top])] = parsed[..]
+    else {
         return false;
     };
     // A recognizer can omit a real closing glyph from both text and boxes.
     // Treat every nonwhite pixel beyond the terminal box as ambiguous.
-    if (0..image.height()).any(|y| (right..image.width()).any(|x| image.get_pixel(x, y)[0] < 255)) {
+    if region_has_ink(image, right..image.width(), 0..image.height(), 255) {
         return false;
     }
     let width = right - left;
@@ -423,7 +639,7 @@ fn terminal_exclamation_mask(text: &str, boxes: &str, image: &image::GrayImage) 
     }
 
     // A clipped quote stroke may lie between the recognized boxes.
-    if (0..image.height()).any(|y| (qright..left).any(|x| image.get_pixel(x, y)[0] < 255)) {
+    if region_has_ink(image, qright..left, 0..image.height(), 255) {
         return false;
     }
 
@@ -463,8 +679,11 @@ fn terminal_exclamation_mask(text: &str, boxes: &str, image: &image::GrayImage) 
         && u64::from(width) <= 2 * u64::from(dot)
 }
 
-// These image-only checks are the frozen multi-threshold experiment. They do
-// not establish what a mark means, and are not used by the default OCR path.
+// These frozen image-only checks gate direct bitmap-line punctuation recovery.
+// They do not establish what a mark means: Tesseract must also agree before any
+// text changes. A shape must pass at every threshold.
+const PUNCTUATION_THRESHOLDS: [u8; 4] = [80, 120, 160, 200];
+
 struct PunctuationRaster<'a> {
     pixels: &'a [u8],
     width: usize,
@@ -607,14 +826,14 @@ fn exact_three_dots_at_threshold(raster: &PunctuationRaster<'_>, threshold: u8) 
     if runs.len() < 4 {
         return false;
     }
-    let tail = &runs[runs.len() - 3..];
-    let Some(first) = raster.ink_box(tail[0], threshold) else {
+    let [.., first, second, third] = runs[..] else {
         return false;
     };
-    let Some(second) = raster.ink_box(tail[1], threshold) else {
-        return false;
-    };
-    let Some(third) = raster.ink_box(tail[2], threshold) else {
+    let (Some(first), Some(second), Some(third)) = (
+        raster.ink_box(first, threshold),
+        raster.ink_box(second, threshold),
+        raster.ink_box(third, threshold),
+    ) else {
         return false;
     };
     let width = first.right - first.left;
@@ -685,7 +904,7 @@ pub(super) fn multi_threshold_exact_three_terminal_dots(image: &image::GrayImage
     let Some(raster) = PunctuationRaster::new(image) else {
         return false;
     };
-    [80, 120, 160, 200]
+    PUNCTUATION_THRESHOLDS
         .into_iter()
         .all(|threshold| exact_three_dots_at_threshold(&raster, threshold))
 }
@@ -740,7 +959,7 @@ pub(super) fn multi_threshold_terminal_comma_shape(image: &image::GrayImage) -> 
     let Some(raster) = PunctuationRaster::new(image) else {
         return false;
     };
-    [80, 120, 160, 200]
+    PUNCTUATION_THRESHOLDS
         .into_iter()
         .all(|threshold| comma_shape_at_threshold(&raster, threshold))
 }
@@ -980,225 +1199,159 @@ mod multi_threshold_punctuation_tests {
 }
 
 fn terminal_ellipsis_pixel_evidence(text: &str, boxes: &str, image: &image::GrayImage) -> bool {
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
+    let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return false;
     };
-    if parsed.len() < 3
-        || !text
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .eq(parsed.iter().map(|(ch, _)| *ch))
-        || !parsed[parsed.len() - 3..].iter().all(|(ch, _)| *ch == '.')
+    let [.., (_, [_, bottom, right, top])] = parsed[..] else {
+        return false;
+    };
+    let dot_boxes = &parsed[parsed.len().saturating_sub(3)..];
+    if dot_boxes.len() < 3
+        || dot_boxes.iter().any(|(ch, _)| *ch != '.')
+        || bottom >= top
+        || top > image.height()
+        || right > image.width()
     {
         return false;
     }
-    let (_, [_, bottom, right, top]) = parsed[parsed.len() - 1];
-    if bottom >= top || top > image.height() || right > image.width() {
-        return false;
-    }
     let dot_height = top - bottom;
-    let dot_boxes = &parsed[parsed.len() - 3..];
-    if dot_boxes.iter().any(|(_, [left, lower, right, upper])| {
-        left >= right
-            || lower >= upper
-            || *right > image.width()
-            || *upper > image.height()
-            || lower.abs_diff(bottom) > (dot_height / 4).max(2)
-    }) || dot_boxes
-        .windows(2)
-        .any(|pair| pair[0].1[0] >= pair[1].1[0] || pair[0].1[2] > pair[1].1[2])
+    if !boxes_fit_image(dot_boxes, image.width(), image.height())
+        || dot_boxes
+            .iter()
+            .any(|(_, [_, lower, _, _])| lower.abs_diff(bottom) > (dot_height / 4).max(2))
+        || dot_boxes
+            .windows(2)
+            .any(|pair| pair[0].1[0] >= pair[1].1[0] || pair[0].1[2] > pair[1].1[2])
     {
         return false;
     }
     if dot_height < 2
         || u64::from(dot_height) * u64::from(image.width()) > 2_000_000
-        || u64::from(image.width()) * u64::from(image.height()) > 4_000_000
+        || exceeds_evidence_area(image)
     {
         return false;
     }
     let y_start = image.height() - top;
     let y_end = image.height() - bottom;
-    let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
-    for x in 0..image.width() {
-        let mut first = y_end;
-        let mut last = y_start;
-        for y in y_start..y_end {
-            if image.get_pixel(x, y)[0] < 128 {
-                first = first.min(y);
-                last = last.max(y);
-            }
-        }
-        if first == y_end {
-            continue;
-        }
-        if let Some(run) = runs.last_mut().filter(|run| run.1 == x) {
-            run.1 = x + 1;
-            run.2 = run.2.min(first);
-            run.3 = run.3.max(last);
-        } else {
-            runs.push((x, x + 1, first, last));
-        }
-    }
-    if runs.len() < 3 {
+    let runs = column_ink_runs(image, y_start..y_end, 128);
+    let [.., first_dot, second_dot, third_dot] = runs[..] else {
         return false;
-    }
-    let dots = &runs[runs.len() - 3..];
+    };
+    let dots = [first_dot, second_dot, third_dot];
     if dots.iter().any(|run| {
         !dot_boxes
             .iter()
-            .any(|(_, [left, _, right, _])| run.0 < *right && *left < run.1)
-    }) || dots[0].0 < dot_boxes[0].1[0]
-        || dots[2].1 > dot_boxes[2].1[2]
+            .any(|(_, [left, _, right, _])| run.left < *right && *left < run.right)
+    }) || first_dot.left < dot_boxes[0].1[0]
+        || third_dot.right > dot_boxes[2].1[2]
     {
         return false;
     }
     // Do not count the bottom of a letter or a vertical stroke as a dot.
     // A blank row separates the current text line from any line above it.
     let mut line_top = y_start;
-    while line_top > 0 && (0..image.width()).any(|x| image.get_pixel(x, line_top - 1)[0] < 128) {
+    while line_top > 0 && region_has_ink(image, 0..image.width(), line_top - 1..line_top, 128) {
         line_top -= 1;
     }
-    if dots.iter().any(|run| {
-        (run.0..run.1).any(|x| (line_top..y_start).any(|y| image.get_pixel(x, y)[0] < 128))
-    }) || dots.windows(2).any(|pair| {
-        (pair[0].1..pair[1].0).any(|x| (line_top..y_end).any(|y| image.get_pixel(x, y)[0] < 128))
-    }) {
+    if dots
+        .iter()
+        .any(|run| region_has_ink(image, run.left..run.right, line_top..y_start, 128))
+        || dots
+            .windows(2)
+            .any(|pair| region_has_ink(image, pair[0].right..pair[1].left, line_top..y_end, 128))
+    {
         return false;
     }
-    let widths: Vec<_> = dots.iter().map(|run| run.1 - run.0).collect();
-    let heights: Vec<_> = dots.iter().map(|run| run.3 - run.2 + 1).collect();
-    let min_width = *widths.iter().min().unwrap();
-    let max_width = *widths.iter().max().unwrap();
-    let min_height = *heights.iter().min().unwrap();
-    let max_height = *heights.iter().max().unwrap();
-    let gap1 = dots[1].0 - dots[0].1;
-    let gap2 = dots[2].0 - dots[1].1;
+    // Fixed-size, non-empty arrays: min and max always exist.
+    let widths = dots.map(|run| run.width());
+    let heights = dots.map(|run| run.height());
+    let (min_width, max_width) = (*widths.iter().min().unwrap(), *widths.iter().max().unwrap());
+    let (min_height, max_height) = (
+        *heights.iter().min().unwrap(),
+        *heights.iter().max().unwrap(),
+    );
+    let gap1 = second_dot.left - first_dot.right;
+    let gap2 = third_dot.left - second_dot.right;
     min_width >= 2
         && min_height >= 2
         && u64::from(max_width) <= 2 * u64::from(dot_height)
         && max_height <= dot_height
         && u64::from(max_width) <= 2 * u64::from(min_width)
         && u64::from(max_height) <= 2 * u64::from(min_height)
-        && dots.iter().all(|run| run.3.abs_diff(dots[0].3) <= 2)
+        && dots
+            .iter()
+            .all(|run| run.last_row.abs_diff(first_dot.last_row) <= 2)
         && gap1 > 0
         && gap2 > 0
         && u64::from(gap1.max(gap2)) <= 2 * u64::from(gap1.min(gap2))
 }
 
 fn terminal_period_pixel_evidence(text: &str, boxes: &str, image: &image::GrayImage) -> bool {
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
+    let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return false;
     };
-    if u64::from(image.width()) * u64::from(image.height()) > 4_000_000
-        || !text
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .eq(parsed.iter().map(|(ch, _)| *ch))
-        || parsed.iter().any(|(_, [left, bottom, right, top])| {
-            left >= right || bottom >= top || *right > image.width() || *top > image.height()
-        })
-    {
+    if exceeds_evidence_area(image) || !boxes_fit_image(&parsed, image.width(), image.height()) {
         return false;
     }
-    let mut offset = 0usize;
-    let mut ranges = Vec::new();
-    for line in text.lines() {
-        let count = line.chars().filter(|ch| !ch.is_whitespace()).count();
-        if count == 0 || offset + count > parsed.len() {
-            return false;
-        }
-        let line_boxes = &parsed[offset..offset + count];
-        let bottom = line_boxes.iter().map(|(_, b)| b[1]).min().unwrap();
-        let top = line_boxes.iter().map(|(_, b)| b[3]).max().unwrap();
-        ranges.push((offset, offset + count, bottom, top));
-        offset += count;
-    }
-    if offset != parsed.len() || ranges.windows(2).any(|pair| pair[0].2 < pair[1].3) {
-        return false;
-    }
-    let Some(&(start, end, bottom, top)) = ranges.last() else {
+    let Some(&(start, end, bottom, top)) = line_box_ranges(text, &parsed)
+        .as_deref()
+        .and_then(<[_]>::last)
+    else {
         return false;
     };
     if end - start < 4 || parsed[end - 1].0 != '.' || !parsed[end - 2].0.is_alphanumeric() {
         return false;
     }
-    let mut baselines = Vec::new();
-    let mut heights = Vec::new();
-    for (ch, [_, lower, _, upper]) in &parsed[start..end - 1] {
-        if ch.is_alphanumeric() {
-            baselines.push(*lower);
-            heights.push(*upper - *lower);
-        }
-    }
+    let (mut baselines, mut heights): (Vec<u32>, Vec<u32>) = parsed[start..end - 1]
+        .iter()
+        .filter(|(ch, _)| ch.is_alphanumeric())
+        .map(|(_, [_, lower, _, upper])| (*lower, upper - lower))
+        .unzip();
     if baselines.len() < 3 {
         return false;
     }
-    baselines.sort_unstable();
-    heights.sort_unstable();
-    let baseline = baselines[baselines.len() / 2];
-    let height = heights[heights.len() / 2];
+    let baseline = upper_median(&mut baselines);
+    let height = upper_median(&mut heights);
     if height < 6 {
         return false;
     }
     let y0 = image.height() - top;
     let y1 = image.height() - bottom;
-    let mut runs: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
-    for x in 0..image.width() {
-        let mut first = y1;
-        let mut last = y0;
-        let mut count = 0;
-        for y in y0..y1 {
-            if image.get_pixel(x, y)[0] < 128 {
-                first = first.min(y);
-                last = last.max(y);
-                count += 1;
-            }
-        }
-        if count == 0 {
-            continue;
-        }
-        if let Some(run) = runs.last_mut().filter(|run| run.1 == x) {
-            run.1 = x + 1;
-            run.2 = run.2.min(first);
-            run.3 = run.3.max(last);
-            run.4 += count;
-        } else {
-            runs.push((x, x + 1, first, last, count));
-        }
-    }
-    if runs.len() < 2 {
+    let runs = column_ink_runs(image, y0..y1, 128);
+    let [.., previous, dot] = runs[..] else {
         return false;
-    }
-    let dot = runs[runs.len() - 1];
-    let previous = runs[runs.len() - 2];
+    };
     let [left, box_bottom, right, box_top] = parsed[end - 1].1;
-    let width = dot.1 - dot.0;
-    let dot_height = dot.3 - dot.2 + 1;
-    let dot_bottom = image.height() - dot.3 - 1;
-    let gap = dot.0 - previous.1;
+    let width = dot.width();
+    let dot_height = dot.height();
+    let dot_bottom = image.height() - dot.last_row - 1;
+    let gap = dot.left - previous.right;
     // Include a text-height margin to the left of the preceding run so that
     // clipped or detached comma tails below the detected line cause abstention.
-    left <= dot.0
-        && dot.1 <= right
+    left <= dot.left
+        && dot.right <= right
         && box_bottom <= dot_bottom
-        && box_top >= image.height() - dot.2
-        && !(dot.1..image.width())
-            .any(|x| (0..image.height()).any(|y| image.get_pixel(x, y)[0] < 245))
-        && parsed[start..end - 1].iter().all(|(_, b)| b[2] <= dot.0)
+        && box_top >= image.height() - dot.first_row
+        && !region_has_ink(image, dot.right..image.width(), 0..image.height(), 245)
+        && parsed[start..end - 1].iter().all(|(_, b)| b[2] <= dot.left)
         && width >= 2
         && dot_height >= 2
         && u64::from(width) <= 2 * u64::from(dot_height)
         && dot_height <= width
         && u64::from(dot_height) * 2 <= u64::from(height)
-        && u64::from(dot.4) * 3 >= 2 * u64::from(width) * u64::from(dot_height)
-        && period_shape_is_symmetric(image, dot.0, dot.1, dot.2, dot.3)
-        && !(dot.0..dot.1).any(|x| (dot.3 + 1..y1).any(|y| image.get_pixel(x, y)[0] < 245))
+        && u64::from(dot.ink) * 3 >= 2 * u64::from(width) * u64::from(dot_height)
+        && period_shape_is_symmetric(image, dot.left, dot.right, dot.first_row, dot.last_row)
+        && !region_has_ink(image, dot.left..dot.right, dot.last_row + 1..y1, 245)
         && dot_bottom.abs_diff(baseline) <= (height / 10).max(2)
         && gap >= 2
         && gap <= height
-        && !(previous.1..dot.0).any(|x| (y0..y1).any(|y| image.get_pixel(x, y)[0] < 245))
-        && !(previous.0.saturating_sub(height)..image.width())
-            .any(|x| (y1..image.height()).any(|y| image.get_pixel(x, y)[0] < 245))
+        && !region_has_ink(image, previous.right..dot.left, y0..y1, 245)
+        && !region_has_ink(
+            image,
+            previous.left.saturating_sub(height)..image.width(),
+            y1..image.height(),
+            245,
+        )
 }
 
 // Reject asymmetric tails, including tails inside a line extended by descenders.
@@ -1244,7 +1397,7 @@ fn period_shape_is_symmetric(
 // Only a clearly separate, downward-left slanting comma can pass. Character
 // boxes locate the line; the punctuation's actual outline comes from the image.
 fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayImage) -> bool {
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
+    let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return false;
     };
     let lines: Vec<_> = text
@@ -1253,53 +1406,41 @@ fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayI
         .collect();
     if lines.len() != 2
         || !lines[0].trim_end().ends_with(',')
-        || u64::from(image.width()) * u64::from(image.height()) > 4_000_000
-        || !text
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .eq(parsed.iter().map(|(ch, _)| *ch))
-        || parsed
-            .iter()
-            .any(|(_, [l, b, r, t])| l >= r || b >= t || *r > image.width() || *t > image.height())
+        || exceeds_evidence_area(image)
+        || !boxes_fit_image(&parsed, image.width(), image.height())
     {
         return false;
     }
+    let has_descender = |ch: char| matches!(ch.to_ascii_lowercase(), 'g' | 'j' | 'p' | 'q' | 'y');
     let first_len = lines[0].chars().filter(|ch| !ch.is_whitespace()).count();
     if first_len < 5
         || first_len >= parsed.len()
         || parsed[first_len - 1].0 != ','
         || !parsed[first_len - 2].0.is_ascii_alphanumeric()
-        || matches!(
-            parsed[first_len - 2].0.to_ascii_lowercase(),
-            'g' | 'j' | 'p' | 'q' | 'y'
-        )
+        || has_descender(parsed[first_len - 2].0)
     {
         return false;
     }
-    let first = &parsed[..first_len];
-    let second = &parsed[first_len..];
-    let bottom = first.iter().map(|(_, b)| b[1]).min().unwrap();
-    let second_top = second.iter().map(|(_, b)| b[3]).max().unwrap();
+    let (first, second) = parsed.split_at(first_len);
+    let Some(bottom) = first.iter().map(|(_, b)| b[1]).min() else {
+        return false;
+    };
+    let Some(second_top) = second.iter().map(|(_, b)| b[3]).max() else {
+        return false;
+    };
     if bottom <= second_top + 4 {
         return false;
     }
-    let mut baselines = Vec::new();
-    let mut heights = Vec::new();
-    for (ch, [_, lower, _, upper]) in &first[..first_len - 1] {
-        if ch.is_ascii_alphanumeric()
-            && !matches!(ch.to_ascii_lowercase(), 'g' | 'j' | 'p' | 'q' | 'y')
-        {
-            baselines.push(*lower);
-            heights.push(upper - lower);
-        }
-    }
+    let (mut baselines, mut heights): (Vec<u32>, Vec<u32>) = first[..first_len - 1]
+        .iter()
+        .filter(|(ch, _)| ch.is_ascii_alphanumeric() && !has_descender(*ch))
+        .map(|(_, [_, lower, _, upper])| (*lower, upper - lower))
+        .unzip();
     if baselines.len() < 4 {
         return false;
     }
-    baselines.sort_unstable();
-    heights.sort_unstable();
-    let baseline = baselines[baselines.len() / 2];
-    let height = heights[heights.len() / 2];
+    let baseline = upper_median(&mut baselines);
+    let height = upper_median(&mut heights);
     if height < 12
         || baselines
             .iter()
@@ -1310,48 +1451,28 @@ fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayI
         return false;
     }
     let y_end = image.height() - (bottom + second_top) / 2;
-    let mut runs: Vec<(u32, u32, u32, u32)> = Vec::new();
-    for x in 0..image.width() {
-        let mut top = y_end;
-        let mut bottom = 0;
-        for y in 0..y_end {
-            if image.get_pixel(x, y)[0] < 245 {
-                top = top.min(y);
-                bottom = bottom.max(y);
-            }
-        }
-        if top == y_end {
-            continue;
-        }
-        if let Some(run) = runs.last_mut().filter(|run| run.1 == x) {
-            run.1 = x + 1;
-            run.2 = run.2.min(top);
-            run.3 = run.3.max(bottom);
-        } else {
-            runs.push((x, x + 1, top, bottom));
-        }
-    }
-    if runs.len() < 2 {
+    let runs = column_ink_runs(image, 0..y_end, 245);
+    let [.., previous, comma] = runs[..] else {
         return false;
-    }
-    let comma = runs[runs.len() - 1];
-    let previous = runs[runs.len() - 2];
+    };
     let [cl, cb, cr, ct] = first[first_len - 1].1;
     let [pl, _, pr, _] = first[first_len - 2].1;
-    let width = comma.1 - comma.0;
-    let shape_height = comma.3 - comma.2 + 1;
-    let comma_bottom = image.height() - comma.3 - 1;
-    if cl > comma.0
-        || cr < comma.1
+    let width = comma.width();
+    let shape_height = comma.height();
+    let comma_bottom = image.height() - comma.last_row - 1;
+    if cl > comma.left
+        || cr < comma.right
         || cb > comma_bottom
-        || ct < image.height() - comma.2
-        || first[..first_len - 1].iter().any(|(_, b)| b[2] > comma.0)
-        || previous.0 >= pr
-        || previous.1 <= pl
-        || previous.1 > comma.0
-        || (image.height() - previous.3 - 1).abs_diff(baseline) > (height / 10).max(2)
-        || comma.0 - previous.1 < 2
-        || comma.0 - previous.1 > height / 2
+        || ct < image.height() - comma.first_row
+        || first[..first_len - 1]
+            .iter()
+            .any(|(_, b)| b[2] > comma.left)
+        || previous.left >= pr
+        || previous.right <= pl
+        || previous.right > comma.left
+        || (image.height() - previous.last_row - 1).abs_diff(baseline) > (height / 10).max(2)
+        || comma.left - previous.right < 2
+        || comma.left - previous.right > height / 2
         || width < 4
         || shape_height < 6
         || shape_height * 5 < width * 6
@@ -1359,7 +1480,7 @@ fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayI
         || comma_bottom >= baseline
         || baseline - comma_bottom < (height / 10).max(2)
         || baseline - comma_bottom > height / 3
-        || image.height() - comma.2 <= baseline + height / 5
+        || image.height() - comma.first_row <= baseline + height / 5
     {
         return false;
     }
@@ -1370,30 +1491,30 @@ fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayI
     let mut lower_n = 0u64;
     let mut previous_row: Option<(u32, u32)> = None;
     let mut ink = 0u64;
-    for y in comma.2..=comma.3 {
-        let xs: Vec<_> = (comma.0..comma.1)
-            .filter(|&x| image.get_pixel(x, y)[0] < 128)
-            .collect();
-        if xs.is_empty() {
+    let upper_end = comma.first_row + shape_height / 4;
+    let lower_start = comma.last_row + 1 - shape_height / 4;
+    for y in comma.first_row..=comma.last_row {
+        let mut row_ink = (comma.left..comma.right).filter(|&x| image.get_pixel(x, y)[0] < 128);
+        let Some(left) = row_ink.next() else {
             return false;
-        }
-        let (left, right) = (*xs.first().unwrap(), *xs.last().unwrap());
-        if right - left + 1 != xs.len() as u32
+        };
+        let (right, count) = row_ink.fold((left, 1u32), |(_, count), x| (x, count + 1));
+        if right - left + 1 != count
             || previous_row.is_some_and(|(l, r)| left > r + 1 || l > right + 1)
         {
             return false;
         }
         previous_row = Some((left, right));
-        ink += xs.len() as u64;
-        for x in xs {
-            if y < comma.2 + shape_height / 4 {
-                upper_x += u64::from(x);
-                upper_n += 1;
-            }
-            if y >= comma.3 + 1 - shape_height / 4 {
-                lower_x += u64::from(x);
-                lower_n += 1;
-            }
+        ink += u64::from(count);
+        // The row is one contiguous span, so its x-sum has a closed form.
+        let row_x_sum = (u64::from(left) + u64::from(right)) * u64::from(count) / 2;
+        if y < upper_end {
+            upper_x += row_x_sum;
+            upper_n += u64::from(count);
+        }
+        if y >= lower_start {
+            lower_x += row_x_sum;
+            lower_n += u64::from(count);
         }
     }
     upper_n > 0
@@ -1408,13 +1529,10 @@ pub(super) fn tesseract_line_final_comma_evidence(
     language: &str,
     text: &str,
 ) -> bool {
-    match (
-        run_tesseract_boxes(image_path, language, 6),
-        image::open(image_path),
-    ) {
-        (Ok(boxes), Ok(image)) => line_final_comma_pixel_evidence(text, &boxes, &image.to_luma8()),
-        _ => false,
-    }
+    with_tesseract_boxes(image_path, language, 6, |boxes, image| {
+        line_final_comma_pixel_evidence(text, boxes, image)
+    })
+    .unwrap_or(false)
 }
 
 pub(super) fn tesseract_terminal_period_evidence(
@@ -1423,65 +1541,35 @@ pub(super) fn tesseract_terminal_period_evidence(
     psm: u8,
     text: &str,
 ) -> bool {
-    match (
-        run_tesseract_boxes(image_path, language, psm),
-        image::open(image_path),
-    ) {
-        (Ok(boxes), Ok(image)) => terminal_period_pixel_evidence(text, &boxes, &image.to_luma8()),
-        _ => false,
-    }
+    with_tesseract_boxes(image_path, language, psm, |boxes, image| {
+        terminal_period_pixel_evidence(text, boxes, image)
+    })
+    .unwrap_or(false)
 }
 
+/// Returns the glyph indices of words following `, ` whose comma and next
+/// glyph are separated by a clear, ink-free gap in the source image.
 fn comma_spacing_pixel_evidence(
     text: &str,
     boxes: &str,
     image: &image::GrayImage,
 ) -> HashSet<usize> {
     let mut supported = HashSet::new();
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
+    let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return supported;
     };
-    if !text
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .eq(parsed.iter().map(|(ch, _)| *ch))
-        || u64::from(image.width()) * u64::from(image.height()) > 4_000_000
+    if exceeds_evidence_area(image) {
+        return supported;
+    }
+    let Some(line_ranges) = line_box_ranges(text, &parsed) else {
+        return supported;
+    };
+    if line_ranges
+        .iter()
+        .any(|&(_, _, bottom, top)| bottom >= top || top > image.height())
     {
         return supported;
     }
-    let mut line_ranges = Vec::new();
-    let mut offset = 0usize;
-    for line in text.lines() {
-        let length = line.chars().filter(|ch| !ch.is_whitespace()).count();
-        if length == 0 {
-            return supported;
-        }
-        let line_boxes = &parsed[offset..offset + length];
-        let bottom = line_boxes
-            .iter()
-            .map(|(_, bounds)| bounds[1])
-            .min()
-            .unwrap();
-        let top = line_boxes
-            .iter()
-            .map(|(_, bounds)| bounds[3])
-            .max()
-            .unwrap();
-        if bottom >= top || top > image.height() {
-            return supported;
-        }
-        line_ranges.push((bottom, top));
-        offset += length;
-    }
-    // Tesseract uses bottom-origin coordinates, so upper lines have larger y.
-    if line_ranges.windows(2).any(|pair| pair[0].0 < pair[1].1) {
-        return supported;
-    }
-    let box_has_ink = |left: u32, bottom: u32, right: u32, top: u32| {
-        (left..right).any(|x| {
-            (image.height() - top..image.height() - bottom).any(|y| image.get_pixel(x, y)[0] < 245)
-        })
-    };
     let mut index = 0usize;
     for line in text.lines() {
         let mut previous = None;
@@ -1491,36 +1579,12 @@ fn comma_spacing_pixel_evidence(
                 whitespace = true;
                 continue;
             }
-            if whitespace && previous == Some(',') && ch.is_alphabetic() && index > 0 {
-                let [comma_left, comma_bottom, comma_right, comma_top] = parsed[index - 1].1;
-                let [next_left, next_bottom, next_right, next_top] = parsed[index].1;
-                if comma_left < comma_right
-                    && comma_bottom < comma_top
-                    && next_bottom < next_top
-                    && comma_top <= image.height()
-                    && next_top <= image.height()
-                    && comma_right < next_left
-                    && next_left < next_right
-                    && next_right <= image.width()
-                    && box_has_ink(comma_left, comma_bottom, comma_right, comma_top)
-                    && box_has_ink(next_left, next_bottom, next_right, next_top)
-                {
-                    let gap = next_left - comma_right;
-                    let height = next_top - next_bottom;
-                    let overlap = comma_top
-                        .min(next_top)
-                        .saturating_sub(comma_bottom.max(next_bottom));
-                    if gap >= (height / 4).max(2)
-                        && u64::from(overlap) * 3 >= u64::from(height)
-                        && !(comma_right..next_left).any(|x| {
-                            (image.height() - comma_top.max(next_top)
-                                ..image.height() - comma_bottom.min(next_bottom))
-                                .any(|y| image.get_pixel(x, y)[0] < 245)
-                        })
-                    {
-                        supported.insert(index);
-                    }
-                }
+            let follows_comma_space = whitespace && previous == Some(',') && index > 0;
+            if follows_comma_space
+                && ch.is_alphabetic()
+                && comma_gap_is_clear(image, parsed[index - 1].1, parsed[index].1)
+            {
+                supported.insert(index);
             }
             index += 1;
             previous = Some(ch);
@@ -1530,55 +1594,88 @@ fn comma_spacing_pixel_evidence(
     supported
 }
 
+/// Whether a comma box and the next glyph's box both hold ink, overlap
+/// vertically, and are separated by an ink-free gap of at least a quarter of
+/// the glyph height.
+fn comma_gap_is_clear(image: &image::GrayImage, comma: [u32; 4], next: [u32; 4]) -> bool {
+    let [comma_left, comma_bottom, comma_right, comma_top] = comma;
+    let [next_left, next_bottom, next_right, next_top] = next;
+    let box_has_ink = |left: u32, bottom: u32, right: u32, top: u32| {
+        region_has_ink(
+            image,
+            left..right,
+            image.height() - top..image.height() - bottom,
+            245,
+        )
+    };
+    if !(comma_left < comma_right
+        && comma_bottom < comma_top
+        && next_bottom < next_top
+        && comma_top <= image.height()
+        && next_top <= image.height()
+        && comma_right < next_left
+        && next_left < next_right
+        && next_right <= image.width()
+        && box_has_ink(comma_left, comma_bottom, comma_right, comma_top)
+        && box_has_ink(next_left, next_bottom, next_right, next_top))
+    {
+        return false;
+    }
+    let gap = next_left - comma_right;
+    let height = next_top - next_bottom;
+    let overlap = comma_top
+        .min(next_top)
+        .saturating_sub(comma_bottom.max(next_bottom));
+    gap >= (height / 4).max(2)
+        && u64::from(overlap) * 3 >= u64::from(height)
+        && !box_has_ink(
+            comma_right,
+            comma_bottom.min(next_bottom),
+            next_left,
+            comma_top.max(next_top),
+        )
+}
+
 pub(super) fn tesseract_terminal_ellipsis_evidence(
     image_path: &Path,
     language: &str,
     psm: u8,
     text: &str,
 ) -> Option<HashSet<usize>> {
-    let boxes = run_tesseract_boxes(image_path, language, psm).ok()?;
-    let image = image::open(image_path).ok()?.to_luma8();
-    terminal_ellipsis_pixel_evidence(text, &boxes, &image)
-        .then(|| comma_spacing_pixel_evidence(text, &boxes, &image))
+    with_tesseract_boxes(image_path, language, psm, |boxes, image| {
+        terminal_ellipsis_pixel_evidence(text, boxes, image)
+            .then(|| comma_spacing_pixel_evidence(text, boxes, image))
+    })
+    .flatten()
 }
 
 fn recover_straight_quote_from_boxes(text: &str, boxes: &str, image: &image::GrayImage) -> String {
-    if text.contains(['\n', '\r']) {
-        return text.to_string();
-    }
-    let Some(parsed) = parse_tesseract_boxes(boxes) else {
-        return text.to_string();
+    let recovered = || {
+        if text.contains(['\n', '\r']) {
+            return None;
+        }
+        let parsed = parse_boxes_matching_text(text, boxes)?;
+        let quotes: Vec<_> = parsed
+            .iter()
+            .filter(|(ch, _)| matches!(ch, '"' | '“' | '”'))
+            .collect();
+        if quotes.len() != 2 || quotes.iter().filter(|(ch, _)| *ch == '"').count() != 1 {
+            return None;
+        }
+        let first = straight_quote_mask(image, quotes[0].1)?;
+        let second = straight_quote_mask(image, quotes[1].1)?;
+        (first == second).then(|| {
+            text.chars()
+                .map(|ch| if matches!(ch, '“' | '”') { '"' } else { ch })
+                .collect()
+        })
     };
-    if !text
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .eq(parsed.iter().map(|(c, _)| *c))
-    {
-        return text.to_string();
-    }
-    let quotes: Vec<_> = parsed
-        .iter()
-        .filter(|(ch, _)| matches!(ch, '"' | '“' | '”'))
-        .collect();
-    if quotes.len() != 2 || quotes.iter().filter(|(ch, _)| *ch == '"').count() != 1 {
-        return text.to_string();
-    }
-    let Some(first) = straight_quote_mask(image, quotes[0].1) else {
-        return text.to_string();
-    };
-    let Some(second) = straight_quote_mask(image, quotes[1].1) else {
-        return text.to_string();
-    };
-    if first != second {
-        return text.to_string();
-    }
-    text.chars()
-        .map(|ch| if matches!(ch, '“' | '”') { '"' } else { ch })
-        .collect()
+    recovered().unwrap_or_else(|| text.to_string())
 }
 
 // A straight double quote has the same two vertical strokes in every row.
 // Trim box padding, then require matching masks for both recognized glyphs.
+// Returns the row count and the single repeated row mask.
 fn straight_quote_mask(
     image: &image::GrayImage,
     [left, bottom, right, top]: [u32; 4],
@@ -1615,11 +1712,7 @@ fn straight_quote_mask(
         return None;
     }
     // Include height so an unrelated taller glyph cannot match.
-    let mut result = Vec::with_capacity(mask.len() * rows.len());
-    for _ in &rows {
-        result.extend_from_slice(mask);
-    }
-    Some((mask.len(), result))
+    Some((rows.len(), mask.to_vec()))
 }
 
 pub(super) fn run_external_ocr_command(
@@ -1882,6 +1975,9 @@ struct PgsSpatialInkGroup {
     count: usize,
 }
 
+/// Whether rows `top..bottom` contain two substantial, horizontally separated
+/// ink groups whose vertical extents are staggered in the same direction, such
+/// as two speakers' lines at different heights that share one row band.
 fn overlapping_spatial_bands(
     pixels: &[u8],
     stride: usize,
@@ -2011,8 +2107,7 @@ pub(super) unsafe fn split_pgs_bitmap_lines(
     }
     let scale = pgm_width / width;
     let pixel_count = width.checked_mul(height)?;
-    if scale == 0
-        || pgm_height / height != scale
+    if pgm_height / height != scale
         || width > MAX_SOURCE_SIDE
         || height > MAX_SOURCE_SIDE
         || pixel_count > MAX_SOURCE_PIXELS
@@ -2254,6 +2349,7 @@ pub(super) unsafe fn split_pgs_bitmap_lines(
     }
 
     // Reject oversized crops before allocating any of their output buffers.
+    let mut scaled_spans = Vec::with_capacity(spans.len());
     for &(top, bottom) in &spans {
         let scaled_top = top.checked_mul(scale)?;
         let scaled_bottom = bottom.checked_mul(scale)?;
@@ -2264,12 +2360,11 @@ pub(super) unsafe fn split_pgs_bitmap_lines(
         {
             return None;
         }
+        scaled_spans.push((scaled_top, scaled_bottom));
     }
     let raster = &pgm[header_len..];
-    let mut crops = Vec::with_capacity(spans.len());
-    for (top, bottom) in spans {
-        let top = top.checked_mul(scale)?;
-        let bottom = bottom.checked_mul(scale)?;
+    let mut crops = Vec::with_capacity(scaled_spans.len());
+    for (top, bottom) in scaled_spans {
         crops.push((
             crop_pgm(raster, pgm_width, 0, top, pgm_width, bottom),
             OcrBoundingBox {
@@ -3548,6 +3643,10 @@ fn tesseract_seam_evidence_with(
     seam: &OverlappingSeam,
     mut read: impl FnMut(u8) -> Option<(String, String)>,
 ) -> bool {
+    if !bounded_seam_image(image) {
+        return false;
+    }
+    let gray = image::imageops::grayscale(image);
     let mut seam_box = None;
     for psm in [6, 7] {
         let Some((text, raw_boxes)) = read(psm) else {
@@ -3559,10 +3658,11 @@ fn tesseract_seam_evidence_with(
         let Some(boxes) = parse_tesseract_boxes(&raw_boxes) else {
             return false;
         };
-        if boxes.iter().map(|(c, _)| *c).collect::<String>() != seam.corrected_glyphs
-            || boxes.iter().any(|(_, [l, b, r, t])| {
-                l >= r || b >= t || *r > image.width() || *t > image.height()
-            })
+        if !boxes
+            .iter()
+            .map(|(c, _)| *c)
+            .eq(seam.corrected_glyphs.chars())
+            || !boxes_fit_image(&boxes, image.width(), image.height())
             || seam.seam_index == 0
             || seam.seam_index + 1 >= boxes.len()
         {
@@ -3577,7 +3677,7 @@ fn tesseract_seam_evidence_with(
         if !(prev[2] <= current[0] && current[2] <= next[0] && prev[2] < next[0]) {
             return false;
         }
-        if !seam_pixel_evidence(image, seam, current, prev[2], next) {
+        if !seam_pixel_evidence(&gray, seam, current, prev[2], next) {
             return false;
         }
         seam_box = Some(current);
@@ -3585,31 +3685,46 @@ fn tesseract_seam_evidence_with(
     seam_box.is_some()
 }
 
+/// The 8-connected neighbors of `(x, y)` inside the given column and row ranges.
+fn neighbors8(
+    x: u32,
+    y: u32,
+    columns: std::ops::Range<u32>,
+    rows: std::ops::Range<u32>,
+) -> impl Iterator<Item = (u32, u32)> {
+    let xs = x.saturating_sub(1).max(columns.start)..(x.saturating_add(2)).min(columns.end);
+    let ys = y.saturating_sub(1).max(rows.start)..(y.saturating_add(2)).min(rows.end);
+    ys.flat_map(move |ny| xs.clone().map(move |nx| (nx, ny)))
+        .filter(move |&neighbor| neighbor != (x, y))
+}
+
 fn seam_pixel_evidence(
-    image: &image::RgbImage,
+    gray: &image::GrayImage,
     seam: &OverlappingSeam,
     char_box: [u32; 4],
     left: u32,
     next_box: [u32; 4],
 ) -> bool {
     let right = next_box[0];
-    if !bounded_seam_image(image) || left >= right || right > image.width() {
+    if left >= right || right > gray.width() {
         return false;
     }
     let [cl, cb, cr, ct] = char_box;
-    if cl >= cr || cb >= ct || cr > image.width() || ct > image.height() {
+    if cl >= cr || cb >= ct || cr > gray.width() || ct > gray.height() {
         return false;
     }
-    let gray = image::imageops::grayscale(image);
     let width = (right - left) as usize;
-    let height = image.height() as usize;
+    let height = gray.height() as usize;
+    // Tesseract boxes are bottom-origin; convert the character box to rows.
+    let top = gray.height() - ct;
+    let bottom = gray.height() - cb;
     let mut seen = vec![false; width * height];
     let mut component_count = 0;
     let mut neighbor_fringe_count = 0;
     let mut component_pixels = 0u64;
     let mut char_pixels = 0u64;
     let mut overlap_pixels = 0u64;
-    for y in 0..image.height() {
+    for y in 0..gray.height() {
         for x in left..right {
             let index = y as usize * width + (x - left) as usize;
             if gray.get_pixel(x, y)[0] >= SEAM_FOREGROUND_THRESHOLD || seen[index] {
@@ -3623,28 +3738,14 @@ fn seam_pixel_evidence(
                 if pixels.len() > SEAM_COMPONENT_PIXEL_LIMIT {
                     return false;
                 }
-                for dy in -1i64..=1 {
-                    for dx in -1i64..=1 {
-                        let nx = i64::from(px) + dx;
-                        let ny = i64::from(py) + dy;
-                        if nx < i64::from(left)
-                            || nx >= i64::from(right)
-                            || ny < 0
-                            || ny >= i64::from(image.height())
-                        {
-                            continue;
-                        }
-                        let (nx, ny) = (nx as u32, ny as u32);
-                        let ni = ny as usize * width + (nx - left) as usize;
-                        if !seen[ni] && gray.get_pixel(nx, ny)[0] < SEAM_FOREGROUND_THRESHOLD {
-                            seen[ni] = true;
-                            stack.push((nx, ny));
-                        }
+                for (nx, ny) in neighbors8(px, py, left..right, 0..gray.height()) {
+                    let ni = ny as usize * width + (nx - left) as usize;
+                    if !seen[ni] && gray.get_pixel(nx, ny)[0] < SEAM_FOREGROUND_THRESHOLD {
+                        seen[ni] = true;
+                        stack.push((nx, ny));
                     }
                 }
             }
-            let top = image.height() - ct;
-            let bottom = image.height() - cb;
             if pixels.iter().any(|&(px, py)| {
                 px < cl.saturating_sub(2)
                     || px >= cr.saturating_add(2)
@@ -3652,7 +3753,7 @@ fn seam_pixel_evidence(
                     || py >= bottom.saturating_add(2)
             }) {
                 neighbor_fringe_count += 1;
-                if neighbor_fringe_count > 1 || !is_neighbor_fringe(&gray, &pixels, next_box) {
+                if neighbor_fringe_count > 1 || !is_neighbor_fringe(gray, &pixels, next_box) {
                     return false;
                 }
                 continue;
@@ -3724,29 +3825,17 @@ fn is_neighbor_fringe(gray: &image::GrayImage, fringe: &[(u32, u32)], next_box: 
             }
             core_pixels += 1;
         }
-        for dy in -1i64..=1 {
-            for dx in -1i64..=1 {
-                let nx = i64::from(x) + dx;
-                let ny = i64::from(y) + dy;
-                if nx < 0
-                    || ny < 0
-                    || nx >= i64::from(gray.width())
-                    || ny >= i64::from(gray.height())
-                {
-                    continue;
-                }
-                let (nx, ny) = (nx as u32, ny as u32);
-                if gray.get_pixel(nx, ny)[0] >= SEAM_FOREGROUND_THRESHOLD {
-                    continue;
-                }
-                if nx < min_x || nx >= max_x || ny < min_y || ny >= max_y {
-                    return false;
-                }
-                let index = (ny - min_y) as usize * width + (nx - min_x) as usize;
-                if !seen[index] {
-                    seen[index] = true;
-                    stack.push((nx, ny));
-                }
+        for (nx, ny) in neighbors8(x, y, 0..gray.width(), 0..gray.height()) {
+            if gray.get_pixel(nx, ny)[0] >= SEAM_FOREGROUND_THRESHOLD {
+                continue;
+            }
+            if nx < min_x || nx >= max_x || ny < min_y || ny >= max_y {
+                return false;
+            }
+            let index = (ny - min_y) as usize * width + (nx - min_x) as usize;
+            if !seen[index] {
+                seen[index] = true;
+                stack.push((nx, ny));
             }
         }
     }

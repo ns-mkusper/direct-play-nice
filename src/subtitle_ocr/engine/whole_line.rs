@@ -142,10 +142,8 @@ impl ExperimentalLineRecognizer {
         }
     }
 
-    pub(in crate::subtitle_ocr) fn recognize(&mut self, crop: &RgbImage) -> Result<RecognizedLine> {
-        self.recognize_with_spacing_probe(crop, false)
-    }
-
+    /// Recognizes one line; `allow_probe` enables the padded spacing probe for
+    /// the corrected mapping.
     pub(in crate::subtitle_ocr) fn recognize_with_spacing_probe(
         &mut self,
         crop: &RgbImage,
@@ -268,7 +266,7 @@ impl WholeLineRecognizer {
     }
 }
 
-pub(super) fn read_bounded_model(path: &Path) -> Result<Vec<u8>> {
+fn read_bounded_model(path: &Path) -> Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
     // Opening an attacker-controlled FIFO must not hang a worker on Unix.
@@ -277,31 +275,34 @@ pub(super) fn read_bounded_model(path: &Path) -> Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = options
-        .open(path)
-        .context("opening experimental recognizer model")?;
+    let file = options.open(path).context("opening model")?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        bail!("experimental recognizer model must be a regular file");
+        bail!("model must be a regular file");
     }
     if metadata.len() > MAX_MODEL_BYTES {
-        bail!("experimental recognizer model exceeds size limit");
+        bail!("model exceeds size limit");
     }
     let mut bytes = Vec::new();
     file.take(MAX_MODEL_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_MODEL_BYTES {
-        bail!("experimental recognizer model exceeds size limit");
+        bail!("model exceeds size limit");
+    }
+    Ok(bytes)
+}
+
+/// Reads a bounded model and accepts it only if its SHA-256 is in `allowed`.
+pub(super) fn read_pinned_model(path: &Path, allowed: &[&str]) -> Result<Vec<u8>> {
+    let bytes = read_bounded_model(path)?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if !allowed.contains(&digest.as_str()) {
+        bail!("model is not in the audited allowlist");
     }
     Ok(bytes)
 }
 
 pub(super) fn read_audited_model(path: &Path) -> Result<Vec<u8>> {
-    let bytes = read_bounded_model(path)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    if !AUDITED_SHA256.contains(&digest.as_str()) {
-        bail!("experimental recognizer model is not in the audited allowlist");
-    }
-    Ok(bytes)
+    read_pinned_model(path, &AUDITED_SHA256).context("experimental recognizer model")
 }
 
 pub(in crate::subtitle_ocr) fn supports_crop_dimensions(width: u32, height: u32) -> bool {
@@ -348,11 +349,13 @@ struct SpaceAlignments {
     timesteps: usize,
 }
 
-fn ctc_space_alignments(
+/// Validates a `[1, time, classes]` recognizer output against the dictionary
+/// and returns `(time, classes)`.
+fn checked_output_dims(
     shape: &[i64],
     data: &[f32],
     dictionaries: &Dictionaries,
-) -> Result<SpaceAlignments> {
+) -> Result<(usize, usize)> {
     if shape.len() != 3 || shape[0] != 1 {
         bail!("recognizer output must have shape [1, time, classes]");
     }
@@ -363,28 +366,47 @@ fn ctc_space_alignments(
         || width == 0
         || width > MAX_CLASSES
         || width != dictionaries.corrected.len()
-        || time
-            .checked_mul(width)
-            .is_none_or(|n| n > MAX_OUTPUT_ELEMENTS || n != data.len())
+        || dictionaries.original.len() < width
     {
-        bail!("recognizer alignment dimensions are invalid");
+        bail!("recognizer output dimensions do not match the bounded dictionary");
     }
+    let count = time
+        .checked_mul(width)
+        .ok_or_else(|| anyhow!("recognizer output size overflow"))?;
+    if count > MAX_OUTPUT_ELEMENTS || data.len() != count {
+        bail!("recognizer output size is invalid or exceeds limit");
+    }
+    Ok((time, width))
+}
+
+/// Returns the first highest-scoring class of one timestep, rejecting non-finite scores.
+fn best_class(row: &[f32]) -> Result<(usize, f32)> {
+    let mut best = (0usize, f32::MIN);
+    for (index, &score) in row.iter().enumerate() {
+        if !score.is_finite() {
+            bail!("recognizer output contains a non-finite score");
+        }
+        if score > best.1 {
+            best = (index, score);
+        }
+    }
+    Ok(best)
+}
+
+/// Maps each decoded space (by count of preceding glyphs) to the timestep where
+/// its CTC run peaks.
+fn ctc_space_alignments(
+    shape: &[i64],
+    data: &[f32],
+    dictionaries: &Dictionaries,
+) -> Result<SpaceAlignments> {
+    let (time, width) = checked_output_dims(shape, data, dictionaries)?;
     let mut runs = Vec::new();
     let mut previous = 0usize;
     let mut peak_step = 0usize;
     let mut peak_score = f32::MIN;
     for (step, row) in data.chunks_exact(width).enumerate() {
-        let mut best_index = 0usize;
-        let mut best_score = f32::MIN;
-        for (index, &score) in row.iter().enumerate() {
-            if !score.is_finite() {
-                bail!("recognizer output contains a non-finite score");
-            }
-            if score > best_score {
-                best_index = index;
-                best_score = score;
-            }
-        }
+        let (best_index, best_score) = best_class(row)?;
         if best_index != previous {
             if previous != 0 {
                 runs.push((previous, peak_step));
@@ -505,15 +527,19 @@ fn merge_padded_spacing(
     }
     let width = crop.width() as usize;
     let min_gap = (crop.height() as usize / 6).clamp(2, 8);
+    let blank_columns: Vec<bool> = (0..crop.width())
+        .map(|x| (0..crop.height()).all(|y| crop.get_pixel(x, y)[0] >= 245))
+        .collect();
+    // Interior runs of blank columns wide enough to separate words.
     let mut gaps = Vec::new();
     let mut x = 0usize;
     while x < width {
-        if (0..crop.height()).any(|y| crop.get_pixel(x as u32, y)[0] < 245) {
+        if !blank_columns[x] {
             x += 1;
             continue;
         }
         let start = x;
-        while x < width && (0..crop.height()).all(|y| crop.get_pixel(x as u32, y)[0] >= 245) {
+        while x < width && blank_columns[x] {
             x += 1;
         }
         if start > 0 && x < width && x - start >= min_gap {
@@ -575,43 +601,14 @@ fn decode_output(
     data: &[f32],
     dictionaries: &Dictionaries,
 ) -> Result<LineRecognition> {
-    if shape.len() != 3 || shape[0] != 1 {
-        bail!("recognizer output must have shape [1, time, classes]");
-    }
-    let time = usize::try_from(shape[1]).context("invalid recognizer time dimension")?;
-    let width = usize::try_from(shape[2]).context("invalid recognizer class dimension")?;
-    if time == 0
-        || time > MAX_TIMESTEPS
-        || width == 0
-        || width > MAX_CLASSES
-        || width != dictionaries.corrected.len()
-        || dictionaries.original.len() < width
-    {
-        bail!("recognizer output dimensions do not match the bounded dictionary");
-    }
-    let count = time
-        .checked_mul(width)
-        .ok_or_else(|| anyhow!("recognizer output size overflow"))?;
-    if count > MAX_OUTPUT_ELEMENTS || data.len() != count {
-        bail!("recognizer output size is invalid or exceeds limit");
-    }
+    let (_, width) = checked_output_dims(shape, data, dictionaries)?;
     let mut original = String::new();
     let mut corrected = String::new();
     let mut last_index = 0usize;
     let mut score_sum = 0.0f64;
     let mut score_count = 0usize;
     for row in data.chunks_exact(width) {
-        let mut max_index = 0usize;
-        let mut max_value = f32::MIN;
-        for (index, &value) in row.iter().enumerate() {
-            if !value.is_finite() {
-                bail!("recognizer output contains a non-finite score");
-            }
-            if value > max_value {
-                max_index = index;
-                max_value = value;
-            }
-        }
+        let (max_index, max_value) = best_class(row)?;
         if max_index != 0 && max_index != last_index {
             append_bounded(&mut original, &dictionaries.original[max_index])?;
             append_bounded(&mut corrected, &dictionaries.corrected[max_index])?;

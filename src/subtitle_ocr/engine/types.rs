@@ -66,9 +66,11 @@ pub(in crate::subtitle_ocr) struct OcrLine {
 #[derive(Debug, Default)]
 pub(in crate::subtitle_ocr) struct OcrOutput {
     pub(in crate::subtitle_ocr) lines: Vec<OcrLine>,
+    /// Set when an overlapping detector seam was corrected in `lines`.
     pub(in crate::subtitle_ocr) seam_corrected: bool,
 }
 
+/// Layout known about a bitmap line crop before direct recognition.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(in crate::subtitle_ocr) enum BitmapLineContext {
     #[default]
@@ -82,10 +84,12 @@ pub(in crate::subtitle_ocr) trait SubtitleConverter {
     /// Implementations should return an empty `OcrOutput` when extraction succeeds but no text is found.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
 
+    /// Whether `recognize_bitmap_line*` can recognize crops for `language`.
     fn supports_bitmap_line_recognition(&self, _language: &str) -> bool {
         false
     }
 
+    /// Recognizes one pre-cropped bitmap line, or `None` when unsupported.
     fn recognize_bitmap_line(
         &mut self,
         _image: &image::RgbImage,
@@ -94,6 +98,8 @@ pub(in crate::subtitle_ocr) trait SubtitleConverter {
         Ok(None)
     }
 
+    /// Like `recognize_bitmap_line`, with layout context that may enable
+    /// additional spacing checks.
     fn recognize_bitmap_line_with_context(
         &mut self,
         image: &image::RgbImage,

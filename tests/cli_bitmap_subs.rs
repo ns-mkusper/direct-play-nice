@@ -257,6 +257,12 @@ fn probe_duration_ms(path: &Path) -> u64 {
 // Construct a small SUP stream directly: FFmpeg's bitmap encoders cannot turn
 // SRT into pictures. Each visible display set carries a real PGS RLE object.
 fn synthetic_pgs() -> Vec<u8> {
+    const PALETTE: u8 = 0x14;
+    const OBJECT: u8 = 0x15;
+    const PRESENTATION: u8 = 0x16;
+    const WINDOW: u8 = 0x17;
+    const END: u8 = 0x80;
+
     fn segment(out: &mut Vec<u8>, ms: u32, kind: u8, data: &[u8]) {
         out.extend_from_slice(b"PG");
         out.extend_from_slice(&(ms * 90).to_be_bytes());
@@ -274,15 +280,15 @@ fn synthetic_pgs() -> Vec<u8> {
             // Object 0 in window 0, positioned at (48, 80).
             pcs.extend_from_slice(&[0, 0, 0, 0, 0, 48, 0, 80]);
         }
-        segment(out, ms, 0x16, &pcs);
+        segment(out, ms, PRESENTATION, &pcs);
         if visible {
             // Distinct rectangle widths make replacement events visibly different.
             let width = 32 - (number as u8 * 2);
-            segment(out, ms, 0x17, &[1, 0, 0, 48, 0, 80, 0, width, 0, 16]);
+            segment(out, ms, WINDOW, &[1, 0, 0, 48, 0, 80, 0, width, 0, 16]);
             segment(
                 out,
                 ms,
-                0x14,
+                PALETTE,
                 &[0, 0, 0, 16, 128, 128, 0, 1, 235, 128, 128, 255],
             );
             let mut rle = Vec::new();
@@ -304,9 +310,9 @@ fn synthetic_pgs() -> Vec<u8> {
                 16,
             ];
             object.extend_from_slice(&rle);
-            segment(out, ms, 0x15, &object);
+            segment(out, ms, OBJECT, &object);
         }
-        segment(out, ms, 0x80, &[]);
+        segment(out, ms, END, &[]);
     }
     let mut data = Vec::new();
     for (n, (ms, visible)) in [
@@ -323,6 +329,16 @@ fn synthetic_pgs() -> Vec<u8> {
         display(&mut data, ms, n as u16, visible);
     }
     data
+}
+
+/// Parses an SRT `HH:MM:SS,mmm` timestamp into milliseconds.
+fn srt_timestamp_ms(timestamp: &str) -> i64 {
+    let parts: Vec<i64> = timestamp
+        .split([':', ','])
+        .map(|part| part.parse().expect("timestamp component"))
+        .collect();
+    assert_eq!(parts.len(), 4, "malformed SRT timestamp {timestamp:?}");
+    parts[0] * 3_600_000 + parts[1] * 60_000 + parts[2] * 1_000 + parts[3]
 }
 
 #[test]
@@ -420,15 +436,7 @@ fn cli_synthetic_pgs_preserves_event_timing() -> Result<(), Box<dyn std::error::
         assert_eq!(lines.next(), Some((index + 1).to_string().as_str()));
         let times = lines.next().expect("cue timestamp");
         let (actual_start, actual_end) = times.split_once(" --> ").expect("SRT timing");
-        fn ms(timestamp: &str) -> i64 {
-            let parts: Vec<i64> = timestamp
-                .split([':', ','])
-                .map(|part| part.parse().expect("timestamp component"))
-                .collect();
-            assert_eq!(parts.len(), 4);
-            parts[0] * 3_600_000 + parts[1] * 60_000 + parts[2] * 1_000 + parts[3]
-        }
-        let actual = (ms(actual_start), ms(actual_end));
+        let actual = (srt_timestamp_ms(actual_start), srt_timestamp_ms(actual_end));
         assert!(
             (actual.0 - start).abs() <= 30 && (actual.1 - end).abs() <= 30,
             "cue {}: expected {start}-{end}ms, got {}-{}ms",

@@ -487,55 +487,35 @@ pub(super) fn normalize_text_for_char_similarity(input: &str) -> String {
 pub(super) fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
-    if expected_words.is_empty() {
-        return if actual_words.is_empty() { 0.0 } else { 1.0 };
-    }
-
-    let m = expected_words.len();
-    let n = actual_words.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
-        row[0] = i;
-    }
-    for (j, cell) in dp[0].iter_mut().enumerate().take(n + 1) {
-        *cell = j;
-    }
-    for i in 1..=m {
-        for j in 1..=n {
-            let cost = if expected_words[i - 1] == actual_words[j - 1] {
-                0
-            } else {
-                1
-            };
-            dp[i][j] = std::cmp::min(
-                std::cmp::min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
-                dp[i - 1][j - 1] + cost,
-            );
-        }
-    }
-    dp[m][n] as f32 / expected_words.len() as f32
+    edit_error_rate(&expected_words, &actual_words)
 }
 
 pub(super) fn char_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_chars: Vec<char> = expected.chars().collect();
     let actual_chars: Vec<char> = actual.chars().collect();
-    if expected_chars.is_empty() {
-        return if actual_chars.is_empty() { 0.0 } else { 1.0 };
+    edit_error_rate(&expected_chars, &actual_chars)
+}
+
+/// Levenshtein distance divided by the reference length, using two rolling
+/// rows. An empty reference scores 0 for empty output and 1 otherwise.
+fn edit_error_rate<T: PartialEq>(expected: &[T], actual: &[T]) -> f32 {
+    if expected.is_empty() {
+        return if actual.is_empty() { 0.0 } else { 1.0 };
     }
 
-    let mut previous: Vec<usize> = (0..=actual_chars.len()).collect();
-    for (i, expected_char) in expected_chars.iter().enumerate() {
-        let mut current = vec![0; actual_chars.len() + 1];
+    let mut previous: Vec<usize> = (0..=actual.len()).collect();
+    let mut current = vec![0; actual.len() + 1];
+    for (i, expected_item) in expected.iter().enumerate() {
         current[0] = i + 1;
-        for (j, actual_char) in actual_chars.iter().enumerate() {
-            let cost = usize::from(expected_char != actual_char);
+        for (j, actual_item) in actual.iter().enumerate() {
+            let cost = usize::from(expected_item != actual_item);
             current[j + 1] = (previous[j + 1] + 1)
                 .min(current[j] + 1)
                 .min(previous[j] + cost);
         }
-        previous = current;
+        std::mem::swap(&mut previous, &mut current);
     }
-    previous[actual_chars.len()] as f32 / expected_chars.len() as f32
+    previous[actual.len()] as f32 / expected.len() as f32
 }
 
 #[cfg(test)]
