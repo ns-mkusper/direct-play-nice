@@ -212,16 +212,37 @@ servarr_api_key = "..."
 environment variables. Supported env names include `SONARR_URL`,
 `SONARR_API_KEY`, `RADARR_URL`, and `RADARR_API_KEY`.
 
-Before grabbing a verified replacement, DPN marks the current Arr history item as
-failed so the old release is blocklisted. It resolves that history item from the
-Arr download id when available, or from `DIRECT_PLAY_NICE_SONARR_HISTORY_ID` /
-`DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if your wrapper provides it.
+After grabbing a verified replacement, DPN marks the current download failed in
+Arr history so the old release is blocklisted. It resolves that history item
+from the Arr download id when available, or from
+`DIRECT_PLAY_NICE_SONARR_HISTORY_ID` / `DIRECT_PLAY_NICE_RADARR_HISTORY_ID` if
+your wrapper provides it, and marks the download's `grabbed` record failed: Arr
+cannot blocklist a release from its import record.
+
+Candidates whose title is already on the item's Arr blocklist are skipped, since
+Arr matches its blocklist per indexer and would otherwise grab the same release
+from another indexer. Candidates that are the release behind the current file,
+identified from its Arr history and scene name, are skipped as well. If Arr
+refuses a grab, DPN tries the next candidate (up to three).
+
+Release titles do not always list every audio track, so the audit checks its own
+grabs after Arr imports them. Each grab is remembered in DPN's cache next to the
+no-candidate cooldown. At the start of every audit run, DPN looks for the import
+of each remembered grab in Arr history and assesses the imported file against
+the languages the grab was meant to provide. If a required language is still
+missing, DPN marks that release's `grabbed` history record failed so Arr
+blocklists it, clears the item's no-candidate cooldown, and the same run
+searches the item again. Grabs that are not imported within 14 days are
+forgotten. With `servarr_language_dry_run`, DPN only reports what it would
+blocklist.
 
 For Sonarr/Radarr, a language-better file can be stuck as a completed queue item
 when Arr considers it a quality downgrade. Audit mode checks those pending
 imports; when the pending file satisfies DPN's language policy, apply mode
 deletes the old episode/movie-file entry, posts manual import, and removes the
-completed queue item without deleting the downloaded replacement.
+completed queue item without deleting the downloaded replacement. DPN decides
+from the audio and subtitle tracks of the downloaded file when it can read it,
+and from the release title and custom formats otherwise.
 
 The default examples above require English audio only. Extra audio languages are
 allowed; a file with English plus Japanese audio still satisfies

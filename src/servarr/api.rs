@@ -1,16 +1,17 @@
 //! Minimal Sonarr/Radarr API helpers used by optional language mismatch handling.
 
-use super::cache;
+use super::cache::{self, PendingGrab};
 use super::env_helpers::get_env_ignore_case;
 use super::language::{
-    normalize_language_tag, parse_language_tokens, report_from_present, LanguageCheckReport,
-    LanguageRequirements, UntaggedRetagOptions,
+    check_file, normalize_language_tag, parse_language_tokens, report_from_present,
+    LanguageCheckReport, LanguageRequirements, UntaggedRetagOptions,
 };
 use super::IntegrationKind;
 use crate::{ServarrLanguageAuditScope, ServarrLanguageCandidatePolicy};
 use anyhow::{anyhow, bail, Context, Result};
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,6 +19,17 @@ use ureq::{Agent, AgentBuilder, Error as UreqError};
 
 const SERVARR_HISTORY_PAGE_SIZE: u32 = 100;
 const SERVARR_HISTORY_MAX_PAGES: u32 = 1_000;
+// Newest blocklist entries of a series checked before grabbing a replacement.
+const SERVARR_BLOCKLIST_PAGE_SIZE: u32 = 1_000;
+// Candidates tried when Arr refuses to grab one (for example because the
+// download client already has it); the attempt fails once all of these fail.
+const SERVARR_MAX_GRAB_ATTEMPTS: usize = 3;
+// A replacement grabbed by the audit is checked once Arr has imported it. A
+// grab that is still not imported after this long is forgotten.
+const PENDING_GRAB_MAX_AGE_SECS: u64 = 14 * 86_400;
+// History up to this long before the recorded grab time still counts as the
+// grab, in case the Arr host's clock runs behind DPN's.
+const PENDING_GRAB_CLOCK_SLACK_SECS: u64 = 3_600;
 // How long the language audit waits for a Sonarr ManualImport command to
 // finish before giving up on that import (120 polls x 5 s = 10 minutes).
 const SERVARR_COMMAND_MAX_POLLS: u32 = 120;
@@ -85,6 +97,9 @@ pub struct AuditSummary {
     pub dry_run: usize,
     pub no_candidate: usize,
     pub skipped_no_candidate_cooldown: usize,
+    /// Grabbed replacements whose imported file still lacked a required
+    /// language and were marked failed so Arr blocklists them.
+    pub rejected_imports: usize,
     pub errors: usize,
 }
 
@@ -125,6 +140,7 @@ impl AuditSummary {
         self.dry_run += other.dry_run;
         self.no_candidate += other.no_candidate;
         self.skipped_no_candidate_cooldown += other.skipped_no_candidate_cooldown;
+        self.rejected_imports += other.rejected_imports;
         self.errors += other.errors;
     }
 }
@@ -160,6 +176,12 @@ pub fn run_sonarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
+    let mut summary = AuditSummary::default();
+    client.verify_pending_grabs(
+        redownload_options.dry_run,
+        &audit_options.untagged_retag,
+        &mut summary,
+    );
     let mut queue_records = client.sonarr_queue_records()?;
     log_sonarr_queue_health(
         "before cleanup",
@@ -167,7 +189,6 @@ pub fn run_sonarr_language_audit(
         audit_options.stale_queue_days,
     );
 
-    let mut summary = AuditSummary::default();
     let removed_queue_items = client.sonarr_remove_bad_queue_items(
         &queue_records,
         requirements,
@@ -546,13 +567,19 @@ pub fn run_radarr_language_audit(
     audit_options: AuditOptions,
 ) -> Result<AuditSummary> {
     let client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
+    let mut summary = AuditSummary::default();
+    client.verify_pending_grabs(
+        redownload_options.dry_run,
+        &audit_options.untagged_retag,
+        &mut summary,
+    );
     let queue_records = client.radarr_queue_records()?;
     let active_queue_movie_ids = radarr_active_queue_movie_ids(&queue_records);
-    let mut summary = client.radarr_force_import_pending_language_upgrades(
+    summary.merge(client.radarr_force_import_pending_language_upgrades(
         &queue_records,
         requirements,
         redownload_options,
-    )?;
+    )?);
     let audit_summary = match audit_options.scope {
         ServarrLanguageAuditScope::History => run_radarr_history_language_audit(
             &client,
@@ -858,60 +885,35 @@ pub fn trigger_verified_redownload(
     let client = ApiClient::from_settings(kind, settings)?;
     let target = Target::from_env(kind)?;
     let releases = client.search_releases(&target)?;
-    let Some(release) = select_verified_release_for_target(
+    client.redownload_from_releases(
         &releases,
         target,
+        HistoryToFail::CurrentDownload,
         requirements,
-        options.candidate_policy,
+        options,
         false,
-    ) else {
-        return Ok(RedownloadOutcome::NoVerifiedRelease {
-            reason: format!(
-                "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
-                kind.label(),
-                options.candidate_policy,
-                if requirements.subtitles.is_empty() {
-                    ""
-                } else {
-                    "/subtitle"
-                }
-            ),
-        });
-    };
+    )
+}
 
-    let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
-    let evidence = release_match_evidence(release, requirements, options.candidate_policy);
-    if options.dry_run {
-        return Ok(RedownloadOutcome::DryRun {
-            summary: format!(
-                "would grab '{}' using {:?} policy ({}) and then blocklist the current history item if identifiable{}",
-                title,
-                options.candidate_policy,
-                evidence,
-                if release_rejections_are_only_existing_file_cutoff(release) {
-                    "; accepting Arr's existing-file/cutoff rejection as a language-upgrade override"
-                } else {
-                    ""
-                }
-            ),
-        });
+/// The Arr history record to mark failed once a replacement is grabbed.
+#[derive(Debug, Clone, Copy)]
+enum HistoryToFail {
+    /// A known history record, typically the import of the current file.
+    Id(i64),
+    /// The record of the download that triggered this Arr custom-script
+    /// event, resolved from the event environment.
+    CurrentDownload,
+}
+
+impl HistoryToFail {
+    fn describe(self) -> String {
+        match self {
+            HistoryToFail::Id(id) => format!("history item {id}"),
+            HistoryToFail::CurrentDownload => {
+                "the current history item if identifiable".to_string()
+            }
+        }
     }
-
-    let Some(history_id) = client.find_current_history_id(kind)? else {
-        bail!(
-            "{} found a verified replacement but could not identify the current download history record to blacklist; refusing to grab replacement.",
-            kind.label()
-        );
-    };
-
-    client.grab_release(release)?;
-    client.mark_history_failed(history_id)?;
-    info!(
-        "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
-        kind.label(),
-        history_id
-    );
-    Ok(RedownloadOutcome::Grabbed { title })
 }
 
 #[derive(Debug, Clone)]
@@ -920,6 +922,9 @@ struct ApiClient {
     base_url: String,
     api_key: String,
     agent: Agent,
+    /// History records marked failed in this run, so one release is not
+    /// failed (and blocklisted) twice.
+    failed_history_ids: RefCell<BTreeSet<i64>>,
 }
 
 impl ApiClient {
@@ -954,6 +959,7 @@ impl ApiClient {
                 .timeout_write(Duration::from_secs(5 * 60))
                 .timeout_connect(Duration::from_secs(60))
                 .build(),
+            failed_history_ids: RefCell::new(BTreeSet::new()),
         })
     }
 
@@ -1069,32 +1075,63 @@ impl ApiClient {
         prefer_non_torrent: bool,
     ) -> Result<RedownloadOutcome> {
         let releases = self.search_releases(&target)?;
-        let Some(release) = select_verified_release_for_target(
+        self.redownload_from_releases(
             &releases,
             target,
+            HistoryToFail::Id(history_id),
             requirements,
-            options.candidate_policy,
+            options,
             prefer_non_torrent,
-        ) else {
+        )
+    }
+
+    /// Grabs the best verified replacement among `releases`, then marks the
+    /// replaced download failed so Arr blocklists it. Candidates already on the
+    /// target's blocklist are skipped; when Arr refuses a grab, the next
+    /// candidate is tried.
+    fn redownload_from_releases(
+        &self,
+        releases: &[Value],
+        target: Target,
+        history: HistoryToFail,
+        requirements: &LanguageRequirements,
+        options: RedownloadOptions,
+        prefer_non_torrent: bool,
+    ) -> Result<RedownloadOutcome> {
+        let label = self.kind.label();
+        let mut candidates = ReplacementCandidates::new(
+            self,
+            verified_release_candidates(
+                releases,
+                target,
+                requirements,
+                options.candidate_policy,
+                prefer_non_torrent,
+            ),
+            target,
+            history,
+        );
+        let Some(mut release) = candidates.next() else {
             return Ok(RedownloadOutcome::NoVerifiedRelease {
                 reason: format!(
-                    "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages",
-                    self.kind.label(),
+                    "{} manual search returned no approved release matching {:?} candidate policy for required audio{} languages{}",
+                    label,
                     options.candidate_policy,
-                    if requirements.subtitles.is_empty() { "" } else { "/subtitle" }
+                    if requirements.subtitles.is_empty() { "" } else { "/subtitle" },
+                    candidates.skipped_summary()
                 ),
             });
         };
-        let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
-        let evidence = release_match_evidence(release, requirements, options.candidate_policy);
         if options.dry_run {
+            let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
+            let evidence = release_match_evidence(release, requirements, options.candidate_policy);
             return Ok(RedownloadOutcome::DryRun {
                 summary: format!(
-                    "would grab '{}' using {:?} policy ({}) and then blocklist history item {}{}",
+                    "would grab '{}' using {:?} policy ({}) and then blocklist {}{}",
                     title,
                     options.candidate_policy,
                     evidence,
-                    history_id,
+                    history.describe(),
                     if release_rejections_are_only_existing_file_cutoff(release) {
                         "; accepting Arr's existing-file/cutoff rejection as a language-upgrade override"
                     } else {
@@ -1103,9 +1140,575 @@ impl ApiClient {
                 ),
             });
         }
-        self.grab_release(release)?;
-        self.mark_history_failed(history_id)?;
+
+        let history_id = match history {
+            HistoryToFail::Id(id) => id,
+            HistoryToFail::CurrentDownload => self.find_current_history_id(self.kind)?.ok_or_else(|| {
+                anyhow!(
+                    "{} found a verified replacement but could not identify the current download history record to blacklist; refusing to grab replacement.",
+                    label
+                )
+            })?,
+        };
+
+        let mut attempts = 1;
+        while let Err(err) = self.grab_release(release) {
+            let failed_title = release_title(release).unwrap_or_default();
+            if attempts >= SERVARR_MAX_GRAB_ATTEMPTS {
+                return Err(err.context(format!(
+                    "{label} refused all {attempts} replacement candidates tried for {} {}; last was '{failed_title}'",
+                    target.noun(),
+                    target.id()
+                )));
+            }
+            let Some(next) = candidates.next() else {
+                return Err(err.context(format!(
+                    "{label} refused replacement '{failed_title}' for {} {} and no other verified candidate is left",
+                    target.noun(),
+                    target.id()
+                )));
+            };
+            warn!(
+                "{} language audit could not grab '{}' for {} {}; trying the next candidate: {:#}",
+                label,
+                failed_title,
+                target.noun(),
+                target.id(),
+                err
+            );
+            release = next;
+            attempts += 1;
+        }
+
+        let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
+        let failed_id = self.history_id_to_mark_failed(target, history_id);
+        self.mark_history_failed(failed_id)?;
+        info!(
+            "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
+            label, failed_id
+        );
+        if matches!(history, HistoryToFail::Id(_)) {
+            // Audit grabs are checked by the next audit run once Arr imports them.
+            let guid = release
+                .get("guid")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let pending = PendingGrab::new(
+                self.kind,
+                target.noun(),
+                target.id(),
+                &title,
+                guid,
+                requirements,
+            );
+            if let Err(err) = cache::record_pending_grab(pending) {
+                warn!(
+                    "{} language audit could not remember grabbed release '{}' for a post-import check: {:#}",
+                    label, title, err
+                );
+            }
+        }
         Ok(RedownloadOutcome::Grabbed { title })
+    }
+
+    /// Checks the replacements earlier audit runs grabbed. Once Arr has
+    /// imported one, the current file is assessed against the languages the
+    /// grab was meant to provide; a file that still lacks one gets its grab
+    /// marked failed, so Arr blocklists the release and this run searches the
+    /// item again. Grabs not imported after 14 days are forgotten.
+    fn verify_pending_grabs(
+        &self,
+        dry_run: bool,
+        untagged_retag: &UntaggedRetagOptions,
+        summary: &mut AuditSummary,
+    ) {
+        let grabs = match cache::pending_grabs(self.kind) {
+            Ok(grabs) => grabs,
+            Err(err) => {
+                warn!(
+                    "{} language audit could not read its pending grabs: {:#}",
+                    self.kind.label(),
+                    err
+                );
+                return;
+            }
+        };
+        for grab in grabs {
+            self.verify_pending_grab(&grab, dry_run, untagged_retag, summary);
+        }
+    }
+
+    fn verify_pending_grab(
+        &self,
+        grab: &PendingGrab,
+        dry_run: bool,
+        untagged_retag: &UntaggedRetagOptions,
+        summary: &mut AuditSummary,
+    ) {
+        let label = self.kind.label();
+        let forget = || {
+            if dry_run {
+                return;
+            }
+            if let Err(err) = cache::remove_pending_grab(
+                self.kind,
+                &grab.target_noun,
+                grab.target_id,
+                grab.grabbed_at_unix,
+            ) {
+                warn!(
+                    "{} language audit could not update its pending grabs: {:#}",
+                    label, err
+                );
+            }
+        };
+        let Some(target) = Target::for_pending_grab(self.kind, grab) else {
+            warn!(
+                "{} language audit dropped pending grab '{}' for unknown target {} {}.",
+                label, grab.release_title, grab.target_noun, grab.target_id
+            );
+            forget();
+            return;
+        };
+        let grabbed_id = match self.imported_pending_grab_history_id(target, grab) {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                let age = current_unix_secs().saturating_sub(grab.grabbed_at_unix);
+                if age >= PENDING_GRAB_MAX_AGE_SECS {
+                    info!(
+                        "{} language audit stops waiting for '{}' ({} {}) to be imported: grabbed {} day(s) ago.",
+                        label,
+                        grab.release_title,
+                        target.noun(),
+                        target.id(),
+                        age / 86_400
+                    );
+                    forget();
+                }
+                return;
+            }
+            Err(err) => {
+                warn!(
+                    "{} language audit could not check whether '{}' ({} {}) was imported: {:#}",
+                    label,
+                    grab.release_title,
+                    target.noun(),
+                    target.id(),
+                    err
+                );
+                return;
+            }
+        };
+        let mut lookup_summary = AuditSummary::default();
+        let report = match target {
+            Target::SonarrEpisode { episode_id } => self
+                .sonarr_current_episode_file(episode_id, &mut lookup_summary)
+                .map(|file| {
+                    assess_sonarr_language_audit_item(
+                        self,
+                        &file,
+                        &grab.requirements,
+                        untagged_retag,
+                    )
+                }),
+            Target::RadarrMovie { movie_id } => self
+                .radarr_current_movie_file(movie_id, &mut lookup_summary)
+                .map(|file| assess_radarr_language_audit_item(&file, &grab.requirements)),
+        };
+        summary.errors += lookup_summary.errors;
+        let Some(report) = report else {
+            warn!(
+                "{} language audit could not load the imported file of '{}' ({} {}); checking again next run.",
+                label,
+                grab.release_title,
+                target.noun(),
+                target.id()
+            );
+            return;
+        };
+        if report.satisfied() {
+            info!(
+                "{} language audit verified imported replacement '{}' for {} {}.",
+                label,
+                grab.release_title,
+                target.noun(),
+                target.id()
+            );
+            forget();
+            return;
+        }
+        let actual = format!(
+            "audio [{}], subtitles [{}]",
+            report.present_audio.join(", "),
+            report.present_subtitles.join(", ")
+        );
+        if dry_run {
+            info!(
+                "{} language audit dry-run: imported replacement '{}' for {} {} lacks {} (file has {}); would mark grabbed history record {} failed to blocklist it.",
+                label,
+                grab.release_title,
+                target.noun(),
+                target.id(),
+                report.describe_missing(),
+                actual,
+                grabbed_id
+            );
+            return;
+        }
+        if let Err(err) = self.mark_history_failed(grabbed_id) {
+            summary.errors += 1;
+            warn!(
+                "{} language audit could not blocklist imported replacement '{}' for {} {}: {:#}",
+                label,
+                grab.release_title,
+                target.noun(),
+                target.id(),
+                err
+            );
+            return;
+        }
+        summary.rejected_imports += 1;
+        info!(
+            "{} language audit blocklisted imported replacement '{}' for {} {}: it lacks {} (file has {}); marked grabbed history record {} failed.",
+            label,
+            grab.release_title,
+            target.noun(),
+            target.id(),
+            report.describe_missing(),
+            actual,
+            grabbed_id
+        );
+        if let Err(err) = cache::clear_no_candidate(self.kind, target.noun(), target.id()) {
+            warn!(
+                "{} language audit could not clear the no-candidate cooldown of {} {}: {:#}",
+                label,
+                target.noun(),
+                target.id(),
+                err
+            );
+        }
+        forget();
+    }
+
+    /// The grabbed history record of `grab` when Arr has imported that
+    /// download, found by guid or core title among the target's history
+    /// since the grab.
+    fn imported_pending_grab_history_id(
+        &self,
+        target: Target,
+        grab: &PendingGrab,
+    ) -> Result<Option<i64>> {
+        let records = self.target_history_records(target)?;
+        let since = grab
+            .grabbed_at_unix
+            .saturating_sub(PENDING_GRAB_CLOCK_SLACK_SECS);
+        let recent = |record: &&Value| {
+            record
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(iso_unix_secs)
+                .is_none_or(|date| date >= since)
+        };
+        let core = core_release_title(&grab.release_title);
+        let Some(grabbed) = records
+            .iter()
+            .filter(recent)
+            .filter(|record| history_event_type(record) == Some("grabbed"))
+            .find(|record| {
+                let guid = record
+                    .get("data")
+                    .and_then(|data| data.get("guid"))
+                    .and_then(Value::as_str);
+                (guid.is_some() && guid == grab.guid.as_deref())
+                    || record
+                        .get("sourceTitle")
+                        .and_then(Value::as_str)
+                        .is_some_and(|title| core_release_title(title) == core)
+            })
+        else {
+            return Ok(None);
+        };
+        let Some(grabbed_id) = grabbed.get("id").and_then(Value::as_i64) else {
+            return Ok(None);
+        };
+        let Some(download_id) = grabbed
+            .get("downloadId")
+            .and_then(Value::as_str)
+            .or(grab.download_id.as_deref())
+            .filter(|id| !id.is_empty())
+        else {
+            return Ok(None);
+        };
+        let imported = records.iter().filter(recent).any(|record| {
+            history_event_type(record) == Some("downloadFolderImported")
+                && record
+                    .get("downloadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id.eq_ignore_ascii_case(download_id))
+        });
+        Ok(imported.then_some(grabbed_id))
+    }
+
+    /// Arr blocklists a release only when the history record marked failed
+    /// carries the grab's details (indexer, publish date, size). Import records
+    /// lack them; Sonarr then fails to parse the publish date and blocklists
+    /// nothing. Returns the "grabbed" record of the download that
+    /// `history_id` belongs to, or `history_id` itself when none is found.
+    fn history_id_to_mark_failed(&self, target: Target, history_id: i64) -> i64 {
+        let label = self.kind.label();
+        match self.grabbed_history_id_for(target, history_id) {
+            Ok(Some(grabbed_id)) => {
+                if grabbed_id != history_id {
+                    info!(
+                        "{} history record {} belongs to the download grabbed in record {}; marking the grab failed so the release is blocklisted.",
+                        label, history_id, grabbed_id
+                    );
+                }
+                grabbed_id
+            }
+            Ok(None) => {
+                warn!(
+                    "{} has no grabbed history record for the download of record {}; marking record {} failed, which may not blocklist the release.",
+                    label, history_id, history_id
+                );
+                history_id
+            }
+            Err(err) => {
+                warn!(
+                    "{} grabbed-history lookup for record {} failed; marking record {} failed, which may not blocklist the release: {:#}",
+                    label, history_id, history_id, err
+                );
+                history_id
+            }
+        }
+    }
+
+    fn grabbed_history_id_for(&self, target: Target, history_id: i64) -> Result<Option<i64>> {
+        let records = self.target_history_records(target)?;
+        let Some(record) = records
+            .iter()
+            .find(|record| record.get("id").and_then(Value::as_i64) == Some(history_id))
+        else {
+            return Ok(None);
+        };
+        if history_event_type(record) == Some("grabbed") {
+            return Ok(Some(history_id));
+        }
+        let Some(download_id) = record
+            .get("downloadId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            return Ok(None);
+        };
+        if let Some(id) = grabbed_history_id_for_download(&records, download_id) {
+            return Ok(Some(id));
+        }
+        // eventType=1 is "grabbed" in both Sonarr and Radarr.
+        let endpoint = format!(
+            "{}/api/v3/history?page=1&pageSize=20&sortKey=date&sortDirection=descending&eventType=1&downloadId={}",
+            self.base_url,
+            url_encode(download_id)
+        );
+        Ok(grabbed_history_id_for_download(
+            &paged_records(&self.get(&endpoint)?),
+            download_id,
+        ))
+    }
+
+    fn target_history_records(&self, target: Target) -> Result<Vec<Value>> {
+        match target {
+            Target::SonarrEpisode { episode_id } => {
+                let endpoint = format!(
+                    "{}/api/v3/history?page=1&pageSize=50&sortKey=date&sortDirection=descending&episodeId={}",
+                    self.base_url, episode_id
+                );
+                Ok(paged_records(&self.get(&endpoint)?))
+            }
+            Target::RadarrMovie { movie_id } => {
+                let endpoint = format!(
+                    "{}/api/v3/history/movie?movieId={}",
+                    self.base_url, movie_id
+                );
+                Ok(self.get(&endpoint)?.as_array().cloned().unwrap_or_default())
+            }
+        }
+    }
+
+    /// Core titles of the release behind the target's current file: the
+    /// history records of the download that imported it (its import and grab
+    /// records) and the file's scene name.
+    fn current_release_titles(&self, target: Target, history: HistoryToFail) -> BTreeSet<String> {
+        let label = self.kind.label();
+        let mut titles = Vec::new();
+        match self.target_history_records(target) {
+            Ok(records) => {
+                let current_download_id = match history {
+                    HistoryToFail::Id(id) => records
+                        .iter()
+                        .find(|record| record.get("id").and_then(Value::as_i64) == Some(id))
+                        .and_then(|record| {
+                            titles.extend(
+                                record
+                                    .get("sourceTitle")
+                                    .and_then(Value::as_str)
+                                    .map(ToOwned::to_owned),
+                            );
+                            record.get("downloadId").and_then(Value::as_str)
+                        })
+                        .map(ToOwned::to_owned),
+                    HistoryToFail::CurrentDownload => download_id(self.kind),
+                };
+                if let Some(download_id) = current_download_id.filter(|id| !id.is_empty()) {
+                    titles.extend(
+                        records
+                            .iter()
+                            .filter(|record| {
+                                record
+                                    .get("downloadId")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|id| id.eq_ignore_ascii_case(&download_id))
+                            })
+                            .filter_map(|record| record.get("sourceTitle").and_then(Value::as_str))
+                            .map(ToOwned::to_owned),
+                    );
+                }
+            }
+            Err(err) => warn!(
+                "{} language audit could not load history of {} {} to identify its current release: {:#}",
+                label,
+                target.noun(),
+                target.id(),
+                err
+            ),
+        }
+        if let HistoryToFail::CurrentDownload = history {
+            titles.extend(match self.kind {
+                IntegrationKind::Sonarr => first_env(&["sonarr_episodefile_scenename"]),
+                IntegrationKind::Radarr => first_env(&["radarr_moviefile_scenename"]),
+            });
+        }
+        match self.current_file_scene_name(target) {
+            Ok(scene_name) => titles.extend(scene_name),
+            Err(err) => warn!(
+                "{} language audit could not load the current file of {} {} to identify its release: {:#}",
+                label,
+                target.noun(),
+                target.id(),
+                err
+            ),
+        }
+        titles
+            .iter()
+            .map(|title| core_release_title(title))
+            .filter(|core| !core.is_empty())
+            .collect()
+    }
+
+    fn current_file_scene_name(&self, target: Target) -> Result<Option<String>> {
+        let file = match target {
+            Target::SonarrEpisode { episode_id } => {
+                match self
+                    .sonarr_episode(episode_id)?
+                    .get("episodeFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                {
+                    Some(file_id) => self.sonarr_episode_file(file_id)?,
+                    None => return Ok(None),
+                }
+            }
+            Target::RadarrMovie { movie_id } => {
+                match self
+                    .radarr_movie(movie_id)?
+                    .get("movieFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                {
+                    Some(file_id) => self.radarr_movie_file(file_id)?,
+                    None => return Ok(None),
+                }
+            }
+        };
+        Ok(file
+            .get("sceneName")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(ToOwned::to_owned))
+    }
+
+    /// Core titles (see `core_release_title`) Arr has blocklisted for `target`. Arr matches
+    /// its blocklist per indexer, so a release blocklisted from one indexer is
+    /// still offered (and grabbed) from another unless it is skipped here.
+    fn blocklisted_release_titles(
+        &self,
+        target: Target,
+        sample_release: &Value,
+    ) -> BTreeSet<String> {
+        match self.blocklist_records(target, sample_release) {
+            Ok(records) => records
+                .iter()
+                .filter_map(|record| record.get("sourceTitle").and_then(Value::as_str))
+                .map(core_release_title)
+                .collect(),
+            Err(err) => {
+                warn!(
+                    "{} language audit could not load the blocklist for {} {}; not skipping blocklisted candidates: {:#}",
+                    self.kind.label(),
+                    target.noun(),
+                    target.id(),
+                    err
+                );
+                BTreeSet::new()
+            }
+        }
+    }
+
+    fn blocklist_records(&self, target: Target, sample_release: &Value) -> Result<Vec<Value>> {
+        match target {
+            Target::SonarrEpisode { episode_id } => {
+                let series_id = match ["mappedSeriesId", "seriesId"]
+                    .iter()
+                    .find_map(|key| sample_release.get(*key).and_then(Value::as_i64))
+                {
+                    Some(id) => id,
+                    None => self
+                        .sonarr_episode(episode_id)?
+                        .get("seriesId")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| anyhow!("episode {} has no series id", episode_id))?,
+                };
+                let endpoint = format!(
+                    "{}/api/v3/blocklist?page=1&pageSize={}&sortKey=date&sortDirection=descending&seriesIds={}",
+                    self.base_url, SERVARR_BLOCKLIST_PAGE_SIZE, series_id
+                );
+                Ok(paged_records(&self.get(&endpoint)?)
+                    .into_iter()
+                    .filter(|record| {
+                        sonarr_blocklist_record_covers_episode(record, series_id, episode_id)
+                    })
+                    .collect())
+            }
+            Target::RadarrMovie { movie_id } => {
+                let endpoint = format!(
+                    "{}/api/v3/blocklist/movie?movieId={}",
+                    self.base_url, movie_id
+                );
+                Ok(self
+                    .get(&endpoint)?
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|record| {
+                        record
+                            .get("movieId")
+                            .and_then(Value::as_i64)
+                            .is_none_or(|id| id == movie_id)
+                    })
+                    .collect())
+            }
+        }
     }
 
     fn sonarr_recent_import_history(&self, lookback_days: u32) -> Result<Vec<Value>> {
@@ -1585,7 +2188,8 @@ impl ApiClient {
             };
             let Some(item) = manual_items.into_iter().find(|item| {
                 sonarr_manual_import_item_matches_episode(item, episode_id)
-                    && manual_import_item_satisfies(
+                    && pending_import_satisfies(
+                        IntegrationKind::Sonarr,
                         item,
                         queue_item,
                         requirements,
@@ -1985,7 +2589,8 @@ impl ApiClient {
             }
             let manual_items = self.radarr_manual_import_items(&download_id, movie_id)?;
             let Some(item) = manual_items.into_iter().find(|item| {
-                manual_import_item_satisfies(
+                pending_import_satisfies(
+                    IntegrationKind::Radarr,
                     item,
                     &queue_item,
                     requirements,
@@ -2137,9 +2742,18 @@ impl ApiClient {
     }
 
     fn mark_history_failed(&self, history_id: i64) -> Result<()> {
+        if self.failed_history_ids.borrow().contains(&history_id) {
+            info!(
+                "{} history record {} was already marked failed in this run.",
+                self.kind.label(),
+                history_id
+            );
+            return Ok(());
+        }
         let endpoint = format!("{}/api/v3/history/failed/{}", self.base_url, history_id);
         self.post_json(&endpoint, &Value::Null)
             .with_context(|| format!("marking {} history item failed", self.kind.label()))?;
+        self.failed_history_ids.borrow_mut().insert(history_id);
         Ok(())
     }
 
@@ -2267,10 +2881,15 @@ impl ApiClient {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        Ok(records
-            .iter()
-            .filter_map(|record| record.get("id").and_then(Value::as_i64))
-            .next())
+        // Prefer the grab: only it carries what Arr needs to blocklist.
+        Ok(
+            grabbed_history_id_for_download(&records, &download_id).or_else(|| {
+                records
+                    .iter()
+                    .filter_map(|record| record.get("id").and_then(Value::as_i64))
+                    .next()
+            }),
+        )
     }
 
     fn get(&self, endpoint: &str) -> Result<Value> {
@@ -2661,6 +3280,81 @@ fn radarr_active_queue_movie_ids(records: &[Value]) -> BTreeSet<i64> {
         .collect()
 }
 
+/// Whether a pending download fixes the missing languages. The downloaded
+/// file's own audio and subtitle tracks decide when DPN can read it (the
+/// manual-import item's path, else the queue item's output path); release
+/// titles and Arr's parsed languages often understate what a release carries.
+/// When the file cannot be read, the title and custom-format evidence decide.
+fn pending_import_satisfies(
+    kind: IntegrationKind,
+    item: &Value,
+    queue_item: &Value,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+) -> bool {
+    let title = queue_item
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("<pending import>");
+    let paths = [item.get("path"), queue_item.get("outputPath")]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| !path.is_empty());
+    for path in paths {
+        let report = match probe_download_languages(Path::new(path), requirements) {
+            Ok(report) => report,
+            Err(err) => {
+                debug!(
+                    "{} language audit could not read pending download '{}': {:#}",
+                    kind.label(),
+                    path,
+                    err
+                );
+                continue;
+            }
+        };
+        let found = format!(
+            "audio [{}], subtitles [{}]",
+            report.present_audio.join(", "),
+            report.present_subtitles.join(", ")
+        );
+        if report.satisfied() {
+            info!(
+                "{} language audit: pending download '{}' has the required languages ({}) in '{}'.",
+                kind.label(),
+                title,
+                found,
+                path
+            );
+        } else {
+            info!(
+                "{} language audit will not force-import '{}': its file '{}' lacks {} ({}).",
+                kind.label(),
+                title,
+                path,
+                report.describe_missing(),
+                found
+            );
+        }
+        return report.satisfied();
+    }
+    manual_import_item_satisfies(item, queue_item, requirements, policy)
+}
+
+/// Reads the stream languages of a downloaded file with the same probe the
+/// per-import language check uses.
+fn probe_download_languages(
+    path: &Path,
+    requirements: &LanguageRequirements,
+) -> Result<LanguageCheckReport> {
+    #[cfg(test)]
+    if let Some(report) = tests::stubbed_probe(path, requirements) {
+        return Ok(report);
+    }
+    check_file(path, requirements)
+}
+
 fn manual_import_item_satisfies(
     item: &Value,
     queue_item: &Value,
@@ -2852,7 +3546,7 @@ fn record_language_audit_assessment(
 
 fn log_audit_summary(label: &str, summary: &AuditSummary) {
     info!(
-        "{} language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, skipped_no_candidate_cooldown={}, errors={}",
+        "{} language audit complete: checked={}, missing={}, searched={}, dry_run={}, grabbed={}, no_candidate={}, skipped_no_candidate_cooldown={}, rejected_imports={}, errors={}",
         label,
         summary.checked,
         summary.missing,
@@ -2861,6 +3555,7 @@ fn log_audit_summary(label: &str, summary: &AuditSummary) {
         summary.grabbed,
         summary.no_candidate,
         summary.skipped_no_candidate_cooldown,
+        summary.rejected_imports,
         summary.errors
     );
 }
@@ -2872,6 +3567,23 @@ fn current_day_number() -> i64 {
         .as_secs() as i64
         / 86_400;
     unix_days + days_from_civil(1970, 1, 1)
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Seconds since the Unix epoch of an Arr UTC timestamp such as
+/// `2026-11-07T06:12:34Z` or `2026-11-07T06:12:34.1234567Z`.
+fn iso_unix_secs(value: &str) -> Option<u64> {
+    let day = iso_day_number(value)? - days_from_civil(1970, 1, 1);
+    let time = value.get(11..19)?;
+    let mut parts = time.split(':').map(|part| part.parse::<i64>().ok());
+    let (hours, minutes, seconds) = (parts.next()??, parts.next()??, parts.next()??);
+    u64::try_from(day * 86_400 + hours * 3_600 + minutes * 60 + seconds).ok()
 }
 
 fn iso_day_number(value: &str) -> Option<i64> {
@@ -2914,6 +3626,18 @@ impl Target {
         }
     }
 
+    fn for_pending_grab(kind: IntegrationKind, grab: &PendingGrab) -> Option<Self> {
+        match (kind, grab.target_noun.as_str()) {
+            (IntegrationKind::Sonarr, "episode") => Some(Target::SonarrEpisode {
+                episode_id: grab.target_id,
+            }),
+            (IntegrationKind::Radarr, "movie") => Some(Target::RadarrMovie {
+                movie_id: grab.target_id,
+            }),
+            _ => None,
+        }
+    }
+
     fn from_env(kind: IntegrationKind) -> Result<Self> {
         match kind {
             IntegrationKind::Sonarr => env_int_list(&[
@@ -2943,6 +3667,36 @@ impl Target {
     }
 }
 
+/// Releases that may replace the current file for `target`, best first:
+/// non-torrent releases first when `prefer_non_torrent` is set, then by
+/// custom-format score plus quality weight. Among equal keys the release Arr
+/// listed last comes first.
+fn verified_release_candidates<'a>(
+    releases: &'a [Value],
+    target: Target,
+    requirements: &LanguageRequirements,
+    policy: ServarrLanguageCandidatePolicy,
+    prefer_non_torrent: bool,
+) -> Vec<&'a Value> {
+    let mut candidates = releases
+        .iter()
+        .filter(|release| release_matches_target(release, target))
+        .filter(|release| release_can_be_language_upgrade_candidate(release))
+        .filter(|release| release_satisfies_languages(release, requirements, policy))
+        .collect::<Vec<_>>();
+    // Reverse before the stable sort so ties keep the release listed last
+    // first, as `Iterator::max_by_key` picked it before candidates were ranked.
+    candidates.reverse();
+    candidates.sort_by_key(|release| {
+        std::cmp::Reverse((
+            prefer_non_torrent && !release_is_torrent(release),
+            release_score(release),
+        ))
+    });
+    candidates
+}
+
+#[cfg(test)]
 fn select_verified_release_for_target<'a>(
     releases: &'a [Value],
     target: Target,
@@ -2950,17 +3704,176 @@ fn select_verified_release_for_target<'a>(
     policy: ServarrLanguageCandidatePolicy,
     prefer_non_torrent: bool,
 ) -> Option<&'a Value> {
-    releases
+    verified_release_candidates(releases, target, requirements, policy, prefer_non_torrent)
+        .into_iter()
+        .next()
+}
+
+/// Ranked replacement candidates that are not on the target's Arr blocklist.
+/// The blocklist is loaded lazily, when the first candidate is considered.
+struct ReplacementCandidates<'a> {
+    client: &'a ApiClient,
+    ranked: std::vec::IntoIter<&'a Value>,
+    target: Target,
+    history: HistoryToFail,
+    blocklisted_titles: Option<BTreeSet<String>>,
+    /// Core titles of the release behind the current file. The old release
+    /// is only blocklisted after the replacement is grabbed, so the blocklist
+    /// cannot keep the same release on another indexer from being chosen.
+    current_titles: Option<BTreeSet<String>>,
+    skipped_blocklisted: usize,
+    skipped_current: usize,
+}
+
+impl<'a> ReplacementCandidates<'a> {
+    fn new(
+        client: &'a ApiClient,
+        ranked: Vec<&'a Value>,
+        target: Target,
+        history: HistoryToFail,
+    ) -> Self {
+        Self {
+            client,
+            ranked: ranked.into_iter(),
+            target,
+            history,
+            blocklisted_titles: None,
+            current_titles: None,
+            skipped_blocklisted: 0,
+            skipped_current: 0,
+        }
+    }
+
+    fn skipped_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.skipped_current > 0 {
+            parts.push(format!(
+                "{} same release as the current file",
+                self.skipped_current
+            ));
+        }
+        if self.skipped_blocklisted > 0 {
+            parts.push(format!("{} already blocklisted", self.skipped_blocklisted));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" (skipped {})", parts.join(", "))
+        }
+    }
+}
+
+impl<'a> Iterator for ReplacementCandidates<'a> {
+    type Item = &'a Value;
+
+    fn next(&mut self) -> Option<&'a Value> {
+        let label = self.client.kind.label();
+        for release in self.ranked.by_ref() {
+            let title = release_title(release).unwrap_or_default();
+            let core = core_release_title(&title);
+            let (client, target, history) = (self.client, self.target, self.history);
+            let current = self
+                .current_titles
+                .get_or_insert_with(|| client.current_release_titles(target, history));
+            if current.contains(&core) {
+                info!(
+                    "{} language audit skipped candidate '{}' for {} {}: same release as the current file.",
+                    label,
+                    title,
+                    target.noun(),
+                    target.id()
+                );
+                self.skipped_current += 1;
+                continue;
+            }
+            let blocklisted = self
+                .blocklisted_titles
+                .get_or_insert_with(|| client.blocklisted_release_titles(target, release));
+            if blocklisted.contains(&core) {
+                info!(
+                    "{} language audit skipped candidate '{}' for {} {}: it is already blocklisted.",
+                    label,
+                    title,
+                    target.noun(),
+                    target.id()
+                );
+                self.skipped_blocklisted += 1;
+                continue;
+            }
+            return Some(release);
+        }
+        None
+    }
+}
+
+/// Lower-cased alphanumeric words of a release title, so `Show.S01E01-GRP`
+/// and `Show S01E01 GRP` compare equal.
+fn normalize_release_title(title: &str) -> String {
+    title
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Normalised release title without trailing `(...)` and `[...]` groups.
+/// Indexers decorate the same release differently, e.g.
+/// `Show S01E01-GRP (Alt Title, Multi-Audio, Multi-Subs) [h264]` on one and
+/// `Show.S01E01-GRP` on another; both have the core title `show s01e01 grp`.
+fn core_release_title(title: &str) -> String {
+    let mut core = title.trim_end();
+    loop {
+        let open = match core.chars().last() {
+            Some(')') => '(',
+            Some(']') => '[',
+            _ => break,
+        };
+        match core[..core.len() - 1].rfind(open) {
+            Some(start) if !core[..start].trim().is_empty() => core = core[..start].trim_end(),
+            _ => break,
+        }
+    }
+    normalize_release_title(core)
+}
+
+fn paged_records(response: &Value) -> Vec<Value> {
+    response
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn history_event_type(record: &Value) -> Option<&str> {
+    record.get("eventType").and_then(Value::as_str)
+}
+
+fn grabbed_history_id_for_download(records: &[Value], download_id: &str) -> Option<i64> {
+    records
         .iter()
-        .filter(|release| release_matches_target(release, target))
-        .filter(|release| release_can_be_language_upgrade_candidate(release))
-        .filter(|release| release_satisfies_languages(release, requirements, policy))
-        .max_by_key(|release| {
-            (
-                prefer_non_torrent && !release_is_torrent(release),
-                release_score(release),
-            )
+        .filter(|record| history_event_type(record) == Some("grabbed"))
+        .filter(|record| {
+            record
+                .get("downloadId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.eq_ignore_ascii_case(download_id))
         })
+        .find_map(|record| record.get("id").and_then(Value::as_i64))
+}
+
+/// Sonarr blocklist entries list the series and the episodes of the release.
+/// Older Sonarr versions ignore the `seriesIds` filter, so check both here.
+fn sonarr_blocklist_record_covers_episode(record: &Value, series_id: i64, episode_id: i64) -> bool {
+    let series_matches = record
+        .get("seriesId")
+        .and_then(Value::as_i64)
+        .is_none_or(|id| id == series_id);
+    let episode_matches = record
+        .get("episodeIds")
+        .and_then(Value::as_array)
+        .is_none_or(|ids| ids.iter().any(|id| id.as_i64() == Some(episode_id)));
+    series_matches && episode_matches
 }
 
 fn release_is_torrent(release: &Value) -> bool {
@@ -3448,7 +4361,7 @@ fn env_int_list(keys: &[&str]) -> Vec<i64> {
     Vec::new()
 }
 
-fn url_encode(input: &str) -> String {
+pub(super) fn url_encode(input: &str) -> String {
     input
         .bytes()
         .flat_map(|byte| match byte {
@@ -3807,6 +4720,8 @@ mod tests {
             .match_query(Matcher::Any)
             .with_status(200)
             .with_body(json!({ "records": [] }).to_string())
+            // Read for the import record and the current release's titles.
+            .expect(2)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -3906,6 +4821,9 @@ mod tests {
                 })
                 .to_string(),
             )
+            // For the import record, the current release's titles and the
+            // import's grab record.
+            .expect(3)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -4350,8 +5268,9 @@ mod tests {
             .mock("GET", "/api/v3/episode/77")
             .with_status(200)
             .with_body(json!({ "id": 77, "episodeFileId": 555 }).to_string())
-            // Once for the audit and once for the release search's series-title check.
-            .expect(2)
+            // For the audit, the release search's series-title check, the
+            // current file's scene name and the series id of the blocklist.
+            .expect(4)
             .create();
         let episode_file = server
             .mock("GET", "/api/v3/episodefile/555")
@@ -4364,12 +5283,16 @@ mod tests {
                 })
                 .to_string(),
             )
+            // For the audit and the current file's scene name.
+            .expect(2)
             .create();
         let history = server
             .mock("GET", "/api/v3/history")
             .match_query(Matcher::Any)
             .with_status(200)
             .with_body(json!({ "records": [] }).to_string())
+            // For the import record and the current release's titles.
+            .expect(2)
             .create();
         let search = server
             .mock("GET", "/api/v3/release")
@@ -5953,5 +6876,1133 @@ mod tests {
             false,
         )
         .is_some());
+    }
+
+    fn english_audio() -> LanguageRequirements {
+        LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        }
+    }
+
+    fn apply_options() -> RedownloadOptions {
+        RedownloadOptions {
+            dry_run: false,
+            candidate_policy: ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+        }
+    }
+
+    fn multi_audio_release(title: &str, score: i64, info_hash: &str) -> Value {
+        json!({
+            "title": title,
+            "rejected": false,
+            "protocol": "torrent",
+            "infoHash": info_hash,
+            "mappedSeriesId": 1,
+            "mappedEpisodeInfo": [{ "id": 77 }],
+            "customFormatScore": score
+        })
+    }
+
+    fn mock_sonarr_release_search(server: &mut mockito::Server, releases: Value) -> mockito::Mock {
+        server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(releases.to_string())
+            .create()
+    }
+
+    fn mock_sonarr_blocklist(server: &mut mockito::Server, records: Value) -> mockito::Mock {
+        server
+            .mock("GET", "/api/v3/blocklist")
+            .match_query(Matcher::UrlEncoded("seriesIds".into(), "1".into()))
+            .with_status(200)
+            .with_body(json!({ "records": records }).to_string())
+            .create()
+    }
+
+    fn mock_sonarr_episode_history(server: &mut mockito::Server, records: Value) -> mockito::Mock {
+        server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(json!({ "records": records }).to_string())
+            .create()
+    }
+
+    fn mock_grab(server: &mut mockito::Server, title: &str, status: usize) -> mockito::Mock {
+        server
+            .mock("POST", "/api/v3/release")
+            .match_body(Matcher::PartialJson(json!({ "title": title })))
+            .with_status(status)
+            .with_body("{}")
+            .create()
+    }
+
+    fn mock_mark_failed(server: &mut mockito::Server, history_id: i64) -> mockito::Mock {
+        server
+            .mock(
+                "POST",
+                format!("/api/v3/history/failed/{history_id}").as_str(),
+            )
+            .with_status(200)
+            .with_body("{}")
+            .create()
+    }
+
+    fn import_and_grab_records() -> Value {
+        json!([
+            { "id": 1234, "eventType": "downloadFolderImported", "episodeId": 77, "downloadId": "ABC123" },
+            { "id": 1200, "eventType": "grabbed", "episodeId": 77, "downloadId": "ABC123" }
+        ])
+    }
+
+    #[test]
+    fn sonarr_redownload_marks_grabbed_record_of_imported_download_failed() {
+        let mut server = mockito::Server::new();
+        let search = mock_sonarr_release_search(
+            &mut server,
+            json!([multi_audio_release("Show S01E01 Multi-Audio", 10, "aaa")]),
+        );
+        let blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        // Read for the current release's titles and for the grab record.
+        let history = mock_sonarr_episode_history(&mut server, import_and_grab_records()).expect(2);
+        let grab = mock_grab(&mut server, "Show S01E01 Multi-Audio", 200);
+        let mark_grab = mock_mark_failed(&mut server, 1200);
+        let mark_import = mock_mark_failed(&mut server, 1234).expect(0);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        assert!(matches!(outcome, RedownloadOutcome::Grabbed { .. }));
+        search.assert();
+        blocklist.assert();
+        history.assert();
+        grab.assert();
+        mark_grab.assert();
+        mark_import.assert();
+    }
+
+    #[test]
+    fn sonarr_redownload_looks_up_grab_by_download_id_when_not_in_episode_history() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([multi_audio_release("Show S01E01 Multi-Audio", 10, "aaa")]),
+        );
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(
+            &mut server,
+            json!([{ "id": 1234, "eventType": "downloadFolderImported", "downloadId": "ABC123" }]),
+        );
+        let by_download = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("downloadId".into(), "ABC123".into()),
+                Matcher::UrlEncoded("eventType".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_body(
+                json!({ "records": [{ "id": 900, "eventType": "grabbed", "downloadId": "ABC123" }] })
+                    .to_string(),
+            )
+            .create();
+        let _grab = mock_grab(&mut server, "Show S01E01 Multi-Audio", 200);
+        let mark_grab = mock_mark_failed(&mut server, 900);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        by_download.assert();
+        mark_grab.assert();
+    }
+
+    #[test]
+    fn radarr_redownload_marks_grabbed_record_and_skips_blocklisted_release() {
+        let mut server = mockito::Server::new();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+            .with_status(200)
+            .with_body(
+                json!([
+                    { "title": "Movie.2020.Multi-Audio-GRP", "rejected": false, "customFormatScore": 50 },
+                    { "title": "Movie 2020 Dual-Audio GRP2", "rejected": false, "customFormatScore": 10 }
+                ])
+                .to_string(),
+            )
+            .create();
+        let blocklist = server
+            .mock("GET", "/api/v3/blocklist/movie")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+            .with_status(200)
+            .with_body(
+                json!([{ "movieId": 5, "sourceTitle": "Movie 2020 Multi-Audio-GRP" }]).to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history/movie")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+            .with_status(200)
+            .with_body(
+                json!([
+                    { "id": 70, "eventType": "downloadFolderImported", "downloadId": "XYZ" },
+                    { "id": 60, "eventType": "grabbed", "downloadId": "xyz" }
+                ])
+                .to_string(),
+            )
+            // Read for the current release's titles and for the grab record.
+            .expect(2)
+            .create();
+        let skipped_grab = mock_grab(&mut server, "Movie.2020.Multi-Audio-GRP", 200).expect(0);
+        let grab = mock_grab(&mut server, "Movie 2020 Dual-Audio GRP2", 200);
+        let mark_grab = mock_mark_failed(&mut server, 60);
+        let client = test_client(IntegrationKind::Radarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::RadarrMovie { movie_id: 5 },
+                70,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            RedownloadOutcome::Grabbed {
+                title: "Movie 2020 Dual-Audio GRP2".to_string()
+            }
+        );
+        search.assert();
+        blocklist.assert();
+        history.assert();
+        skipped_grab.assert();
+        grab.assert();
+        mark_grab.assert();
+    }
+
+    #[test]
+    fn redownload_falls_back_to_given_history_id_without_grab_record() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([multi_audio_release("Show S01E01 Multi-Audio", 10, "aaa")]),
+        );
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(
+            &mut server,
+            json!([{ "id": 1234, "eventType": "downloadFolderImported" }]),
+        );
+        let _grab = mock_grab(&mut server, "Show S01E01 Multi-Audio", 200);
+        let mark_import = mock_mark_failed(&mut server, 1234);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        mark_import.assert();
+    }
+
+    #[test]
+    fn redownload_tries_next_candidate_when_grab_fails() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([
+                multi_audio_release("Show S01E01 Multi-Audio A", 30, "aaa"),
+                multi_audio_release("Show S01E01 Multi-Audio B", 20, "bbb")
+            ]),
+        );
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, import_and_grab_records());
+        let failed_grab = mock_grab(&mut server, "Show S01E01 Multi-Audio A", 500);
+        let grab = mock_grab(&mut server, "Show S01E01 Multi-Audio B", 200);
+        let mark_grab = mock_mark_failed(&mut server, 1200);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            RedownloadOutcome::Grabbed {
+                title: "Show S01E01 Multi-Audio B".to_string()
+            }
+        );
+        failed_grab.assert();
+        grab.assert();
+        mark_grab.assert();
+    }
+
+    #[test]
+    fn redownload_errors_without_marking_failed_when_every_grab_fails() {
+        let mut server = mockito::Server::new();
+        let releases = (0..5)
+            .map(|idx| {
+                multi_audio_release(&format!("Show S01E01 Multi-Audio {idx}"), 50 - idx, "h")
+            })
+            .collect::<Vec<_>>();
+        let _search = mock_sonarr_release_search(&mut server, json!(releases));
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let grabs = server
+            .mock("POST", "/api/v3/release")
+            .with_status(500)
+            .expect(SERVARR_MAX_GRAB_ATTEMPTS)
+            .create();
+        let mark = server
+            .mock("POST", Matcher::Regex("^/api/v3/history/failed/".into()))
+            .expect(0)
+            .create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let err = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("refused all 3 replacement candidates"));
+        grabs.assert();
+        mark.assert();
+    }
+
+    #[test]
+    fn current_download_history_prefers_grabbed_record() {
+        let _guard = env_lock();
+        env::set_var("sonarr_download_id", "ABC123");
+        let mut server = mockito::Server::new();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::UrlEncoded("downloadId".into(), "ABC123".into()))
+            .with_status(200)
+            .with_body(json!({ "records": import_and_grab_records() }).to_string())
+            .create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let id = client.find_current_history_id(IntegrationKind::Sonarr);
+
+        env::remove_var("sonarr_download_id");
+        assert_eq!(id.unwrap(), Some(1200));
+        history.assert();
+    }
+
+    #[test]
+    fn candidate_ranking_keeps_max_by_key_tie_order() {
+        let releases = vec![
+            json!({ "title": "first", "languages": [{"name": "English"}], "customFormatScore": 5 }),
+            json!({ "title": "second", "languages": [{"name": "English"}], "customFormatScore": 5 }),
+            json!({ "title": "low", "languages": [{"name": "English"}], "customFormatScore": 1 }),
+        ];
+        let titles = verified_release_candidates(
+            &releases,
+            Target::RadarrMovie { movie_id: 1 },
+            &english_audio(),
+            ServarrLanguageCandidatePolicy::Strict,
+            false,
+        )
+        .into_iter()
+        .map(|release| release_title(release).unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["second", "first", "low"]);
+    }
+
+    const MULTI_TITLE: &str =
+        "Show S02E04 REPACK 1080p CR WEB-DL MULTi AAC2.0 H.264-GRP (Alt Title, Multi-Audio, Multi-Subs)";
+    const MULTI_VARIANT_TITLE: &str =
+        "Show S02E04 REPACK 1080p CR WEB-DL MULTi AAC2.0 H.264-GRP (Alt Title, Multi-Audio, Multi-Subs) [h264]";
+    const DUAL_TITLE: &str =
+        "Show S02E04 REPACK 1080p CR WEB-DL DUAL AAC2.0 H.264-GRP (Alt Title, Dual-Audio, Multi-Subs)";
+
+    #[test]
+    fn blocklist_skip_matches_core_title() {
+        let mut server = mockito::Server::new();
+        let _blocklist = mock_sonarr_blocklist(
+            &mut server,
+            json!([{ "seriesId": 1, "episodeIds": [77], "sourceTitle": MULTI_TITLE }]),
+        );
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([
+                multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd"),
+                multi_audio_release(DUAL_TITLE, 20, "bbb")
+            ]),
+        );
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                RedownloadOptions {
+                    dry_run: true,
+                    ..apply_options()
+                },
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::DryRun { summary } = outcome else {
+            panic!("expected dry-run outcome, got {outcome:?}");
+        };
+        assert!(summary.contains(DUAL_TITLE), "{summary}");
+    }
+
+    /// Gives this test thread its own pending-grab and no-candidate caches.
+    fn use_temp_caches() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        cache::use_test_cache_paths(
+            dir.path().join("pending-grabs.json"),
+            dir.path().join("no-candidates.json"),
+        );
+        dir
+    }
+
+    fn pending_grab(title: &str, age_secs: u64) -> PendingGrab {
+        PendingGrab {
+            kind: "Sonarr".to_string(),
+            target_noun: "episode".to_string(),
+            target_id: 77,
+            release_title: title.to_string(),
+            guid: Some("guid-multi".to_string()),
+            download_id: None,
+            grabbed_at_unix: current_unix_secs() - age_secs,
+            requirements: english_audio(),
+        }
+    }
+
+    fn imported_grab_history(title: &str) -> Value {
+        json!([
+            { "id": 1234, "eventType": "downloadFolderImported", "episodeId": 77, "downloadId": "ABC123" },
+            {
+                "id": 1200,
+                "eventType": "grabbed",
+                "episodeId": 77,
+                "downloadId": "ABC123",
+                "sourceTitle": title,
+                "data": { "guid": "guid-multi" }
+            }
+        ])
+    }
+
+    fn mock_sonarr_episode_file(server: &mut mockito::Server, audio: &str) -> Vec<mockito::Mock> {
+        vec![
+            server
+                .mock("GET", "/api/v3/episode/77")
+                .with_status(200)
+                .with_body(json!({ "id": 77, "seriesId": 1, "episodeFileId": 555 }).to_string())
+                .expect_at_least(1)
+                .create(),
+            server
+                .mock("GET", "/api/v3/episodefile/555")
+                .with_status(200)
+                .with_body(
+                    json!({
+                        "id": 555,
+                        "path": "/media/show-s02e04.mkv",
+                        "mediaInfo": { "audioLanguages": audio, "subtitles": "eng" }
+                    })
+                    .to_string(),
+                )
+                .expect_at_least(1)
+                .create(),
+        ]
+    }
+
+    #[test]
+    fn audit_grab_records_pending_grab() {
+        let _caches = use_temp_caches();
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([{
+                "title": DUAL_TITLE,
+                "guid": "guid-dual",
+                "rejected": false,
+                "mappedSeriesId": 1,
+                "customFormatScore": 10
+            }]),
+        );
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, import_and_grab_records());
+        let _grab = mock_grab(&mut server, DUAL_TITLE, 200);
+        let _mark = mock_mark_failed(&mut server, 1200);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        let pending = cache::pending_grabs(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target_noun, "episode");
+        assert_eq!(pending[0].target_id, 77);
+        assert_eq!(pending[0].release_title, DUAL_TITLE);
+        assert_eq!(pending[0].guid.as_deref(), Some("guid-dual"));
+        assert_eq!(pending[0].requirements, english_audio());
+    }
+
+    #[test]
+    fn compliant_import_drops_pending_grab_without_marking_failed() {
+        let _caches = use_temp_caches();
+        cache::record_pending_grab(pending_grab(MULTI_TITLE, 3_600)).unwrap();
+        let mut server = mockito::Server::new();
+        let _history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
+        let _file = mock_sonarr_episode_file(&mut server, "jpn/eng");
+        let mark = server
+            .mock("POST", Matcher::Regex("^/api/v3/history/failed/".into()))
+            .expect(0)
+            .create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        let mut summary = AuditSummary::default();
+
+        client.verify_pending_grabs(false, &UntaggedRetagOptions::default(), &mut summary);
+
+        assert_eq!(summary.rejected_imports, 0);
+        assert!(cache::pending_grabs(IntegrationKind::Sonarr)
+            .unwrap()
+            .is_empty());
+        mark.assert();
+    }
+
+    #[test]
+    fn pending_grab_is_kept_until_imported_and_dropped_once_expired() {
+        let _caches = use_temp_caches();
+        let mut waiting = pending_grab(MULTI_TITLE, 3_600);
+        waiting.target_id = 77;
+        let mut expired = pending_grab(DUAL_TITLE, PENDING_GRAB_MAX_AGE_SECS + 60);
+        expired.target_id = 78;
+        cache::record_pending_grab(waiting.clone()).unwrap();
+        cache::record_pending_grab(expired).unwrap();
+        let mut server = mockito::Server::new();
+        // Grabbed but not imported yet.
+        let waiting_history = mock_sonarr_episode_history(
+            &mut server,
+            json!([{
+                "id": 1200,
+                "eventType": "grabbed",
+                "downloadId": "ABC123",
+                "sourceTitle": MULTI_TITLE
+            }]),
+        );
+        let expired_history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "78".into()))
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        let mut summary = AuditSummary::default();
+
+        client.verify_pending_grabs(false, &UntaggedRetagOptions::default(), &mut summary);
+
+        assert_eq!(
+            cache::pending_grabs(IntegrationKind::Sonarr).unwrap(),
+            vec![waiting]
+        );
+        waiting_history.assert();
+        expired_history.assert();
+    }
+
+    #[test]
+    fn dry_run_reports_non_compliant_import_but_changes_nothing() {
+        let _caches = use_temp_caches();
+        let grab = pending_grab(MULTI_TITLE, 3_600);
+        cache::record_pending_grab(grab.clone()).unwrap();
+        cache::record_no_candidate(
+            IntegrationKind::Sonarr,
+            "episode",
+            77,
+            &english_audio(),
+            "no approved release",
+        )
+        .unwrap();
+        let mut server = mockito::Server::new();
+        let _history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
+        let _file = mock_sonarr_episode_file(&mut server, "jpn/deu/fra");
+        let mark = server.mock("POST", Matcher::Any).expect(0).create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        let mut summary = AuditSummary::default();
+
+        client.verify_pending_grabs(true, &UntaggedRetagOptions::default(), &mut summary);
+
+        assert_eq!(summary.rejected_imports, 0);
+        assert_eq!(
+            cache::pending_grabs(IntegrationKind::Sonarr).unwrap(),
+            vec![grab]
+        );
+        assert!(cache::no_candidate_cooldown_remaining_days(
+            IntegrationKind::Sonarr,
+            "episode",
+            77,
+            &english_audio(),
+            14
+        )
+        .unwrap()
+        .is_some());
+        mark.assert();
+    }
+
+    #[test]
+    fn non_compliant_import_is_blocklisted_and_searched_again_in_the_same_run() {
+        let _caches = use_temp_caches();
+        cache::record_pending_grab(pending_grab(MULTI_TITLE, 3_600)).unwrap();
+        cache::record_no_candidate(
+            IntegrationKind::Sonarr,
+            "episode",
+            77,
+            &english_audio(),
+            "no approved release",
+        )
+        .unwrap();
+        let mut server = mockito::Server::new();
+        let _queue = mock_empty_queue(&mut server);
+        let _file = mock_sonarr_episode_file(&mut server, "jpn/deu/fra");
+        let history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE))
+            .expect_at_least(1);
+        // Marked once by the post-import check; the replacement grab of the
+        // same run resolves to the same record and does not mark it again.
+        let mark = mock_mark_failed(&mut server, 1200).expect(1);
+        let search = mock_sonarr_release_search(
+            &mut server,
+            json!([
+                multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd"),
+                multi_audio_release(DUAL_TITLE, 20, "bbb")
+            ]),
+        );
+        let blocklist = mock_sonarr_blocklist(
+            &mut server,
+            json!([{ "seriesId": 1, "episodeIds": [77], "sourceTitle": MULTI_TITLE }]),
+        );
+        let variant_grab = mock_grab(&mut server, MULTI_VARIANT_TITLE, 200).expect(0);
+        let grab = mock_grab(&mut server, DUAL_TITLE, 200);
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &english_audio(),
+            apply_options(),
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::Inventory,
+                no_candidate_cooldown_days: 14,
+                episode_ids: vec![77],
+                ..AuditOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.rejected_imports, 1);
+        assert_eq!(summary.skipped_no_candidate_cooldown, 0);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.grabbed, 1);
+        assert_eq!(summary.errors, 0);
+        history.assert();
+        mark.assert();
+        search.assert();
+        blocklist.assert();
+        variant_grab.assert();
+        grab.assert();
+        let pending = cache::pending_grabs(IntegrationKind::Sonarr).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].release_title, DUAL_TITLE);
+        assert_eq!(
+            cache::no_candidate_cooldown_remaining_days(
+                IntegrationKind::Sonarr,
+                "episode",
+                77,
+                &english_audio(),
+                14
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn iso_unix_secs_parses_arr_timestamps() {
+        assert_eq!(iso_unix_secs("1970-01-02T00:00:01Z"), Some(86_401));
+        assert_eq!(
+            iso_unix_secs("2026-11-07T06:12:34.1234567Z"),
+            Some(1_794_031_954)
+        );
+        assert_eq!(iso_unix_secs("not a date"), None);
+    }
+
+    const MULTI_DOTTED_TITLE: &str = "Show.S02E04.REPACK.1080p.CR.WEB-DL.MULTi.AAC2.0.H.264-GRP";
+
+    fn current_release_history() -> Value {
+        json!([
+            {
+                "id": 1234,
+                "eventType": "downloadFolderImported",
+                "episodeId": 77,
+                "downloadId": "ABC123",
+                "sourceTitle": MULTI_TITLE
+            },
+            {
+                "id": 1200,
+                "eventType": "grabbed",
+                "episodeId": 77,
+                "downloadId": "ABC123",
+                "sourceTitle": MULTI_DOTTED_TITLE
+            }
+        ])
+    }
+
+    fn current_release_candidates() -> Value {
+        let mut dotted = multi_audio_release(MULTI_DOTTED_TITLE, 35, "eee");
+        dotted["customFormats"] = json!([{ "name": "Multi-Audio" }]);
+        json!([
+            multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd"),
+            dotted,
+            multi_audio_release(DUAL_TITLE, 20, "bbb")
+        ])
+    }
+
+    #[test]
+    fn redownload_skips_candidates_that_are_the_current_release() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(&mut server, current_release_candidates());
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let variant_grab = mock_grab(&mut server, MULTI_VARIANT_TITLE, 200).expect(0);
+        let dotted_grab = mock_grab(&mut server, MULTI_DOTTED_TITLE, 200).expect(0);
+        let grab = mock_grab(&mut server, DUAL_TITLE, 200);
+        let mark = mock_mark_failed(&mut server, 1200);
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            RedownloadOutcome::Grabbed {
+                title: DUAL_TITLE.to_string()
+            }
+        );
+        variant_grab.assert();
+        dotted_grab.assert();
+        grab.assert();
+        mark.assert();
+    }
+
+    #[test]
+    fn dry_run_skips_candidates_that_are_the_current_release() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(&mut server, current_release_candidates());
+        let _blocklist = mock_sonarr_blocklist(&mut server, json!([]));
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let posts = server.mock("POST", Matcher::Any).expect(0).create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                RedownloadOptions {
+                    dry_run: true,
+                    ..apply_options()
+                },
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::DryRun { summary } = outcome else {
+            panic!("expected dry-run outcome, got {outcome:?}");
+        };
+        assert!(summary.contains(DUAL_TITLE), "{summary}");
+        posts.assert();
+    }
+
+    #[test]
+    fn radarr_skips_candidate_matching_current_file_scene_name() {
+        let mut server = mockito::Server::new();
+        let _search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("movieId".into(), "5".into()))
+            .with_status(200)
+            .with_body(
+                json!([
+                    { "title": "Movie 2020 MULTi-GRP (Multi-Audio) [h264]", "rejected": false, "customFormatScore": 50 },
+                    { "title": "Movie 2020 DUAL-GRP (Dual-Audio)", "rejected": false, "customFormatScore": 10 }
+                ])
+                .to_string(),
+            )
+            .create();
+        let _blocklist = server
+            .mock("GET", "/api/v3/blocklist/movie")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history/movie")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("[]")
+            .create();
+        let movie = server
+            .mock("GET", "/api/v3/movie/5")
+            .with_status(200)
+            .with_body(json!({ "id": 5, "movieFileId": 9 }).to_string())
+            .create();
+        let movie_file = server
+            .mock("GET", "/api/v3/moviefile/9")
+            .with_status(200)
+            .with_body(json!({ "id": 9, "sceneName": "Movie.2020.MULTi-GRP" }).to_string())
+            .create();
+        let client = test_client(IntegrationKind::Radarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::RadarrMovie { movie_id: 5 },
+                70,
+                &english_audio(),
+                RedownloadOptions {
+                    dry_run: true,
+                    ..apply_options()
+                },
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::DryRun { summary } = outcome else {
+            panic!("expected dry-run outcome, got {outcome:?}");
+        };
+        assert!(summary.contains("Movie 2020 DUAL-GRP"), "{summary}");
+        movie.assert();
+        movie_file.assert();
+    }
+
+    #[test]
+    fn no_candidate_reason_counts_current_release_skips() {
+        let mut server = mockito::Server::new();
+        let _search = mock_sonarr_release_search(
+            &mut server,
+            json!([multi_audio_release(MULTI_VARIANT_TITLE, 40, "ddd")]),
+        );
+        let _history = mock_sonarr_episode_history(&mut server, current_release_history());
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+
+        let outcome = client
+            .redownload_for_target_with_preference(
+                Target::SonarrEpisode { episode_id: 77 },
+                1234,
+                &english_audio(),
+                apply_options(),
+                false,
+            )
+            .unwrap();
+
+        let RedownloadOutcome::NoVerifiedRelease { reason } = outcome else {
+            panic!("expected no verified release, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("1 same release as the current file"),
+            "{reason}"
+        );
+    }
+
+    /// A stubbed probe result: path, audio languages, subtitle languages.
+    type ProbedDownload = (PathBuf, Vec<String>, Vec<String>);
+
+    thread_local! {
+        /// Stream languages the pending-download probe reports in this test
+        /// thread, by path; other paths are probed for real.
+        static PROBED_DOWNLOADS: RefCell<Vec<ProbedDownload>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn stubbed_probe(
+        path: &Path,
+        requirements: &LanguageRequirements,
+    ) -> Option<LanguageCheckReport> {
+        PROBED_DOWNLOADS.with(|probed| {
+            probed
+                .borrow()
+                .iter()
+                .find(|(probed_path, _, _)| probed_path == path)
+                .map(|(_, audio, subtitles)| {
+                    report_from_present(audio.clone(), subtitles.clone(), requirements)
+                })
+        })
+    }
+
+    fn stub_probe(path: &str, audio: &[&str], subtitles: &[&str]) {
+        PROBED_DOWNLOADS.with(|probed| {
+            probed.borrow_mut().push((
+                PathBuf::from(path),
+                audio.iter().map(|lang| lang.to_string()).collect(),
+                subtitles.iter().map(|lang| lang.to_string()).collect(),
+            ))
+        });
+    }
+
+    /// Runs a Sonarr audit over one pending download whose manual-import item
+    /// reports `item_languages`, expecting `imports` ManualImport commands.
+    fn run_sonarr_probe_force_import(
+        item_languages: Value,
+        queue_output_path: Option<&str>,
+        dry_run: bool,
+        imports: usize,
+    ) -> AuditSummary {
+        let mut server = mockito::Server::new();
+        let mut queue_item = sonarr_pending_queue_item();
+        queue_item["title"] = json!("Show.S01E01.1080p.WEB-DL.MULTi.AAC2.0.H.264.MSubs-GRP");
+        if let Some(path) = queue_output_path {
+            queue_item["outputPath"] = json!(path);
+        }
+        let _queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [queue_item] }).to_string())
+            .create();
+        let _current_file = server
+            .mock("GET", "/api/v3/episodefile/555")
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": 555,
+                    "path": "/shows/current.mkv",
+                    "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                })
+                .to_string(),
+            )
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let _series = mock_sonarr_series_lookup(&mut server, "Example Show");
+        let _manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/show-s01e01.mkv",
+                    "episodes": [{"id": 77}],
+                    "series": {"id": 1},
+                    "languages": item_languages
+                }])
+                .to_string(),
+            )
+            .create();
+        let import_command = server
+            .mock("POST", "/api/v3/command")
+            .match_body(Matcher::PartialJson(json!({"name": "ManualImport"})))
+            .with_status(201)
+            .with_body(json!({"id": 9, "status": "queued"}).to_string())
+            .expect(imports)
+            .create();
+        let _command_status = server
+            .mock("GET", "/api/v3/command/9")
+            .with_status(200)
+            .with_body(json!({"id": 9, "status": "completed"}).to_string())
+            .create();
+        let _episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_status(200)
+            .with_body(json!({"id": 77, "seriesId": 1, "episodeFileId": 556}).to_string())
+            .create();
+        let _delete_queue = server
+            .mock("DELETE", "/api/v3/queue/321")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &language_requirements(),
+            RedownloadOptions {
+                dry_run,
+                candidate_policy: ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                ..AuditOptions::default()
+            },
+        )
+        .unwrap();
+        import_command.assert();
+        summary
+    }
+
+    #[test]
+    fn force_import_follows_downloaded_file_with_required_languages() {
+        stub_probe("/downloads/show-s01e01.mkv", &["eng", "jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, false, 1);
+
+        assert_eq!(summary.grabbed, 1);
+        assert_eq!(summary.errors, 0);
+    }
+
+    #[test]
+    fn force_import_skips_downloaded_file_missing_required_languages() {
+        stub_probe("/downloads/show-s01e01.mkv", &["jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(
+            json!([{"name": "English"}, {"name": "Japanese"}]),
+            None,
+            false,
+            0,
+        );
+
+        assert_eq!(summary.grabbed, 0);
+        assert_eq!(summary.missing, 0);
+    }
+
+    #[test]
+    fn force_import_probes_queue_output_path_when_item_path_is_unreadable() {
+        stub_probe(
+            "/downloads/complete/show-s01e01.mkv",
+            &["eng", "jpn"],
+            &["eng"],
+        );
+
+        let summary = run_sonarr_probe_force_import(
+            json!([{"name": "Japanese"}]),
+            Some("/downloads/complete/show-s01e01.mkv"),
+            false,
+            1,
+        );
+
+        assert_eq!(summary.grabbed, 1);
+    }
+
+    #[test]
+    fn force_import_falls_back_to_release_evidence_when_file_is_unreadable() {
+        let weak = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, false, 0);
+        assert_eq!(weak.grabbed, 0);
+
+        let strong = run_sonarr_probe_force_import(
+            json!([{"name": "English"}, {"name": "Japanese"}]),
+            None,
+            false,
+            1,
+        );
+        assert_eq!(strong.grabbed, 1);
+    }
+
+    #[test]
+    fn force_import_dry_run_reports_probed_decision_without_importing() {
+        stub_probe("/downloads/show-s01e01.mkv", &["eng", "jpn"], &["eng"]);
+
+        let summary = run_sonarr_probe_force_import(json!([{"name": "Japanese"}]), None, true, 0);
+
+        assert_eq!(summary.dry_run, 1);
+        assert_eq!(summary.grabbed, 0);
+    }
+
+    #[test]
+    fn radarr_force_import_follows_downloaded_file() {
+        stub_probe("/downloads/movie.mkv", &["jpn"], &["eng"]);
+        let mut server = mockito::Server::new();
+        let _queue = server
+            .mock("GET", "/api/v3/queue")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [radarr_pending_queue_item()] }).to_string())
+            .create();
+        let _manual = server
+            .mock("GET", "/api/v3/manualimport")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "path": "/downloads/movie.mkv",
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+
+        let summary = run_radarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &radarr_requirements(),
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::History,
+                ..AuditOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.dry_run, 0);
+        assert_eq!(summary.missing, 0);
     }
 }
