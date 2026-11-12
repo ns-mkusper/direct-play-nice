@@ -121,6 +121,11 @@ fn short_spacing_candidate(line: &OcrLine) -> bool {
         })
 }
 
+pub(super) fn ambiguous_short_single_token(text: &str) -> bool {
+    let token = text.trim();
+    !token.is_empty() && token.chars().count() <= 11 && token.chars().all(char::is_alphabetic)
+}
+
 pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
     let mut out = normalize_utf8_text(text);
     if out.is_empty() {
@@ -131,6 +136,7 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
         return out;
     }
 
+    let preserve_single_token = ambiguous_short_single_token(&out);
     out = normalize_english_ocr_confusions(&out);
     out = correct_english_ocr_dictionary_confusions(&out);
     out = insert_space_after_punctuation(&out);
@@ -143,7 +149,9 @@ pub(super) fn postprocess_ocr_text(text: &str, language: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     out = merge_common_fragmented_english_words(&out);
-    out = split_glued_english_phrases(&out);
+    if !preserve_single_token {
+        out = split_glued_english_phrases(&out);
+    }
     out = merge_common_fragmented_english_words(&out);
 
     normalize_utf8_text(&out)
@@ -154,19 +162,59 @@ pub(super) fn is_english_language(language: &str) -> bool {
     matches!(lang.as_str(), "eng" | "en" | "en-us" | "en_us")
 }
 
+// An internal capital can be either a name boundary or an OCR-confused
+// character within a possessive. Text alone cannot choose between them.
+fn ambiguous_glued_possessive(token: &str) -> bool {
+    let token = token
+        .strip_prefix('\'')
+        .and_then(|quoted| quoted.strip_suffix('\''))
+        .unwrap_or(token);
+    let Some(stem) = token
+        .strip_suffix("'s")
+        .or_else(|| token.strip_suffix("'S"))
+        .or_else(|| token.strip_suffix("’s"))
+        .or_else(|| token.strip_suffix("’S"))
+    else {
+        return false;
+    };
+    let chars: Vec<char> = stem.chars().collect();
+    if !chars
+        .iter()
+        .all(|ch| ch.is_ascii_alphabetic() || matches!(ch, '\'' | '’' | '|'))
+    {
+        return false;
+    }
+    chars.windows(2).any(|pair| {
+        pair[0].is_ascii_lowercase() && (pair[1].is_ascii_uppercase() || pair[1] == '|')
+    })
+}
+
 fn normalize_mixed_case_ocr_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
     if chars.len() < 3 || !chars.iter().any(|ch| ch.is_ascii_lowercase()) {
         return token.to_string();
     }
     let mut out = String::with_capacity(token.len());
+    let possessive_start = chars
+        .len()
+        .checked_sub(2)
+        .filter(|&end| chars[end] == '\'' && matches!(chars[end + 1], 's' | 'S'));
     for (idx, ch) in chars.iter().copied().enumerate() {
         let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
         let next = chars.get(idx + 1).copied();
         let surrounded_by_lower = prev.is_some_and(|c| c.is_ascii_lowercase())
             && next.is_some_and(|c| c.is_ascii_lowercase());
         let after_lower = prev.is_some_and(|c| c.is_ascii_lowercase());
+        let glued_possessive_name = possessive_start.is_some_and(|end| {
+            idx >= 3
+                && end.saturating_sub(idx) >= 4
+                && after_lower
+                && chars[idx].is_ascii_uppercase()
+                && chars[idx + 1..end].iter().all(char::is_ascii_lowercase)
+                && chars[..idx].iter().all(char::is_ascii_alphabetic)
+        });
         let replacement = match ch {
+            'I' | 'O' | 'Q' if glued_possessive_name => ch,
             // Common OCR confusions from subtitle crops: uppercase I appears
             // inside lower-case words where the recognizer meant i/l.
             'I' if after_lower && matches!(next, Some('I')) => 'i',
@@ -189,11 +237,32 @@ fn normalize_mixed_case_ocr_token(token: &str) -> String {
     out
 }
 
+fn is_uppercase_alphanumeric_identifier(token: &str) -> bool {
+    let token = token
+        .strip_prefix('\'')
+        .and_then(|quoted| quoted.strip_suffix('\''))
+        .unwrap_or(token);
+    let core = token
+        .strip_suffix("'s")
+        .or_else(|| token.strip_suffix("'S"))
+        .unwrap_or(token);
+    core.chars().any(|ch| ch.is_ascii_uppercase())
+        && core.chars().any(|ch| ch.is_ascii_digit())
+        && core
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+}
+
 fn normalize_english_ocr_confusions(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut token = String::new();
     let flush_token = |tok: &mut String, out: &mut String| {
         if tok.is_empty() {
+            return;
+        }
+        if is_uppercase_alphanumeric_identifier(tok) || ambiguous_glued_possessive(tok) {
+            out.push_str(tok);
+            tok.clear();
             return;
         }
         let has_alpha = tok.chars().any(|c| c.is_ascii_alphabetic());
@@ -217,14 +286,14 @@ fn normalize_english_ocr_confusions(input: &str) -> String {
                 normalized.replace_range(0..1, "1");
             }
         }
-        normalized = normalized.replace('|', "I").replace("vv", "w");
+        normalized = normalized.replace('|', "I");
         normalized = normalize_mixed_case_ocr_token(&normalized);
         out.push_str(&normalized);
         tok.clear();
     };
 
     for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '\'' || ch == '|' {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '\'' | '’' | '|') {
             token.push(ch);
         } else {
             flush_token(&mut token, &mut out);
@@ -242,16 +311,36 @@ fn correct_english_ocr_dictionary_confusions(input: &str) -> String {
         if tok.is_empty() {
             return;
         }
-        if let Some(corrected) = correct_english_ocr_token(tok) {
-            out.push_str(&corrected);
-        } else {
+        if is_uppercase_alphanumeric_identifier(tok) || ambiguous_glued_possessive(tok) {
             out.push_str(tok);
+        } else {
+            let mut word = String::new();
+            let flush_word = |word: &mut String, out: &mut String| {
+                if word.is_empty() {
+                    return;
+                }
+                if let Some(corrected) = correct_english_ocr_token(word) {
+                    out.push_str(&corrected);
+                } else {
+                    out.push_str(word);
+                }
+                word.clear();
+            };
+            for ch in tok.chars() {
+                if ch.is_ascii_digit() {
+                    flush_word(&mut word, out);
+                    out.push(ch);
+                } else {
+                    word.push(ch);
+                }
+            }
+            flush_word(&mut word, out);
         }
         tok.clear();
     };
 
     for ch in input.chars() {
-        if ch.is_ascii_alphabetic() || ch == '\'' {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '\'' | '’') {
             token.push(ch);
         } else {
             flush_token(&mut token, &mut out);
@@ -465,36 +554,18 @@ fn merge_common_fragmented_english_words(input: &str) -> String {
         .replace("Wh. ich", "Which")
         .replace("W. i--", "will")
         .replace("Which one . it will be?", "Which one will it be?")
-        .replace("So on,", "Soon,")
-        .replace("so on,", "soon,")
-        .replace("So on.", "Soon.")
-        .replace("so on.", "soon.")
-        .replace("you'll!", "you'll")
-        .replace("we'll!", "we'll")
         .replace("could n't", "couldn't")
         .replace("Could n't", "Couldn't")
         .replace("yo u", "you")
-        .replace("Yo u", "You")
-        .replace("me at", "meat")
-        .replace("Me at", "Meat")
-        .replace("\"?", "?");
+        .replace("Yo u", "You");
     for (from, to) in [
-        ("a sleep", "asleep"),
-        ("any more", "anymore"),
         ("every thing", "everything"),
         ("my self", "myself"),
         ("your self", "yourself"),
         ("kind a", "kind of"),
-        ("any way", "anyway"),
-        ("so on enough", "soon enough"),
-        ("so on,", "soon,"),
-        ("so on.", "soon."),
         ("so on enough", "soon enough"),
         ("yo u", "you"),
-        ("me at", "meat"),
         ("could n't", "couldn't"),
-        ("you'll!", "you'll"),
-        ("we'll!", "we'll"),
         ("com ing", "coming"),
         ("liv ing", "living"),
     ] {
@@ -531,21 +602,50 @@ fn replace_ascii_word_sequence(input: &str, from: &str, to: &str) -> String {
 fn split_glued_english_phrases(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     let mut token = String::new();
+    let single_token = input.split_whitespace().count() == 1;
+    let probabilistic = probabilistic_english_deglue_enabled();
 
     let flush_token = |tok: &mut String, out: &mut String| {
         if tok.is_empty() {
             return;
         }
-        if let Some(split) = split_glued_ascii_token(tok) {
-            out.push_str(&split);
-        } else {
+        if is_uppercase_alphanumeric_identifier(tok) || ambiguous_glued_possessive(tok) {
             out.push_str(tok);
+        } else {
+            let mut word = String::new();
+            let flush_word = |word: &mut String, out: &mut String| {
+                if word.is_empty() {
+                    return;
+                }
+                let long_word_in_sentence = !single_token
+                    && word.len() >= 12
+                    && word.chars().all(|ch| ch.is_ascii_alphabetic());
+                let allow_probabilistic = probabilistic && single_token;
+                let split = split_glued_ascii_token_with_options(word, allow_probabilistic);
+                if let Some(split) = split
+                    .filter(|split| !long_word_in_sentence || split.split_whitespace().count() >= 3)
+                {
+                    out.push_str(&split);
+                } else {
+                    out.push_str(word);
+                }
+                word.clear();
+            };
+            for ch in tok.chars() {
+                if ch.is_ascii_digit() {
+                    flush_word(&mut word, out);
+                    out.push(ch);
+                } else {
+                    word.push(ch);
+                }
+            }
+            flush_word(&mut word, out);
         }
         tok.clear();
     };
 
     for ch in input.chars() {
-        if ch.is_ascii_alphabetic() || ch == '\'' {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '\'' | '’') {
             token.push(ch);
         } else {
             flush_token(&mut token, &mut out);
@@ -570,6 +670,11 @@ fn split_fragmented_english_phrases(input: &str) -> String {
 
     for raw in input.split_whitespace() {
         if let Some(word) = parse_fragment_word(raw) {
+            if ambiguous_glued_possessive(word.core) {
+                flush_fragment_words(&mut buffered, &mut out);
+                push_space_separated(&mut out, raw);
+                continue;
+            }
             let has_trailing_punctuation = !word.trailing.is_empty();
             buffered.push(word);
             if has_trailing_punctuation {
@@ -585,15 +690,23 @@ fn split_fragmented_english_phrases(input: &str) -> String {
 }
 
 fn parse_fragment_word(raw: &str) -> Option<FragmentWord<'_>> {
-    let core_start = raw.find(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')?;
-    let core_end = raw.rfind(|ch: char| ch.is_ascii_alphabetic() || ch == '\'')? + 1;
+    let token =
+        raw.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '\'' | '’'));
+    if is_uppercase_alphanumeric_identifier(token) {
+        return None;
+    }
+    let core_start = raw.find(|ch: char| ch.is_ascii_alphabetic() || matches!(ch, '\'' | '’'))?;
+    let core_end = raw
+        .char_indices()
+        .rfind(|(_, ch)| ch.is_ascii_alphabetic() || matches!(ch, '\'' | '’'))
+        .map(|(index, ch)| index + ch.len_utf8())?;
     if core_start >= core_end {
         return None;
     }
     let core = &raw[core_start..core_end];
     if core
         .chars()
-        .all(|ch| ch.is_ascii_alphabetic() || ch == '\'')
+        .all(|ch| ch.is_ascii_alphabetic() || matches!(ch, '\'' | '’'))
         && core.chars().any(|ch| ch.is_ascii_alphabetic())
     {
         Some(FragmentWord {
@@ -622,23 +735,77 @@ fn flush_fragment_words(buffered: &mut Vec<FragmentWord<'_>>, out: &mut String) 
 }
 
 fn repair_fragment_words(words: &[FragmentWord<'_>]) -> Option<String> {
-    if words.len() < 2 || words.len() > 12 {
+    if words.len() < 2
+        || words.len() > 12
+        || words.iter().skip(1).any(|word| !word.leading.is_empty())
+        || words
+            .iter()
+            .take(words.len() - 1)
+            .any(|word| !word.trailing.is_empty())
+    {
         return None;
     }
-    let suspicious = words.iter().any(|word| {
-        word.core.len() >= 12
-            || word
+    let suspicious_fragment = words.iter().enumerate().any(|(index, word)| {
+        (word.core.len() < 12
+            && word
                 .core
                 .as_bytes()
                 .windows(2)
-                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
-            || (word.core.len() <= 3 && word.core.chars().any(|ch| ch.is_ascii_uppercase()))
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase()))
+            || ((index > 0
+                || words.get(1).is_some_and(|next| {
+                    next.core.len() == 1 && next.core.bytes().all(|ch| ch.is_ascii_lowercase())
+                }))
+                && word.core.len() <= 3
+                && word.core.chars().any(|ch| ch.is_ascii_uppercase()))
     });
     let joined = words.iter().map(|word| word.core).collect::<String>();
-    if !suspicious || joined.len() < 8 {
+    if !suspicious_fragment || joined.len() < 8 {
         return None;
     }
-    let split = split_glued_ascii_token(&joined)?;
+    let split = split_glued_ascii_token_with_options(
+        &joined,
+        suspicious_fragment && probabilistic_english_deglue_enabled(),
+    )?;
+    if split.split_whitespace().collect::<String>() != joined {
+        return None;
+    }
+    let mut boundaries = std::collections::HashSet::new();
+    let mut index = 0;
+    for part in split.split_whitespace() {
+        index += part.len();
+        boundaries.insert(index);
+    }
+    let recognized_word = |word: &FragmentWord<'_>| {
+        if word.core.len() < 2 || !word.core.bytes().all(|ch| ch.is_ascii_alphabetic()) {
+            return false;
+        }
+        let parts = wordninja::DEFAULT_MODEL.split(word.core);
+        parts.len() == 1 && parts[0].eq_ignore_ascii_case(word.core)
+    };
+    let mut position = 0;
+    for (index, word) in words.iter().enumerate() {
+        let start = position;
+        position += word.core.len();
+        if index + 1 < words.len()
+            && !boundaries.contains(&position)
+            && recognized_word(word)
+            && recognized_word(&words[index + 1])
+        {
+            return None;
+        }
+        if word.core.len() > 1
+            && word.core.as_bytes()[0].is_ascii_uppercase()
+            && word.core.as_bytes()[1..].iter().all(u8::is_ascii_lowercase)
+            && (start > 0 && !boundaries.contains(&start)
+                || !boundaries.contains(&position)
+                || boundaries
+                    .iter()
+                    .any(|&boundary| start < boundary && boundary < position))
+        {
+            return None;
+        }
+    }
     let split_word_count = split.split_whitespace().count();
     if split_word_count < words.len() {
         return None;
@@ -663,8 +830,13 @@ fn push_space_separated(out: &mut String, value: &str) {
     out.push_str(value);
 }
 
+#[cfg(test)]
 pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
-    if token.len() < 4 || !token.is_ascii() {
+    split_glued_ascii_token_with_options(token, probabilistic_english_deglue_enabled())
+}
+
+fn split_glued_ascii_token_with_options(token: &str, probabilistic: bool) -> Option<String> {
+    if ambiguous_glued_possessive(token) || token.len() < 4 || !token.is_ascii() {
         return None;
     }
     if !token
@@ -674,9 +846,32 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
         return None;
     }
 
+    // A short capitalized possessive may be a proper name even when the
+    // frequency model recognizes pieces of it as common words.
+    if token.len() <= 11
+        && token
+            .strip_suffix("'s")
+            .or_else(|| token.strip_suffix("'S"))
+            .is_some_and(|stem| {
+                let bytes = stem.as_bytes();
+                bytes.len() >= 2
+                    && bytes[0].is_ascii_uppercase()
+                    && (bytes[1..].iter().all(u8::is_ascii_lowercase)
+                        || bytes[1..].iter().all(u8::is_ascii_uppercase))
+            })
+    {
+        return None;
+    }
+
     // Short valid words are especially easy to over-segment with the local
     // dictionary (for example, "together" as "to get her"). Preserve them
     // when the independent frequency model recognizes the whole token.
+    if ["into", "onto"]
+        .iter()
+        .any(|word| token.eq_ignore_ascii_case(word))
+    {
+        return None;
+    }
     if token.len() <= 11 && token.chars().all(|ch| ch.is_ascii_alphabetic()) {
         let parts = wordninja::DEFAULT_MODEL.split(token);
         if parts.len() == 1 && parts[0].eq_ignore_ascii_case(token) {
@@ -692,21 +887,21 @@ pub(super) fn split_glued_ascii_token(token: &str) -> Option<String> {
         let prefix = match_token_case(&token[..4], "that");
         return Some(format!("{} {} {}", prefix, &token[4..7], &token[7..]));
     }
-    if let Some(split) = split_camelcase_proper_noun_suffix(token) {
+    if let Some(split) = split_camelcase_proper_noun_suffix(token, probabilistic) {
         return Some(split);
     }
     if let Some(split) = segment_glued_english_token_with_dictionary(token) {
         let has_residual_glue = split
             .split_whitespace()
             .any(|part| part.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 12);
-        if has_residual_glue && probabilistic_english_deglue_enabled() {
+        if has_residual_glue && probabilistic {
             if let Some(wordninja_split) = segment_glued_english_token_with_wordninja(token) {
                 return Some(wordninja_split);
             }
         }
         return Some(split);
     }
-    if probabilistic_english_deglue_enabled() {
+    if probabilistic {
         if let Some(split) = segment_glued_english_token_with_wordninja(token) {
             return Some(split);
         }
@@ -832,7 +1027,7 @@ fn probabilistic_english_deglue_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
+fn split_camelcase_proper_noun_suffix(token: &str, probabilistic: bool) -> Option<String> {
     if token.len() < 6 || !token.is_ascii() {
         return None;
     }
@@ -864,7 +1059,7 @@ fn split_camelcase_proper_noun_suffix(token: &str) -> Option<String> {
                 let split_suffix = segment_glued_english_token_with_dictionary(suffix)
                     .or_else(|| split_glued_contraction(suffix, &suffix.to_ascii_lowercase()))
                     .or_else(|| {
-                        probabilistic_english_deglue_enabled()
+                        probabilistic
                             .then(|| segment_glued_english_token_with_wordninja(suffix))
                             .flatten()
                     })
@@ -1593,13 +1788,56 @@ fn segment_glued_english_token_with_wordninja(token: &str) -> Option<String> {
     if token.len() < 8 || !token.is_ascii() {
         return None;
     }
-    let parts = wordninja::DEFAULT_MODEL.split(token);
+    let mut parts = wordninja::DEFAULT_MODEL
+        .split(token)
+        .into_iter()
+        .map(|part| part.into_owned())
+        .collect::<Vec<_>>();
     if parts.len() < 2 {
         return None;
     }
-    let joined = parts.iter().map(|part| part.as_ref()).collect::<String>();
+    let joined = parts.concat();
     if !joined.eq_ignore_ascii_case(token) {
         return None;
+    }
+    if let Some(mark) = token.find("'s").or_else(|| token.find("'S")) {
+        let stem = &token[..mark];
+        let prefix_end = mark + 2;
+        let bytes = stem.as_bytes();
+        if prefix_end < token.len()
+            && prefix_end <= 11
+            && bytes.len() >= 2
+            && bytes[0].is_ascii_uppercase()
+            && (bytes[1..].iter().all(u8::is_ascii_lowercase)
+                || bytes[1..].iter().all(u8::is_ascii_uppercase))
+        {
+            let mut position = 0;
+            let mut split_index = None;
+            for (index, part) in parts.iter().enumerate() {
+                position += part.len();
+                if position == prefix_end {
+                    split_index = Some(index + 1);
+                    break;
+                }
+                if position > prefix_end {
+                    break;
+                }
+            }
+            let split_index = split_index?;
+            let starts_with_pronoun = parts.first().is_some_and(|part| {
+                ["i", "we", "you", "he", "she", "they"]
+                    .iter()
+                    .any(|pronoun| part.eq_ignore_ascii_case(pronoun))
+            });
+            let ends_with_contraction = ["it's", "he's", "she's", "that's", "there's"]
+                .iter()
+                .any(|contraction| parts[split_index - 1].eq_ignore_ascii_case(contraction));
+            if !starts_with_pronoun || !ends_with_contraction {
+                let mut repaired = vec![token[..prefix_end].to_string()];
+                repaired.extend(parts.into_iter().skip(split_index));
+                parts = repaired;
+            }
+        }
     }
     let lower_parts = parts
         .iter()
@@ -1649,13 +1887,7 @@ fn segment_glued_english_token_with_wordninja(token: &str) -> Option<String> {
     {
         return None;
     }
-    Some(
-        parts
-            .into_iter()
-            .map(|part| part.into_owned())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    Some(parts.join(" "))
 }
 
 fn segment_glued_english_token(token: &str) -> Option<String> {
@@ -1780,7 +2012,12 @@ fn insert_space_after_punctuation(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     for (i, ch) in chars.iter().enumerate() {
         out.push(*ch);
+        let leading_ellipsis = *ch == '.'
+            && i >= 2
+            && chars[i - 2..=i] == ['.', '.', '.']
+            && (i == 2 || chars[i - 3] == '\n');
         if matches!(ch, ',' | '.' | ';' | ':' | '!' | '?')
+            && !leading_ellipsis
             && chars
                 .get(i + 1)
                 .is_some_and(|next| next.is_ascii_alphabetic())
@@ -1794,6 +2031,23 @@ fn insert_space_after_punctuation(input: &str) -> String {
 fn insert_space_between_letters_and_digits(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 8);
     let chars: Vec<char> = input.chars().collect();
+    let mut identifier_chars = vec![false; chars.len()];
+    let mut start = 0;
+    while start < chars.len() {
+        if !chars[start].is_ascii_alphanumeric() {
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < chars.len() && chars[end].is_ascii_alphanumeric() {
+            end += 1;
+        }
+        let token: String = chars[start..end].iter().collect();
+        if is_uppercase_alphanumeric_identifier(&token) {
+            identifier_chars[start..end].fill(true);
+        }
+        start = end;
+    }
     for (i, ch) in chars.iter().enumerate() {
         out.push(*ch);
         if let Some(next) = chars.get(i + 1) {
@@ -1811,7 +2065,7 @@ fn insert_space_between_letters_and_digits(input: &str) -> String {
                 false
             };
             let boundary = alpha_to_digit || (digit_to_alpha && !ordinal_suffix);
-            if boundary && *ch != ' ' && *next != ' ' {
+            if boundary && !identifier_chars[i] {
                 out.push(' ');
             }
         }
@@ -2147,7 +2401,227 @@ mod tests {
         // Even a valid word the language model segments is only a request for
         // corroboration, not an instruction to change its text.
         assert!(short_spacing_candidate(&positioned_line("inform", 160, 30)));
+        assert_eq!(postprocess_ocr_text("inform", "eng"), "inform");
         assert!(!spacing_candidate_preserves_characters("inform", "inform"));
+    }
+
+    #[test]
+    fn leading_ellipsis_preserves_existing_word_boundary() {
+        for text in [
+            "...perhaps later.",
+            "... perhaps later.",
+            "A pause.\n...perhaps later.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        assert_eq!(
+            insert_space_after_punctuation("Wait...perhaps"),
+            "Wait... perhaps"
+        );
+        assert_eq!(
+            insert_space_after_punctuation("Hello,there"),
+            "Hello, there"
+        );
+    }
+
+    #[test]
+    fn postprocess_preserves_distinct_short_words() {
+        for text in [
+            "We can go in to see it.",
+            "We went into the room.",
+            "The cat jumped onto the table.",
+            "We walked on to the next stop.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_genuine_repeated_letters() {
+        for text in ["Ask Savva to bring the book.", "THE NAVVY IS READY."] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_lowercase_identifiers() {
+        for text in [
+            "The letter i can represent a value.",
+            "The symbol i would be useful.",
+            "The symbol (i can represent current).",
+            "i can represent a value.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_abstains_on_ambiguous_glued_possessives() {
+        let ambiguous = [
+            "The medIcine's label is blue.",
+            "The radIator's valve is open.",
+            "The protOcol's first step is clear.",
+            "The ineqQality's effect is clear.",
+            "The figUre's shape is clear.",
+            "The camEra's lens is clear.",
+            "The med|cine's label is blue.",
+            "The medIcine’s label is blue.",
+            "We foundOrlana's map.",
+            "We can findIrene's map.",
+            "We foundQalina's map.",
+            "We foundIra's map.",
+            "We foundO's map.",
+            "We foundMira's map.",
+            "We foundAri's map.",
+            "We foundOrlana’s map.",
+            "We foundIra’S map.",
+            "We foundO'Neil's map.",
+            "We foundO’Neil’s map.",
+            "We saw 'foundIra's' label.",
+            "herOine's collar is blue.",
+            "(medIcine's)",
+        ];
+        let check = || {
+            for text in ambiguous {
+                assert_eq!(postprocess_ocr_text(text, "eng"), text);
+            }
+            for token in ["medIcine's", "ineqQality's", "foundIra's", "foundOrlana’s"] {
+                assert_eq!(split_glued_ascii_token(token), None);
+            }
+        };
+        check();
+        with_probabilistic_deglue_enabled(check);
+        assert_eq!(normalize_mixed_case_ocr_token("hOme"), "home");
+    }
+
+    #[test]
+    fn postprocess_preserves_possessive_names_and_unambiguous_splits() {
+        for text in [
+            "We found Orlana's map.",
+            "We found Ira’s map.",
+            "We saw O'Neil's lantern.",
+            "We saw O’Neil’s lantern.",
+            "The medicine's label is blue.",
+            "The radiator’s valve is open.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        assert_eq!(
+            postprocess_ocr_text("We foundMira today.", "eng"),
+            "We found Mira today."
+        );
+        assert_eq!(
+            postprocess_ocr_text("We foundAri today.", "eng"),
+            "We found Ari today."
+        );
+    }
+
+    #[test]
+    fn postprocess_preserves_existing_proper_name_boundaries() {
+        for text in [
+            "I am Ada Moreno, newly assigned to the archive.",
+            "I am Mina Nolan, here for the meeting.",
+            "I am Amy Moreno, here today.",
+            "I am Nolan Dana, here today.",
+            "We saw Dana Palmer at the station.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_uppercase_alphanumeric_identifiers() {
+        for text in [
+            "AB-C07, ready.",
+            "Flight Q15 is boarding.",
+            "Use model 42X.",
+            "B2 is open.",
+            "L1ST is open.",
+            "ATL1 is open.",
+            "R1's light is on.",
+            "X7Q9's light is on.",
+            "Read 'X7Q9'.",
+            "WE HAVE 3DAYS LEFT.",
+            "WAIT 3DAYS.",
+            "A1STANDDOWN is a code.",
+            "A1STANDDOWN's light is on.",
+            "AB-C07\nQ15 is ready.",
+        ] {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        assert_eq!(normalize_english_ocr_confusions("h0me"), "home");
+        assert_eq!(
+            postprocess_ocr_text("WEW ILL FIND THE WAY.", "eng"),
+            "WE WILL FIND THE WAY."
+        );
+    }
+
+    #[test]
+    fn postprocess_preserves_quote_before_question_mark() {
+        for text in [
+            "Did she say \"yes\"?",
+            "Is it called \"blue\"?",
+            "Is it called “blue”?",
+            "Is the label (blue)?",
+        ] {
+            assert_eq!(merge_common_fragmented_english_words(text), text);
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_sleep_as_a_noun() {
+        for text in ["A sleep study starts tonight.", "We need a sleep schedule."] {
+            assert_eq!(merge_common_fragmented_english_words(text), text);
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_any_way_and_any_more_as_words() {
+        for text in [
+            "Is there any way to mend it?",
+            "Do you need any more paint?",
+            "IS THERE ANY WAY?",
+        ] {
+            assert_eq!(merge_common_fragmented_english_words(text), text);
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
+    #[test]
+    fn postprocess_preserves_so_on_as_distinct_words() {
+        for text in [
+            "We saw birds, trees, and so on.",
+            "We saw birds, trees, and so on, too.",
+            "AND SO ON.",
+        ] {
+            assert_eq!(merge_common_fragmented_english_words(text), text);
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        assert_eq!(
+            merge_common_fragmented_english_words("so on enough"),
+            "soon enough"
+        );
+    }
+
+    #[test]
+    fn postprocess_preserves_legitimate_phrases_and_exclamations() {
+        for text in [
+            "me at",
+            "Me at",
+            "ME AT",
+            "Meet me at noon.",
+            "you'll!",
+            "You'll!",
+            "YOU'LL!",
+            "we'll!",
+            "We'll!",
+            "WE'LL!",
+        ] {
+            assert_eq!(merge_common_fragmented_english_words(text), text);
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
     }
 
     #[test]
@@ -2236,6 +2710,72 @@ mod tests {
     }
 
     #[test]
+    fn postprocess_preserves_long_names_and_words_in_sentences() {
+        let texts = [
+            "The parcel belongs to lenastonebridge today.",
+            "The parcel belongs to LenaStonebridge today.",
+            "We discussed counterrevolutionaries in class.",
+        ];
+        for text in texts {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+        with_probabilistic_deglue_enabled(|| {
+            for text in texts {
+                assert_eq!(postprocess_ocr_text(text, "eng"), text);
+            }
+        });
+    }
+
+    #[test]
+    fn probabilistic_deglue_preserves_names_in_sentences() {
+        with_probabilistic_deglue_enabled(|| {
+            for text in [
+                "The parcel reached dawnrose today.",
+                "Please ask mayrose about the plan.",
+                "Gwendolyn set the table.",
+            ] {
+                assert_eq!(postprocess_ocr_text(text, "eng"), text);
+            }
+        });
+    }
+
+    #[test]
+    fn probabilistic_deglue_preserves_short_possessive_names() {
+        with_probabilistic_deglue_enabled(|| {
+            for text in [
+                "Vanora's lantern.",
+                "Orlando's cabinet.",
+                "Rina's map.",
+                "I saw Vanora's lantern.",
+                "We saw Orlando's cabinet.",
+                "VANORA'S LANTERN.",
+            ] {
+                assert_eq!(postprocess_ocr_text(text, "eng"), text);
+            }
+            for (input, expected) in [
+                ("Vanora'slantern.", "Vanora's lantern."),
+                ("Alden'slantern.", "Alden's lantern."),
+                ("Orlana'scabin.", "Orlana's cabin."),
+                ("Romera'scabin.", "Romera's cabin."),
+                ("What'sthat?", "What's that?"),
+                ("Ithinkit'slate.", "I think it's late."),
+                ("Iknowhe'shere.", "I know he's here."),
+            ] {
+                assert_eq!(postprocess_ocr_text(input, "eng"), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn probabilistic_deglue_preserves_existing_common_word_boundaries() {
+        with_probabilistic_deglue_enabled(|| {
+            for text in ["We can go to the lake.", "We can go in to see it."] {
+                assert_eq!(postprocess_ocr_text(text, "eng"), text);
+            }
+        });
+    }
+
+    #[test]
     fn probabilistic_split_handles_unseen_glued_dialogue_when_enabled() {
         with_probabilistic_deglue_enabled(|| {
             assert_eq!(
@@ -2265,6 +2805,16 @@ mod tests {
             assert_eq!(
                 split_glued_ascii_token("Aliceherselfisthecrowningachievement"),
                 Some("Alice herself is the crowning achievement".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn fragmented_first_word_remains_repairable() {
+        with_probabilistic_deglue_enabled(|| {
+            assert_eq!(
+                postprocess_ocr_text("W e willrest.", "eng"),
+                "We will rest."
             );
         });
     }
