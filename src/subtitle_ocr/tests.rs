@@ -1916,6 +1916,151 @@ fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
     assert_eq!(actual, expected, "strict synthetic fixture {name}");
 }
 
+// Exercise the production PGS route with a real engine while recording which
+// converter methods it actually calls. The fixture and label are shared with the
+// strict synthetic suite; these tests must run in separate environment settings.
+fn cpu_bitmap_line_route_case(expect_direct: bool) {
+    struct RouteRecorder<'a> {
+        engine: &'a mut PpOcrEngine,
+        direct_lines: Vec<String>,
+        direct_calls: usize,
+        detector_calls: usize,
+    }
+
+    impl SubtitleConverter for RouteRecorder<'_> {
+        fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
+            self.detector_calls += 1;
+            self.engine.extract_lines(image_path, language)
+        }
+
+        fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
+            self.engine.supports_bitmap_line_recognition(language)
+        }
+
+        fn recognize_bitmap_line_with_context(
+            &mut self,
+            image: &image::RgbImage,
+            language: &str,
+            context: BitmapLineContext,
+        ) -> Result<Option<OcrLine>> {
+            self.direct_calls += 1;
+            let line = self
+                .engine
+                .recognize_bitmap_line_with_context(image, language, context)?;
+            if let Some(line) = &line {
+                self.direct_lines.push(line.text.trim().to_string());
+            }
+            Ok(line)
+        }
+    }
+
+    assert_eq!(std::env::var("DPN_OCR_FORCE_CPU").as_deref(), Ok("1"));
+    assert!(!require_gpu());
+    assert_eq!(
+        std::env::var("DPN_OCR_EXPERIMENTAL_BITMAP_LINES").as_deref(),
+        Ok(if expect_direct { "auto" } else { "off" })
+    );
+    assert_eq!(
+        std::env::var("DPN_OCR_DISABLE_TESS_FALLBACK").as_deref(),
+        Ok("1")
+    );
+
+    let image = image::open(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden_subs/strict_synthetic/short_words.png"),
+    )
+    .expect("load synthetic fixture")
+    .to_luma8();
+    let (width, height) = image.dimensions();
+    let mut indices: Vec<u8> = image.pixels().map(|pixel| 255 - pixel[0]).collect();
+    let mut palette = vec![0u8; 256 * 4];
+    for alpha in 0..256 {
+        palette[alpha * 4..alpha * 4 + 3].fill(255);
+        palette[alpha * 4 + 3] = alpha as u8;
+    }
+    let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+    rect.w = width as i32;
+    rect.h = height as i32;
+    rect.linesize[0] = width as i32;
+    rect.data[0] = indices.as_mut_ptr();
+    rect.data[1] = palette.as_mut_ptr();
+    rect.nb_colors = 256;
+    rect.type_ = ffi::SUBTITLE_BITMAP;
+    let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
+    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
+    subtitle.num_rects = 1;
+    subtitle.rects = &mut rect_ptr;
+
+    let model_dir = resolve_model_dir().expect("resolve model directory");
+    init_ort_environment().expect("initialize ONNX runtime");
+    let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
+        .expect("initialize PP-OCRv3");
+    let mut recorder = RouteRecorder {
+        engine: &mut engine,
+        direct_lines: Vec::new(),
+        direct_calls: 0,
+        detector_calls: 0,
+    };
+    assert_eq!(
+        recorder.supports_bitmap_line_recognition("eng"),
+        expect_direct
+    );
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let params = super::ocr_pipeline::CueBuildParams {
+        language: "eng",
+        stream_index: 0,
+        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        packet_seq: 0,
+        work_dir: temp.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: None,
+        ocr_engine: OcrEngine::PpOcrV3,
+    };
+    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
+        &subtitle,
+        &params,
+        0,
+        &mut recorder,
+        &mut OcrQualityBaseline::default(),
+    )
+    .expect("run production OCR");
+    assert!(visible, "synthetic fixture has no visible pixels");
+    let expected = "I am on my way to you.";
+    let actual = lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(actual, expected);
+    if expect_direct {
+        assert_eq!(recorder.direct_calls, 1);
+        assert_eq!(recorder.direct_lines, [expected]);
+        assert_eq!(
+            recorder.detector_calls, 0,
+            "direct path fell back to detector"
+        );
+    } else {
+        assert_eq!(recorder.direct_calls, 0, "direct path ran in off mode");
+        assert!(recorder.direct_lines.is_empty());
+        assert!(
+            recorder.detector_calls > 0,
+            "detector did not run in off mode"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
+fn cpu_bitmap_line_route_direct() {
+    cpu_bitmap_line_route_case(true);
+}
+
+#[test]
+#[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
+fn cpu_bitmap_line_route_detector_off() {
+    cpu_bitmap_line_route_case(false);
+}
+
 fn synthetic_stage_comparison(actual: &str, expected: &str) -> serde_json::Value {
     fn parts(text: &str) -> (String, Vec<usize>, Vec<usize>) {
         let mut glyphs = String::new();

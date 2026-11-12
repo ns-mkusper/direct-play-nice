@@ -87,12 +87,6 @@ jobs:
         with:
           prefix-key: linux-vcpkg-v3-ffmpeg8
 
-      - name: Cache OCR models
-        uses: actions/cache@v4
-        with:
-          path: target/ocr-models
-          key: ocr-models-linux-v1
-
       - name: Cache vcpkg workspace (cross-branch)
         id: vcpkg-root-cache
         uses: actions/cache@v4
@@ -208,8 +202,10 @@ jobs:
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
           DPN_OCR_GOLDEN: "1"
           DPN_OCR_AI_E2E: "1"
-          DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
         run: |
+          # Existing concurrent tests can initialize v4 models. Use a fresh
+          # directory rather than accepting unchecked files from the cache.
+          export DPN_OCR_MODEL_DIR="$(mktemp -d "$RUNNER_TEMP/ocr-concurrent-models.XXXXXX")"
           start=$(date +%s)
           ./scripts/test-concurrent.sh
           end=$(date +%s)
@@ -229,38 +225,98 @@ jobs:
           cargo test -q --features ffmpeg-cli-tests cli_fails_fast_on_corrupted_hevc_input
           cargo test -q --features ffmpeg-cli-tests sonarr_download_failure_restores_original_and_cleans_temp_files
 
+      - name: CPU real-model OCR regression (Linux stable)
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
+          VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
+          DPN_OCR_FORCE_CPU: "1"
+          DPN_OCR_REQUIRE_GPU: "0"
+        run: |
+          set -euo pipefail
+          sudo apt-get --assume-yes install tesseract-ocr tesseract-ocr-eng
+          tesseract --list-langs 2>/dev/null | grep -Fx eng
+
+          # The dynamic ort binding needs a CPU runtime. This is the same ORT
+          # version supported by the project's legacy runtime configuration.
+          ort_archive="$RUNNER_TEMP/onnxruntime-linux-x64-1.16.3.tgz"
+          curl --fail --location --retry 3 --output "$ort_archive" \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
+          echo "b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e  $ort_archive" | sha256sum --check
+          tar -xzf "$ort_archive" -C "$RUNNER_TEMP"
+          export ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
+          test -f "$ORT_DYLIB_PATH"
+
+          # Provision into a new private directory, never the shared model cache.
+          # Every model the v3 initializer can load is hashed before inference.
+          model_parent="$(mktemp -d "$RUNNER_TEMP/ocr-cpu-models.XXXXXX")"
+          export DPN_OCR_MODEL_DIR="$model_parent/models"
+          python3 -m unittest discover -s scripts/ocr-tools -p 'test_validate_cpu_fixture_report.py' -v
+          python3 scripts/ocr-tools/prepare_cpu_ocr_models.py "$DPN_OCR_MODEL_DIR"
+          unset DPN_OCR_REC_ENGLISH_MODEL DPN_OCR_USE_PPOCRV5_EN_REC DPN_OCR_REC_MULTILINGUAL_MODEL
+          unset DPN_OCR_REC_PROFILE_OVERRIDES DPN_OCR_LANGUAGE_SCRIPT_HINTS DPN_OCR_ROUTING_MANIFEST
+          export DPN_OCR_REC_LATIN_MODEL="$DPN_OCR_MODEL_DIR/latin_PP-OCRv3_rec_mobile.onnx"
+          export DPN_OCR_REC_JAPANESE_MODEL="$DPN_OCR_MODEL_DIR/japan_PP-OCRv4_rec_mobile.onnx"
+          export DPN_OCR_REC_KOREAN_MODEL="$DPN_OCR_MODEL_DIR/korean_PP-OCRv4_rec_mobile.onnx"
+          export DPN_OCR_REC_CJK_MODEL="$DPN_OCR_MODEL_DIR/chinese_cht_PP-OCRv3_rec_mobile.onnx"
+          printf 'ORT_DYLIB_PATH=%s\nDPN_OCR_MODEL_DIR=%s\n' "$ORT_DYLIB_PATH" "$DPN_OCR_MODEL_DIR" >> "$GITHUB_ENV"
+
+          # A successful cargo invocation with zero matching tests is not coverage.
+          run_checked() {
+            local count="$1" filter="$2" mode="$3" log="$RUNNER_TEMP/ocr-regression.log"
+            DPN_OCR_DISABLE_TESS_FALLBACK="$mode" cargo test --bin direct_play_nice "$filter" -- \
+              --ignored --test-threads=1 2>&1 | tee "$log"
+            grep -F "test result: ok. $count passed; 0 failed; 0 ignored;" "$log"
+          }
+          # Test pure PP-OCR plus normal postprocessing, then the production
+          # pipeline with Tesseract recovery enabled. The separate wide-gap
+          # stress and Tesseract-only suite (compact_short_pairs is known to
+          # fail) are not part of this gate.
+          run_checked 12 strict_synthetic_ppocr_v3 1
+          run_checked 12 strict_synthetic_ppocr_v3 0
+          # Verify real direct recognition and the explicit detector rollback;
+          # off mode gates only the stable short_words fixture, not all 12.
+          DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto run_checked 1 cpu_bitmap_line_route_direct 1
+          DPN_OCR_EXPERIMENTAL_BITMAP_LINES=off run_checked 1 cpu_bitmap_line_route_detector_off 1
+          # Narrow dialogue remains an opt-in diagnostic: on ARM CPU its exact
+          # text currently misrecognizes a glyph. Do not mask or relabel it.
+
+          # The validator also checks profile initialization and rejects fallback.
+          export DPN_OCR_DISABLE_TESS_FALLBACK=1 RUST_LOG=info
+          cargo build --bin direct_play_nice
+          report="$RUNNER_TEMP/ocr-cpu-fixture-report.json"
+          log="$RUNNER_TEMP/ocr-cpu-fixture-probe.log"
+          if ! target/debug/direct_play_nice --probe-ocr-fixtures tests/golden_subs/multilang \
+              --ocr-engine pp-ocr-v3 --output json > "$report" 2> "$log"; then
+            cat "$log" >&2
+            exit 1
+          fi
+          if ! python3 scripts/ocr-tools/validate_cpu_fixture_report.py \
+              "$report" "$log" "$DPN_OCR_MODEL_DIR" "$ORT_DYLIB_PATH"; then
+            cat "$log" >&2
+            exit 1
+          fi
+
       - name: Run OCR fixture accuracy probe (Linux stable)
         if: matrix.toolchain == 'stable'
         env:
           RUSTC_WRAPPER: ${{ env.RUSTC_WRAPPER }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
-          DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
+          DPN_OCR_FORCE_CPU: "1"
         run: |
+          set -euo pipefail
           mkdir -p benchmark_artifacts/ocr_fixture_eval
           probe_log="benchmark_artifacts/ocr_fixture_eval/probe.log"
           if [[ ! -x target/debug/direct_play_nice ]]; then
             cargo build --bin direct_play_nice
           fi
-          set +e
-          ./scripts/ocr-tools/run_ocr_fixture_eval.sh \
+          if ! ./scripts/ocr-tools/run_ocr_fixture_eval.sh \
             --bin target/debug/direct_play_nice \
             --fixtures tests/golden_subs/multilang \
             --run-dir benchmark_artifacts/ocr_fixture_eval \
-            --ocr-engine pp-ocr-v3 2>&1 | tee "$probe_log"
-          probe_status=${PIPESTATUS[0]}
-          set -e
-
-          if [[ "$probe_status" -ne 0 ]]; then
-            if grep -Eqi 'load the ONNX Runtime binary|libonnxruntime\.so|onnxruntime\.dll|cannot open shared object file|The specified module could not be found' "$probe_log"; then
-              echo "::warning title=Skipping OCR fixture probe::ONNX Runtime shared library is unavailable on this runner."
-              {
-                echo "### OCR fixture eval (Linux stable)"
-                echo "- Status: skipped (missing ONNX Runtime shared library on runner)"
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
+            --ocr-engine pp-ocr-v3 2>&1 | tee "$probe_log"; then
             echo "::error title=OCR fixture probe failed::See benchmark_artifacts/ocr_fixture_eval/probe.log"
-            exit "$probe_status"
+            exit 1
           fi
 
           {

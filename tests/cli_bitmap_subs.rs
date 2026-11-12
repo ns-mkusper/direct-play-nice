@@ -9,7 +9,7 @@ use assert_cmd::prelude::*;
 use predicates::str;
 use std::env;
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -252,6 +252,193 @@ fn probe_duration_ms(path: &Path) -> u64 {
     let path_cstr = CString::new(path.to_string_lossy().to_string()).unwrap();
     let ictx = AVFormatContextInput::open(path_cstr.as_c_str()).unwrap();
     (ictx.duration / 1000).max(0) as u64
+}
+
+// Construct a small SUP stream directly: FFmpeg's bitmap encoders cannot turn
+// SRT into pictures. Each visible display set carries a real PGS RLE object.
+fn synthetic_pgs() -> Vec<u8> {
+    fn segment(out: &mut Vec<u8>, ms: u32, kind: u8, data: &[u8]) {
+        out.extend_from_slice(b"PG");
+        out.extend_from_slice(&(ms * 90).to_be_bytes());
+        out.extend_from_slice(&(ms * 90).to_be_bytes());
+        out.push(kind);
+        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        out.extend_from_slice(data);
+    }
+    fn display(out: &mut Vec<u8>, ms: u32, number: u16, visible: bool) {
+        // 160x120 canvas, composition state = epoch start.
+        let mut pcs = vec![0, 160, 0, 120, 0x10];
+        pcs.extend_from_slice(&number.to_be_bytes());
+        pcs.extend_from_slice(&[0x80, 0, 0, u8::from(visible)]);
+        if visible {
+            // Object 0 in window 0, positioned at (48, 80).
+            pcs.extend_from_slice(&[0, 0, 0, 0, 0, 48, 0, 80]);
+        }
+        segment(out, ms, 0x16, &pcs);
+        if visible {
+            // Distinct rectangle widths make replacement events visibly different.
+            let width = 32 - (number as u8 * 2);
+            segment(out, ms, 0x17, &[1, 0, 0, 48, 0, 80, 0, width, 0, 16]);
+            segment(
+                out,
+                ms,
+                0x14,
+                &[0, 0, 0, 16, 128, 128, 0, 1, 235, 128, 128, 255],
+            );
+            let mut rle = Vec::new();
+            for _ in 0..16 {
+                rle.extend_from_slice(&[0, 0x80 | width, 1, 0, 0]);
+            }
+            let len = (rle.len() + 4) as u32;
+            let mut object = vec![
+                0,
+                0,
+                0,
+                0xc0,
+                (len >> 16) as u8,
+                (len >> 8) as u8,
+                len as u8,
+                0,
+                width,
+                0,
+                16,
+            ];
+            object.extend_from_slice(&rle);
+            segment(out, ms, 0x15, &object);
+        }
+        segment(out, ms, 0x80, &[]);
+    }
+    let mut data = Vec::new();
+    for (n, (ms, visible)) in [
+        (500, true),
+        (1000, false),
+        (1500, true),
+        (2000, true),
+        (2600, false),
+        (3000, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        display(&mut data, ms, n as u16, visible);
+    }
+    data
+}
+
+#[test]
+fn cli_synthetic_pgs_preserves_event_timing() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_ffmpeg_present();
+    let tmp = TempDir::new()?;
+    let sup = tmp.path().join("synthetic.sup");
+    let input = tmp.path().join("input.mkv");
+    let output = tmp.path().join("output.mp4");
+    let extracted = tmp.path().join("output.srt");
+    let config = tmp.path().join("config.toml");
+    fs::write(&sup, synthetic_pgs())?;
+    fs::write(&config, "")?;
+
+    let mux = Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-copyts",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=size=160x120:rate=25:duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=sample_rate=44100:channel_layout=mono",
+            "-i",
+        ])
+        .arg(&sup)
+        .args([
+            "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-t", "5", "-c:v", "mpeg4", "-c:a",
+            "aac", "-c:s", "copy",
+        ])
+        .arg(&input)
+        .output()?;
+    assert!(
+        mux.status.success(),
+        "synthetic input mux failed: {}",
+        String::from_utf8_lossy(&mux.stderr)
+    );
+    assert_eq!(count_bitmap_subtitle_streams(&input)?, 1);
+
+    // The external engine is a deterministic stub, not an OCR accuracy test.
+    // It lets the real decoded bitmap events traverse cue assembly and muxing.
+    let external_ocr = if cfg!(windows) {
+        "cmd /C echo SYNTHETIC SAMPLE"
+    } else {
+        "echo SYNTHETIC SAMPLE"
+    };
+    let run = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .arg("--config-file")
+        .arg(&config)
+        .args([
+            "--hw-accel",
+            "none",
+            "--sub-mode",
+            "force",
+            "--ocr-engine",
+            "external",
+            "--ocr-format",
+            "srt",
+            "--ocr-external-command",
+            external_ocr,
+        ])
+        .arg(&input)
+        .arg(&output)
+        .output()?;
+    assert!(
+        run.status.success(),
+        "conversion failed:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(count_mov_text_streams(&output)?, 1);
+    let extract = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&output)
+        .args(["-map", "0:s:0"])
+        .arg(&extracted)
+        .output()?;
+    assert!(
+        extract.status.success(),
+        "subtitle extraction failed: {}",
+        String::from_utf8_lossy(&extract.stderr)
+    );
+    let srt = fs::read_to_string(extracted)?.replace('\r', "");
+    let cues: Vec<_> = srt.trim().split("\n\n").collect();
+    // Includes a clear at 1s, a gap to 1.5s, visible replacement at 2s,
+    // another clear at 2.6s, and an unclosed final event with a 1s fallback.
+    let expected = [(500, 1000), (1500, 2000), (2000, 2600), (3000, 4000)];
+    assert_eq!(cues.len(), expected.len(), "unexpected cues:\n{srt}");
+    for (index, (cue, (start, end))) in cues.iter().zip(expected).enumerate() {
+        let mut lines = cue.lines();
+        assert_eq!(lines.next(), Some((index + 1).to_string().as_str()));
+        let times = lines.next().expect("cue timestamp");
+        let (actual_start, actual_end) = times.split_once(" --> ").expect("SRT timing");
+        fn ms(timestamp: &str) -> i64 {
+            let parts: Vec<i64> = timestamp
+                .split([':', ','])
+                .map(|part| part.parse().expect("timestamp component"))
+                .collect();
+            assert_eq!(parts.len(), 4);
+            parts[0] * 3_600_000 + parts[1] * 60_000 + parts[2] * 1_000 + parts[3]
+        }
+        let actual = (ms(actual_start), ms(actual_end));
+        assert!(
+            (actual.0 - start).abs() <= 30 && (actual.1 - end).abs() <= 30,
+            "cue {}: expected {start}-{end}ms, got {}-{}ms",
+            index + 1,
+            actual.0,
+            actual.1
+        );
+        assert_eq!(lines.collect::<Vec<_>>(), ["SYNTHETIC SAMPLE"]);
+    }
+    Ok(())
 }
 
 #[test]
