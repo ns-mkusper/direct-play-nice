@@ -871,7 +871,7 @@ struct BitmapRect<'a> {
 }
 
 /// Recognizes eligible PGS rectangles line by line without the text detector.
-/// Returns `None` when the direct route is unavailable or abstains.
+/// Returns `None` when the direct route is unavailable or abstains for any line.
 fn recognize_rect_as_bitmap_lines(
     engine: &mut dyn SubtitleConverter,
     bitmap: &BitmapRect<'_>,
@@ -881,18 +881,51 @@ fn recognize_rect_as_bitmap_lines(
     if !may_use_bitmap_lines(params, engine, training_export_requested()) {
         return Ok(None);
     }
-    // SAFETY: the decoder owns this bitmap and keeps its index and
-    // palette buffers valid until subtitle processing completes.
-    let Some(mut lines) = (unsafe {
-        try_direct_bitmap_lines(
-            bitmap.rect,
-            bitmap.pgm,
-            engine,
-            params.language,
-            bitmap.pgm_path,
-            cue_rect_count,
-        )?
-    }) else {
+    let language = params.language;
+    let lines = 'direct: {
+        // SAFETY: the decoder keeps this bitmap's index and palette buffers
+        // valid until subtitle processing completes, and the cropper checks
+        // the declared stride and dimensions before reading them.
+        let Some(crops) = (unsafe { split_pgs_bitmap_lines(bitmap.rect, bitmap.pgm) }) else {
+            break 'direct None;
+        };
+        // An extreme number of bands is more likely noise or unsupported geometry.
+        if crops.is_empty() || crops.len() > 64 {
+            break 'direct None;
+        }
+        let context = if cue_rect_count == 1 && crops.len() == 1 {
+            BitmapLineContext::SingleRectangleSingleBand
+        } else {
+            BitmapLineContext::UnknownOrMultiple
+        };
+        let recover_punctuation = !disable_tesseract_quality_fallback();
+        let mut lines = Vec::with_capacity(crops.len());
+        for (crop, _) in crops {
+            let image = image::load_from_memory_with_format(&crop, image::ImageFormat::Pnm)
+                .context("decoding experimental bitmap-line crop")?
+                .to_rgb8();
+            let Some(mut line) = engine.recognize_bitmap_line(&image, language, context)? else {
+                break 'direct None;
+            };
+            line.text = line.text.trim().to_owned();
+            if line.text.is_empty() {
+                break 'direct None;
+            }
+            if recover_punctuation {
+                let gray = image::imageops::grayscale(&image);
+                recover_direct_line_punctuation_with(&mut line.text, &gray, || {
+                    direct_punctuation_tesseract_attempts(bitmap.pgm_path, &crop, language)
+                });
+            }
+            // This route is SRT-only, and scaled crop boxes are not display
+            // coordinates, so lines carry no box.
+            line.bbox = None;
+            line.color = line.color.or(bitmap.color);
+            lines.push(line);
+        }
+        Some(lines)
+    };
+    let Some(lines) = lines else {
         debug!(
             "Experimental bitmap-line OCR abstained for stream {} packet {} rect {}; using detector",
             params.stream_index, params.packet_seq, bitmap.index
@@ -906,14 +939,6 @@ fn recognize_rect_as_bitmap_lines(
         params.packet_seq,
         bitmap.index
     );
-    for line in &mut lines {
-        // This experimental path is SRT-only; scaled PGM boxes are
-        // not display coordinates and are not used for SRT output.
-        line.bbox = None;
-        if line.color.is_none() {
-            line.color = bitmap.color;
-        }
-    }
     Ok(Some(lines))
 }
 
@@ -954,18 +979,16 @@ fn recognize_rect_with_detector(
     let mut tesseract_attempt = None;
 
     let mut restored_spacing = false;
+    // Forced Tesseract replaces the text, so do not transfer its spacing.
     if tesseract_fallback_enabled
+        && !force_tesseract_non_english
         && language_uses_spaces(language)
         && (ppocr_spacing_needs_fallback(&output.lines)
             || postprocessed_text_needs_quality_fallback(&output, language))
     {
-        if let Some(restored) = restore_spacing_from_tesseract(
-            &mut output,
-            pgm_path,
-            language,
-            force_tesseract_non_english,
-            &mut tesseract_attempt,
-        ) {
+        if let Some(restored) =
+            restore_spacing_from_tesseract(&mut output, pgm_path, language, &mut tesseract_attempt)
+        {
             restored_spacing = restored;
             info!(
                 "{} spacing recovery: restored word boundaries using matching Tesseract text for subtitle stream {} packet {} rect {}",
@@ -1082,23 +1105,20 @@ fn restore_spacing_from_tesseract(
     output: &mut OcrOutput,
     pgm_path: &Path,
     language: &str,
-    force_tesseract: bool,
     tesseract_attempt: &mut Option<Result<TesseractCandidate>>,
 ) -> Option<bool> {
     let fallback_language = resolve_tesseract_fallback_language(language)?;
-    let candidate = cached_tesseract_attempt(tesseract_attempt, || {
-        run_tesseract_best_effort(pgm_path, &fallback_language)
-    })
-    .as_ref()
-    .ok()?;
+    let candidate = tesseract_attempt
+        .get_or_insert_with(|| run_tesseract_best_effort(pgm_path, &fallback_language))
+        .as_ref()
+        .ok()?;
     let mut spacing_lines = output.lines.clone();
-    if !force_tesseract && spacing_lines.len() > 1 {
+    if spacing_lines.len() > 1 {
         if let Ok(alternate) = run_tesseract_with_psm(pgm_path, &fallback_language, 11) {
             recover_line_terminal_punctuation(&mut spacing_lines, &candidate.text, &alternate);
         }
     }
-    let transferred =
-        transfer_spacing_unless_forced(&spacing_lines, &candidate.text, force_tesseract)?;
+    let transferred = transfer_agreed_spacing(&spacing_lines, &candidate.text)?;
     output.lines = apply_transferred_spacing(&spacing_lines, &transferred, language);
     Some(!output_needs_spacing_after_postprocess(output, language))
 }
@@ -1146,9 +1166,9 @@ fn try_tesseract_quality_fallback(
         );
         return false;
     };
-    let candidate = match cached_tesseract_attempt(tesseract_attempt, || {
-        run_tesseract_best_effort(bitmap.pgm_path, &fallback_language)
-    }) {
+    let candidate = match tesseract_attempt
+        .get_or_insert_with(|| run_tesseract_best_effort(bitmap.pgm_path, &fallback_language))
+    {
         Ok(candidate) if !candidate.text.is_empty() => candidate,
         Ok(_) => return false,
         Err(err) => {
@@ -1230,17 +1250,12 @@ fn try_tesseract_quality_fallback(
 fn union_bbox(lines: &[OcrLine]) -> Option<OcrBoundingBox> {
     lines
         .iter()
-        .filter_map(|line| line.bbox.as_ref())
-        .fold(None, |acc, bbox| {
-            Some(match acc {
-                Some(current) => OcrBoundingBox {
-                    left: current.left.min(bbox.left),
-                    top: current.top.min(bbox.top),
-                    right: current.right.max(bbox.right),
-                    bottom: current.bottom.max(bbox.bottom),
-                },
-                None => bbox.clone(),
-            })
+        .filter_map(|line| line.bbox.clone())
+        .reduce(|a, b| OcrBoundingBox {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
         })
 }
 
@@ -1277,9 +1292,9 @@ fn recover_detector_punctuation(
     let Some(fallback_language) = resolve_tesseract_fallback_language(language) else {
         return recovered_line_comma;
     };
-    let Ok(candidate) = cached_tesseract_attempt(tesseract_attempt, || {
-        run_tesseract_best_effort(pgm_path, &fallback_language)
-    }) else {
+    let Ok(candidate) = tesseract_attempt
+        .get_or_insert_with(|| run_tesseract_best_effort(pgm_path, &fallback_language))
+    else {
         return recovered_line_comma;
     };
     let recovered_terminal = if missing_terminal_ellipsis_candidate(lines, &candidate.text) {
@@ -1337,61 +1352,6 @@ fn recover_terminal_ellipsis(
     }
     transfer_verified_comma_spacing(lines, &candidate.text, &comma_boundaries);
     true
-}
-
-/// # Safety
-/// The rectangle's FFmpeg-owned pixel and palette buffers must remain valid
-/// for their declared dimensions throughout this call.
-unsafe fn try_direct_bitmap_lines(
-    rect: &ffi::AVSubtitleRect,
-    pgm: &[u8],
-    engine: &mut dyn SubtitleConverter,
-    language: &str,
-    work_image_path: &Path,
-    cue_rect_count: u32,
-) -> Result<Option<Vec<OcrLine>>> {
-    if !engine.supports_bitmap_line_recognition(language) {
-        return Ok(None);
-    }
-    // SAFETY: inherited from this function's caller; the cropper checks the
-    // declared stride and dimensions before reading FFmpeg-owned buffers.
-    let Some(crops) = (unsafe { split_pgs_bitmap_lines(rect, pgm) }) else {
-        return Ok(None);
-    };
-    // An extreme number of bands is more likely noise or unsupported geometry.
-    if crops.is_empty() || crops.len() > 64 {
-        return Ok(None);
-    }
-    let context = if cue_rect_count == 1 && crops.len() == 1 {
-        BitmapLineContext::SingleRectangleSingleBand
-    } else {
-        BitmapLineContext::UnknownOrMultiple
-    };
-    let recover_punctuation = !disable_tesseract_quality_fallback();
-    let mut lines = Vec::with_capacity(crops.len());
-    for (crop, bbox) in crops {
-        let image = image::load_from_memory_with_format(&crop, image::ImageFormat::Pnm)
-            .context("decoding experimental bitmap-line crop")?
-            .to_rgb8();
-        let Some(mut line) =
-            engine.recognize_bitmap_line_with_context(&image, language, context)?
-        else {
-            return Ok(None);
-        };
-        line.text = line.text.trim().to_owned();
-        if line.text.is_empty() {
-            return Ok(None);
-        }
-        if recover_punctuation {
-            let gray = image::imageops::grayscale(&image);
-            let _ = recover_direct_line_punctuation_with(&mut line.text, &gray, || {
-                direct_punctuation_tesseract_attempts(work_image_path, &crop, language)
-            });
-        }
-        line.bbox = Some(bbox);
-        lines.push(line);
-    }
-    Ok(Some(lines))
 }
 
 fn recover_direct_line_punctuation_with(
@@ -1471,12 +1431,10 @@ fn export_training_sample_unless_recovered(
     recovered_punctuation: bool,
     export: impl FnOnce(&OcrOutput) -> Result<()>,
 ) -> Result<()> {
-    if let Some(output) = output {
-        if !recovered_punctuation && !output.seam_corrected {
-            return export(output);
-        }
+    match output {
+        Some(output) if !recovered_punctuation && !output.seam_corrected => export(output),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn export_ocr_training_sample(pgm_path: &Path, output: &OcrOutput, language: &str) -> Result<()> {
@@ -1690,15 +1648,7 @@ fn stable_label_hash(text: &str) -> u64 {
 }
 
 fn keep_ocr_intermediates() -> bool {
-    env::var("DPN_OCR_KEEP_INTERMEDIATES")
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    env_flag_enabled("DPN_OCR_KEEP_INTERMEDIATES")
 }
 
 /// Text long enough to trust a recognizer's terminal mark: it ends in a glyph
@@ -1787,24 +1737,23 @@ fn ambiguous_terminal_period_input_valid(lines: &[OcrLine]) -> bool {
     needs_terminal_punctuation_candidate(lines)
         && ends_with_alphanumeric(&lines_text_for_quality(lines))
         && lines.iter().any(|line| line.text.contains(['I', '|']))
-        && !lines.iter().any(|line| {
-            line.text.trim().is_empty()
-                || line.text.contains('\r')
-                || line.text.starts_with('\n')
-                || line.text.ends_with('\n')
-                || line.text.lines().any(|part| part.trim().is_empty())
-        })
+        && !lines
+            .iter()
+            .any(|line| line.text.trim().is_empty() || has_irregular_line_breaks(&line.text))
+}
+
+/// Carriage returns, or leading, trailing, or blank lines.
+fn has_irregular_line_breaks(text: &str) -> bool {
+    text.contains('\r')
+        || text.starts_with('\n')
+        || text.ends_with('\n')
+        || text.lines().any(|line| line.trim().is_empty())
 }
 
 // Permit only a single I/| disagreement, and the space Tesseract can insert
 // immediately after its pipe. Never transfer the glyph or its spacing.
 fn ambiguous_terminal_period_candidate(lines: &[OcrLine], candidate: &str) -> bool {
-    if !ambiguous_terminal_period_input_valid(lines)
-        || candidate.contains('\r')
-        || candidate.starts_with('\n')
-        || candidate.ends_with('\n')
-        || candidate.lines().any(|line| line.trim().is_empty())
-    {
+    if !ambiguous_terminal_period_input_valid(lines) || has_irregular_line_breaks(candidate) {
         return false;
     }
     // Valid input has no blank lines, so this keeps every line boundary.
@@ -1911,10 +1860,7 @@ fn first_line_comma_agrees(lines: &[OcrLine], candidate: &str) -> bool {
     if lines.len() != 2 || lines.iter().any(|line| line.text.contains(['\n', '\r'])) {
         return false;
     }
-    let candidate: Vec<_> = candidate
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
+    let candidate = non_blank_lines(candidate);
     if candidate.len() != 2 {
         return false;
     }
@@ -1953,14 +1899,8 @@ fn recover_line_terminal_punctuation(
     candidate: &str,
     alternate: &str,
 ) -> bool {
-    let candidates: Vec<_> = candidate
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let alternates: Vec<_> = alternate
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
+    let candidates = non_blank_lines(candidate);
+    let alternates = non_blank_lines(alternate);
     if lines.len() < 2 || candidates.len() != lines.len() || alternates.len() != lines.len() {
         return false;
     }
@@ -2042,24 +1982,6 @@ fn line_break_positions(output: &OcrOutput) -> Vec<usize> {
         }
     }
     positions
-}
-
-fn cached_tesseract_attempt(
-    attempt: &mut Option<Result<TesseractCandidate>>,
-    run: impl FnOnce() -> Result<TesseractCandidate>,
-) -> &Result<TesseractCandidate> {
-    attempt.get_or_insert_with(run)
-}
-
-fn transfer_spacing_unless_forced(
-    lines: &[OcrLine],
-    candidate: &str,
-    force_tesseract: bool,
-) -> Option<String> {
-    if force_tesseract {
-        return None;
-    }
-    transfer_agreed_spacing(lines, candidate)
 }
 
 fn transfer_agreed_spacing(lines: &[OcrLine], candidate: &str) -> Option<String> {
@@ -2213,11 +2135,16 @@ fn preserves_existing_boundaries(original: &str, candidate: &str) -> bool {
     original_boundaries.is_subset(&candidate_boundaries)
 }
 
+fn non_blank_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect()
+}
+
 fn without_whitespace(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
-/// Each line of `text` with its whitespace removed.
 fn compact_lines(text: &str) -> Vec<String> {
     text.lines().map(without_whitespace).collect()
 }
@@ -2446,13 +2373,7 @@ fn recognize_ppocr_word_crops(
 }
 
 pub(super) fn force_tesseract_non_english_enabled() -> bool {
-    let enabled = env::var("DPN_OCR_FORCE_TESS_NON_ENGLISH")
-        .ok()
-        .map(|v| {
-            let x = v.trim().to_ascii_lowercase();
-            matches!(x.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false);
+    let enabled = env_flag_enabled("DPN_OCR_FORCE_TESS_NON_ENGLISH");
     if enabled && !FORCE_TESS_NON_ENGLISH_LOGGED.swap(true, Ordering::Relaxed) {
         warn!(
             "DPN_OCR_FORCE_TESS_NON_ENGLISH=1 set; non-English subtitle streams will prefer Tesseract over PP-OCR."
@@ -2508,6 +2429,32 @@ mod tests {
         }
     }
 
+    fn line(text: &str) -> OcrLine {
+        OcrLine {
+            text: text.into(),
+            bbox: None,
+            score: None,
+            color: None,
+            italic: false,
+        }
+    }
+
+    fn text_output(text: &str) -> OcrOutput {
+        OcrOutput {
+            lines: vec![line(text)],
+            ..OcrOutput::default()
+        }
+    }
+
+    /// A line with metadata that recovery passes must preserve.
+    fn styled_line(text: &str) -> OcrLine {
+        OcrLine {
+            score: Some(0.9),
+            italic: true,
+            ..line(text)
+        }
+    }
+
     fn cue(start_ms: i64, end_ms: i64, text: &str) -> SubtitleCue {
         SubtitleCue {
             start_ms,
@@ -2524,6 +2471,25 @@ mod tests {
         sub
     }
 
+    fn cue_params<'a>(
+        language: &'a str,
+        stream_codec_id: ffi::AVCodecID,
+        ocr_format: OcrFormat,
+        ocr_engine: OcrEngine,
+        work_dir: &'a Path,
+    ) -> CueBuildParams<'a> {
+        CueBuildParams {
+            language,
+            stream_index: 0,
+            stream_codec_id,
+            packet_seq: 0,
+            work_dir,
+            ocr_format,
+            video_dimensions: None,
+            ocr_engine,
+        }
+    }
+
     fn process_event(
         sub: &ffi::AVSubtitle,
         fallback_start: Option<i64>,
@@ -2533,16 +2499,7 @@ mod tests {
         cues: &mut Vec<SubtitleCue>,
         timing: &mut PgsCueTiming,
     ) {
-        let params = CueBuildParams {
-            language: "eng",
-            stream_index: 0,
-            stream_codec_id: codec,
-            packet_seq: 0,
-            work_dir: Path::new("."),
-            ocr_format: format,
-            video_dimensions: None,
-            ocr_engine: OcrEngine::External,
-        };
+        let params = cue_params("eng", codec, format, OcrEngine::External, Path::new("."));
         append_subtitle_cues(
             sub,
             fallback_start,
@@ -2579,16 +2536,7 @@ mod tests {
     fn rect_group(bounds: Option<(i64, i64)>, texts: &[&str]) -> SubtitleRectLines {
         SubtitleRectLines {
             vertical_bounds: bounds,
-            lines: texts
-                .iter()
-                .map(|text| OcrLine {
-                    text: (*text).into(),
-                    bbox: None,
-                    score: None,
-                    color: None,
-                    italic: false,
-                })
-                .collect(),
+            lines: texts.iter().map(|text| line(text)).collect(),
         }
     }
 
@@ -2702,6 +2650,7 @@ mod tests {
             &mut self,
             image: &image::RgbImage,
             _: &str,
+            _: BitmapLineContext,
         ) -> Result<Option<OcrLine>> {
             self.seen_sizes.push(image.dimensions());
             Ok(self.responses.pop_front().flatten().map(|text| OcrLine {
@@ -2725,7 +2674,7 @@ mod tests {
         fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
             is_english_language(language)
         }
-        fn recognize_bitmap_line_with_context(
+        fn recognize_bitmap_line(
             &mut self,
             _: &image::RgbImage,
             _: &str,
@@ -2742,15 +2691,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bitmap_line_context_requires_one_rectangle_and_one_band() {
-        let width = 16usize;
-        let height = 25usize;
-        let mut pixels = vec![0u8; width * height];
-        for y in 2..8 {
-            pixels[y * width + 2..y * width + 14].fill(1);
-        }
-        let mut palette = vec![0u8; 256 * 4];
+    /// A paletted bitmap rectangle whose index 1 is opaque white.
+    fn bitmap_rect(
+        width: usize,
+        height: usize,
+        pixels: &mut [u8],
+        palette: &mut [u8],
+    ) -> ffi::AVSubtitleRect {
         palette[4..8].fill(255);
         let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
         rect.type_ = ffi::SUBTITLE_BITMAP;
@@ -2760,46 +2707,56 @@ mod tests {
         rect.linesize[0] = width as i32;
         rect.data[0] = pixels.as_mut_ptr();
         rect.data[1] = palette.as_mut_ptr();
+        rect
+    }
+
+    #[test]
+    fn bitmap_line_context_requires_one_rectangle_and_one_band() {
+        let width = 16usize;
+        let height = 25usize;
+        let mut pixels = vec![0u8; width * height];
+        for y in 2..8 {
+            pixels[y * width + 2..y * width + 14].fill(1);
+        }
+        let mut palette = vec![0u8; 256 * 4];
+        let rect = bitmap_rect(width, height, &mut pixels, &mut palette);
         let temp = tempfile::tempdir().unwrap();
+        let params = cue_params(
+            "eng",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            OcrEngine::PpOcrV3,
+            temp.path(),
+        );
+        let pgm_path = temp.path().join("unused.pgm");
         let mut mock = ContextBitmapMock {
             contexts: Vec::new(),
+        };
+        let recognize = |mock: &mut ContextBitmapMock, cue_rect_count| {
+            let (pgm, _) = rect_to_pgm(&rect, OcrEngine::PpOcrV3).unwrap();
+            let bitmap = BitmapRect {
+                rect: &rect,
+                index: 0,
+                pgm: &pgm,
+                pgm_path: &pgm_path,
+                color: None,
+            };
+            recognize_rect_as_bitmap_lines(mock, &bitmap, &params, cue_rect_count)
+                .unwrap()
+                .is_some()
         };
         for (count, expected) in [
             (1, BitmapLineContext::SingleRectangleSingleBand),
             (2, BitmapLineContext::UnknownOrMultiple),
         ] {
-            let (pgm, _) = rect_to_pgm(&rect, OcrEngine::PpOcrV3).unwrap();
-            assert!(unsafe {
-                try_direct_bitmap_lines(
-                    &rect,
-                    &pgm,
-                    &mut mock,
-                    "eng",
-                    &temp.path().join("unused.pgm"),
-                    count,
-                )
-            }
-            .unwrap()
-            .is_some());
+            assert!(recognize(&mut mock, count));
             assert_eq!(mock.contexts, [expected]);
             mock.contexts.clear();
         }
         for y in 15..21 {
             pixels[y * width + 2..y * width + 14].fill(1);
         }
-        let (pgm, _) = rect_to_pgm(&rect, OcrEngine::PpOcrV3).unwrap();
-        assert!(unsafe {
-            try_direct_bitmap_lines(
-                &rect,
-                &pgm,
-                &mut mock,
-                "eng",
-                &temp.path().join("unused.pgm"),
-                1,
-            )
-        }
-        .unwrap()
-        .is_some());
+        assert!(recognize(&mut mock, 1));
         assert_eq!(mock.contexts, [BitmapLineContext::UnknownOrMultiple; 2]);
     }
 
@@ -2913,32 +2870,21 @@ mod tests {
             pixels[y * width + 2..y * width + 14].fill(1);
         }
         let mut palette = vec![0u8; 256 * 4];
-        palette[4..8].fill(255);
-        let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
-        rect.type_ = ffi::SUBTITLE_BITMAP;
-        rect.w = width as i32;
-        rect.h = height as i32;
+        let mut rect = bitmap_rect(width, height, &mut pixels, &mut palette);
         rect.x = 9;
         rect.y = 11;
-        rect.nb_colors = 256;
-        rect.linesize[0] = width as i32;
-        rect.data[0] = pixels.as_mut_ptr();
-        rect.data[1] = palette.as_mut_ptr();
         let mut rect_ptr = &mut rect as *mut ffi::AVSubtitleRect;
         let mut sub = subtitle(Some(1_000), 0, 2_000);
         sub.num_rects = 1;
         sub.rects = &mut rect_ptr;
         let temp = tempfile::tempdir().unwrap();
-        let params = CueBuildParams {
-            language: "eng",
-            stream_index: 0,
-            stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
-            packet_seq: 0,
-            work_dir: temp.path(),
-            ocr_format: OcrFormat::Srt,
-            video_dimensions: None,
-            ocr_engine: OcrEngine::PpOcrV3,
-        };
+        let params = cue_params(
+            "eng",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            OcrEngine::PpOcrV3,
+            temp.path(),
+        );
         let mut direct = DirectBitmapMock {
             enabled: true,
             responses: [
@@ -3040,27 +2986,13 @@ mod tests {
         assert!(dvd.seen_sizes.is_empty());
         assert_eq!(dvd_lines[0].text, "Stable text.");
 
-        let mut disabled = DirectBitmapMock {
+        let disabled = DirectBitmapMock {
             enabled: false,
             responses: std::collections::VecDeque::new(),
             seen_sizes: Vec::new(),
             detector_calls: 0,
         };
-        let (pgm, _) = rect_to_pgm(&rect, OcrEngine::PpOcrV3).unwrap();
-        // SAFETY: this test owns the backing pixel and palette allocations.
-        assert!(unsafe {
-            try_direct_bitmap_lines(
-                &rect,
-                &pgm,
-                &mut disabled,
-                "eng",
-                &temp.path().join("unused.pgm"),
-                1,
-            )
-        }
-        .unwrap()
-        .is_none());
-        assert!(disabled.seen_sizes.is_empty());
+        assert!(!may_use_bitmap_lines(&params, &disabled, false));
     }
 
     struct RectangleOcr {
@@ -3126,16 +3058,13 @@ mod tests {
                 ]
                 .into(),
             };
-            let params = CueBuildParams {
-                language: "fra",
-                stream_index: 0,
-                stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
-                packet_seq: 0,
-                work_dir: temp.path(),
-                ocr_format: format,
-                video_dimensions: None,
-                ocr_engine: OcrEngine::External,
-            };
+            let params = cue_params(
+                "fra",
+                ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+                format,
+                OcrEngine::External,
+                temp.path(),
+            );
             let cues = subtitle_to_cues(
                 &sub,
                 None,
@@ -3162,15 +3091,7 @@ mod tests {
 
     #[test]
     fn terminal_punctuation_recovery_requires_exact_glyph_agreement() {
-        fn line(text: &str) -> OcrLine {
-            OcrLine {
-                text: text.to_string(),
-                bbox: None,
-                score: Some(0.9),
-                color: None,
-                italic: true,
-            }
-        }
+        let line = styled_line;
 
         let mut lines = vec![line("A small"), line("example  ")];
         assert!(recover_terminal_punctuation(&mut lines, "Asmall example!"));
@@ -3245,13 +3166,7 @@ mod tests {
 
     #[test]
     fn ambiguous_terminal_period_requires_matching_raw_lines_and_glyphs() {
-        let line = |text: &str| OcrLine {
-            text: text.to_string(),
-            bbox: None,
-            score: Some(0.9),
-            color: None,
-            italic: true,
-        };
+        let line = styled_line;
         let mut lines = vec![line("Iwalk home"), line("before dusk  ")];
         assert!(ambiguous_terminal_period_candidate(
             &lines,
@@ -3332,13 +3247,7 @@ mod tests {
     #[test]
     fn ambiguous_period_checks_inputs_before_alternate_and_pixel_work() {
         use std::cell::Cell;
-        let line = |text: &str| OcrLine {
-            text: text.to_string(),
-            bbox: None,
-            score: Some(0.9),
-            color: None,
-            italic: true,
-        };
+        let line = styled_line;
         let candidate = |psm, text: &str| TesseractCandidate {
             text: text.to_string(),
             psm,
@@ -3413,13 +3322,7 @@ mod tests {
 
     #[test]
     fn missing_terminal_ellipsis_requires_exact_existing_glyphs() {
-        let line = |text: &str| OcrLine {
-            text: text.to_string(),
-            bbox: None,
-            score: Some(0.9),
-            color: None,
-            italic: true,
-        };
+        let line = styled_line;
         let mut lines = vec![line("Waiting..  ")];
         assert!(needs_terminal_punctuation_candidate(&lines));
         assert!(missing_terminal_ellipsis_candidate(&lines, "Waiting..."));
@@ -3445,13 +3348,7 @@ mod tests {
 
     #[test]
     fn comma_spacing_transfer_preserves_glyphs_and_line_layout() {
-        let line = |text: &str| OcrLine {
-            text: text.to_string(),
-            bbox: None,
-            score: Some(0.9),
-            color: None,
-            italic: true,
-        };
+        let line = styled_line;
         let mut lines = vec![line("Well,then"), line("we can wait...")];
         assert!(transfer_verified_comma_spacing(
             &mut lines,
@@ -3561,16 +3458,7 @@ mod tests {
     #[test]
     fn multiline_punctuation_requires_matching_lines_and_independent_agreement() {
         fn lines() -> Vec<OcrLine> {
-            ["Aquietplace", "Wearehome."]
-                .into_iter()
-                .map(|text| OcrLine {
-                    text: text.into(),
-                    bbox: None,
-                    score: None,
-                    color: None,
-                    italic: false,
-                })
-                .collect()
+            ["Aquietplace", "Wearehome."].map(line).to_vec()
         }
         let mut original = lines();
         assert!(recover_line_terminal_punctuation(
@@ -3610,15 +3498,6 @@ mod tests {
 
     #[test]
     fn balanced_quote_recovery_requires_two_matching_recognitions() {
-        fn line(text: &str) -> OcrLine {
-            OcrLine {
-                text: text.to_string(),
-                bbox: None,
-                score: None,
-                color: None,
-                italic: false,
-            }
-        }
         let mut lines = vec![line("  Quiet harbor  ")];
         assert!(recover_balanced_quotes(
             &mut lines,
@@ -3657,59 +3536,6 @@ mod tests {
                 italic: false,
             }];
             assert!(transfer_agreed_spacing(&lines, candidate).is_none());
-        }
-    }
-
-    #[test]
-    fn forced_tesseract_takes_precedence_over_agreed_spacing() {
-        let lines = vec![OcrLine {
-            text: "Bonjourtoutlemonde".to_string(),
-            bbox: None,
-            score: Some(0.9),
-            color: None,
-            italic: false,
-        }];
-        let candidate = "Bonjour tout le monde";
-        assert_eq!(
-            transfer_spacing_unless_forced(&lines, candidate, false).as_deref(),
-            Some(candidate)
-        );
-        assert!(transfer_spacing_unless_forced(&lines, candidate, true).is_none());
-    }
-
-    #[test]
-    fn tesseract_attempt_is_reused_for_success_empty_and_failure() {
-        for result in [Some("Bonjour tout le monde"), Some(""), None] {
-            let mut attempt = None;
-            let mut calls = 0;
-            let first = cached_tesseract_attempt(&mut attempt, || {
-                calls += 1;
-                match result {
-                    Some(text) => Ok(TesseractCandidate {
-                        text: text.to_string(),
-                        psm: 6,
-                        quality: 0.8,
-                    }),
-                    None => Err(anyhow!("recognition failed")),
-                }
-            });
-            match result {
-                Some(text) => assert_eq!(first.as_ref().unwrap().text, text),
-                None => assert_eq!(
-                    first.as_ref().err().unwrap().to_string(),
-                    "recognition failed"
-                ),
-            }
-            let second =
-                cached_tesseract_attempt(&mut attempt, || panic!("must reuse the first result"));
-            match result {
-                Some(text) => assert_eq!(second.as_ref().unwrap().text, text),
-                None => assert_eq!(
-                    second.as_ref().err().unwrap().to_string(),
-                    "recognition failed"
-                ),
-            }
-            assert_eq!(calls, 1);
         }
     }
 
@@ -3768,13 +3594,7 @@ mod tests {
 
     #[test]
     fn spacing_recovery_preserves_internal_line_breaks() {
-        let lines = vec![OcrLine {
-            text: "Bluebird\ngreentree".into(),
-            bbox: None,
-            score: None,
-            color: None,
-            italic: false,
-        }];
+        let lines = vec![line("Bluebird\ngreentree")];
         let transferred = transfer_agreed_spacing(&lines, "Blue bird green tree").unwrap();
         assert_eq!(transferred, "Blue bird\ngreen tree");
         assert_eq!(
@@ -3785,15 +3605,6 @@ mod tests {
 
     #[test]
     fn transfer_spacing_preserves_ambiguous_glyphs_and_lines() {
-        fn line(text: &str) -> OcrLine {
-            OcrLine {
-                text: text.to_owned(),
-                bbox: None,
-                score: None,
-                color: None,
-                italic: false,
-            }
-        }
         let lines = vec![line("Iwanttheletter"), line("sentbytomorrow.")];
         assert_eq!(
             transfer_agreed_spacing(&lines, "| want the letter\nsent by tomorrow.").as_deref(),
@@ -3848,18 +3659,7 @@ mod tests {
 
     #[test]
     fn crop_recovery_rejects_lost_or_altered_characters() {
-        fn output(text: &str) -> OcrOutput {
-            OcrOutput {
-                lines: vec![OcrLine {
-                    text: text.to_owned(),
-                    bbox: None,
-                    score: None,
-                    color: None,
-                    italic: false,
-                }],
-                ..OcrOutput::default()
-            }
-        }
+        let output = text_output;
         let original = output("Thedoorisopen.\nPleasewait.");
         assert!(crop_recovery_preserves_characters(
             &original,
@@ -3886,10 +3686,7 @@ mod tests {
             &output("The door is\nopen. Please wait.")
         ));
         let split_lines = OcrOutput {
-            lines: vec![
-                output("The door is open.").lines.remove(0),
-                output("Please wait.").lines.remove(0),
-            ],
+            lines: vec![line("The door is open."), line("Please wait.")],
             ..OcrOutput::default()
         };
         assert!(crop_recovery_preserves_characters(&original, &split_lines));
@@ -3897,18 +3694,7 @@ mod tests {
 
     #[test]
     fn crop_selection_filters_before_ranking() {
-        fn output(text: &str) -> OcrOutput {
-            OcrOutput {
-                lines: vec![OcrLine {
-                    text: text.to_owned(),
-                    bbox: None,
-                    score: None,
-                    color: None,
-                    italic: false,
-                }],
-                ..OcrOutput::default()
-            }
-        }
+        let output = text_output;
         let original = output("Thedoorisopen.");
         let invalid = output("This is a fluent but different sentence.");
         let valid = output("The door is open.");
@@ -3925,13 +3711,7 @@ mod tests {
                 lines: if text.is_empty() {
                     Vec::new()
                 } else {
-                    vec![OcrLine {
-                        text: text.to_string(),
-                        bbox: None,
-                        score: None,
-                        color: None,
-                        italic: false,
-                    }]
+                    vec![line(text)]
                 },
                 seam_corrected,
             }
@@ -4272,87 +4052,9 @@ mod tests {
         assert_eq!(cues[0].end_ms, 6000);
     }
 
-    fn plain_line(text: &str, bbox: Option<OcrBoundingBox>) -> OcrLine {
-        OcrLine {
-            text: text.into(),
-            bbox,
-            score: None,
-            color: None,
-            italic: false,
-        }
-    }
-
-    #[test]
-    fn word_boundaries_share_glyph_numbering_across_lines() {
-        let boundaries = HashSet::from([3, 7]);
-        let mut index = 0;
-        assert_eq!(
-            insert_word_boundaries("theend", &boundaries, &mut index),
-            "the end"
-        );
-        assert_eq!(index, 6);
-        // Existing whitespace does not advance the glyph index.
-        assert_eq!(
-            insert_word_boundaries(" ab c", &boundaries, &mut index),
-            " a b c"
-        );
-        assert_eq!(index, 9);
-        assert_eq!(insert_word_boundaries("", &boundaries, &mut 0), "");
-    }
-
-    #[test]
-    fn union_bbox_covers_every_boxed_line_and_skips_unboxed_lines() {
-        let boxed = |left, top, right, bottom| {
-            Some(OcrBoundingBox {
-                left,
-                top,
-                right,
-                bottom,
-            })
-        };
-        let lines = [
-            plain_line("a", boxed(10, 5, 20, 15)),
-            plain_line("b", None),
-            plain_line("c", boxed(2, 8, 18, 30)),
-        ];
-        let edges = |bbox: Option<OcrBoundingBox>| {
-            bbox.map(|bbox| (bbox.left, bbox.top, bbox.right, bbox.bottom))
-        };
-        assert_eq!(edges(union_bbox(&lines)), Some((2, 5, 20, 30)));
-        assert!(union_bbox(&[plain_line("a", None)]).is_none());
-        assert!(union_bbox(&[]).is_none());
-    }
-
-    #[test]
-    fn line_text_helpers_ignore_blank_lines_and_whitespace() {
-        let lines = [
-            plain_line("  Hello there ", None),
-            plain_line("   ", None),
-            plain_line("friend", None),
-        ];
-        assert_eq!(joined_line_text(&lines), "Hello there\nfriend");
-        assert_eq!(compact_lines("a b\n c d "), vec!["ab", "cd"]);
-        assert!(ends_with_alphanumeric("word9  "));
-        assert!(!ends_with_alphanumeric("word. "));
-        assert!(!ends_with_alphanumeric("   "));
-        let mut text = String::from("Wait  ");
-        insert_before_trailing_whitespace(&mut text, '!');
-        assert_eq!(text, "Wait!  ");
-    }
-
-    #[test]
-    fn ascii_alpha_tokens_keep_apostrophes_and_split_on_other_characters() {
-        let tokens: Vec<_> = ascii_alpha_tokens("don't stop-now, 42x  ").collect();
-        assert_eq!(tokens, ["don't", "stop", "now", "x"]);
-        assert_eq!(ascii_alpha_tokens(" 1, 2 ").count(), 0);
-    }
-
     #[test]
     fn postprocessed_quality_fallback_flags_glued_space_language_text() {
-        let output = |text: &str| OcrOutput {
-            lines: vec![plain_line(text, None)],
-            seam_corrected: false,
-        };
+        let output = text_output;
         assert!(!postprocessed_text_needs_quality_fallback(
             &output("I will see you tomorrow."),
             "eng"

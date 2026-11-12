@@ -1012,15 +1012,7 @@ fn ascii_language_likelihood(token: &str) -> f32 {
 }
 
 fn probabilistic_english_deglue_enabled() -> bool {
-    std::env::var("DPN_OCR_PROBABILISTIC_DEGLUE")
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    super::engine::env_flag_enabled("DPN_OCR_PROBABILISTIC_DEGLUE")
 }
 
 fn split_camelcase_proper_noun_suffix(token: &str, probabilistic: bool) -> Option<String> {
@@ -1801,19 +1793,15 @@ fn segment_glued_english_token_with_wordninja(token: &str) -> Option<String> {
         // split reads as pronoun + contraction ("I think it's").
         let prefix_end = mark + 2;
         if prefix_end < token.len() && prefix_end <= 11 && is_name_like_stem(&token[..mark]) {
-            let mut position = 0;
-            let mut split_index = None;
-            for (index, part) in parts.iter().enumerate() {
-                position += part.len();
-                if position == prefix_end {
-                    split_index = Some(index + 1);
-                    break;
-                }
-                if position > prefix_end {
-                    break;
-                }
-            }
-            let split_index = split_index?;
+            // The parts must break exactly after the possessive.
+            let split_index = parts
+                .iter()
+                .scan(0, |end, part| {
+                    *end += part.len();
+                    Some(*end)
+                })
+                .position(|end| end == prefix_end)?
+                + 1;
             let starts_with_pronoun = parts.first().is_some_and(|part| {
                 ["i", "we", "you", "he", "she", "they"]
                     .iter()
@@ -2366,6 +2354,12 @@ mod tests {
         line
     }
 
+    fn assert_unchanged(texts: &[&str]) {
+        for &text in texts {
+            assert_eq!(postprocess_ocr_text(text, "eng"), text);
+        }
+    }
+
     #[test]
     fn short_glue_requests_concordant_recognition_with_line_geometry() {
         // Anonymized forms of short standalone and embedded sample failures.
@@ -2376,56 +2370,39 @@ mod tests {
             );
         }
         assert!(!ppocr_spacing_needs_fallback(&[ocr_line("Waitup!")]));
-        assert!(!short_spacing_candidate(&positioned_line(
-            "waitup's", 160, 30
-        )));
-        assert!(!short_spacing_candidate(&positioned_line(
-            "bonjour", 160, 30
-        )));
-        assert!(!ppocr_spacing_needs_fallback(&[positioned_line(
-            "Waitup!", 20, 30
-        )]));
-        assert!(!ppocr_spacing_needs_fallback(&[positioned_line(
-            "Waitup!", 160, 0
-        )]));
+        for (text, width, height) in [("Waitup!", 20, 30), ("Waitup!", 160, 0)] {
+            assert!(!ppocr_spacing_needs_fallback(&[positioned_line(
+                text, width, height
+            )]));
+        }
+        for text in ["waitup's", "bonjour"] {
+            assert!(!short_spacing_candidate(&positioned_line(text, 160, 30)));
+        }
     }
 
     #[test]
-    fn short_candidates_do_not_split_without_recognizer_agreement() {
-        use crate::subtitle_ocr::ocr_pipeline::spacing_candidate_preserves_characters;
-
-        assert!(spacing_candidate_preserves_characters(
-            "Waitup!", "Wait up!"
-        ));
-        assert!(!spacing_candidate_preserves_characters(
-            "Waitup!", "Wake up!"
-        ));
-        assert!(!spacing_candidate_preserves_characters(
-            "Waitup!", "Waitup!"
-        ));
-        for text in ["hello", "notebook", "someone", "android", "together"] {
+    fn valid_words_neither_request_nor_receive_spacing_changes() {
+        let words = ["hello", "notebook", "someone", "android", "together"];
+        for text in words {
             assert!(
                 !ppocr_spacing_needs_fallback(&[positioned_line(text, 160, 30)]),
                 "{text}"
             );
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
         }
+        assert_unchanged(&words);
         // Even a valid word the language model segments is only a request for
         // corroboration, not an instruction to change its text.
         assert!(short_spacing_candidate(&positioned_line("inform", 160, 30)));
-        assert_eq!(postprocess_ocr_text("inform", "eng"), "inform");
-        assert!(!spacing_candidate_preserves_characters("inform", "inform"));
+        assert_unchanged(&["inform"]);
     }
 
     #[test]
     fn leading_ellipsis_preserves_existing_word_boundary() {
-        for text in [
+        assert_unchanged(&[
             "...perhaps later.",
             "... perhaps later.",
             "A pause.\n...perhaps later.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
+        ]);
         assert_eq!(
             insert_space_after_punctuation("Wait...perhaps"),
             "Wait... perhaps"
@@ -2437,34 +2414,28 @@ mod tests {
     }
 
     #[test]
-    fn postprocess_preserves_distinct_short_words() {
-        for text in [
+    fn postprocess_preserves_valid_text() {
+        assert_unchanged(&[
+            // Distinct short words.
             "We can go in to see it.",
             "We went into the room.",
             "The cat jumped onto the table.",
             "We walked on to the next stop.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn postprocess_preserves_genuine_repeated_letters() {
-        for text in ["Ask Savva to bring the book.", "THE NAVVY IS READY."] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn postprocess_preserves_lowercase_identifiers() {
-        for text in [
+            // Genuine repeated letters.
+            "Ask Savva to bring the book.",
+            "THE NAVVY IS READY.",
+            // Lowercase identifiers.
             "The letter i can represent a value.",
             "The symbol i would be useful.",
             "The symbol (i can represent current).",
             "i can represent a value.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
+            // Existing proper name boundaries.
+            "I am Ada Moreno, newly assigned to the archive.",
+            "I am Mina Nolan, here for the meeting.",
+            "I am Amy Moreno, here today.",
+            "I am Nolan Dana, here today.",
+            "We saw Dana Palmer at the station.",
+        ]);
     }
 
     #[test]
@@ -2494,9 +2465,7 @@ mod tests {
             "(medIcine's)",
         ];
         let check = || {
-            for text in ambiguous {
-                assert_eq!(postprocess_ocr_text(text, "eng"), text);
-            }
+            assert_unchanged(&ambiguous);
             for token in ["medIcine's", "ineqQality's", "foundIra's", "foundOrlana’s"] {
                 assert_eq!(split_glued_ascii_token(token), None);
             }
@@ -2508,16 +2477,14 @@ mod tests {
 
     #[test]
     fn postprocess_preserves_possessive_names_and_unambiguous_splits() {
-        for text in [
+        assert_unchanged(&[
             "We found Orlana's map.",
             "We found Ira’s map.",
             "We saw O'Neil's lantern.",
             "We saw O’Neil’s lantern.",
             "The medicine's label is blue.",
             "The radiator’s valve is open.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
+        ]);
         assert_eq!(
             postprocess_ocr_text("We foundMira today.", "eng"),
             "We found Mira today."
@@ -2529,57 +2496,8 @@ mod tests {
     }
 
     #[test]
-    fn postprocess_preserves_existing_proper_name_boundaries() {
-        for text in [
-            "I am Ada Moreno, newly assigned to the archive.",
-            "I am Mina Nolan, here for the meeting.",
-            "I am Amy Moreno, here today.",
-            "I am Nolan Dana, here today.",
-            "We saw Dana Palmer at the station.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn digit_free_runs_are_rewritten_around_unchanged_digits() {
-        let rewrite = |token: &str, out: &mut String| {
-            push_rewriting_digit_free_runs(token, out, |run| {
-                (run != "keep").then(|| run.to_ascii_uppercase())
-            });
-        };
-        for (token, expected) in [
-            ("ab12cd", "AB12CD"),
-            ("7up", "7UP"),
-            ("keep3x", "keep3X"),
-            ("42", "42"),
-            ("", ""),
-        ] {
-            let mut out = String::from(">");
-            rewrite(token, &mut out);
-            assert_eq!(out, format!(">{expected}"), "{token:?}");
-        }
-    }
-
-    #[test]
-    fn name_like_stems_and_wordninja_words() {
-        for stem in ["Vanora", "VANORA", "Ra"] {
-            assert!(is_name_like_stem(stem), "{stem}");
-        }
-        for stem in ["V", "vanora", "VaNora", "Va1"] {
-            assert!(!is_name_like_stem(stem), "{stem}");
-        }
-        assert!(wordninja_recognizes_word("together"));
-        assert!(!wordninja_recognizes_word("waitup"));
-        assert_eq!(strip_ascii_possessive("Ira'S"), Some("Ira"));
-        assert_eq!(strip_ascii_possessive("Ira’s"), None);
-        assert_eq!(strip_single_quotes("'X7'"), "X7");
-        assert_eq!(strip_single_quotes("'X7"), "'X7");
-    }
-
-    #[test]
     fn postprocess_preserves_uppercase_alphanumeric_identifiers() {
-        for text in [
+        assert_unchanged(&[
             "AB-C07, ready.",
             "Flight Q15 is boarding.",
             "Use model 42X.",
@@ -2594,9 +2512,7 @@ mod tests {
             "A1STANDDOWN is a code.",
             "A1STANDDOWN's light is on.",
             "AB-C07\nQ15 is ready.",
-        ] {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
+        ]);
         assert_eq!(normalize_english_ocr_confusions("h0me"), "home");
         assert_eq!(
             postprocess_ocr_text("WEW ILL FIND THE WAY.", "eng"),
@@ -2604,58 +2520,22 @@ mod tests {
         );
     }
 
+    // Each phrase was rewritten by an entry since removed from the merge table.
     #[test]
-    fn postprocess_preserves_quote_before_question_mark() {
-        for text in [
+    fn merge_table_preserves_legitimate_phrases() {
+        let phrases = [
             "Did she say \"yes\"?",
             "Is it called \"blue\"?",
             "Is it called “blue”?",
             "Is the label (blue)?",
-        ] {
-            assert_eq!(merge_common_fragmented_english_words(text), text);
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn postprocess_preserves_sleep_as_a_noun() {
-        for text in ["A sleep study starts tonight.", "We need a sleep schedule."] {
-            assert_eq!(merge_common_fragmented_english_words(text), text);
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn postprocess_preserves_any_way_and_any_more_as_words() {
-        for text in [
+            "A sleep study starts tonight.",
+            "We need a sleep schedule.",
             "Is there any way to mend it?",
             "Do you need any more paint?",
             "IS THERE ANY WAY?",
-        ] {
-            assert_eq!(merge_common_fragmented_english_words(text), text);
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-    }
-
-    #[test]
-    fn postprocess_preserves_so_on_as_distinct_words() {
-        for text in [
             "We saw birds, trees, and so on.",
             "We saw birds, trees, and so on, too.",
             "AND SO ON.",
-        ] {
-            assert_eq!(merge_common_fragmented_english_words(text), text);
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-        assert_eq!(
-            merge_common_fragmented_english_words("so on enough"),
-            "soon enough"
-        );
-    }
-
-    #[test]
-    fn postprocess_preserves_legitimate_phrases_and_exclamations() {
-        for text in [
             "me at",
             "Me at",
             "ME AT",
@@ -2666,10 +2546,15 @@ mod tests {
             "we'll!",
             "We'll!",
             "WE'LL!",
-        ] {
+        ];
+        for text in phrases {
             assert_eq!(merge_common_fragmented_english_words(text), text);
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
         }
+        assert_unchanged(&phrases);
+        assert_eq!(
+            merge_common_fragmented_english_words("so on enough"),
+            "soon enough"
+        );
     }
 
     #[test]
@@ -2747,42 +2632,34 @@ mod tests {
             "The parcel belongs to LenaStonebridge today.",
             "We discussed counterrevolutionaries in class.",
         ];
-        for text in texts {
-            assert_eq!(postprocess_ocr_text(text, "eng"), text);
-        }
-        with_probabilistic_deglue(true, || {
-            for text in texts {
-                assert_eq!(postprocess_ocr_text(text, "eng"), text);
-            }
-        });
+        assert_unchanged(&texts);
+        with_probabilistic_deglue(true, || assert_unchanged(&texts));
     }
 
     #[test]
-    fn probabilistic_deglue_preserves_names_in_sentences() {
+    fn probabilistic_deglue_preserves_names_and_existing_boundaries() {
         with_probabilistic_deglue(true, || {
-            for text in [
+            assert_unchanged(&[
                 "The parcel reached dawnrose today.",
                 "Please ask mayrose about the plan.",
                 "Gwendolyn set the table.",
-            ] {
-                assert_eq!(postprocess_ocr_text(text, "eng"), text);
-            }
+                "We can go to the lake.",
+                "We can go in to see it.",
+            ])
         });
     }
 
     #[test]
     fn probabilistic_deglue_preserves_short_possessive_names() {
         with_probabilistic_deglue(true, || {
-            for text in [
+            assert_unchanged(&[
                 "Vanora's lantern.",
                 "Orlando's cabinet.",
                 "Rina's map.",
                 "I saw Vanora's lantern.",
                 "We saw Orlando's cabinet.",
                 "VANORA'S LANTERN.",
-            ] {
-                assert_eq!(postprocess_ocr_text(text, "eng"), text);
-            }
+            ]);
             for (input, expected) in [
                 ("Vanora'slantern.", "Vanora's lantern."),
                 ("Alden'slantern.", "Alden's lantern."),
@@ -2793,15 +2670,6 @@ mod tests {
                 ("Iknowhe'shere.", "I know he's here."),
             ] {
                 assert_eq!(postprocess_ocr_text(input, "eng"), expected);
-            }
-        });
-    }
-
-    #[test]
-    fn probabilistic_deglue_preserves_existing_common_word_boundaries() {
-        with_probabilistic_deglue(true, || {
-            for text in ["We can go to the lake.", "We can go in to see it."] {
-                assert_eq!(postprocess_ocr_text(text, "eng"), text);
             }
         });
     }

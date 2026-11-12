@@ -295,20 +295,11 @@ fn synthetic_pgs() -> Vec<u8> {
             for _ in 0..16 {
                 rle.extend_from_slice(&[0, 0x80 | width, 1, 0, 0]);
             }
+            // Object 0, version 0, first and last fragment, 24-bit data length.
             let len = (rle.len() + 4) as u32;
-            let mut object = vec![
-                0,
-                0,
-                0,
-                0xc0,
-                (len >> 16) as u8,
-                (len >> 8) as u8,
-                len as u8,
-                0,
-                width,
-                0,
-                16,
-            ];
+            let mut object = vec![0, 0, 0, 0xc0];
+            object.extend_from_slice(&len.to_be_bytes()[1..]);
+            object.extend_from_slice(&[0, width, 0, 16]);
             object.extend_from_slice(&rle);
             segment(out, ms, OBJECT, &object);
         }

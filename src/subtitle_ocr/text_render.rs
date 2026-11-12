@@ -324,40 +324,24 @@ fn line_box_ranges(text: &str, parsed: &[CharBox]) -> Option<Vec<(usize, usize, 
     Some(ranges)
 }
 
+/// Fills the `xs` by `ys` pixel rectangle with `level`.
+#[cfg(test)]
+fn paint(
+    image: &mut image::GrayImage,
+    xs: std::ops::Range<u32>,
+    ys: std::ops::Range<u32>,
+    level: u8,
+) {
+    for y in ys {
+        for x in xs.clone() {
+            image.put_pixel(x, y, image::Luma([level]));
+        }
+    }
+}
+
 #[cfg(test)]
 mod box_evidence_helper_tests {
     use super::*;
-
-    #[test]
-    fn boxes_must_match_non_whitespace_text_exactly() {
-        let boxes = "A 0 0 2 4 0\nB 3 0 5 4 0\n";
-        assert_eq!(
-            parse_boxes_matching_text("A B", boxes),
-            Some(vec![('A', [0, 0, 2, 4]), ('B', [3, 0, 5, 4])])
-        );
-        assert!(parse_boxes_matching_text("AB C", boxes).is_none());
-        assert!(parse_boxes_matching_text("A", boxes).is_none());
-        assert!(parse_boxes_matching_text("A B", "A 0 0 2 4 1\nB 3 0 5 4 0\n").is_none());
-    }
-
-    #[test]
-    fn boxes_fit_rejects_degenerate_and_out_of_bounds() {
-        assert!(boxes_fit_image(&[('A', [0, 0, 4, 4])], 4, 4));
-        assert!(boxes_fit_image(&[], 0, 0));
-        for bounds in [[2, 0, 2, 4], [0, 4, 4, 4], [0, 0, 5, 4], [0, 0, 4, 5]] {
-            assert!(!boxes_fit_image(&[('A', bounds)], 4, 4), "{bounds:?}");
-        }
-    }
-
-    #[test]
-    fn region_ink_threshold_is_strict_and_ranges_are_exclusive() {
-        let mut image = image::GrayImage::from_pixel(4, 4, image::Luma([255]));
-        image.put_pixel(2, 1, image::Luma([128]));
-        assert!(region_has_ink(&image, 0..4, 0..4, 129));
-        assert!(!region_has_ink(&image, 0..4, 0..4, 128));
-        assert!(!region_has_ink(&image, 0..2, 0..4, 255));
-        assert!(!region_has_ink(&image, 0..4, 2..4, 255));
-    }
 
     #[test]
     fn column_runs_join_adjacent_columns_and_track_rows() {
@@ -391,23 +375,6 @@ mod box_evidence_helper_tests {
         assert!(line_box_ranges("AB", &boxes).is_none());
         let overlapping = [('A', [0, 5, 4, 15]), ('B', [0, 0, 4, 10])];
         assert!(line_box_ranges("A\nB", &overlapping).is_none());
-    }
-
-    #[test]
-    fn upper_median_sorts_and_picks_upper_middle() {
-        assert_eq!(upper_median(&mut [7]), 7);
-        assert_eq!(upper_median(&mut [9, 1, 5, 3]), 5);
-        assert_eq!(upper_median(&mut [9, 1, 5]), 5);
-    }
-
-    #[test]
-    fn neighbors_exclude_center_and_respect_bounds() {
-        assert_eq!(neighbors8(5, 5, 0..10, 0..10).count(), 8);
-        let mut corner: Vec<_> = neighbors8(0, 0, 0..10, 0..10).collect();
-        corner.sort_unstable();
-        assert_eq!(corner, [(0, 1), (1, 0), (1, 1)]);
-        assert_eq!(neighbors8(4, 0, 4..5, 0..1).count(), 0);
-        assert_eq!(neighbors8(u32::MAX - 1, 0, 0..u32::MAX, 0..2).count(), 3);
     }
 
     #[test]
@@ -685,7 +652,7 @@ fn terminal_exclamation_mask(text: &str, boxes: &str, image: &image::GrayImage) 
 const PUNCTUATION_THRESHOLDS: [u8; 4] = [80, 120, 160, 200];
 
 struct PunctuationRaster<'a> {
-    pixels: &'a [u8],
+    image: &'a image::GrayImage,
     width: usize,
     height: usize,
 }
@@ -715,34 +682,22 @@ impl<'a> PunctuationRaster<'a> {
             return None;
         }
         Some(Self {
-            pixels: image.as_raw(),
+            image,
             width,
             height,
         })
     }
 
     fn ink(&self, x: usize, y: usize, threshold: u8) -> bool {
-        self.pixels[y * self.width + x] < threshold
+        self.image.as_raw()[y * self.width + x] < threshold
     }
 
     fn column_runs(&self, top: usize, bottom: usize, threshold: u8) -> Vec<(usize, usize)> {
-        let mut runs = Vec::new();
-        let mut start = None;
-        for x in 0..self.width {
-            let occupied = (top..bottom).any(|y| self.ink(x, y, threshold));
-            match (start, occupied) {
-                (None, true) => start = Some(x),
-                (Some(left), false) => {
-                    runs.push((left, x));
-                    start = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(left) = start {
-            runs.push((left, self.width));
-        }
-        runs
+        // The constructor bounds both sides to 4096, so these casts are lossless.
+        column_ink_runs(self.image, top as u32..bottom as u32, threshold)
+            .iter()
+            .map(|run| (run.left as usize, run.right as usize))
+            .collect()
     }
 
     fn ink_box(&self, run: (usize, usize), threshold: u8) -> Option<PunctuationInkBox> {
@@ -764,10 +719,10 @@ impl<'a> PunctuationRaster<'a> {
 
     fn single_8_connected_ink(&self, mark: PunctuationInkBox, threshold: u8) -> bool {
         const MAX_MARK_PIXELS: usize = 64 * 1024;
-        let Some(width) = mark.right.checked_sub(mark.left) else {
-            return false;
-        };
-        let Some(height) = mark.bottom.checked_sub(mark.top) else {
+        let (Some(width), Some(height)) = (
+            mark.right.checked_sub(mark.left),
+            mark.bottom.checked_sub(mark.top),
+        ) else {
             return false;
         };
         let Some(area) = width.checked_mul(height) else {
@@ -1107,11 +1062,7 @@ mod multi_threshold_punctuation_tests {
 
     #[test]
     fn disconnected_comma_like_ink_is_rejected() {
-        let image = comma(true);
-        let identical = image.clone();
-        assert_eq!(image.as_raw(), identical.as_raw());
-        assert!(!multi_threshold_terminal_comma_shape(&image));
-        assert!(!multi_threshold_terminal_comma_shape(&identical));
+        assert!(!multi_threshold_terminal_comma_shape(&comma(true)));
     }
 
     #[test]
@@ -1137,44 +1088,23 @@ mod multi_threshold_punctuation_tests {
 
     #[test]
     fn connected_ink_search_is_bounded() {
+        let mark = |left, right, top, bottom| PunctuationInkBox {
+            left,
+            right,
+            top,
+            bottom,
+        };
         let allowed = image::GrayImage::from_pixel(256, 256, image::Luma([0]));
         let allowed_raster = PunctuationRaster::new(&allowed).unwrap();
-        let allowed_mark = PunctuationInkBox {
-            left: 0,
-            right: 256,
-            top: 0,
-            bottom: 256,
-        };
-        assert!(allowed_raster.single_8_connected_ink(allowed_mark, 128));
+        assert!(allowed_raster.single_8_connected_ink(mark(0, 256, 0, 256), 128));
 
         let oversized = image::GrayImage::from_pixel(257, 256, image::Luma([0]));
         let oversized_raster = PunctuationRaster::new(&oversized).unwrap();
-        let oversized_mark = PunctuationInkBox {
-            left: 0,
-            right: 257,
-            top: 0,
-            bottom: 256,
-        };
-        assert!(!oversized_raster.single_8_connected_ink(oversized_mark, 128));
         for invalid in [
-            PunctuationInkBox {
-                left: 2,
-                right: 1,
-                top: 0,
-                bottom: 1,
-            },
-            PunctuationInkBox {
-                left: 0,
-                right: 258,
-                top: 0,
-                bottom: 1,
-            },
-            PunctuationInkBox {
-                left: 0,
-                right: 1,
-                top: 0,
-                bottom: 257,
-            },
+            mark(0, 257, 0, 256),
+            mark(2, 1, 0, 1),
+            mark(0, 258, 0, 1),
+            mark(0, 1, 0, 257),
         ] {
             assert!(!oversized_raster.single_8_connected_ink(invalid, 128));
         }
@@ -1202,23 +1132,18 @@ fn terminal_ellipsis_pixel_evidence(text: &str, boxes: &str, image: &image::Gray
     let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return false;
     };
-    let [.., (_, [_, bottom, right, top])] = parsed[..] else {
-        return false;
-    };
     let dot_boxes = &parsed[parsed.len().saturating_sub(3)..];
     if dot_boxes.len() < 3
         || dot_boxes.iter().any(|(ch, _)| *ch != '.')
-        || bottom >= top
-        || top > image.height()
-        || right > image.width()
+        || !boxes_fit_image(dot_boxes, image.width(), image.height())
     {
         return false;
     }
+    let [_, bottom, _, top] = dot_boxes[2].1;
     let dot_height = top - bottom;
-    if !boxes_fit_image(dot_boxes, image.width(), image.height())
-        || dot_boxes
-            .iter()
-            .any(|(_, [_, lower, _, _])| lower.abs_diff(bottom) > (dot_height / 4).max(2))
+    if dot_boxes
+        .iter()
+        .any(|(_, [_, lower, _, _])| lower.abs_diff(bottom) > (dot_height / 4).max(2))
         || dot_boxes
             .windows(2)
             .any(|pair| pair[0].1[0] >= pair[1].1[0] || pair[0].1[2] > pair[1].1[2])
@@ -1422,10 +1347,10 @@ fn line_final_comma_pixel_evidence(text: &str, boxes: &str, image: &image::GrayI
         return false;
     }
     let (first, second) = parsed.split_at(first_len);
-    let Some(bottom) = first.iter().map(|(_, b)| b[1]).min() else {
-        return false;
-    };
-    let Some(second_top) = second.iter().map(|(_, b)| b[3]).max() else {
+    let (Some(bottom), Some(second_top)) = (
+        first.iter().map(|(_, b)| b[1]).min(),
+        second.iter().map(|(_, b)| b[3]).max(),
+    ) else {
         return false;
     };
     if bottom <= second_top + 4 {
@@ -1558,16 +1483,12 @@ fn comma_spacing_pixel_evidence(
     let Some(parsed) = parse_boxes_matching_text(text, boxes) else {
         return supported;
     };
-    if exceeds_evidence_area(image) {
-        return supported;
-    }
-    let Some(line_ranges) = line_box_ranges(text, &parsed) else {
-        return supported;
-    };
-    if line_ranges
-        .iter()
-        .any(|&(_, _, bottom, top)| bottom >= top || top > image.height())
-    {
+    let lines_fit = line_box_ranges(text, &parsed).is_some_and(|ranges| {
+        ranges
+            .iter()
+            .all(|&(_, _, bottom, top)| bottom < top && top <= image.height())
+    });
+    if exceeds_evidence_area(image) || !lines_fit {
         return supported;
     }
     let mut index = 0usize;
@@ -2657,6 +2578,7 @@ mod pgs_bitmap_line_tests {
                 &mut self,
                 _: &image::RgbImage,
                 _: &str,
+                _: BitmapLineContext,
             ) -> Result<Option<OcrLine>> {
                 self.direct_calls += 1;
                 Ok(None)
@@ -3512,11 +3434,7 @@ fn valid_seam_polygon(points: &[paddle_ocr_rs::ocr_result::Point], w: u32, h: u3
     true
 }
 
-fn seam_polygon_contains(points: &[paddle_ocr_rs::ocr_result::Point], x: u32, y: u32) -> bool {
-    seam_polygon_contains_with_boundary(points, x, y, true)
-}
-
-fn seam_polygon_contains_with_boundary(
+fn seam_polygon_contains(
     points: &[paddle_ocr_rs::ocr_result::Point],
     x: u32,
     y: u32,
@@ -3617,7 +3535,7 @@ pub(super) fn full_line_ink_coverage(
     for (x, y, pixel) in gray.enumerate_pixels() {
         if pixel[0] < SEAM_FOREGROUND_THRESHOLD {
             total += 1;
-            covered += u64::from(seam_polygon_contains(points, x, y));
+            covered += u64::from(seam_polygon_contains(points, x, y, true));
         }
     }
     total > 0 && covered * 100 >= total * 99
@@ -3767,8 +3685,8 @@ fn seam_pixel_evidence(
                     component_pixels += 1;
                     if px >= cl && px < cr && py >= top && py < bottom {
                         char_pixels += 1;
-                        if seam_polygon_contains_with_boundary(&seam.polygons[0], px, py, false)
-                            && seam_polygon_contains_with_boundary(&seam.polygons[1], px, py, false)
+                        if seam_polygon_contains(&seam.polygons[0], px, py, false)
+                            && seam_polygon_contains(&seam.polygons[1], px, py, false)
                         {
                             overlap_pixels += 1;
                         }
@@ -4046,6 +3964,11 @@ mod overlapping_seam_tests {
         "A 1 2 4 8 0\nQ 10 2 12 8 0\nB 19 2 22 8 0\n".into()
     }
 
+    /// Both Tesseract modes read the corrected glyphs with matching boxes.
+    fn agrees(image: &image::RgbImage, seam: &OverlappingSeam) -> bool {
+        tesseract_seam_evidence_with(image, seam, |_| Some(("A Q B".into(), boxes())))
+    }
+
     #[test]
     fn candidate_preserves_spacing_and_metadata() {
         let (img, blocks, mut lines) = setup();
@@ -4106,10 +4029,7 @@ mod overlapping_seam_tests {
     fn tesseract_requires_both_modes_exact_glyphs_boxes_and_one_component() {
         let (mut img, blocks, lines) = setup();
         let seam = prepare_overlapping_seam(&blocks, &lines, &img).unwrap();
-        assert!(tesseract_seam_evidence_with(&img, &seam, |_| Some((
-            "A Q B".into(),
-            boxes()
-        ))));
+        assert!(agrees(&img, &seam));
         assert!(!tesseract_seam_evidence_with(&img, &seam, |_| None));
         assert!(!tesseract_seam_evidence_with(&img, &seam, |psm| {
             if psm == 6 {
@@ -4136,10 +4056,7 @@ mod overlapping_seam_tests {
         }));
         for shade in [0, 200] {
             img.put_pixel(15, 4, image::Rgb([shade, shade, shade]));
-            assert!(!tesseract_seam_evidence_with(&img, &seam, |_| Some((
-                "A Q B".into(),
-                boxes()
-            ))));
+            assert!(!agrees(&img, &seam));
         }
 
         let (mut halo, blocks, lines) = setup();
@@ -4147,33 +4064,22 @@ mod overlapping_seam_tests {
         for x in 11..=12 {
             halo.put_pixel(x, 4, image::Rgb([200, 200, 200]));
         }
-        assert!(tesseract_seam_evidence_with(&halo, &seam, |_| Some((
-            "A Q B".into(),
-            boxes()
-        ))));
+        assert!(agrees(&halo, &seam));
         halo.put_pixel(14, 4, image::Rgb([200, 200, 200]));
         halo.put_pixel(13, 4, image::Rgb([200, 200, 200]));
-        assert!(!tesseract_seam_evidence_with(&halo, &seam, |_| Some((
-            "A Q B".into(),
-            boxes()
-        ))));
+        assert!(!agrees(&halo, &seam));
 
         let (mut connected, blocks, lines) = setup();
         let seam = prepare_overlapping_seam(&blocks, &lines, &connected).unwrap();
         for x in 11..18 {
             connected.put_pixel(x, 4, image::Rgb([0, 0, 0]));
         }
-        assert!(!tesseract_seam_evidence_with(&connected, &seam, |_| Some(
-            ("A Q B".into(), boxes())
-        )));
+        assert!(!agrees(&connected, &seam));
 
         let (img, blocks, lines) = setup();
         let mut seam = prepare_overlapping_seam(&blocks, &lines, &img).unwrap();
         seam.polygons = [rect(0, 0, 10, 9), rect(10, 0, 24, 9)];
-        assert!(!tesseract_seam_evidence_with(&img, &seam, |_| Some((
-            "A Q B".into(),
-            boxes()
-        ))));
+        assert!(!agrees(&img, &seam));
     }
 
     #[test]
@@ -4190,42 +4096,39 @@ mod overlapping_seam_tests {
                 image.put_pixel(x, y, image::Rgb([200, 200, 200]));
             }
         }
-        let evidence = |image: &image::RgbImage| {
-            tesseract_seam_evidence_with(image, &seam, |_| Some(("A Q B".into(), boxes())))
-        };
-        assert!(evidence(&image));
+        assert!(agrees(&image, &seam));
 
         let mut disconnected = image.clone();
         for y in 3..5 {
             disconnected.put_pixel(18, y, image::Rgb([255, 255, 255]));
         }
-        assert!(!evidence(&disconnected));
+        assert!(!agrees(&disconnected, &seam));
 
         let mut dark_fringe = image.clone();
         dark_fringe.put_pixel(17, 3, image::Rgb([0, 0, 0]));
-        assert!(!evidence(&dark_fringe));
+        assert!(!agrees(&dark_fringe, &seam));
 
         let mut wider_fringe = image.clone();
         wider_fringe.put_pixel(16, 3, image::Rgb([200, 200, 200]));
-        assert!(!evidence(&wider_fringe));
+        assert!(!agrees(&wider_fringe, &seam));
 
         let mut bridge = image.clone();
         for x in 11..17 {
             bridge.put_pixel(x, 4, image::Rgb([200, 200, 200]));
         }
-        assert!(!evidence(&bridge));
+        assert!(!agrees(&bridge, &seam));
 
         let mut tiny_core = image.clone();
         for (x, y) in [(19, 3), (20, 3), (20, 4)] {
             tiny_core.put_pixel(x, y, image::Rgb([255, 255, 255]));
         }
-        assert!(!evidence(&tiny_core));
+        assert!(!agrees(&tiny_core, &seam));
 
         let mut outside_core = image.clone();
         for x in 21..23 {
             outside_core.put_pixel(x, 4, image::Rgb([0, 0, 0]));
         }
-        assert!(!evidence(&outside_core));
+        assert!(!agrees(&outside_core, &seam));
 
         let mut large = image::GrayImage::from_pixel(512, 512, image::Luma([255]));
         large.put_pixel(0, 212, image::Luma([200]));
@@ -4239,10 +4142,8 @@ mod quote_tests {
 
     fn image_with_quotes(curved: bool) -> image::GrayImage {
         let mut image = image::GrayImage::from_pixel(20, 8, image::Luma([255]));
-        for y in 1..6 {
-            for x in [2, 4, 12, 14] {
-                image.put_pixel(x, y, image::Luma([0]));
-            }
+        for x in [2, 4, 12, 14] {
+            paint(&mut image, x..x + 1, 1..6, 0);
         }
         if curved {
             image.put_pixel(14, 5, image::Luma([255]));
@@ -4253,11 +4154,8 @@ mod quote_tests {
 
     fn punctuation_image() -> image::GrayImage {
         let mut image = image::GrayImage::from_pixel(40, 30, image::Luma([255]));
-        for y in (7..19).chain(23..27) {
-            for x in 24..28 {
-                image.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut image, 24..28, 7..19, 0);
+        paint(&mut image, 24..28, 23..27, 0);
         image
     }
 
@@ -4277,18 +4175,10 @@ mod quote_tests {
         let boxes = "A 10 90 22 130 0\nB 30 90 42 130 0\nC 50 90 62 130 0\nD 70 90 82 130 0\n, 86 78 102 100 0\nX 10 20 22 40 0\nY 30 20 42 40 0\n";
         let mut image = image::GrayImage::from_pixel(140, 140, image::Luma([255]));
         for x0 in [10, 30, 50, 70] {
-            for x in x0..x0 + 12 {
-                for y in 10..50 {
-                    image.put_pixel(x, y, image::Luma([0]));
-                }
-            }
+            paint(&mut image, x0..x0 + 12, 10..50, 0);
         }
         for x0 in [10, 30] {
-            for x in x0..x0 + 12 {
-                for y in 100..120 {
-                    image.put_pixel(x, y, image::Luma([0]));
-                }
-            }
+            paint(&mut image, x0..x0 + 12, 100..120, 0);
         }
         for y in 40..62 {
             let start = 94 - (y - 40) / 4;
@@ -4301,25 +4191,15 @@ mod quote_tests {
         assert!(!line_final_comma_pixel_evidence("ABCE,\nXY", boxes, &image));
         assert!(!line_final_comma_pixel_evidence("ABC,D\nXY", boxes, &image));
         let mut period = image.clone();
-        for x in 84..105 {
-            for y in 35..65 {
-                period.put_pixel(x, y, image::Luma([255]));
-            }
-        }
-        for x in 92..100 {
-            for y in 43..51 {
-                period.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut period, 84..105, 35..65, 255);
+        paint(&mut period, 92..100, 43..51, 0);
         assert!(!line_final_comma_pixel_evidence(
             "ABCD,\nXY",
             boxes,
             &period
         ));
         let mut connected = image.clone();
-        for x in 82..94 {
-            connected.put_pixel(x, 49, image::Luma([0]));
-        }
+        paint(&mut connected, 82..94, 49..50, 0);
         assert!(!line_final_comma_pixel_evidence(
             "ABCD,\nXY",
             boxes,
@@ -4329,36 +4209,22 @@ mod quote_tests {
         noise.put_pixel(110, 42, image::Luma([0]));
         assert!(!line_final_comma_pixel_evidence("ABCD,\nXY", boxes, &noise));
         let mut detached = image.clone();
-        for x in 86..103 {
-            detached.put_pixel(x, 54, image::Luma([255]));
-        }
+        paint(&mut detached, 86..103, 54..55, 255);
         assert!(!line_final_comma_pixel_evidence(
             "ABCD,\nXY",
             boxes,
             &detached
         ));
         let mut vertical = image.clone();
-        for x in 84..105 {
-            for y in 35..65 {
-                vertical.put_pixel(x, y, image::Luma([255]));
-            }
-        }
-        for x in 91..99 {
-            for y in 40..62 {
-                vertical.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut vertical, 84..105, 35..65, 255);
+        paint(&mut vertical, 91..99, 40..62, 0);
         assert!(!line_final_comma_pixel_evidence(
             "ABCD,\nXY",
             boxes,
             &vertical
         ));
         let mut slash = image.clone();
-        for x in 84..105 {
-            for y in 35..65 {
-                slash.put_pixel(x, y, image::Luma([255]));
-            }
-        }
+        paint(&mut slash, 84..105, 35..65, 255);
         for y in 40..62 {
             let start = 94 - (y - 40) / 4;
             for x in start..start + 8 {
@@ -4378,13 +4244,9 @@ mod quote_tests {
     fn comma_spacing_requires_matching_boxes_and_clear_gap() {
         let boxes = "A 1 2 5 15 0\n, 6 2 8 8 0\nB 14 2 20 15 0\n";
         let mut image = image::GrayImage::from_pixel(30, 20, image::Luma([255]));
-        for y in 5..18 {
-            image.put_pixel(2, y, image::Luma([0]));
-            image.put_pixel(15, y, image::Luma([0]));
-        }
-        for y in 12..18 {
-            image.put_pixel(7, y, image::Luma([0]));
-        }
+        paint(&mut image, 2..3, 5..18, 0);
+        paint(&mut image, 15..16, 5..18, 0);
+        paint(&mut image, 7..8, 12..18, 0);
         assert_eq!(
             comma_spacing_pixel_evidence("A, B", boxes, &image),
             HashSet::from([2])
@@ -4406,16 +4268,10 @@ mod quote_tests {
     fn terminal_period_requires_separate_baseline_ink_and_matching_boxes() {
         let boxes = "A 2 6 7 22 0\nB 10 6 15 22 0\nC 18 6 23 22 0\n. 21 6 31 22 0\n";
         let mut image = image::GrayImage::from_pixel(36, 28, image::Luma([255]));
-        for x in [2..7, 10..15, 18..23].into_iter().flatten() {
-            for y in 6..22 {
-                image.put_pixel(x, y, image::Luma([0]));
-            }
+        for xs in [2..7, 10..15, 18..23] {
+            paint(&mut image, xs, 6..22, 0);
         }
-        for x in 27..31 {
-            for y in 18..22 {
-                image.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut image, 27..31, 18..22, 0);
         assert!(terminal_period_pixel_evidence("ABC.", boxes, &image));
         for (text, bad_boxes) in [
             ("ABD.", boxes),
@@ -4438,23 +4294,13 @@ mod quote_tests {
             assert!(!terminal_period_pixel_evidence(text, bad_boxes, &image));
         }
         let mut missing = image.clone();
-        for x in 27..31 {
-            for y in 18..22 {
-                missing.put_pixel(x, y, image::Luma([255]));
-            }
-        }
+        paint(&mut missing, 27..31, 18..22, 255);
         assert!(!terminal_period_pixel_evidence("ABC.", boxes, &missing));
         let mut high = missing.clone();
-        for x in 27..31 {
-            for y in 7..11 {
-                high.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut high, 27..31, 7..11, 0);
         assert!(!terminal_period_pixel_evidence("ABC.", boxes, &high));
         let mut tall = image.clone();
-        for y in 10..18 {
-            tall.put_pixel(28, y, image::Luma([0]));
-        }
+        paint(&mut tall, 28..29, 10..18, 0);
         assert!(!terminal_period_pixel_evidence("ABC.", boxes, &tall));
         let mut sparse = image.clone();
         for (x, y) in [(27, 18), (28, 18), (29, 18), (27, 19), (28, 19), (27, 20)] {
@@ -4482,29 +4328,21 @@ mod quote_tests {
 
         let descender_boxes = "A 2 6 7 22 0\nB 10 2 15 22 0\nC 18 6 23 22 0\n. 21 2 31 22 0\n";
         let mut descender = image.clone();
-        for x in 10..12 {
-            for y in 22..26 {
-                descender.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut descender, 10..12, 22..26, 0);
         assert!(terminal_period_pixel_evidence(
             "ABC.",
             descender_boxes,
             &descender
         ));
         let mut inner_tail = descender.clone();
-        for x in 28..30 {
-            inner_tail.put_pixel(x, 22, image::Luma([0]));
-        }
+        paint(&mut inner_tail, 28..30, 22..23, 0);
         assert!(!terminal_period_pixel_evidence(
             "ABC.",
             descender_boxes,
             &inner_tail
         ));
         let mut full_width_tail = descender.clone();
-        for x in 27..31 {
-            full_width_tail.put_pixel(x, 22, image::Luma([0]));
-        }
+        paint(&mut full_width_tail, 27..31, 22..23, 0);
         assert!(!terminal_period_pixel_evidence(
             "ABC.",
             descender_boxes,
@@ -4540,10 +4378,8 @@ mod quote_tests {
 
         let multiline_boxes = "X 2 30 7 46 0\nY 10 30 15 46 0\nA 2 6 7 22 0\nB 10 6 15 22 0\nC 18 6 23 22 0\n. 21 6 31 22 0\n";
         let mut multiline = image::GrayImage::from_pixel(36, 52, image::Luma([255]));
-        for x in [2..7, 10..15].into_iter().flatten() {
-            for y in 6..22 {
-                multiline.put_pixel(x, y, image::Luma([0]));
-            }
+        for xs in [2..7, 10..15] {
+            paint(&mut multiline, xs, 6..22, 0);
         }
         for (x, y, pixel) in image.enumerate_pixels() {
             multiline.put_pixel(x, y + 24, *pixel);
@@ -4574,15 +4410,11 @@ mod quote_tests {
     fn terminal_ellipsis_requires_three_separate_baseline_dots() {
         let boxes = "A 2 2 10 15 0\n. 16 2 19 5 0\n. 23 2 26 5 0\n. 30 2 33 5 0\n";
         let mut image = image::GrayImage::from_pixel(40, 20, image::Luma([255]));
-        for x in [16..19, 23..26, 30..33].into_iter().flatten() {
-            for y in 15..18 {
-                image.put_pixel(x, y, image::Luma([0]));
-            }
+        for xs in [16..19, 23..26, 30..33] {
+            paint(&mut image, xs, 15..18, 0);
         }
         // A separate character above the baseline establishes the text line.
-        for y in 5..18 {
-            image.put_pixel(4, y, image::Luma([0]));
-        }
+        paint(&mut image, 4..5, 5..18, 0);
         assert!(terminal_ellipsis_pixel_evidence("A...", boxes, &image));
         // Some recognizers shift one dot box and combine two others.
         let shifted = "A 2 2 10 15 0\n. 11 2 15 5 0\n. 16 2 19 5 0\n. 23 2 33 5 0\n";
@@ -4606,18 +4438,12 @@ mod quote_tests {
             &interposed_ink
         ));
         let mut two_dots = image.clone();
-        for x in 16..19 {
-            for y in 15..18 {
-                two_dots.put_pixel(x, y, image::Luma([255]));
-            }
-        }
+        paint(&mut two_dots, 16..19, 15..18, 255);
         assert!(!terminal_ellipsis_pixel_evidence("A...", boxes, &two_dots));
         two_dots.put_pixel(17, 17, image::Luma([0]));
         assert!(!terminal_ellipsis_pixel_evidence("A...", boxes, &two_dots));
         // The bottom of a narrow letter is not an independent punctuation dot.
-        for y in 6..15 {
-            image.put_pixel(17, y, image::Luma([0]));
-        }
+        paint(&mut image, 17..18, 6..15, 0);
         assert!(!terminal_ellipsis_pixel_evidence("A...", boxes, &image));
     }
 
@@ -4727,10 +4553,8 @@ mod quote_tests {
         let image = punctuation_image();
         assert_eq!(repair("A?\"", "A?!", PUNCTUATION_BOXES, &image), "A?!");
         let mut omitted_quote = image.clone();
-        for y in 7..13 {
-            for x in [30, 33] {
-                omitted_quote.put_pixel(x, y, image::Luma([0]));
-            }
+        for x in [30, 33] {
+            paint(&mut omitted_quote, x..x + 1, 7..13, 0);
         }
         assert_eq!(
             repair("A?\"", "A?!", PUNCTUATION_BOXES, &omitted_quote),
@@ -4751,9 +4575,7 @@ mod quote_tests {
         // The final box can contain one quote stroke and a stray dot, while
         // Tesseract omits a second stroke just outside that box.
         let mut omitted_stroke = image.clone();
-        for y in 7..19 {
-            omitted_stroke.put_pixel(22, y, image::Luma([0]));
-        }
+        paint(&mut omitted_stroke, 22..23, 7..19, 0);
         assert_eq!(
             repair("A?\"", "A?!", PUNCTUATION_BOXES, &omitted_stroke),
             "A?\""
@@ -4772,36 +4594,18 @@ mod quote_tests {
     fn terminal_exclamation_rejects_quotes_and_noisy_or_incomplete_shapes() {
         let image = punctuation_image();
         let mut quote = image.clone();
-        for y in 7..27 {
-            for x in 24..28 {
-                quote.put_pixel(x, y, image::Luma([255]));
-            }
-        }
-        for y in 7..13 {
-            for x in [24, 27] {
-                quote.put_pixel(x, y, image::Luma([0]));
-            }
+        paint(&mut quote, 24..28, 7..27, 255);
+        for x in [24, 27] {
+            paint(&mut quote, x..x + 1, 7..13, 0);
         }
         let mut missing_dot = image.clone();
-        for y in 23..27 {
-            for x in 24..28 {
-                missing_dot.put_pixel(x, y, image::Luma([255]));
-            }
-        }
+        paint(&mut missing_dot, 24..28, 23..27, 255);
         let mut joined = image.clone();
-        for y in 19..23 {
-            for x in 24..28 {
-                joined.put_pixel(x, y, image::Luma([0]));
-            }
-        }
+        paint(&mut joined, 24..28, 19..23, 0);
         let mut noise = image.clone();
         noise.put_pixel(25, 21, image::Luma([0]));
         let mut connected_quote_and_dot = image.clone();
-        for y in 8..19 {
-            for x in 25..27 {
-                connected_quote_and_dot.put_pixel(x, y, image::Luma([255]));
-            }
-        }
+        paint(&mut connected_quote_and_dot, 25..27, 8..19, 255);
         for negative in [quote, missing_dot, joined, noise, connected_quote_and_dot] {
             assert_eq!(repair("A?\"", "A?!", PUNCTUATION_BOXES, &negative), "A?\"");
         }

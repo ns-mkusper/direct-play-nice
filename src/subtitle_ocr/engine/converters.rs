@@ -119,17 +119,6 @@ fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
             .filter(|v| v.is_finite())
             .unwrap_or(default)
     }
-    fn env_bool(key: &str, default: bool) -> bool {
-        env::var(key)
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(default)
-    }
 
     PpOcrDetectParams {
         padding: env_u32("DPN_OCR_DET_PADDING", 50),
@@ -137,37 +126,19 @@ fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
         box_score_thresh: env_f32("DPN_OCR_DET_BOX_SCORE", 0.5),
         box_thresh: env_f32("DPN_OCR_DET_BOX_THRESH", 0.3),
         un_clip_ratio: env_f32("DPN_OCR_DET_UNCLIP", 1.6),
-        do_angle: env_bool("DPN_OCR_DET_DO_ANGLE", false),
-        most_angle: env_bool("DPN_OCR_DET_MOST_ANGLE", false),
+        do_angle: super::env_flag_enabled("DPN_OCR_DET_DO_ANGLE"),
+        most_angle: super::env_flag_enabled("DPN_OCR_DET_MOST_ANGLE"),
     }
-}
-
-fn bitmap_line_route(has_recognizer: bool, language: &str, profile: OcrRecProfile) -> bool {
-    has_recognizer && is_english_language(language) && profile == OcrRecProfile::English
 }
 
 impl SubtitleConverter for PpOcrEngine {
     fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
-        bitmap_line_route(
-            self.experimental_lines.is_some(),
-            language,
-            rec_profile_for_language(language),
-        )
+        self.experimental_lines.is_some()
+            && is_english_language(language)
+            && rec_profile_for_language(language) == OcrRecProfile::English
     }
 
     fn recognize_bitmap_line(
-        &mut self,
-        image: &image::RgbImage,
-        language: &str,
-    ) -> Result<Option<OcrLine>> {
-        self.recognize_bitmap_line_with_context(
-            image,
-            language,
-            BitmapLineContext::UnknownOrMultiple,
-        )
-    }
-
-    fn recognize_bitmap_line_with_context(
         &mut self,
         image: &image::RgbImage,
         language: &str,
@@ -294,9 +265,6 @@ fn correct_overlapping_seam(
     let Some(seam) = prepare_overlapping_seam(&result.text_blocks, lines, img) else {
         return false;
     };
-    if !seam_detect_env_valid() {
-        return false;
-    }
     let Some(alternatives) = seam_detect_variations(params, img.width(), img.height()) else {
         return false;
     };
@@ -327,35 +295,6 @@ fn correct_overlapping_seam(
         return true;
     }
     false
-}
-
-fn seam_detect_env_valid() -> bool {
-    fn valid_env(key: &str, validate: impl FnOnce(&str) -> bool) -> bool {
-        match env::var_os(key) {
-            None => true,
-            Some(value) => value.to_str().is_some_and(|value| validate(value.trim())),
-        }
-    }
-    ["DPN_OCR_DET_PADDING", "DPN_OCR_DET_MAX_SIDE"]
-        .iter()
-        .all(|key| valid_env(key, |value| value.parse::<u32>().is_ok()))
-        && [
-            "DPN_OCR_DET_BOX_SCORE",
-            "DPN_OCR_DET_BOX_THRESH",
-            "DPN_OCR_DET_UNCLIP",
-        ]
-        .iter()
-        .all(|key| valid_env(key, |value| value.parse::<f32>().is_ok_and(f32::is_finite)))
-        && ["DPN_OCR_DET_DO_ANGLE", "DPN_OCR_DET_MOST_ANGLE"]
-            .iter()
-            .all(|key| {
-                valid_env(key, |value| {
-                    matches!(
-                        value.to_ascii_lowercase().as_str(),
-                        "0" | "1" | "true" | "false" | "yes" | "no" | "on" | "off"
-                    )
-                })
-            })
 }
 
 fn seam_detect_variations(
@@ -730,15 +669,8 @@ mod seam_variation_tests {
     use super::*;
 
     #[test]
-    fn bitmap_lines_honor_language_profile_and_availability() {
-        assert!(bitmap_line_route(true, "eng", OcrRecProfile::English));
-        assert!(!bitmap_line_route(false, "eng", OcrRecProfile::English));
-        assert!(!bitmap_line_route(true, "eng", OcrRecProfile::Latin));
-        assert!(!bitmap_line_route(true, "jpn", OcrRecProfile::English));
-    }
-
-    fn params() -> PpOcrDetectParams {
-        PpOcrDetectParams {
+    fn retry_settings_are_relative_and_invalid_values_fail_closed() {
+        let p = PpOcrDetectParams {
             padding: 50,
             max_side_len: 1024,
             box_score_thresh: 0.5,
@@ -746,51 +678,30 @@ mod seam_variation_tests {
             un_clip_ratio: 1.6,
             do_angle: false,
             most_angle: false,
-        }
-    }
-
-    #[test]
-    fn retry_settings_are_relative_and_invalid_values_fail_closed() {
-        let p = params();
+        };
         let [a, b] = seam_detect_variations(p, 100, 50).unwrap();
         assert_eq!((a.padding, a.max_side_len), (50, 768));
         assert_eq!((b.padding, b.max_side_len), (100, 1024));
-        assert!(seam_detect_variations(
+        for invalid in [
             PpOcrDetectParams {
                 padding: u32::MAX,
                 ..p
             },
-            100,
-            50
-        )
-        .is_none());
-        assert!(seam_detect_variations(
             PpOcrDetectParams {
                 max_side_len: 0,
                 ..p
             },
-            100,
-            50
-        )
-        .is_none());
-        assert!(seam_detect_variations(
             PpOcrDetectParams {
                 box_thresh: f32::NAN,
                 ..p
             },
-            100,
-            50
-        )
-        .is_none());
-        assert!(seam_detect_variations(
             PpOcrDetectParams {
                 do_angle: true,
                 ..p
             },
-            100,
-            50
-        )
-        .is_none());
+        ] {
+            assert!(seam_detect_variations(invalid, 100, 50).is_none());
+        }
         assert!(seam_detect_variations(p, u32::MAX, 50).is_none());
     }
 }

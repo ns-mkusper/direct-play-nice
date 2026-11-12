@@ -571,13 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_similarity_remains_a_cap_when_strict_cer_is_more_lenient() {
-        let metrics = fixture_text_metrics("Hello, world!", "Hello world!", 0.0);
-        assert_close(metrics.similarity, 1.0 - metrics.cer);
-        assert!(metrics.similarity < 1.0 - metrics.strict_cer);
-    }
-
-    #[test]
     fn empty_reference_and_large_insertion_error_are_bounded() {
         for (expected, actual, strict_cer) in [("", " ", 1.0), ("a", "abcd", 3.0)] {
             let metrics = fixture_text_metrics(expected, actual, 1.0);

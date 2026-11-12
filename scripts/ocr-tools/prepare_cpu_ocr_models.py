@@ -10,58 +10,36 @@ from validate_cpu_fixture_report import MODELS, sha256_file
 
 # Same model sources as src/subtitle_ocr/engine/models.rs. The independent
 # hashes in MODELS are verified before any CI test can initialize an engine.
-_HUGGINGFACE = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/"
-_MODELSCOPE = (
-    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/"
-    "onnx/PP-OCRv4/rec/"
-)
+HUGGINGFACE = "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/{}?download=true"
+MODELSCOPE = ("https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/"
+              "onnx/PP-OCRv4/rec/{}")
 URLS = {
-    **{
-        name: f"{_HUGGINGFACE}{name}?download=true"
-        for name in (
-            "ch_PP-OCRv3_det_infer.onnx",
-            "ch_ppocr_mobile_v2.0_cls_train.onnx",
-            "en_PP-OCRv3_rec_infer.onnx",
-        )
-    },
-    **{
-        name: f"{_MODELSCOPE}{name}"
-        for name in (
-            "latin_PP-OCRv3_rec_mobile.onnx",
-            "japan_PP-OCRv4_rec_mobile.onnx",
-            "korean_PP-OCRv4_rec_mobile.onnx",
-            "chinese_cht_PP-OCRv3_rec_mobile.onnx",
-        )
-    },
+    name: source.format(name)
+    for source, names in (
+        (HUGGINGFACE, ("ch_PP-OCRv3_det_infer.onnx", "ch_ppocr_mobile_v2.0_cls_train.onnx",
+                       "en_PP-OCRv3_rec_infer.onnx")),
+        (MODELSCOPE, ("latin_PP-OCRv3_rec_mobile.onnx", "japan_PP-OCRv4_rec_mobile.onnx",
+                      "korean_PP-OCRv4_rec_mobile.onnx", "chinese_cht_PP-OCRv3_rec_mobile.onnx")),
+    )
+    for name in names
 }
 
 
 def prepare_models(destination):
-    """Download every pinned model into ``destination`` and verify it.
-
-    ``destination`` must not exist yet: existing directories or cached models
-    are never reused, overwritten or removed.
-    """
+    """Download and verify every pinned model; never reuse an existing directory."""
     if set(URLS) != set(MODELS):
         raise ValueError("model URLs and pinned hashes do not match")
     destination.mkdir()
     for name, expected in MODELS.items():
         path = destination / name
-        subprocess.run(
-            [
-                "curl", "--fail", "--location", "--retry", "3",
-                "--silent", "--show-error",
-                "--output", str(path), URLS[name],
-            ],
-            check=True,
-        )
+        subprocess.run(["curl", "--fail", "--location", "--retry", "3", "--silent",
+                        "--show-error", "--output", str(path), URLS[name]], check=True)
         if sha256_file(path) != expected:
             raise ValueError(f"model hash mismatch: {name}")
         print(f"Verified {name}", flush=True)
 
 
 def main():
-    """Prepare models in the directory given on the command line."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
     args = parser.parse_args()

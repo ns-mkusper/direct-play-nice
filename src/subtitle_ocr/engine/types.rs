@@ -84,29 +84,19 @@ pub(in crate::subtitle_ocr) trait SubtitleConverter {
     /// Implementations should return an empty `OcrOutput` when extraction succeeds but no text is found.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
 
-    /// Whether `recognize_bitmap_line*` can recognize crops for `language`.
+    /// Whether `recognize_bitmap_line` can recognize crops for `language`.
     fn supports_bitmap_line_recognition(&self, _language: &str) -> bool {
         false
     }
 
-    /// Recognizes one pre-cropped bitmap line, or `None` when unsupported.
+    /// Recognizes one pre-cropped bitmap line, or `None` to abstain.
     fn recognize_bitmap_line(
         &mut self,
         _image: &image::RgbImage,
         _language: &str,
-    ) -> Result<Option<OcrLine>> {
-        Ok(None)
-    }
-
-    /// Like `recognize_bitmap_line`, with layout context that may enable
-    /// additional spacing checks.
-    fn recognize_bitmap_line_with_context(
-        &mut self,
-        image: &image::RgbImage,
-        language: &str,
         _context: BitmapLineContext,
     ) -> Result<Option<OcrLine>> {
-        self.recognize_bitmap_line(image, language)
+        Ok(None)
     }
 }
 

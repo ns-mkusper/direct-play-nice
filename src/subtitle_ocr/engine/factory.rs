@@ -5,7 +5,6 @@
 
 use anyhow::{anyhow, Result};
 use log::{info, warn};
-use std::env;
 use std::sync::atomic::Ordering;
 
 use super::{
@@ -166,13 +165,7 @@ pub(in crate::subtitle_ocr) fn auto_engine_preference_with_capability(
 
 /// Checks if PP-OCR quality fallback to Tesseract is disabled by environment policy.
 pub(in crate::subtitle_ocr) fn disable_tesseract_quality_fallback() -> bool {
-    let disabled = env::var("DPN_OCR_DISABLE_TESS_FALLBACK")
-        .ok()
-        .map(|v| {
-            let x = v.trim().to_ascii_lowercase();
-            matches!(x.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false);
+    let disabled = super::env_flag_enabled("DPN_OCR_DISABLE_TESS_FALLBACK");
     if disabled && !DISABLE_TESS_FALLBACK_LOGGED.swap(true, Ordering::Relaxed) {
         warn!(
             "DPN_OCR_DISABLE_TESS_FALLBACK=1 set; skipping Tesseract quality fallback and using pure PP-OCR output."

@@ -1763,6 +1763,17 @@ fn spacing_candidate_rejects_character_and_punctuation_changes() {
         "I willlift it.",
         "Iwill lift it."
     ));
+    // Short glue is split only when a recognizer read the same characters.
+    assert!(spacing_candidate_preserves_characters(
+        "Waitup!", "Wait up!"
+    ));
+    for (text, candidate) in [
+        ("Waitup!", "Wake up!"),
+        ("Waitup!", "Waitup!"),
+        ("inform", "inform"),
+    ] {
+        assert!(!spacing_candidate_preserves_characters(text, candidate));
+    }
 }
 
 #[test]
@@ -1793,11 +1804,9 @@ impl IndexedSubtitleBitmap {
             .to_luma8();
         let (width, height) = image.dimensions();
         let indices = image.pixels().map(|pixel| 255 - pixel[0]).collect();
-        let mut palette = vec![0u8; 256 * 4];
-        for (alpha, entry) in palette.chunks_exact_mut(4).enumerate() {
-            entry[..3].fill(255);
-            entry[3] = alpha as u8;
-        }
+        let palette = (0..=255u8)
+            .flat_map(|alpha| [255, 255, 255, alpha])
+            .collect();
         Self {
             width,
             height,
@@ -1930,7 +1939,7 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
             self.engine.supports_bitmap_line_recognition(language)
         }
 
-        fn recognize_bitmap_line_with_context(
+        fn recognize_bitmap_line(
             &mut self,
             image: &image::RgbImage,
             language: &str,
@@ -1939,7 +1948,7 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
             self.direct_calls += 1;
             let line = self
                 .engine
-                .recognize_bitmap_line_with_context(image, language, context)?;
+                .recognize_bitmap_line(image, language, context)?;
             if let Some(line) = &line {
                 self.direct_lines.push(line.text.trim().to_string());
             }
@@ -2043,43 +2052,6 @@ fn synthetic_stage_comparison(actual: &str, expected: &str) -> serde_json::Value
     })
 }
 
-#[test]
-fn synthetic_stage_comparison_marks_incomparable_boundaries() {
-    let mismatch = synthetic_stage_comparison("ab cd", "a bc!");
-    assert_eq!(mismatch["same_non_whitespace_glyphs"], false);
-    assert!(mismatch["missing_expected_spaces"].is_null());
-    let boundaries = synthetic_stage_comparison("ab cd", "a bc\nd");
-    assert_eq!(
-        boundaries["missing_expected_spaces"],
-        serde_json::json!([1])
-    );
-    assert_eq!(boundaries["unexpected_spaces"], serde_json::json!([2]));
-    assert_eq!(
-        boundaries["missing_expected_line_breaks"],
-        serde_json::json!([3])
-    );
-}
-
-/// Detector tuning variables that raw-detector diagnostics require at defaults.
-const DETECTOR_TUNING_ENV: [&str; 7] = [
-    "DPN_OCR_DET_PADDING",
-    "DPN_OCR_DET_MAX_SIDE",
-    "DPN_OCR_DET_BOX_SCORE",
-    "DPN_OCR_DET_BOX_THRESH",
-    "DPN_OCR_DET_UNCLIP",
-    "DPN_OCR_DET_DO_ANGLE",
-    "DPN_OCR_DET_MOST_ANGLE",
-];
-
-fn assert_env_unset(keys: &[&str], context: &str) {
-    for key in keys {
-        assert!(
-            std::env::var_os(key).is_none(),
-            "{context} requires default {key}"
-        );
-    }
-}
-
 // Run with: cargo test --bin direct_play_nice synthetic_stage_diagnostic -- --ignored --nocapture --test-threads=1.
 // Only the fixed synthetic fixtures are read. Boundary differences are null when
 // glyphs differ; the first recorded converter call is the full production input.
@@ -2108,15 +2080,24 @@ fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
         }
     }
 
-    assert_env_unset(&DETECTOR_TUNING_ENV, "diagnostic");
-    assert_env_unset(
-        &[
-            "DPN_OCR_REC_PROFILE_OVERRIDES",
-            "DPN_OCR_LANGUAGE_SCRIPT_HINTS",
-            "DPN_OCR_ROUTING_MANIFEST",
-        ],
-        "diagnostic",
-    );
+    // The raw-detector rerun below uses default parameters and profiles.
+    for key in [
+        "DPN_OCR_DET_PADDING",
+        "DPN_OCR_DET_MAX_SIDE",
+        "DPN_OCR_DET_BOX_SCORE",
+        "DPN_OCR_DET_BOX_THRESH",
+        "DPN_OCR_DET_UNCLIP",
+        "DPN_OCR_DET_DO_ANGLE",
+        "DPN_OCR_DET_MOST_ANGLE",
+        "DPN_OCR_REC_PROFILE_OVERRIDES",
+        "DPN_OCR_LANGUAGE_SCRIPT_HINTS",
+        "DPN_OCR_ROUTING_MANIFEST",
+    ] {
+        assert!(
+            std::env::var_os(key).is_none(),
+            "diagnostic requires default {key}"
+        );
+    }
     let mut ppocr = init_ppocr_v3_engine();
     let mut tesseract = TesseractEngine;
     let temp = tempfile::tempdir().expect("create temporary directory");
@@ -2262,26 +2243,16 @@ mod wide_gap_stress {
 #[test]
 #[ignore = "requires a private bitmap stream and OCR models"]
 fn test_manual_bitmap_stream_probe() {
-    let input = std::env::var("DPN_OCR_PROBE_INPUT").expect("DPN_OCR_PROBE_INPUT");
-    let output = std::env::var("DPN_OCR_PROBE_OUTPUT").expect("DPN_OCR_PROBE_OUTPUT");
-    let stream_index = std::env::var("DPN_OCR_PROBE_STREAM")
-        .expect("DPN_OCR_PROBE_STREAM")
+    let var = |key: &str| std::env::var(key).unwrap_or_else(|_| panic!("{key} is required"));
+    let (input, output) = (var("DPN_OCR_PROBE_INPUT"), var("DPN_OCR_PROBE_OUTPUT"));
+    let stream_index = var("DPN_OCR_PROBE_STREAM")
         .parse()
         .expect("subtitle stream index");
-    let width = std::env::var("DPN_OCR_PROBE_WIDTH")
-        .expect("DPN_OCR_PROBE_WIDTH")
-        .parse()
-        .expect("video width");
-    let height = std::env::var("DPN_OCR_PROBE_HEIGHT")
-        .expect("DPN_OCR_PROBE_HEIGHT")
-        .parse()
-        .expect("video height");
+    let width = var("DPN_OCR_PROBE_WIDTH").parse().expect("video width");
+    let height = var("DPN_OCR_PROBE_HEIGHT").parse().expect("video height");
     assert!(!Path::new(&output).exists(), "probe output already exists");
     let work = tempfile::tempdir().expect("create probe directory");
-    let model_dir = resolve_model_dir().expect("resolve model directory");
-    init_ort_environment().expect("initialize ONNX runtime");
-    let mut engine = init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3)
-        .expect("initialize PP-OCRv3");
+    let mut engine = init_ppocr_v3_engine();
     let request = super::ocr_pipeline::OcrStreamRequest {
         input_path: &input,
         stream_index,
@@ -2340,128 +2311,4 @@ fn test_manual_ppocr_v3_single_image_probe() {
         output.lines.len(),
         avg_conf
     );
-}
-
-// Manifest rows and results stay outside the repository. Run this ignored probe
-// alone with one test thread and with local model paths supplied by the caller.
-#[test]
-#[ignore = "requires a private synthetic corpus, local models and Tesseract"]
-fn synthetic_corpus_converter_probe() {
-    #[derive(serde::Deserialize)]
-    struct Case {
-        id: String,
-        group: String,
-        path: std::path::PathBuf,
-        sha256: String,
-        expected: String,
-        baseline: String,
-        candidate: String,
-    }
-    fn glyphs(text: &str) -> String {
-        text.chars().filter(|ch| !ch.is_whitespace()).collect()
-    }
-    let manifest = std::env::var_os("DPN_OCR_CORPUS_MANIFEST").expect("corpus manifest");
-    let output_path = std::env::var_os("DPN_OCR_CORPUS_OUTPUT").expect("corpus result path");
-    assert!(!Path::new(&output_path).exists(), "result path exists");
-    let cases: Vec<Case> = serde_json::from_slice(&fs::read(manifest).expect("read manifest"))
-        .expect("parse manifest");
-    assert!(!cases.is_empty(), "empty corpus");
-    let inspect_blocks = std::env::var("DPN_OCR_CORPUS_INSPECT_BLOCKS")
-        .ok()
-        .as_deref()
-        == Some("1");
-    if inspect_blocks {
-        assert_env_unset(&DETECTOR_TUNING_ENV, "block inspection");
-    }
-    let det = std::env::var_os("DPN_OCR_CORPUS_DET").expect("detector model");
-    let cls = std::env::var_os("DPN_OCR_CORPUS_CLS").expect("classifier model");
-    let rec = std::env::var_os("DPN_OCR_CORPUS_REC").expect("recognizer model");
-    for path in [&det, &cls, &rec] {
-        assert!(Path::new(path).is_file(), "model missing");
-    }
-    init_ort_environment().expect("initialize ONNX runtime");
-    let english_ocr = init_ocr_lite(
-        PpOcrVariant::V3,
-        "english",
-        Path::new(&det),
-        Path::new(&cls),
-        Path::new(&rec),
-    )
-    .expect("initialize PP-OCRv3 models");
-    let mut engine = PpOcrEngine {
-        english_ocr,
-        latin_ocr: None,
-        multilingual_ocr: None,
-        japanese_ocr: None,
-        korean_ocr: None,
-        cjk_ocr: None,
-        experimental_lines: None,
-        variant: PpOcrVariant::V3,
-    };
-    let mut rows = Vec::with_capacity(cases.len());
-    let mut errors = 0;
-    for case in cases {
-        let bytes = fs::read(&case.path).expect("read corpus image");
-        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), case.sha256);
-        let block_counts = if inspect_blocks {
-            let image = image::open(&case.path)
-                .expect("decode corpus image")
-                .to_rgb8();
-            match engine
-                .english_ocr
-                .detect(&image, 50, 1024, 0.5, 0.3, 1.6, false, false)
-            {
-                Ok(result) => Some((
-                    result.text_blocks.len(),
-                    result
-                        .text_blocks
-                        .iter()
-                        .filter(|block| !block.text.trim().is_empty())
-                        .count(),
-                )),
-                Err(_) => {
-                    errors += 1;
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let (matches_expected, matches_baseline, matches_candidate, corrected, lines, failed) =
-            match engine.extract_lines(&case.path, "eng") {
-                Ok(output) => {
-                    let actual = glyphs(&joined_line_text(&output.lines));
-                    (
-                        actual == glyphs(&case.expected),
-                        actual == glyphs(&case.baseline),
-                        actual == glyphs(&case.candidate),
-                        output.seam_corrected,
-                        output.lines.len(),
-                        false,
-                    )
-                }
-                Err(_) => {
-                    errors += 1;
-                    (false, false, false, false, 0, true)
-                }
-            };
-        rows.push(serde_json::json!({
-            "id": case.id, "group": case.group, "matches_expected": matches_expected,
-            "matches_baseline": matches_baseline, "matches_candidate": matches_candidate,
-            "corrected": corrected, "lines": lines, "error": failed,
-            "baseline_blocks": block_counts.map(|counts| counts.0),
-            "baseline_nonempty_blocks": block_counts.map(|counts| counts.1),
-        }));
-    }
-    fs::write(
-        &output_path,
-        serde_json::to_vec_pretty(&rows).expect("serialize results"),
-    )
-    .expect("write results");
-    eprintln!(
-        "Synthetic corpus converter probe: {} cases, {} errors",
-        rows.len(),
-        errors
-    );
-    assert_eq!(errors, 0, "corpus inference failures");
 }

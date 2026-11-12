@@ -47,56 +47,33 @@ pub(in crate::subtitle_ocr) struct RecognizedLine {
     pub(in crate::subtitle_ocr) score: Option<f32>,
 }
 
-#[derive(Debug, PartialEq)]
-pub(in crate::subtitle_ocr) struct LineRecognition {
-    pub(in crate::subtitle_ocr) original: RecognizedLine,
-    pub(in crate::subtitle_ocr) corrected: RecognizedLine,
-    pub(in crate::subtitle_ocr) class_width: usize,
-}
-
-struct Dictionaries {
-    original: Vec<String>,
-    corrected: Vec<String>,
-}
-
-impl Dictionaries {
-    fn from_metadata(character: &str) -> Result<Self> {
-        if character.len() > MAX_METADATA_BYTES {
-            bail!("recognizer character metadata exceeds limit");
-        }
-        fn keys(raw: &str) -> Result<Vec<String>> {
-            let count = raw
-                .split('\n')
-                .count()
-                .checked_add(2)
-                .ok_or_else(|| anyhow!("recognizer dictionary size overflow"))?;
-            if count > MAX_CLASSES + 1 {
-                bail!("recognizer dictionary exceeds class limit");
-            }
-            let mut keys = Vec::with_capacity(count);
-            keys.push("#".to_owned());
-            keys.extend(raw.split('\n').map(str::to_owned));
-            keys.push(" ".to_owned());
-            Ok(keys)
-        }
-        Ok(Self {
-            original: keys(character)?,
-            corrected: keys(character.strip_suffix('\n').unwrap_or(character))?,
-        })
+/// Builds the CTC dictionary from the model's `character` metadata.
+///
+/// Paddle's metadata ends in an LF, which its own loader turns into an extra
+/// empty class that takes the place of the final space class. Dropping one
+/// terminal LF aligns the dictionary with the model's actual class width.
+fn dictionary_from_metadata(character: &str) -> Result<Vec<String>> {
+    if character.len() > MAX_METADATA_BYTES {
+        bail!("recognizer character metadata exceeds limit");
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::subtitle_ocr) enum ExperimentalLineMapping {
-    Original,
-    Corrected,
+    let raw = character.strip_suffix('\n').unwrap_or(character);
+    let mut keys = Vec::with_capacity(raw.split('\n').count() + 2);
+    keys.push("#".to_owned());
+    keys.extend(raw.split('\n').map(str::to_owned));
+    keys.push(" ".to_owned());
+    if keys.len() > MAX_CLASSES {
+        bail!("recognizer dictionary exceeds class limit");
+    }
+    Ok(keys)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::subtitle_ocr) enum BitmapLinePolicy {
+    /// Use direct-line OCR when the audited models are installed.
     Auto,
     Off,
-    Explicit(ExperimentalLineMapping),
+    /// Fail initialization unless the audited models are installed.
+    Required,
 }
 
 fn parse_bitmap_line_policy(value: Option<&OsStr>) -> Result<BitmapLinePolicy> {
@@ -109,13 +86,8 @@ fn parse_bitmap_line_policy(value: Option<&OsStr>) -> Result<BitmapLinePolicy> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "0" | "off" | "false" => Ok(BitmapLinePolicy::Off),
         "auto" => Ok(BitmapLinePolicy::Auto),
-        "original" => Ok(BitmapLinePolicy::Explicit(
-            ExperimentalLineMapping::Original,
-        )),
-        "corrected" => Ok(BitmapLinePolicy::Explicit(
-            ExperimentalLineMapping::Corrected,
-        )),
-        _ => bail!("DPN_OCR_EXPERIMENTAL_BITMAP_LINES must be auto, original, corrected, or off"),
+        "1" | "on" | "true" => Ok(BitmapLinePolicy::Required),
+        _ => bail!("DPN_OCR_EXPERIMENTAL_BITMAP_LINES must be auto, on, or off"),
     }
 }
 
@@ -126,24 +98,18 @@ pub(in crate::subtitle_ocr) fn bitmap_line_policy_from_env() -> Result<BitmapLin
 /// Lazily initializes only on a supported bitmap line, once per worker.
 pub(in crate::subtitle_ocr) struct ExperimentalLineRecognizer {
     audited_model: Vec<u8>,
-    mapping: ExperimentalLineMapping,
     recognizer: Option<WholeLineRecognizer>,
 }
 
 impl ExperimentalLineRecognizer {
-    pub(in crate::subtitle_ocr) fn new(
-        audited_model: Vec<u8>,
-        mapping: ExperimentalLineMapping,
-    ) -> Self {
+    pub(in crate::subtitle_ocr) fn new(audited_model: Vec<u8>) -> Self {
         Self {
             audited_model,
-            mapping,
             recognizer: None,
         }
     }
 
-    /// Recognizes one line; `allow_probe` enables the padded spacing probe for
-    /// the corrected mapping.
+    /// Recognizes one line; `allow_probe` enables the padded spacing probe.
     pub(in crate::subtitle_ocr) fn recognize_with_spacing_probe(
         &mut self,
         crop: &RgbImage,
@@ -155,19 +121,11 @@ impl ExperimentalLineRecognizer {
             )?);
         }
         let recognizer = self.recognizer.as_mut().expect("recognizer initialized");
-        let result = if allow_probe && self.mapping == ExperimentalLineMapping::Corrected {
-            recognizer.recognize_with_spacing_probe(crop)?
+        if allow_probe {
+            recognizer.recognize_with_spacing_probe(crop)
         } else {
-            recognizer.recognize(crop)?
-        };
-        log::trace!(
-            "Experimental bitmap-line OCR class width: {}",
-            result.class_width
-        );
-        Ok(match self.mapping {
-            ExperimentalLineMapping::Original => result.original,
-            ExperimentalLineMapping::Corrected => result.corrected,
-        })
+            recognizer.recognize(crop)
+        }
     }
 }
 
@@ -175,7 +133,7 @@ impl ExperimentalLineRecognizer {
 pub(in crate::subtitle_ocr) struct WholeLineRecognizer {
     session: Session,
     input_name: String,
-    dictionaries: Dictionaries,
+    dictionary: Vec<String>,
 }
 
 impl WholeLineRecognizer {
@@ -192,7 +150,7 @@ impl WholeLineRecognizer {
             .ok_or_else(|| anyhow!("recognizer output must be a tensor"))?;
         if output_type.tensor_type() != Some(TensorElementType::Float32)
             || shape.len() != 3
-            || shape[2] != recognizer.dictionaries.corrected.len() as i64
+            || shape[2] != recognizer.dictionary.len() as i64
         {
             bail!("recognizer declared class width does not match corrected dictionary");
         }
@@ -214,23 +172,19 @@ impl WholeLineRecognizer {
             .metadata()?
             .custom("character")?
             .ok_or_else(|| anyhow!("recognizer has no character metadata"))?;
-        let dictionaries = Dictionaries::from_metadata(&character)?;
+        let dictionary = dictionary_from_metadata(&character)?;
         Ok(Self {
             session,
             input_name,
-            dictionaries,
+            dictionary,
         })
     }
 
-    /// Runs normal recognition with both dictionaries against the same scores.
-    pub(in crate::subtitle_ocr) fn recognize(
-        &mut self,
-        crop: &RgbImage,
-    ) -> Result<LineRecognition> {
+    pub(in crate::subtitle_ocr) fn recognize(&mut self, crop: &RgbImage) -> Result<RecognizedLine> {
         Ok(self.recognize_once(crop, false)?.0)
     }
 
-    fn recognize_with_spacing_probe(&mut self, crop: &RgbImage) -> Result<LineRecognition> {
+    fn recognize_with_spacing_probe(&mut self, crop: &RgbImage) -> Result<RecognizedLine> {
         let normal = self.recognize(crop)?;
         Ok(apply_padded_spacing_probe(normal, crop, |padded| {
             let (result, alignments) = self.recognize_once(padded, true)?;
@@ -242,7 +196,7 @@ impl WholeLineRecognizer {
         &mut self,
         crop: &RgbImage,
         with_alignments: bool,
-    ) -> Result<(LineRecognition, Option<SpaceAlignments>)> {
+    ) -> Result<(RecognizedLine, Option<SpaceAlignments>)> {
         let width = resized_width(crop.width(), crop.height())?;
         let resized =
             image::imageops::resize(crop, width, HEIGHT, image::imageops::FilterType::Triangle);
@@ -256,9 +210,9 @@ impl WholeLineRecognizer {
             .next()
             .ok_or_else(|| anyhow!("recognizer produced no output"))?;
         let (shape, data) = output.try_extract_tensor::<f32>()?;
-        let result = decode_output(shape, data, &self.dictionaries)?;
+        let result = decode_output(shape, data, &self.dictionary)?;
         let alignments = if with_alignments {
-            Some(ctc_space_alignments(shape, data, &self.dictionaries)?)
+            Some(ctc_space_alignments(shape, data, &self.dictionary)?)
         } else {
             None
         };
@@ -345,7 +299,7 @@ fn resized_width(width: u32, height: u32) -> Result<u32> {
 
 #[derive(Debug, Default)]
 struct SpaceAlignments {
-    corrected: BTreeMap<usize, usize>,
+    spaces: BTreeMap<usize, usize>,
     timesteps: usize,
 }
 
@@ -354,7 +308,7 @@ struct SpaceAlignments {
 fn checked_output_dims(
     shape: &[i64],
     data: &[f32],
-    dictionaries: &Dictionaries,
+    dictionary: &[String],
 ) -> Result<(usize, usize)> {
     if shape.len() != 3 || shape[0] != 1 {
         bail!("recognizer output must have shape [1, time, classes]");
@@ -365,8 +319,7 @@ fn checked_output_dims(
         || time > MAX_TIMESTEPS
         || width == 0
         || width > MAX_CLASSES
-        || width != dictionaries.corrected.len()
-        || dictionaries.original.len() < width
+        || width != dictionary.len()
     {
         bail!("recognizer output dimensions do not match the bounded dictionary");
     }
@@ -398,9 +351,9 @@ fn best_class(row: &[f32]) -> Result<(usize, f32)> {
 fn ctc_space_alignments(
     shape: &[i64],
     data: &[f32],
-    dictionaries: &Dictionaries,
+    dictionary: &[String],
 ) -> Result<SpaceAlignments> {
-    let (time, width) = checked_output_dims(shape, data, dictionaries)?;
+    let (time, width) = checked_output_dims(shape, data, dictionary)?;
     let mut runs = Vec::new();
     let mut previous = 0usize;
     let mut peak_step = 0usize;
@@ -425,7 +378,7 @@ fn ctc_space_alignments(
     let mut positions = BTreeMap::new();
     let mut glyph_index = 0usize;
     for (index, step) in runs {
-        for ch in dictionaries.corrected[index].chars() {
+        for ch in dictionary[index].chars() {
             if ch == ' ' {
                 positions.insert(glyph_index, step);
             } else if !ch.is_whitespace() {
@@ -434,7 +387,7 @@ fn ctc_space_alignments(
         }
     }
     Ok(SpaceAlignments {
-        corrected: positions,
+        spaces: positions,
         timesteps: time,
     })
 }
@@ -476,11 +429,11 @@ fn spacing_layout(text: &str) -> Option<(Vec<char>, BTreeSet<usize>)> {
 }
 
 fn apply_padded_spacing_probe(
-    mut normal: LineRecognition,
+    mut normal: RecognizedLine,
     crop: &RgbImage,
-    probe: impl FnOnce(&RgbImage) -> Result<(LineRecognition, SpaceAlignments)>,
-) -> LineRecognition {
-    if spacing_layout(&normal.corrected.text).is_none() {
+    probe: impl FnOnce(&RgbImage) -> Result<(RecognizedLine, SpaceAlignments)>,
+) -> RecognizedLine {
+    if spacing_layout(&normal.text).is_none() {
         return normal;
     }
     let Ok((padded, _)) = pad_crop(crop) else {
@@ -493,10 +446,10 @@ fn apply_padded_spacing_probe(
             return normal;
         }
     };
-    normal.corrected.text = merge_padded_spacing(
-        &normal.corrected.text,
-        &alternative.corrected.text,
-        &alignments.corrected,
+    normal.text = merge_padded_spacing(
+        &normal.text,
+        &alternative.text,
+        &alignments.spaces,
         alignments.timesteps,
         crop,
     );
@@ -596,43 +549,24 @@ fn merge_padded_spacing(
     output
 }
 
-fn decode_output(
-    shape: &[i64],
-    data: &[f32],
-    dictionaries: &Dictionaries,
-) -> Result<LineRecognition> {
-    let (_, width) = checked_output_dims(shape, data, dictionaries)?;
-    let mut original = String::new();
-    let mut corrected = String::new();
+fn decode_output(shape: &[i64], data: &[f32], dictionary: &[String]) -> Result<RecognizedLine> {
+    let (_, width) = checked_output_dims(shape, data, dictionary)?;
+    let mut text = String::new();
     let mut last_index = 0usize;
     let mut score_sum = 0.0f64;
     let mut score_count = 0usize;
     for row in data.chunks_exact(width) {
         let (max_index, max_value) = best_class(row)?;
         if max_index != 0 && max_index != last_index {
-            append_bounded(&mut original, &dictionaries.original[max_index])?;
-            append_bounded(&mut corrected, &dictionaries.corrected[max_index])?;
+            append_bounded(&mut text, &dictionary[max_index])?;
             score_sum += f64::from(max_value);
             score_count += 1;
         }
         last_index = max_index;
     }
-    // Match Paddle's confidence calculation, including selected empty dictionary
-    // entries, while representing an empty decoded line without a NaN score.
-    let score = (score_count != 0).then(|| (score_sum / score_count as f64) as f32);
-    let original_score = if original.is_empty() { None } else { score };
-    let corrected_score = if corrected.is_empty() { None } else { score };
-    Ok(LineRecognition {
-        original: RecognizedLine {
-            text: original,
-            score: original_score,
-        },
-        corrected: RecognizedLine {
-            text: corrected,
-            score: corrected_score,
-        },
-        class_width: width,
-    })
+    // Match Paddle's mean confidence, without a NaN score for an empty line.
+    let score = (!text.is_empty()).then(|| (score_sum / score_count as f64) as f32);
+    Ok(RecognizedLine { text, score })
 }
 
 fn append_bounded(text: &mut String, token: &str) -> Result<()> {
@@ -653,49 +587,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bitmap_line_policy_defaults_to_auto_and_supports_explicit_rollback() {
-        assert_eq!(
-            parse_bitmap_line_policy(None).unwrap(),
-            BitmapLinePolicy::Auto
-        );
-        assert_eq!(
-            parse_bitmap_line_policy(Some(OsStr::new("auto"))).unwrap(),
-            BitmapLinePolicy::Auto
-        );
+    fn bitmap_line_policy_defaults_to_auto() {
+        let parse = |value: Option<&str>| parse_bitmap_line_policy(value.map(OsStr::new));
+        assert_eq!(parse(None).unwrap(), BitmapLinePolicy::Auto);
+        assert_eq!(parse(Some("auto")).unwrap(), BitmapLinePolicy::Auto);
         for value in ["", "0", "off", "false"] {
-            assert_eq!(
-                parse_bitmap_line_policy(Some(OsStr::new(value))).unwrap(),
-                BitmapLinePolicy::Off
-            );
+            assert_eq!(parse(Some(value)).unwrap(), BitmapLinePolicy::Off);
         }
-        assert_eq!(
-            parse_bitmap_line_policy(Some(OsStr::new("original"))).unwrap(),
-            BitmapLinePolicy::Explicit(ExperimentalLineMapping::Original)
-        );
-        assert_eq!(
-            parse_bitmap_line_policy(Some(OsStr::new("corrected"))).unwrap(),
-            BitmapLinePolicy::Explicit(ExperimentalLineMapping::Corrected)
-        );
-        assert!(parse_bitmap_line_policy(Some(OsStr::new("true"))).is_err());
-        assert!(parse_bitmap_line_policy(Some(OsStr::new("typo"))).is_err());
+        for value in ["1", "on", "true"] {
+            assert_eq!(parse(Some(value)).unwrap(), BitmapLinePolicy::Required);
+        }
+        assert!(parse(Some("typo")).is_err());
     }
 
     #[test]
     fn dictionary_removes_only_one_lf_and_preserves_entries() {
-        let d = Dictionaries::from_metadata("a\n \nλ\n\n").unwrap();
-        assert_eq!(d.corrected, ["#", "a", " ", "λ", "", " "]);
-        assert_eq!(d.original, ["#", "a", " ", "λ", "", "", " "]);
-        let no_lf = Dictionaries::from_metadata("a\nλ").unwrap();
-        assert_eq!(no_lf.original, no_lf.corrected);
-        let crlf = Dictionaries::from_metadata("a\r\n").unwrap();
-        assert_eq!(crlf.corrected, ["#", "a\r", " "]);
-        assert!(Dictionaries::from_metadata(&"a".repeat(MAX_METADATA_BYTES + 1)).is_err());
-        assert!(Dictionaries::from_metadata(&"\n".repeat(MAX_CLASSES + 1)).is_err());
+        let d = dictionary_from_metadata("a\n \nλ\n\n").unwrap();
+        assert_eq!(d, ["#", "a", " ", "λ", "", " "]);
+        assert_eq!(
+            dictionary_from_metadata("a\nλ").unwrap(),
+            ["#", "a", "λ", " "]
+        );
+        assert_eq!(
+            dictionary_from_metadata("a\r\n").unwrap(),
+            ["#", "a\r", " "]
+        );
+        assert!(dictionary_from_metadata(&"a".repeat(MAX_METADATA_BYTES + 1)).is_err());
+        assert!(dictionary_from_metadata(&"\n".repeat(MAX_CLASSES + 1)).is_err());
     }
 
     #[test]
     fn output_safety_checks_actual_width_shape_and_scores() {
-        let d = Dictionaries::from_metadata("a\n").unwrap();
+        let d = dictionary_from_metadata("a\n").unwrap();
         let good = [0.0, 0.9, 0.1];
         assert!(decode_output(&[1, 1, 3], &good, &d).is_ok());
         for shape in [
@@ -713,7 +636,7 @@ mod tests {
         }
         assert!(decode_output(&[1, 1, 3], &good[..2], &d).is_err());
         assert!(decode_output(&[1, 1, 3], &[0.0, 0.9, 0.1, 0.0], &d).is_err());
-        let wide = Dictionaries::from_metadata(&"a\n".repeat(MAX_CLASSES - 2)).unwrap();
+        let wide = dictionary_from_metadata(&"a\n".repeat(MAX_CLASSES - 2)).unwrap();
         let err = decode_output(&[1, 1025, MAX_CLASSES as i64], &[], &wide).unwrap_err();
         assert!(err.to_string().contains("exceeds limit"));
         assert!(decode_output(&[1, 1, 3], &[0.0, f32::NAN, 1.0], &d).is_err());
@@ -721,9 +644,9 @@ mod tests {
     }
 
     #[test]
-    fn ctc_decodes_both_versions_from_same_scores() {
-        let d = Dictionaries::from_metadata("a\nλ\n").unwrap();
-        // a, a, blank, a, last class (empty in original, space in corrected), λ.
+    fn ctc_decodes_space_class_and_mean_score() {
+        let d = dictionary_from_metadata("a\nλ\n").unwrap();
+        // a, a, blank, a, space (the class Paddle's loader maps to ""), λ.
         let indices = [1, 1, 0, 1, 3, 2];
         let mut data = vec![0.0; indices.len() * 4];
         let confidence = [0.8, 0.7, 0.9, 0.6, 0.4, 0.2];
@@ -731,17 +654,12 @@ mod tests {
             data[i * 4 + index] = confidence[i];
         }
         let out = decode_output(&[1, 6, 4], &data, &d).unwrap();
-        assert_eq!(out.original.text, "aaλ");
-        assert_eq!(out.corrected.text, "aa λ");
-        assert_eq!(out.original.score, Some(0.5));
-        assert_eq!(out.corrected.score, Some(0.5));
-        assert_eq!(out.class_width, 4);
+        assert_eq!(out.text, "aa λ");
+        assert_eq!(out.score, Some(0.5));
         let empty = decode_output(&[1, 1, 4], &[1.0, 0.0, 0.0, 0.0], &d).unwrap();
-        assert_eq!(empty.original.score, None);
-        assert_eq!(empty.corrected.score, None);
-        let empty_token = decode_output(&[1, 1, 4], &[0.0, 0.0, 0.0, 1.0], &d).unwrap();
-        assert_eq!(empty_token.original.score, None);
-        assert_eq!(empty_token.corrected.score, Some(1.0));
+        assert_eq!(empty.score, None);
+        let space = decode_output(&[1, 1, 4], &[0.0, 0.0, 0.0, 1.0], &d).unwrap();
+        assert_eq!(space.score, Some(1.0));
     }
 
     fn anonymous_gap() -> RgbImage {
@@ -813,17 +731,10 @@ mod tests {
         assert!(!guard_text_supported(&"a".repeat(MAX_GUARD_CHARS + 1)));
     }
 
-    fn sample_recognition(text: &str) -> LineRecognition {
-        LineRecognition {
-            original: RecognizedLine {
-                text: "original".into(),
-                score: Some(0.7),
-            },
-            corrected: RecognizedLine {
-                text: text.into(),
-                score: Some(0.8),
-            },
-            class_width: 4,
+    fn sample_recognition(text: &str) -> RecognizedLine {
+        RecognizedLine {
+            text: text.into(),
+            score: Some(0.8),
         }
     }
 
@@ -856,20 +767,18 @@ mod tests {
             Ok((
                 sample_recognition("AB CD"),
                 SpaceAlignments {
-                    corrected: BTreeMap::from([(2, 39)]),
+                    spaces: BTreeMap::from([(2, 39)]),
                     timesteps: 100,
                 },
             ))
         });
-        assert_eq!(merged.corrected.text, "AB CD");
-        assert_eq!(merged.corrected.score, Some(0.8));
-        assert_eq!(merged.original, sample_recognition("ABCD").original);
-        assert_eq!(merged.class_width, 4);
+        assert_eq!(merged.text, "AB CD");
+        assert_eq!(merged.score, Some(0.8));
     }
 
     #[test]
     fn ctc_space_alignment_uses_peak_and_correct_dictionary() {
-        let d = Dictionaries::from_metadata("a\nb\n").unwrap();
+        let d = dictionary_from_metadata("a\nb\n").unwrap();
         let indices = [1, 0, 3, 3, 0, 2];
         let mut data = vec![0.0; indices.len() * 4];
         for (i, ix) in indices.into_iter().enumerate() {
@@ -877,7 +786,7 @@ mod tests {
         }
         let result = ctc_space_alignments(&[1, 6, 4], &data, &d).unwrap();
         assert_eq!(result.timesteps, 6);
-        assert_eq!(result.corrected, BTreeMap::from([(1, 3)]));
+        assert_eq!(result.spaces, BTreeMap::from([(1, 3)]));
         assert!(ctc_space_alignments(&[1, 6, 5], &data, &d).is_err());
         assert!(ctc_space_alignments(&[1, 6, 4], &data[..20], &d).is_err());
         data[0] = f32::NAN;
@@ -978,38 +887,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires audited and metadata-only test models plus a compatible ORT shared library"]
-    fn corrected_dictionary_matches_metadata_only_model_on_anonymous_fixture() {
-        use paddle_ocr_rs::{base_net::BaseNet, crnn_net::CrnnNet};
-
-        let original_path = std::env::var_os("DPN_TEST_AUDITED_REC_MODEL").unwrap();
-        let corrected_path = std::env::var_os("DPN_TEST_CORRECTED_REC_MODEL").unwrap();
-        let mut recognizer = WholeLineRecognizer::new(Path::new(&original_path)).unwrap();
-        let mut paddle = CrnnNet::new();
-        paddle
-            .init_model(
-                Path::new(&corrected_path).to_str().unwrap(),
-                0,
-                Some(configure_ort_builder),
-            )
-            .unwrap();
-        let image = image::open(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/golden_subs/strict_synthetic/compact_short_pairs.png"),
-        )
-        .unwrap()
-        .to_rgb8();
-        let actual = recognizer.recognize(&image).unwrap();
-        let expected = paddle
-            .get_text_lines(&[image], &std::collections::HashMap::new(), 0.0)
-            .unwrap();
-        assert_eq!(actual.corrected.text, expected[0].text);
-        if let Some(score) = actual.corrected.score {
-            assert!((score - expected[0].text_score).abs() < 1e-5);
-        }
-    }
-
-    #[test]
     #[ignore = "requires DPN_TEST_AUDITED_REC_MODEL and a compatible ORT shared library"]
     fn in_memory_metadata_correction_matches_checked_decoder() {
         use paddle_ocr_rs::{base_net::BaseNet, crnn_net::CrnnNet};
@@ -1033,8 +910,8 @@ mod tests {
         let actual = paddle
             .get_text_lines(&[image], &std::collections::HashMap::new(), 0.0)
             .unwrap();
-        assert_eq!(actual[0].text, expected.corrected.text);
-        if let Some(score) = expected.corrected.score {
+        assert_eq!(actual[0].text, expected.text);
+        if let Some(score) = expected.score {
             assert!((score - actual[0].text_score).abs() < 1e-5);
         }
     }
@@ -1080,76 +957,22 @@ mod tests {
         for image in [punctuation, slanted, speaker] {
             let actual = recognizer.recognize(&image).unwrap();
             let guarded = recognizer.recognize_with_spacing_probe(&image).unwrap();
-            assert_eq!(guarded.original, actual.original);
-            assert_eq!(guarded.corrected.score, actual.corrected.score);
-            assert_eq!(guarded.class_width, actual.class_width);
-            let normal_glyphs: String = actual
-                .corrected
-                .text
-                .chars()
-                .filter(|c| *c != ' ')
-                .collect();
-            let guarded_glyphs: String = guarded
-                .corrected
-                .text
-                .chars()
-                .filter(|c| *c != ' ')
-                .collect();
-            assert_eq!(guarded_glyphs, normal_glyphs);
-            if let (Some((_, before)), Some((_, after))) = (
-                spacing_layout(&actual.corrected.text),
-                spacing_layout(&guarded.corrected.text),
-            ) {
+            assert_eq!(guarded.score, actual.score);
+            let glyphs = |text: &str| text.replace(' ', "");
+            assert_eq!(glyphs(&guarded.text), glyphs(&actual.text));
+            if let (Some((_, before)), Some((_, after))) =
+                (spacing_layout(&actual.text), spacing_layout(&guarded.text))
+            {
                 assert!(before.is_subset(&after));
             } else {
-                assert_eq!(guarded.corrected.text, actual.corrected.text);
+                assert_eq!(guarded.text, actual.text);
             }
             let expected = paddle
                 .get_text_lines(&[image], &std::collections::HashMap::new(), 0.0)
                 .unwrap();
-            assert_eq!(actual.corrected.text, expected[0].text);
-            if let Some(score) = actual.corrected.score {
+            assert_eq!(actual.text, expected[0].text);
+            if let Some(score) = actual.score {
                 assert!((score - expected[0].text_score).abs() < 1e-5);
-            }
-        }
-    }
-
-    #[test]
-    #[ignore = "requires DPN_TEST_AUDITED_REC_MODEL and a compatible ORT shared library"]
-    fn audited_model_runs_on_anonymous_crop() {
-        let path = std::env::var_os("DPN_TEST_AUDITED_REC_MODEL").unwrap();
-        let bytes = read_audited_model(Path::new(&path)).unwrap();
-        let mut recognizer = WholeLineRecognizer::preflight_audited_model(&bytes).unwrap();
-        use paddle_ocr_rs::{base_net::BaseNet, crnn_net::CrnnNet};
-        let mut paddle = CrnnNet::new();
-        paddle
-            .init_model(
-                Path::new(&path).to_str().unwrap(),
-                0,
-                Some(configure_ort_builder),
-            )
-            .unwrap();
-        for width in [96, 192] {
-            let mut crop = RgbImage::from_pixel(width, 48, image::Rgb([255, 255, 255]));
-            for (x, y, pixel) in crop.enumerate_pixels_mut() {
-                if (12..36).contains(&y) && x % 15 < 4 {
-                    *pixel = image::Rgb([0, 0, 0]);
-                }
-            }
-            let result = recognizer.recognize(&crop).unwrap();
-            let mut rollback =
-                ExperimentalLineRecognizer::new(bytes.clone(), ExperimentalLineMapping::Original);
-            assert_eq!(
-                rollback.recognize_with_spacing_probe(&crop, true).unwrap(),
-                result.original
-            );
-            assert_eq!(result.class_width, recognizer.dictionaries.corrected.len());
-            let paddle_result = paddle
-                .get_text_lines(&[crop], &std::collections::HashMap::new(), 0.0)
-                .unwrap();
-            assert_eq!(result.original.text, paddle_result[0].text);
-            if let Some(score) = result.original.score {
-                assert!((score - paddle_result[0].text_score).abs() < 1e-5);
             }
         }
     }

@@ -14,7 +14,7 @@ use super::model_metadata::strip_character_metadata_lf;
 use super::models::PpOcrModels;
 use super::whole_line::{
     bitmap_line_policy_from_env, read_audited_model, read_pinned_model, BitmapLinePolicy,
-    ExperimentalLineMapping, ExperimentalLineRecognizer, WholeLineRecognizer,
+    ExperimentalLineRecognizer, WholeLineRecognizer,
 };
 use super::{
     build_execution_providers, ensure_ppocr_models, force_cpu_execution_providers,
@@ -47,7 +47,7 @@ pub(in crate::subtitle_ocr) fn init_ppocr_engine(
     // Configuration and model-policy errors must not be mistaken for GPU failures.
     let line_policy = bitmap_line_policy_from_env()?;
     let skip_cls = skip_ppocr_cls(variant, require_gpu);
-    if matches!(line_policy, BitmapLinePolicy::Explicit(_)) {
+    if line_policy == BitmapLinePolicy::Required {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
         audited_line_models(line_policy, variant, &models)?;
     }
@@ -209,9 +209,8 @@ impl PpOcrEngine {
             init_optional_rec_profile(variant, "korean", &models.det, &models.cls, korean_rec);
         let cjk_ocr = init_optional_rec_profile(variant, "cjk", &models.det, &models.cls, cjk_rec);
 
-        let experimental_lines = line_models.map(|line_models| {
-            ExperimentalLineRecognizer::new(line_models.rec, line_models.mapping)
-        });
+        let experimental_lines =
+            line_models.map(|line_models| ExperimentalLineRecognizer::new(line_models.rec));
         Ok(Self {
             english_ocr,
             latin_ocr,
@@ -271,7 +270,6 @@ const AUDITED_V4_CLS: &str = "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146d
 
 /// Audited model bytes for the in-memory English recognizer and bitmap-line OCR.
 struct AuditedLineModels {
-    mapping: ExperimentalLineMapping,
     det: Vec<u8>,
     cls: Vec<u8>,
     rec: Vec<u8>,
@@ -279,9 +277,6 @@ struct AuditedLineModels {
 
 impl AuditedLineModels {
     fn init_english_ocr(&self, variant: PpOcrVariant) -> Result<OcrLite> {
-        if self.mapping == ExperimentalLineMapping::Original {
-            return init_ocr_lite_from_memory(variant, &self.det, &self.cls, &self.rec);
-        }
         // Validate the corrected class width, then release the preflight session
         // before loading the detector; direct-line recognition initializes lazily.
         drop(WholeLineRecognizer::preflight_audited_model(&self.rec)?);
@@ -292,7 +287,7 @@ impl AuditedLineModels {
 
 /// Loads the audited model bytes required by `policy`.
 ///
-/// An explicit policy fails on any unaudited model. `Auto` quietly keeps the
+/// `Required` fails on any unaudited model. `Auto` quietly keeps the
 /// path-loaded detector pipeline for custom models; only the exact detector and
 /// classifier bytes audited for external ONNX data are loaded from memory.
 fn audited_line_models(
@@ -300,12 +295,10 @@ fn audited_line_models(
     variant: PpOcrVariant,
     models: &PpOcrModels,
 ) -> Result<Option<AuditedLineModels>> {
-    let mapping = match policy {
-        BitmapLinePolicy::Off => return Ok(None),
-        BitmapLinePolicy::Explicit(mapping) => mapping,
-        BitmapLinePolicy::Auto => ExperimentalLineMapping::Corrected,
-    };
-    let explicit = policy != BitmapLinePolicy::Auto;
+    if policy == BitmapLinePolicy::Off {
+        return Ok(None);
+    }
+    let explicit = policy == BitmapLinePolicy::Required;
     let rec = match read_audited_model(&models.rec) {
         Ok(rec) => rec,
         Err(err) if explicit => return Err(err),
@@ -327,12 +320,7 @@ fn audited_line_models(
             Ok((det, cls))
         });
     match aux {
-        Ok((det, cls)) => Ok(Some(AuditedLineModels {
-            mapping,
-            det,
-            cls,
-            rec,
-        })),
+        Ok((det, cls)) => Ok(Some(AuditedLineModels { det, cls, rec })),
         Err(err) if explicit => Err(err),
         Err(err) => {
             warn!("Bitmap-line and corrected-dictionary OCR unavailable for custom detector/classifier models; using the existing detector path: {err:#}");
@@ -423,8 +411,7 @@ mod audited_aux_tests {
                 cls: file.path().to_path_buf(),
                 rec: file.path().to_path_buf(),
             };
-            let explicit = BitmapLinePolicy::Explicit(ExperimentalLineMapping::Corrected);
-            assert!(audited_line_models(explicit, variant, &models).is_err());
+            assert!(audited_line_models(BitmapLinePolicy::Required, variant, &models).is_err());
             for policy in [BitmapLinePolicy::Auto, BitmapLinePolicy::Off] {
                 assert!(audited_line_models(policy, variant, &models)
                     .unwrap()
