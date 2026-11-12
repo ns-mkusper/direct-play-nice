@@ -1196,6 +1196,44 @@ fn test_ppocr_spacing_keeps_compact_tokens() {
 }
 
 #[test]
+fn test_word_crop_recovery_preserves_spaces_after_padding() {
+    let width = 40;
+    let height = 28;
+    let mut pgm = format!("P5\n{width} {height}\n255\n").into_bytes();
+    let mut pixels = vec![255; width * height];
+    for (left, right, top, bottom) in [
+        (2, 10, 2, 10),
+        (15, 24, 2, 10),
+        (3, 12, 17, 25),
+        (17, 28, 17, 25),
+    ] {
+        for y in top..bottom {
+            for x in left..right {
+                pixels[y * width + x] = 0;
+            }
+        }
+    }
+    pgm.extend_from_slice(&pixels);
+    let crops = split_pgm_into_word_crops_with_gap(&pgm, Some(5));
+    assert_eq!(crops.len(), 4);
+    let lines = crops
+        .into_iter()
+        .zip(["Please", "wait.", "Come", "back."])
+        .map(|((_, bbox), text)| OcrLine {
+            text: text.to_string(),
+            bbox: Some(bbox),
+            score: Some(0.9),
+            color: None,
+            italic: false,
+        })
+        .collect();
+    let merged = merge_ocr_word_crops(lines);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].text, "Please wait.");
+    assert_eq!(merged[1].text, "Come back.");
+}
+
+#[test]
 fn test_ppocr_spacing_fallback_detection() {
     let lines = vec![OcrLine {
         text: "BythistimeIobserved".to_string(),
@@ -1693,6 +1731,541 @@ fn test_multilang_prerendered_fixture_accuracy_and_performance() {
     if fixture_count == 0 {
         eprintln!("Multilingual fixtures are empty; skipping.");
     }
+}
+
+const SYNTHETIC_NARROW_DIALOGUE: &str = "Please wait, the door is open.\nWe can leave now.";
+
+#[test]
+fn spacing_candidate_rejects_character_and_punctuation_changes() {
+    use super::ocr_pipeline::spacing_candidate_preserves_characters;
+
+    let glued = "Pleasewait,thedoorisopen.\nWecanleavenow.";
+    assert!(spacing_candidate_preserves_characters(
+        glued,
+        SYNTHETIC_NARROW_DIALOGUE
+    ));
+    for candidate in [
+        "Please wait, the door is open.\nWe can leave now!",
+        "Please wait, the door is open\nWe can leave now.",
+        "Please wait, the door is open.\nWe can leave now?",
+        "Please wait, the door is open.\nWe can leave now..!",
+        "Please wait, the Door is open.\nWe can leave now.",
+        glued,
+        "",
+    ] {
+        assert!(
+            !spacing_candidate_preserves_characters(glued, candidate),
+            "accepted altered candidate: {candidate:?}"
+        );
+    }
+    assert!(!spacing_candidate_preserves_characters("", " "));
+    assert!(!spacing_candidate_preserves_characters(
+        "I willlift it.",
+        "Iwill lift it."
+    ));
+    // Short glue is split only when a recognizer read the same characters.
+    assert!(spacing_candidate_preserves_characters(
+        "Waitup!", "Wait up!"
+    ));
+    for (text, candidate) in [
+        ("Waitup!", "Wake up!"),
+        ("Waitup!", "Waitup!"),
+        ("inform", "inform"),
+    ] {
+        assert!(!spacing_candidate_preserves_characters(text, candidate));
+    }
+}
+
+#[test]
+fn postprocess_preserves_multiline_narrow_dialogue_and_punctuation() {
+    for text in [
+        SYNTHETIC_NARROW_DIALOGUE,
+        "I will lift it, little by little.\nWill it fit",
+        "I will lift it\nWill it fit?",
+        "A line ends here.\nA little line follows.",
+    ] {
+        assert_eq!(postprocess_ocr_text(text, "eng"), text);
+    }
+}
+
+/// A grayscale fixture encoded as an FFmpeg-style indexed subtitle rectangle:
+/// opaque white ink on a transparent background with antialiased alpha.
+struct IndexedSubtitleBitmap {
+    width: u32,
+    height: u32,
+    indices: Vec<u8>,
+    palette: Vec<u8>,
+}
+
+impl IndexedSubtitleBitmap {
+    fn load(path: &Path) -> Self {
+        let image = image::open(path)
+            .unwrap_or_else(|err| panic!("load {}: {err}", path.display()))
+            .to_luma8();
+        let (width, height) = image.dimensions();
+        let indices = image.pixels().map(|pixel| 255 - pixel[0]).collect();
+        let palette = (0..=255u8)
+            .flat_map(|alpha| [255, 255, 255, alpha])
+            .collect();
+        Self {
+            width,
+            height,
+            indices,
+            palette,
+        }
+    }
+
+    /// The returned rectangle points into this bitmap's buffers.
+    fn rect(&mut self) -> ffi::AVSubtitleRect {
+        let mut rect: ffi::AVSubtitleRect = unsafe { std::mem::zeroed() };
+        rect.w = self.width as i32;
+        rect.h = self.height as i32;
+        rect.linesize[0] = self.width as i32;
+        rect.data[0] = self.indices.as_mut_ptr();
+        rect.data[1] = self.palette.as_mut_ptr();
+        rect.nb_colors = 256;
+        rect.type_ = ffi::SUBTITLE_BITMAP;
+        rect
+    }
+}
+
+fn strict_synthetic_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden_subs/strict_synthetic")
+        .join(format!("{name}.png"))
+}
+
+fn init_ppocr_v3_engine() -> PpOcrEngine {
+    let model_dir = resolve_model_dir().expect("resolve model directory");
+    init_ort_environment().expect("initialize ONNX runtime");
+    init_ppocr_engine(&model_dir, require_gpu(), PpOcrVariant::V3).expect("initialize PP-OCRv3")
+}
+
+fn joined_line_text(lines: &[OcrLine]) -> String {
+    lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Runs one English PGS rectangle through the production OCR route.
+fn ocr_bitmap_rect(
+    rect: &mut ffi::AVSubtitleRect,
+    backend: OcrEngine,
+    engine: &mut dyn SubtitleConverter,
+) -> String {
+    let mut rect_ptr = rect as *mut ffi::AVSubtitleRect;
+    let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
+    subtitle.num_rects = 1;
+    subtitle.rects = &mut rect_ptr;
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let params = super::ocr_pipeline::CueBuildParams {
+        language: "eng",
+        stream_index: 0,
+        stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+        packet_seq: 0,
+        work_dir: temp.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: None,
+        ocr_engine: backend,
+    };
+    let (lines, visible) = super::ocr_pipeline::extract_subtitle_lines(
+        &subtitle,
+        &params,
+        0,
+        engine,
+        &mut OcrQualityBaseline::default(),
+    )
+    .unwrap_or_else(|err| panic!("production OCR failed: {err:#}"));
+    assert!(visible, "fixture has no visible pixels");
+    joined_line_text(&lines)
+}
+
+#[test]
+fn ppocr_v3_synthetic_narrow_dialogue_exact() {
+    if std::env::var("DPN_OCR_NARROW_DIALOGUE").ok().as_deref() != Some("1") {
+        eprintln!(
+            "Skipping PP-OCRv3 narrow dialogue test (set DPN_OCR_NARROW_DIALOGUE=1 to enable)."
+        );
+        return;
+    }
+
+    let mut bitmap = IndexedSubtitleBitmap::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden_subs/narrow_dialogue/synthetic.png"),
+    );
+    let actual = ocr_bitmap_rect(
+        &mut bitmap.rect(),
+        OcrEngine::PpOcrV3,
+        &mut init_ppocr_v3_engine(),
+    );
+    assert_eq!(actual, SYNTHETIC_NARROW_DIALOGUE);
+}
+
+// These bitmaps contain only newly authored synthetic text. Run the standard
+// fixtures with `cargo test --bin direct_play_nice strict_synthetic -- --ignored
+// --test-threads=1`. Run the quarantined wide-gap stress fixture separately with
+// `cargo test --bin direct_play_nice wide_gap_stress -- --ignored --test-threads=1`.
+fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
+    let mut engine: Box<dyn SubtitleConverter> = match backend {
+        OcrEngine::PpOcrV3 => Box::new(init_ppocr_v3_engine()),
+        OcrEngine::Tesseract => Box::new(TesseractEngine),
+        _ => panic!("unsupported strict synthetic backend"),
+    };
+    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture(name));
+    let actual = ocr_bitmap_rect(&mut bitmap.rect(), backend, engine.as_mut());
+    assert_eq!(actual, expected, "strict synthetic fixture {name}");
+}
+
+// Exercise the production PGS route with a real engine while recording which
+// converter methods it actually calls. The fixture and label are shared with the
+// strict synthetic suite; these tests must run in separate environment settings.
+fn cpu_bitmap_line_route_case(expect_direct: bool) {
+    struct RouteRecorder<'a> {
+        engine: &'a mut PpOcrEngine,
+        direct_lines: Vec<String>,
+        direct_calls: usize,
+        detector_calls: usize,
+    }
+
+    impl SubtitleConverter for RouteRecorder<'_> {
+        fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
+            self.detector_calls += 1;
+            self.engine.extract_lines(image_path, language)
+        }
+
+        fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
+            self.engine.supports_bitmap_line_recognition(language)
+        }
+
+        fn recognize_bitmap_line(
+            &mut self,
+            image: &image::RgbImage,
+            language: &str,
+            context: BitmapLineContext,
+        ) -> Result<Option<OcrLine>> {
+            self.direct_calls += 1;
+            let line = self
+                .engine
+                .recognize_bitmap_line(image, language, context)?;
+            if let Some(line) = &line {
+                self.direct_lines.push(line.text.trim().to_string());
+            }
+            Ok(line)
+        }
+    }
+
+    assert_eq!(std::env::var("DPN_OCR_FORCE_CPU").as_deref(), Ok("1"));
+    assert!(!require_gpu());
+    assert_eq!(
+        std::env::var("DPN_OCR_EXPERIMENTAL_BITMAP_LINES").as_deref(),
+        Ok(if expect_direct { "auto" } else { "off" })
+    );
+    assert_eq!(
+        std::env::var("DPN_OCR_DISABLE_TESS_FALLBACK").as_deref(),
+        Ok("1")
+    );
+
+    let mut engine = init_ppocr_v3_engine();
+    let mut recorder = RouteRecorder {
+        engine: &mut engine,
+        direct_lines: Vec::new(),
+        direct_calls: 0,
+        detector_calls: 0,
+    };
+    assert_eq!(
+        recorder.supports_bitmap_line_recognition("eng"),
+        expect_direct
+    );
+    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture("short_words"));
+    let actual = ocr_bitmap_rect(&mut bitmap.rect(), OcrEngine::PpOcrV3, &mut recorder);
+    let expected = "I am on my way to you.";
+    assert_eq!(actual, expected);
+    if expect_direct {
+        assert_eq!(recorder.direct_calls, 1);
+        assert_eq!(recorder.direct_lines, [expected]);
+        assert_eq!(
+            recorder.detector_calls, 0,
+            "direct path fell back to detector"
+        );
+    } else {
+        assert_eq!(recorder.direct_calls, 0, "direct path ran in off mode");
+        assert!(recorder.direct_lines.is_empty());
+        assert!(
+            recorder.detector_calls > 0,
+            "detector did not run in off mode"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
+fn cpu_bitmap_line_route_direct() {
+    cpu_bitmap_line_route_case(true);
+}
+
+#[test]
+#[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
+fn cpu_bitmap_line_route_detector_off() {
+    cpu_bitmap_line_route_case(false);
+}
+
+fn synthetic_stage_comparison(actual: &str, expected: &str) -> serde_json::Value {
+    fn parts(text: &str) -> (String, Vec<usize>, Vec<usize>) {
+        let mut glyphs = String::new();
+        let mut spaces = Vec::new();
+        let mut breaks = Vec::new();
+        let mut position = 0;
+        for ch in text.chars() {
+            if ch == '\n' {
+                breaks.push(position);
+            } else if ch.is_whitespace() {
+                spaces.push(position);
+            } else {
+                glyphs.push(ch);
+                position += 1;
+            }
+        }
+        (glyphs, spaces, breaks)
+    }
+
+    let (actual_glyphs, actual_spaces, actual_breaks) = parts(actual);
+    let (expected_glyphs, expected_spaces, expected_breaks) = parts(expected);
+    let same_glyphs = actual_glyphs == expected_glyphs;
+    let difference = |left: &[usize], right: &[usize]| {
+        left.iter()
+            .copied()
+            .filter(|position| !right.contains(position))
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "text": actual,
+        "exact": actual == expected,
+        "same_non_whitespace_glyphs": same_glyphs,
+        "actual_space_positions": actual_spaces,
+        "actual_line_break_positions": actual_breaks,
+        "missing_expected_spaces": same_glyphs.then(|| difference(&expected_spaces, &actual_spaces)),
+        "unexpected_spaces": same_glyphs.then(|| difference(&actual_spaces, &expected_spaces)),
+        "missing_expected_line_breaks": same_glyphs.then(|| difference(&expected_breaks, &actual_breaks)),
+        "unexpected_line_breaks": same_glyphs.then(|| difference(&actual_breaks, &expected_breaks)),
+    })
+}
+
+// Run with: cargo test --bin direct_play_nice synthetic_stage_diagnostic -- --ignored --nocapture --test-threads=1.
+// Only the fixed synthetic fixtures are read. Boundary differences are null when
+// glyphs differ; the first recorded converter call is the full production input.
+fn synthetic_stage_diagnostic_cases(cases: &[(&str, &str)]) {
+    struct RecordingConverter<'a> {
+        inner: &'a mut dyn SubtitleConverter,
+        expected: &'a str,
+        calls: Vec<serde_json::Value>,
+    }
+
+    impl SubtitleConverter for RecordingConverter<'_> {
+        fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
+            let output = self.inner.extract_lines(image_path, language)?;
+            let text = joined_line_text(&output.lines);
+            self.calls.push(serde_json::json!({
+                "full_fixture_comparison": self.calls.is_empty().then(|| synthetic_stage_comparison(&text, self.expected)),
+                "lines": output.lines.iter().map(|line| serde_json::json!({
+                    "text": line.text,
+                    "bbox": line.bbox.as_ref().map(|bbox| [bbox.left, bbox.top, bbox.right, bbox.bottom]),
+                    "score": line.score,
+                })).collect::<Vec<_>>(),
+                "seam_corrected": output.seam_corrected,
+                "spacing_fallback_before_pruning": ppocr_spacing_needs_fallback(&output.lines),
+            }));
+            Ok(output)
+        }
+    }
+
+    // The raw-detector rerun below uses default parameters and profiles.
+    for key in [
+        "DPN_OCR_DET_PADDING",
+        "DPN_OCR_DET_MAX_SIDE",
+        "DPN_OCR_DET_BOX_SCORE",
+        "DPN_OCR_DET_BOX_THRESH",
+        "DPN_OCR_DET_UNCLIP",
+        "DPN_OCR_DET_DO_ANGLE",
+        "DPN_OCR_DET_MOST_ANGLE",
+        "DPN_OCR_REC_PROFILE_OVERRIDES",
+        "DPN_OCR_LANGUAGE_SCRIPT_HINTS",
+        "DPN_OCR_ROUTING_MANIFEST",
+    ] {
+        assert!(
+            std::env::var_os(key).is_none(),
+            "diagnostic requires default {key}"
+        );
+    }
+    let mut ppocr = init_ppocr_v3_engine();
+    let mut tesseract = TesseractEngine;
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    eprintln!("synthetic stage diagnostic: raw detector is a separate default-parameter rerun; converter calls are captured from production");
+
+    for &(name, expected) in cases {
+        let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture(name));
+        let mut rect = bitmap.rect();
+
+        let mut rasters = Vec::new();
+        for backend in [OcrEngine::PpOcrV3, OcrEngine::Tesseract] {
+            let (pgm, visible) = rect_to_pgm(&rect, backend).expect("render synthetic bitmap");
+            assert!(visible, "synthetic fixture {name} has no visible pixels");
+            let path = temp.path().join(if backend == OcrEngine::PpOcrV3 {
+                "ppocr-input.pgm"
+            } else {
+                "tesseract-input.pgm"
+            });
+            fs::write(&path, pgm).expect("write temporary raster");
+            rasters.push(path);
+        }
+        let detector_image = load_image(&rasters[0]).expect("load PP-OCR raster");
+        let detector = ppocr
+            .english_ocr
+            .detect(&detector_image, 50, 1024, 0.5, 0.3, 1.6, false, false)
+            .expect("run raw PP-OCR detector");
+        let blocks = detector.text_blocks.iter().map(|block| serde_json::json!({
+            "text": block.text,
+            "score": block.text_score,
+            "polygon": block.box_points.iter().map(|point| [point.x, point.y]).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+        let tess_modes = rasters.iter().map(|path| {
+            [6, 7].iter().map(|&psm| {
+                let text = run_tesseract_with_psm(path, "eng", psm).expect("run Tesseract mode");
+                serde_json::json!({"psm": psm, "comparison": synthetic_stage_comparison(&text, expected)})
+            }).collect::<Vec<_>>()
+        }).collect::<Vec<_>>();
+
+        let mut production = Vec::new();
+        for (backend, label, engine) in [
+            (
+                OcrEngine::PpOcrV3,
+                "ppocr_v3",
+                &mut ppocr as &mut dyn SubtitleConverter,
+            ),
+            (
+                OcrEngine::Tesseract,
+                "tesseract",
+                &mut tesseract as &mut dyn SubtitleConverter,
+            ),
+        ] {
+            let mut recording = RecordingConverter {
+                inner: engine,
+                expected,
+                calls: Vec::new(),
+            };
+            let text = ocr_bitmap_rect(&mut rect, backend, &mut recording);
+            production.push(serde_json::json!({
+                "backend": label,
+                "converter_calls": recording.calls,
+                "final": synthetic_stage_comparison(&text, expected),
+            }));
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "fixture": name, "expected": expected,
+                "detector_blocks": blocks,
+                "tesseract_modes_on_ppocr_raster": tess_modes[0],
+                "tesseract_modes_on_tesseract_raster": tess_modes[1],
+                "production": production,
+            })
+        );
+    }
+}
+
+macro_rules! strict_synthetic_tests {
+    ($($fixture:ident => $expected:literal),+ $(,)?) => {
+        #[test]
+        #[ignore = "diagnostic requires OCR models and Tesseract"]
+        fn synthetic_stage_diagnostic() {
+            synthetic_stage_diagnostic_cases(&[$((stringify!($fixture), $expected)),+]);
+        }
+        mod strict_synthetic_ppocr_v3 {
+            use super::*;
+            $(#[test]
+            #[ignore = "requires OCR models and Tesseract"]
+            fn $fixture() {
+                strict_synthetic_case(stringify!($fixture), $expected, OcrEngine::PpOcrV3);
+            })+
+        }
+        mod strict_synthetic_tesseract {
+            use super::*;
+            $(#[test]
+            #[ignore = "requires OCR models and Tesseract"]
+            fn $fixture() {
+                strict_synthetic_case(stringify!($fixture), $expected, OcrEngine::Tesseract);
+            })+
+        }
+    };
+}
+
+strict_synthetic_tests! {
+    tight_spaces => "We can go to the lake.",
+    quotes_punctuation => "She said, \"Yes, please!\"",
+    title => "THE SILENT GARDEN",
+    multiline => "The moon is bright.\nWe will walk home.",
+    short_words => "I am on my way to you.",
+    ellipsis_pause => "Wait... perhaps later.",
+    compact_short_pairs => "We can go in to see it.",
+    capital_i_lower_l => "I will polish a little lid.",
+    name_initial => "Mira R. found it.",
+    overlapping_single => "Saffron tango thimble magnet.",
+    overlapping_double => "Saffron tango tthimble magnet.",
+    // Control: valid words and punctuation must survive without correction.
+    valid_words_punctuation => "A cabin has a lamp, not a map!",
+}
+
+// This intentionally extreme internal gap is kept as a separate stress case;
+// it is not evidence of an identical raster with contradictory labels.
+mod wide_gap_stress {
+    use super::*;
+
+    #[test]
+    #[ignore = "adversarial OCR stress fixture; requires models and Tesseract"]
+    fn ppocr_v3() {
+        strict_synthetic_case("single_word_wide_gap", "inform", OcrEngine::PpOcrV3);
+    }
+
+    #[test]
+    #[ignore = "adversarial OCR stress fixture; requires models and Tesseract"]
+    fn tesseract() {
+        strict_synthetic_case("single_word_wide_gap", "inform", OcrEngine::Tesseract);
+    }
+
+    #[test]
+    #[ignore = "diagnostic requires OCR models and Tesseract"]
+    fn stage_diagnostic() {
+        synthetic_stage_diagnostic_cases(&[("single_word_wide_gap", "inform")]);
+    }
+}
+
+#[test]
+#[ignore = "requires a private bitmap stream and OCR models"]
+fn test_manual_bitmap_stream_probe() {
+    let var = |key: &str| std::env::var(key).unwrap_or_else(|_| panic!("{key} is required"));
+    let (input, output) = (var("DPN_OCR_PROBE_INPUT"), var("DPN_OCR_PROBE_OUTPUT"));
+    let stream_index = var("DPN_OCR_PROBE_STREAM")
+        .parse()
+        .expect("subtitle stream index");
+    let width = var("DPN_OCR_PROBE_WIDTH").parse().expect("video width");
+    let height = var("DPN_OCR_PROBE_HEIGHT").parse().expect("video height");
+    assert!(!Path::new(&output).exists(), "probe output already exists");
+    let work = tempfile::tempdir().expect("create probe directory");
+    let mut engine = init_ppocr_v3_engine();
+    let request = super::ocr_pipeline::OcrStreamRequest {
+        input_path: &input,
+        stream_index,
+        language: "eng",
+        work_dir: work.path(),
+        ocr_format: OcrFormat::Srt,
+        video_dimensions: Some((width, height)),
+        ocr_engine: OcrEngine::PpOcrV3,
+    };
+    let cues =
+        super::ocr_pipeline::ocr_single_stream(&request, &mut engine).expect("OCR bitmap stream");
+    assert!(!cues.is_empty(), "probe returned no cues");
+    super::text_render::write_srt(Path::new(&output), &cues).expect("write probe SRT");
 }
 
 #[test]

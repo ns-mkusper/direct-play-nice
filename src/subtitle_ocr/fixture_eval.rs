@@ -54,6 +54,7 @@ pub(crate) struct FixtureResult {
     pub infer_ms: u64,
     pub cer: f32,
     pub wer: f32,
+    pub strict_cer: f32,
     pub similarity: f32,
     pub min_similarity: f32,
     pub meets_threshold: bool,
@@ -69,6 +70,7 @@ pub(crate) struct FixtureLanguageSummary {
     pub fixture_count: usize,
     pub avg_cer: f32,
     pub avg_wer: f32,
+    pub avg_strict_cer: f32,
     pub avg_similarity: f32,
     pub pass_rate: f32,
 }
@@ -79,6 +81,7 @@ pub(crate) struct FixtureModeSummary {
     pub fixture_count: usize,
     pub avg_cer: f32,
     pub avg_wer: f32,
+    pub avg_strict_cer: f32,
     pub avg_similarity: f32,
     pub pass_rate: f32,
     pub avg_infer_ms: f32,
@@ -141,20 +144,24 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
     lines.push(format!("- Fixture dir: `{}`", report.fixture_dir));
     lines.push(format!("- Engine: `{}`", report.engine));
     lines.push(String::new());
+    lines.push("CER ignores case and whitespace; WER ignores case and whitespace differences between words. Strict CER compares all Unicode characters, including case, punctuation, and whitespace, in expected and postprocessed actual text. Each error rate divides edit distance by the reference length and may exceed 1; an empty reference scores 0 for empty output and 1 otherwise. Similarity is the legacy best of CER and WER similarities, capped by strict CER similarity (each clamped to 0–1). A score of 1 requires exact text equality.".to_string());
+    lines.push("OCR output is postprocessed before scoring; PP-OCR lines are joined with spaces, so original line breaks may not survive in actual text.".to_string());
+    lines.push(String::new());
     lines.push("## Mode Summary".to_string());
     lines.push(String::new());
     lines.push(
-        "| Mode | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate | Avg Infer ms | Tesseract Replacements |"
+        "| Mode | Fixtures | Avg CER | Avg WER | Avg Strict CER | Avg Similarity | Pass Rate | Avg Infer ms | Tesseract Replacements |"
             .to_string(),
     );
-    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
+    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
     for mode in &report.modes {
         lines.push(format!(
-            "| {} | {} | {:.4} | {:.4} | {:.4} | {:.2}% | {:.2} | {} |",
+            "| {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.2}% | {:.2} | {} |",
             mode.mode,
             mode.fixture_count,
             mode.avg_cer,
             mode.avg_wer,
+            mode.avg_strict_cer,
             mode.avg_similarity,
             mode.pass_rate * 100.0,
             mode.avg_infer_ms,
@@ -167,16 +174,17 @@ pub(crate) fn render_ocr_fixture_report_markdown(report: &OcrFixtureEvalReport) 
         lines.push(format!("## Mode: {}", mode.mode));
         lines.push(String::new());
         lines.push(
-            "| Language | Fixtures | Avg CER | Avg WER | Avg Similarity | Pass Rate |".to_string(),
+            "| Language | Fixtures | Avg CER | Avg WER | Avg Strict CER | Avg Similarity | Pass Rate |".to_string(),
         );
-        lines.push("| --- | ---: | ---: | ---: | ---: | ---: |".to_string());
+        lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
         for lang in &mode.per_language {
             lines.push(format!(
-                "| {} | {} | {:.4} | {:.4} | {:.4} | {:.2}% |",
+                "| {} | {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.2}% |",
                 lang.language,
                 lang.fixture_count,
                 lang.avg_cer,
                 lang.avg_wer,
+                lang.avg_strict_cer,
                 lang.avg_similarity,
                 lang.pass_rate * 100.0
             ));
@@ -334,15 +342,7 @@ pub(super) fn evaluate_fixture(
     actual_text = postprocess_ocr_text(&actual_text, &spec.language);
     actual_text = normalize_utf8_text(&actual_text);
 
-    let expected_word = normalize_text_for_word_similarity(&spec.expected_text);
-    let actual_word = normalize_text_for_word_similarity(&actual_text);
-    let wer = word_error_rate_eval(&expected_word, &actual_word);
-
-    let expected_char = normalize_text_for_char_similarity(&spec.expected_text);
-    let actual_char = normalize_text_for_char_similarity(&actual_text);
-    let cer = char_error_rate_eval(&expected_char, &actual_char);
-    let similarity = (1.0 - cer).max(1.0 - wer).clamp(0.0, 1.0);
-    let meets_threshold = similarity >= spec.min_similarity;
+    let metrics = fixture_text_metrics(&spec.expected_text, &actual_text, spec.min_similarity);
 
     Ok(FixtureResult {
         name: spec.name.clone(),
@@ -350,11 +350,12 @@ pub(super) fn evaluate_fixture(
         expected_text: spec.expected_text.clone(),
         actual_text,
         infer_ms,
-        cer,
-        wer,
-        similarity,
+        cer: metrics.cer,
+        wer: metrics.wer,
+        strict_cer: metrics.strict_cer,
+        similarity: metrics.similarity,
         min_similarity: spec.min_similarity,
-        meets_threshold,
+        meets_threshold: metrics.meets_threshold,
         used_tesseract,
         ppocr_quality,
         ppocr_confidence,
@@ -369,6 +370,7 @@ pub(super) fn summarize_mode(
     let fixture_count = fixtures.len();
     let avg_cer = avg(fixtures.iter().map(|x| x.cer));
     let avg_wer = avg(fixtures.iter().map(|x| x.wer));
+    let avg_strict_cer = avg(fixtures.iter().map(|x| x.strict_cer));
     let avg_similarity = avg(fixtures.iter().map(|x| x.similarity));
     let pass_rate = avg(fixtures
         .iter()
@@ -392,6 +394,7 @@ pub(super) fn summarize_mode(
             fixture_count: items.len(),
             avg_cer: avg(items.iter().map(|x| x.cer)),
             avg_wer: avg(items.iter().map(|x| x.wer)),
+            avg_strict_cer: avg(items.iter().map(|x| x.strict_cer)),
             avg_similarity: avg(items.iter().map(|x| x.similarity)),
             pass_rate: avg(items
                 .iter()
@@ -404,6 +407,7 @@ pub(super) fn summarize_mode(
         fixture_count,
         avg_cer,
         avg_wer,
+        avg_strict_cer,
         avg_similarity,
         pass_rate,
         avg_infer_ms,
@@ -430,6 +434,40 @@ where
     }
 }
 
+#[derive(Debug)]
+struct FixtureTextMetrics {
+    cer: f32,
+    wer: f32,
+    strict_cer: f32,
+    similarity: f32,
+    meets_threshold: bool,
+}
+
+fn fixture_text_metrics(expected: &str, actual: &str, min_similarity: f32) -> FixtureTextMetrics {
+    let cer = char_error_rate_eval(
+        &normalize_text_for_char_similarity(expected),
+        &normalize_text_for_char_similarity(actual),
+    );
+    let wer = word_error_rate_eval(
+        &normalize_text_for_word_similarity(expected),
+        &normalize_text_for_word_similarity(actual),
+    );
+    let strict_cer = char_error_rate_eval(expected, actual);
+    let legacy_similarity = (1.0 - cer).max(1.0 - wer).clamp(0.0, 1.0);
+    let mut similarity = legacy_similarity.min((1.0 - strict_cer).clamp(0.0, 1.0));
+    // A nonzero error can round away for very long strings. Keep 1.0 exact.
+    if expected != actual && similarity == 1.0 {
+        similarity = f32::from_bits(1.0f32.to_bits() - 1);
+    }
+    FixtureTextMetrics {
+        cer,
+        wer,
+        strict_cer,
+        similarity,
+        meets_threshold: similarity >= min_similarity,
+    }
+}
+
 pub(super) fn normalize_text_for_word_similarity(input: &str) -> String {
     input
         .to_uppercase()
@@ -449,63 +487,134 @@ pub(super) fn normalize_text_for_char_similarity(input: &str) -> String {
 pub(super) fn word_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_words: Vec<&str> = expected.split_whitespace().collect();
     let actual_words: Vec<&str> = actual.split_whitespace().collect();
-    if expected_words.is_empty() {
-        return if actual_words.is_empty() { 0.0 } else { 1.0 };
-    }
-
-    let m = expected_words.len();
-    let n = actual_words.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
-        row[0] = i;
-    }
-    for (j, cell) in dp[0].iter_mut().enumerate().take(n + 1) {
-        *cell = j;
-    }
-    for i in 1..=m {
-        for j in 1..=n {
-            let cost = if expected_words[i - 1] == actual_words[j - 1] {
-                0
-            } else {
-                1
-            };
-            dp[i][j] = std::cmp::min(
-                std::cmp::min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
-                dp[i - 1][j - 1] + cost,
-            );
-        }
-    }
-    dp[m][n] as f32 / expected_words.len() as f32
+    edit_error_rate(&expected_words, &actual_words)
 }
 
 pub(super) fn char_error_rate_eval(expected: &str, actual: &str) -> f32 {
     let expected_chars: Vec<char> = expected.chars().collect();
     let actual_chars: Vec<char> = actual.chars().collect();
-    if expected_chars.is_empty() {
-        return if actual_chars.is_empty() { 0.0 } else { 1.0 };
+    edit_error_rate(&expected_chars, &actual_chars)
+}
+
+/// Levenshtein distance divided by the reference length, using two rolling
+/// rows. An empty reference scores 0 for empty output and 1 otherwise.
+fn edit_error_rate<T: PartialEq>(expected: &[T], actual: &[T]) -> f32 {
+    if expected.is_empty() {
+        return if actual.is_empty() { 0.0 } else { 1.0 };
     }
 
-    let m = expected_chars.len();
-    let n = actual_chars.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for (i, row) in dp.iter_mut().enumerate().take(m + 1) {
-        row[0] = i;
+    let mut previous: Vec<usize> = (0..=actual.len()).collect();
+    let mut current = vec![0; actual.len() + 1];
+    for (i, expected_item) in expected.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, actual_item) in actual.iter().enumerate() {
+            let cost = usize::from(expected_item != actual_item);
+            current[j + 1] = (previous[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(previous[j] + cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
     }
-    for (j, cell) in dp[0].iter_mut().enumerate().take(n + 1) {
-        *cell = j;
+    previous[actual.len()] as f32 / expected.len() as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
     }
-    for i in 1..=m {
-        for j in 1..=n {
-            let cost = if expected_chars[i - 1] == actual_chars[j - 1] {
-                0
-            } else {
-                1
-            };
-            dp[i][j] = std::cmp::min(
-                std::cmp::min(dp[i - 1][j] + 1, dp[i][j - 1] + 1),
-                dp[i - 1][j - 1] + cost,
+
+    #[test]
+    fn strict_metrics_distinguish_spacing_case_punctuation_and_line_breaks() {
+        let cases = [
+            ("Hello world", "Helloworld", 0.0, 1.0, 1.0 / 11.0),
+            ("Hello world", "hello world", 0.0, 0.0, 1.0 / 11.0),
+            ("Hello, world!", "Hello world!", 1.0 / 12.0, 0.5, 1.0 / 13.0),
+            ("Hello\nworld", "Hello world", 0.0, 0.0, 1.0 / 11.0),
+            ("Hello  world", "Hello world", 0.0, 0.0, 1.0 / 12.0),
+        ];
+        for (expected, actual, cer, wer, strict_cer) in cases {
+            let metrics = fixture_text_metrics(expected, actual, 1.0);
+            assert_close(metrics.cer, cer);
+            assert_close(metrics.wer, wer);
+            assert_close(metrics.strict_cer, strict_cer);
+            assert_close(
+                metrics.similarity,
+                (1.0 - cer).max(1.0 - wer).min(1.0 - strict_cer),
             );
+            assert!(!metrics.meets_threshold, "{expected:?} vs {actual:?}");
         }
     }
-    dp[m][n] as f32 / expected_chars.len() as f32
+
+    #[test]
+    fn strict_metrics_handle_long_whitespace_without_a_quadratic_matrix() {
+        let expected = " ".repeat(8_000);
+        let actual = " ".repeat(7_999);
+        assert_close(char_error_rate_eval(&expected, &actual), 1.0 / 8_000.0);
+    }
+
+    #[test]
+    fn exact_match_and_threshold_boundaries() {
+        for text in ["", "Hello,\nworld!", "你好 世界"] {
+            let metrics = fixture_text_metrics(text, text, 1.0);
+            assert_close(metrics.cer, 0.0);
+            assert_close(metrics.wer, 0.0);
+            assert_close(metrics.strict_cer, 0.0);
+            assert_eq!(metrics.similarity, 1.0);
+            assert!(metrics.meets_threshold);
+        }
+        let score = fixture_text_metrics("Hello world", "Helloworld", 0.0).similarity;
+        assert!(fixture_text_metrics("Hello world", "Helloworld", score).meets_threshold);
+        assert!(!fixture_text_metrics("Hello world", "Helloworld", score + 0.001).meets_threshold);
+    }
+
+    #[test]
+    fn empty_reference_and_large_insertion_error_are_bounded() {
+        for (expected, actual, strict_cer) in [("", " ", 1.0), ("a", "abcd", 3.0)] {
+            let metrics = fixture_text_metrics(expected, actual, 1.0);
+            assert_close(metrics.strict_cer, strict_cer);
+            assert_eq!(metrics.similarity, 0.0);
+            assert!(!metrics.meets_threshold);
+        }
+    }
+
+    #[test]
+    fn summaries_and_reports_expose_strict_metric() {
+        let metrics = fixture_text_metrics("Hello world", "Helloworld", 1.0);
+        let result = FixtureResult {
+            name: "example".into(),
+            language: "eng".into(),
+            expected_text: "Hello world".into(),
+            actual_text: "Helloworld".into(),
+            infer_ms: 1,
+            cer: metrics.cer,
+            wer: metrics.wer,
+            strict_cer: metrics.strict_cer,
+            similarity: metrics.similarity,
+            min_similarity: 1.0,
+            meets_threshold: metrics.meets_threshold,
+            used_tesseract: false,
+            ppocr_quality: 0.0,
+            ppocr_confidence: 0.0,
+            tesseract_quality: None,
+        };
+        let summary = summarize_mode(FixtureEvalMode::PureOnnx, vec![result]);
+        assert_close(summary.avg_strict_cer, 1.0 / 11.0);
+        assert_close(summary.per_language[0].avg_strict_cer, 1.0 / 11.0);
+        assert_eq!(summary.pass_rate, 0.0);
+        let report = OcrFixtureEvalReport {
+            fixture_dir: "fixtures".into(),
+            engine: "test".into(),
+            modes: vec![summary],
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(json["modes"][0]["fixtures"][0]["strict_cer"].is_number());
+        assert!(json["modes"][0]["avg_strict_cer"].is_number());
+        assert!(json["modes"][0]["per_language"][0]["avg_strict_cer"].is_number());
+        let markdown = render_ocr_fixture_report_markdown(&report);
+        assert!(markdown.contains("Avg Strict CER"));
+        assert!(markdown.contains("including case, punctuation, and whitespace"));
+    }
 }

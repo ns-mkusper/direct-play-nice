@@ -4,7 +4,9 @@
 //! PP-OCR, including language/script to recognizer-profile routing.
 
 use anyhow::{anyhow, Result};
+use paddle_ocr_rs::ocr_error::OcrError;
 use paddle_ocr_rs::ocr_lite::OcrLite;
+use paddle_ocr_rs::ocr_result::OcrResult;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -13,11 +15,17 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use super::super::language::map_language_tag_to_tesseract;
+use super::super::text_processing::is_english_language;
 use super::super::text_render::{
-    bounding_box_from_points, load_image, merge_ocr_lines_with_spacing, normalize_utf8_text,
-    run_external_ocr_command, run_tesseract,
+    apply_overlapping_seam, bounding_box_from_points, full_line_ink_coverage, load_image,
+    merge_ocr_lines_with_spacing, normalize_utf8_text, prepare_overlapping_seam,
+    run_external_ocr_command, run_tesseract, seam_glyph_stream, tesseract_seam_evidence,
 };
-use super::{ExternalEngine, OcrLine, OcrOutput, PpOcrEngine, SubtitleConverter, TesseractEngine};
+use super::factory::disable_tesseract_quality_fallback;
+use super::{
+    BitmapLineContext, ExternalEngine, OcrLine, OcrOutput, PpOcrEngine, SubtitleConverter,
+    TesseractEngine,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::subtitle_ocr) enum OcrRecProfile {
@@ -47,6 +55,7 @@ impl SubtitleConverter for TesseractEngine {
                 color: None,
                 italic: false,
             }],
+            ..OcrOutput::default()
         })
     }
 }
@@ -65,6 +74,7 @@ impl SubtitleConverter for ExternalEngine {
                 color: None,
                 italic: false,
             }],
+            ..OcrOutput::default()
         })
     }
 }
@@ -78,6 +88,21 @@ struct PpOcrDetectParams {
     un_clip_ratio: f32,
     do_angle: bool,
     most_angle: bool,
+}
+
+impl PpOcrDetectParams {
+    fn detect(self, ocr: &mut OcrLite, img: &image::RgbImage) -> Result<OcrResult, OcrError> {
+        ocr.detect(
+            img,
+            self.padding,
+            self.max_side_len,
+            self.box_score_thresh,
+            self.box_thresh,
+            self.un_clip_ratio,
+            self.do_angle,
+            self.most_angle,
+        )
+    }
 }
 
 fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
@@ -94,17 +119,6 @@ fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
             .filter(|v| v.is_finite())
             .unwrap_or(default)
     }
-    fn env_bool(key: &str, default: bool) -> bool {
-        env::var(key)
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(default)
-    }
 
     PpOcrDetectParams {
         padding: env_u32("DPN_OCR_DET_PADDING", 50),
@@ -112,12 +126,44 @@ fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
         box_score_thresh: env_f32("DPN_OCR_DET_BOX_SCORE", 0.5),
         box_thresh: env_f32("DPN_OCR_DET_BOX_THRESH", 0.3),
         un_clip_ratio: env_f32("DPN_OCR_DET_UNCLIP", 1.6),
-        do_angle: env_bool("DPN_OCR_DET_DO_ANGLE", false),
-        most_angle: env_bool("DPN_OCR_DET_MOST_ANGLE", false),
+        do_angle: super::env_flag_enabled("DPN_OCR_DET_DO_ANGLE"),
+        most_angle: super::env_flag_enabled("DPN_OCR_DET_MOST_ANGLE"),
     }
 }
 
 impl SubtitleConverter for PpOcrEngine {
+    fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
+        self.experimental_lines.is_some()
+            && is_english_language(language)
+            && rec_profile_for_language(language) == OcrRecProfile::English
+    }
+
+    fn recognize_bitmap_line(
+        &mut self,
+        image: &image::RgbImage,
+        language: &str,
+        context: BitmapLineContext,
+    ) -> Result<Option<OcrLine>> {
+        if !self.supports_bitmap_line_recognition(language)
+            || !super::whole_line::supports_crop_dimensions(image.width(), image.height())
+        {
+            return Ok(None);
+        }
+        let Some(recognizer) = self.experimental_lines.as_mut() else {
+            return Ok(None);
+        };
+        // The spacing probe assumes the crop holds exactly one text band.
+        let allow_probe = context == BitmapLineContext::SingleRectangleSingleBand;
+        let result = recognizer.recognize_with_spacing_probe(image, allow_probe)?;
+        Ok(Some(OcrLine {
+            text: result.text,
+            score: result.score,
+            bbox: None,
+            color: None,
+            italic: false,
+        }))
+    }
+
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput> {
         let PpOcrEngine {
             english_ocr,
@@ -126,6 +172,7 @@ impl SubtitleConverter for PpOcrEngine {
             japanese_ocr,
             korean_ocr,
             cjk_ocr,
+            experimental_lines: _,
             variant,
         } = self;
         let rec_profile = rec_profile_for_language(language);
@@ -166,30 +213,19 @@ impl SubtitleConverter for PpOcrEngine {
 
         let img = load_image(image_path)?;
         let params = ppocr_detect_params_from_env();
-        let result = ocr
-            .detect(
-                &img,
-                params.padding,
-                params.max_side_len,
-                params.box_score_thresh,
-                params.box_thresh,
-                params.un_clip_ratio,
-                params.do_angle,
-                params.most_angle,
+        let result = params.detect(ocr, &img).map_err(|err| {
+            anyhow!(
+                "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
+                variant.label(),
+                rec_label,
+                language,
+                err,
+                err
             )
-            .map_err(|err| {
-                anyhow!(
-                    "{} failed (rec_profile={}, language={}): {} (debug: {:?})",
-                    variant.label(),
-                    rec_label,
-                    language,
-                    err,
-                    err
-                )
-            })?;
+        })?;
 
         let mut lines = Vec::with_capacity(result.text_blocks.len());
-        for block in result.text_blocks {
+        for block in &result.text_blocks {
             let text = normalize_utf8_text(&block.text);
             if text.is_empty() {
                 continue;
@@ -204,10 +240,94 @@ impl SubtitleConverter for PpOcrEngine {
             });
         }
 
+        let mut lines = merge_ocr_lines_with_spacing(lines);
+        let seam_corrected = rec_profile == OcrRecProfile::English
+            && is_english_language(language)
+            && !disable_tesseract_quality_fallback()
+            && correct_overlapping_seam(ocr, params, image_path, &img, &result, &mut lines);
         Ok(OcrOutput {
-            lines: merge_ocr_lines_with_spacing(lines),
+            lines,
+            seam_corrected,
         })
     }
+}
+
+/// Splits an overlapping two-box detector seam back into one line when a retry
+/// with relaxed detector settings and Tesseract both agree on the corrected glyphs.
+fn correct_overlapping_seam(
+    ocr: &mut OcrLite,
+    params: PpOcrDetectParams,
+    image_path: &Path,
+    img: &image::RgbImage,
+    result: &OcrResult,
+    lines: &mut [OcrLine],
+) -> bool {
+    let Some(seam) = prepare_overlapping_seam(&result.text_blocks, lines, img) else {
+        return false;
+    };
+    let Some(alternatives) = seam_detect_variations(params, img.width(), img.height()) else {
+        return false;
+    };
+    for alternate in alternatives {
+        let Ok(retry) = alternate.detect(ocr, img) else {
+            continue;
+        };
+        let [block] = retry.text_blocks.as_slice() else {
+            continue;
+        };
+        if !full_line_ink_coverage(img, &block.box_points) {
+            continue;
+        }
+        let Some(glyphs) = seam_glyph_stream(&block.text) else {
+            continue;
+        };
+        if glyphs == seam.original_glyphs {
+            return false;
+        }
+        if glyphs != seam.corrected_glyphs {
+            continue;
+        }
+        if !tesseract_seam_evidence(image_path, img, &seam) {
+            return false;
+        }
+        apply_overlapping_seam(&mut lines[0], &seam);
+        log::debug!("Corrected an overlapping PP-OCR detector seam");
+        return true;
+    }
+    false
+}
+
+fn seam_detect_variations(
+    params: PpOcrDetectParams,
+    width: u32,
+    height: u32,
+) -> Option<[PpOcrDetectParams; 2]> {
+    if !(32..=4096).contains(&params.max_side_len)
+        || params.padding == 0
+        || params.padding > 512
+        || !(0.0..=1.0).contains(&params.box_score_thresh)
+        || !(0.0..=1.0).contains(&params.box_thresh)
+        || !params.un_clip_ratio.is_finite()
+        || !(0.5..=3.0).contains(&params.un_clip_ratio)
+        || params.do_angle
+        || params.most_angle
+    {
+        return None;
+    }
+    let max_side_len = params.max_side_len.checked_mul(3)?.checked_div(4)?;
+    let padding = params.padding.checked_mul(2)?;
+    if max_side_len < 32 || padding > 512 {
+        return None;
+    }
+    width.checked_add(padding.checked_mul(2)?)?;
+    height.checked_add(padding.checked_mul(2)?)?;
+    Some([
+        PpOcrDetectParams {
+            max_side_len,
+            ..params
+        },
+        PpOcrDetectParams { padding, ..params },
+    ])
 }
 
 fn select_profile_ocr_with_fallback<'a>(
@@ -541,5 +661,47 @@ fn parse_routing_manifest_from_raw(raw: &str) -> RoutingManifest {
         language_profiles: normalize_manifest_keys(parsed.language_profiles),
         script_profiles: normalize_manifest_keys(parsed.script_profiles),
         likely_scripts: normalize_manifest_keys(parsed.likely_scripts),
+    }
+}
+
+#[cfg(test)]
+mod seam_variation_tests {
+    use super::*;
+
+    #[test]
+    fn retry_settings_are_relative_and_invalid_values_fail_closed() {
+        let p = PpOcrDetectParams {
+            padding: 50,
+            max_side_len: 1024,
+            box_score_thresh: 0.5,
+            box_thresh: 0.3,
+            un_clip_ratio: 1.6,
+            do_angle: false,
+            most_angle: false,
+        };
+        let [a, b] = seam_detect_variations(p, 100, 50).unwrap();
+        assert_eq!((a.padding, a.max_side_len), (50, 768));
+        assert_eq!((b.padding, b.max_side_len), (100, 1024));
+        for invalid in [
+            PpOcrDetectParams {
+                padding: u32::MAX,
+                ..p
+            },
+            PpOcrDetectParams {
+                max_side_len: 0,
+                ..p
+            },
+            PpOcrDetectParams {
+                box_thresh: f32::NAN,
+                ..p
+            },
+            PpOcrDetectParams {
+                do_angle: true,
+                ..p
+            },
+        ] {
+            assert!(seam_detect_variations(invalid, 100, 50).is_none());
+        }
+        assert!(seam_detect_variations(p, u32::MAX, 50).is_none());
     }
 }

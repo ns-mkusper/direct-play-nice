@@ -3,13 +3,19 @@
 //! Initializes ORT environment state, builds OcrLite instances per recognizer
 //! profile, and manages per-thread CUDA device affinity for workers.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use ort::session::builder::SessionBuilder;
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
+use super::model_metadata::strip_character_metadata_lf;
+use super::models::PpOcrModels;
+use super::whole_line::{
+    bitmap_line_policy_from_env, read_audited_model, read_pinned_model, BitmapLinePolicy,
+    ExperimentalLineRecognizer, WholeLineRecognizer,
+};
 use super::{
     build_execution_providers, ensure_ppocr_models, force_cpu_execution_providers,
     resolve_optional_cjk_rec_model, resolve_optional_japanese_rec_model,
@@ -38,7 +44,13 @@ pub(in crate::subtitle_ocr) fn init_ppocr_engine(
     require_gpu: bool,
     variant: PpOcrVariant,
 ) -> Result<PpOcrEngine> {
+    // Configuration and model-policy errors must not be mistaken for GPU failures.
+    let line_policy = bitmap_line_policy_from_env()?;
     let skip_cls = skip_ppocr_cls(variant, require_gpu);
+    if line_policy == BitmapLinePolicy::Required {
+        let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
+        audited_line_models(line_policy, variant, &models)?;
+    }
     if skip_cls {
         info!(
             "{} classifier model is disabled (DPN_OCR_SKIP_CLS or Maxwell GPU mode).",
@@ -152,7 +164,11 @@ impl PpOcrEngine {
             models.cls.display(),
             models.rec.display()
         );
-        let english_ocr = init_ocr_lite(variant, "english", &models.det, &models.cls, &models.rec)?;
+        let line_models = audited_line_models(bitmap_line_policy_from_env()?, variant, &models)?;
+        let english_ocr = match &line_models {
+            Some(line_models) => line_models.init_english_ocr(variant)?,
+            None => init_ocr_lite(variant, "english", &models.det, &models.cls, &models.rec)?,
+        };
 
         let latin_ocr = if let Some(latin_rec_path) = latin_rec {
             info!(
@@ -193,6 +209,8 @@ impl PpOcrEngine {
             init_optional_rec_profile(variant, "korean", &models.det, &models.cls, korean_rec);
         let cjk_ocr = init_optional_rec_profile(variant, "cjk", &models.det, &models.cls, cjk_rec);
 
+        let experimental_lines =
+            line_models.map(|line_models| ExperimentalLineRecognizer::new(line_models.rec));
         Ok(Self {
             english_ocr,
             latin_ocr,
@@ -200,6 +218,7 @@ impl PpOcrEngine {
             japanese_ocr,
             korean_ocr,
             cjk_ocr,
+            experimental_lines,
             variant,
         })
     }
@@ -241,6 +260,91 @@ pub(in crate::subtitle_ocr) fn init_optional_rec_profile(
             None
         }
     }
+}
+
+// Independently pinned to the exact files audited for ONNX external data.
+const AUDITED_V3_DET: &str = "3439588c030faea393a54515f51e983d8e155b19a2e8aba7891934c1cf0de526";
+const AUDITED_V3_CLS: &str = "70581b300b83babd9e0dd1d7d74c5b006869e8796da277a70c2e405bf9d77c82";
+const AUDITED_V4_DET: &str = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9";
+const AUDITED_V4_CLS: &str = "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c";
+
+/// Audited model bytes for the in-memory English recognizer and bitmap-line OCR.
+struct AuditedLineModels {
+    det: Vec<u8>,
+    cls: Vec<u8>,
+    rec: Vec<u8>,
+}
+
+impl AuditedLineModels {
+    fn init_english_ocr(&self, variant: PpOcrVariant) -> Result<OcrLite> {
+        // Validate the corrected class width, then release the preflight session
+        // before loading the detector; direct-line recognition initializes lazily.
+        drop(WholeLineRecognizer::preflight_audited_model(&self.rec)?);
+        let corrected = strip_character_metadata_lf(&self.rec)?;
+        init_ocr_lite_from_memory(variant, &self.det, &self.cls, &corrected)
+    }
+}
+
+/// Loads the audited model bytes required by `policy`.
+///
+/// `Required` fails on any unaudited model. `Auto` quietly keeps the
+/// path-loaded detector pipeline for custom models; only the exact detector and
+/// classifier bytes audited for external ONNX data are loaded from memory.
+fn audited_line_models(
+    policy: BitmapLinePolicy,
+    variant: PpOcrVariant,
+    models: &PpOcrModels,
+) -> Result<Option<AuditedLineModels>> {
+    if policy == BitmapLinePolicy::Off {
+        return Ok(None);
+    }
+    let explicit = policy == BitmapLinePolicy::Required;
+    let rec = match read_audited_model(&models.rec) {
+        Ok(rec) => rec,
+        Err(err) if explicit => return Err(err),
+        Err(err) => {
+            debug!(
+                "Bitmap-line OCR unavailable for this recognizer; retaining detector path: {err:#}"
+            );
+            return Ok(None);
+        }
+    };
+    let (det_hash, cls_hash) = match variant {
+        PpOcrVariant::V3 => (AUDITED_V3_DET, AUDITED_V3_CLS),
+        PpOcrVariant::V4 => (AUDITED_V4_DET, AUDITED_V4_CLS),
+    };
+    let aux = read_pinned_model(&models.det, &[det_hash])
+        .context("detector model")
+        .and_then(|det| {
+            let cls = read_pinned_model(&models.cls, &[cls_hash]).context("classifier model")?;
+            Ok((det, cls))
+        });
+    match aux {
+        Ok((det, cls)) => Ok(Some(AuditedLineModels { det, cls, rec })),
+        Err(err) if explicit => Err(err),
+        Err(err) => {
+            warn!("Bitmap-line and corrected-dictionary OCR unavailable for custom detector/classifier models; using the existing detector path: {err:#}");
+            Ok(None)
+        }
+    }
+}
+
+fn init_ocr_lite_from_memory(
+    variant: PpOcrVariant,
+    det_bytes: &[u8],
+    cls_bytes: &[u8],
+    rec_bytes: &[u8],
+) -> Result<OcrLite> {
+    let mut ocr = OcrLite::new();
+    ocr.init_models_from_memory_custom(det_bytes, cls_bytes, rec_bytes, configure_ort_builder)
+        .map_err(|err| {
+            anyhow!(
+                "failed to initialize {} experimental models from memory: {}",
+                variant.label(),
+                err
+            )
+        })?;
+    Ok(ocr)
 }
 
 /// Initializes one OcrLite instance for a detector/classifier/recognizer triplet.
@@ -286,4 +390,33 @@ pub(in crate::subtitle_ocr) fn configure_ort_builder(
             .map(|n| n.get())
             .unwrap_or(2),
     )
+}
+
+#[cfg(test)]
+mod audited_aux_tests {
+    use super::*;
+
+    #[test]
+    fn pins_match_provisioned_specs_and_unrecognized_bytes_are_rejected() {
+        for (variant, det, cls) in [
+            (PpOcrVariant::V3, AUDITED_V3_DET, AUDITED_V3_CLS),
+            (PpOcrVariant::V4, AUDITED_V4_DET, AUDITED_V4_CLS),
+        ] {
+            let (det_spec, cls_spec, _) = variant.model_specs();
+            assert_eq!(det, det_spec.sha256.to_ascii_lowercase());
+            assert_eq!(cls, cls_spec.sha256.to_ascii_lowercase());
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let models = PpOcrModels {
+                det: file.path().to_path_buf(),
+                cls: file.path().to_path_buf(),
+                rec: file.path().to_path_buf(),
+            };
+            assert!(audited_line_models(BitmapLinePolicy::Required, variant, &models).is_err());
+            for policy in [BitmapLinePolicy::Auto, BitmapLinePolicy::Off] {
+                assert!(audited_line_models(policy, variant, &models)
+                    .unwrap()
+                    .is_none());
+            }
+        }
+    }
 }

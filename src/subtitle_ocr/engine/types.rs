@@ -66,6 +66,16 @@ pub(in crate::subtitle_ocr) struct OcrLine {
 #[derive(Debug, Default)]
 pub(in crate::subtitle_ocr) struct OcrOutput {
     pub(in crate::subtitle_ocr) lines: Vec<OcrLine>,
+    /// Set when an overlapping detector seam was corrected in `lines`.
+    pub(in crate::subtitle_ocr) seam_corrected: bool,
+}
+
+/// Layout known about a bitmap line crop before direct recognition.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(in crate::subtitle_ocr) enum BitmapLineContext {
+    #[default]
+    UnknownOrMultiple,
+    SingleRectangleSingleBand,
 }
 
 pub(in crate::subtitle_ocr) trait SubtitleConverter {
@@ -73,6 +83,21 @@ pub(in crate::subtitle_ocr) trait SubtitleConverter {
     ///
     /// Implementations should return an empty `OcrOutput` when extraction succeeds but no text is found.
     fn extract_lines(&mut self, image_path: &Path, language: &str) -> Result<OcrOutput>;
+
+    /// Whether `recognize_bitmap_line` can recognize crops for `language`.
+    fn supports_bitmap_line_recognition(&self, _language: &str) -> bool {
+        false
+    }
+
+    /// Recognizes one pre-cropped bitmap line, or `None` to abstain.
+    fn recognize_bitmap_line(
+        &mut self,
+        _image: &image::RgbImage,
+        _language: &str,
+        _context: BitmapLineContext,
+    ) -> Result<Option<OcrLine>> {
+        Ok(None)
+    }
 }
 
 pub(in crate::subtitle_ocr) struct TesseractEngine;
@@ -154,6 +179,8 @@ pub(in crate::subtitle_ocr) struct PpOcrEngine {
     pub(in crate::subtitle_ocr) japanese_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) korean_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) cjk_ocr: Option<OcrLite>,
+    pub(in crate::subtitle_ocr) experimental_lines:
+        Option<super::whole_line::ExperimentalLineRecognizer>,
     pub(in crate::subtitle_ocr) variant: PpOcrVariant,
 }
 

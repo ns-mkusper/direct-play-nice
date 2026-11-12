@@ -116,6 +116,8 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
 
     output_ctx.write_trailer()?;
     drop(output_ctx);
+    // Input and destination can be the same file; close it before replacement.
+    drop(input_ctx);
 
     replace_output_file(&tmp_out, &output_path, "container remux")?;
 
@@ -228,6 +230,8 @@ pub fn mux_text_tracks_from(
 
     output_ctx.write_trailer()?;
     drop(output_ctx);
+    // The converted input is often also the destination on the MP4 OCR path.
+    drop(input_ctx);
 
     replace_output_file(&tmp_out, &output_path, "subtitle remux")?;
 
@@ -560,6 +564,53 @@ mod tests {
         );
         let output_cstr = cstring_path(&output);
         AVFormatContextInput::open(output_cstr.as_c_str()).expect("open replaced remux output");
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    #[test]
+    fn remux_copy_streams_replaces_input_in_place() {
+        ensure_ffmpeg_present();
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("input.mkv");
+        write_test_video(&path);
+        let input = cstring_path(&path);
+
+        remux_copy_streams(input.as_c_str(), input.as_c_str())
+            .expect("in-place remux should close the input before replacing it");
+        let output = AVFormatContextInput::open(input.as_c_str()).expect("open remuxed output");
+        assert!(output
+            .streams()
+            .iter()
+            .any(|stream| { stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_VIDEO }));
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    #[test]
+    fn mux_text_tracks_from_replaces_input_in_place() {
+        ensure_ffmpeg_present();
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("input.mkv");
+        let subtitles = tmp.path().join("ocr.srt");
+        write_test_video(&path);
+        write_srt(&subtitles);
+        let input = cstring_path(&path);
+        let tracks = [OcrSubtitleTrack {
+            language: "eng".to_string(),
+            subtitle_path: subtitles,
+            format: OcrFormat::Srt,
+        }];
+
+        mux_text_tracks_from(input.as_c_str(), input.as_c_str(), &tracks)
+            .expect("in-place subtitle mux should close the input before replacing it");
+        let output = AVFormatContextInput::open(input.as_c_str()).expect("open muxed output");
+        assert!(output
+            .streams()
+            .iter()
+            .any(|stream| { stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_VIDEO }));
+        assert!(output
+            .streams()
+            .iter()
+            .any(|stream| { stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE }));
     }
 
     #[cfg(feature = "ffmpeg-cli-tests")]

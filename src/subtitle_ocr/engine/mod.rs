@@ -16,10 +16,12 @@ use crate::SubtitleFailurePolicy;
 
 mod converters;
 mod factory;
+mod model_metadata;
 mod models;
 mod providers;
 mod runtime;
 mod types;
+pub(in crate::subtitle_ocr) mod whole_line;
 mod workers;
 #[cfg(test)]
 pub(in crate::subtitle_ocr) use converters::rec_profile_for_language_with_test_config;

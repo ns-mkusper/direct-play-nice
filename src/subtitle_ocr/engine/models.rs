@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::PpOcrVariant;
+use super::{env_flag_enabled, PpOcrVariant};
 
 pub(in crate::subtitle_ocr) struct ModelSpec {
     pub(in crate::subtitle_ocr) filename: &'static str,
@@ -181,16 +181,6 @@ fn resolve_english_rec_model(
     }
 
     ensure_model_file(model_dir, default_spec)
-}
-
-fn env_flag_enabled(key: &str) -> bool {
-    env::var(key)
-        .ok()
-        .map(|v| {
-            let x = v.trim().to_ascii_lowercase();
-            matches!(x.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
 }
 
 pub(in crate::subtitle_ocr) fn resolve_optional_latin_rec_model(
