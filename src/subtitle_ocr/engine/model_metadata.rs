@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Result};
 
 const MAX_MODEL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_GROUP_DEPTH: usize = 100;
+const IR_VERSION: u32 = 1;
 const METADATA_PROPS: u32 = 14;
 
 #[derive(Clone, Copy)]
@@ -207,6 +208,37 @@ pub(super) fn strip_character_metadata_lf(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Lower the unique top-level `ir_version` to `max` when it is higher.
+///
+/// ORT 1.16, the newest runtime for Maxwell CUDA, rejects IR v10 even when the
+/// graph only uses older opsets. Only the varint is rewritten, in place.
+pub(super) fn lower_ir_version(bytes: &[u8], max: u8) -> Result<Vec<u8>> {
+    if bytes.len() > MAX_MODEL_BYTES {
+        bail!("model exceeds size limit");
+    }
+    let mut pos = 0;
+    let mut version = None;
+    while pos < bytes.len() {
+        let start = pos;
+        let found = field(bytes, &mut pos)?;
+        if found.number != IR_VERSION {
+            continue;
+        }
+        if found.wire != 0 || version.is_some() {
+            bail!("invalid or duplicate ir_version");
+        }
+        // A one-byte varint follows the one-byte tag for every real IR version.
+        if pos != start + 2 {
+            bail!("unsupported ir_version encoding");
+        }
+        version = Some(start + 1);
+    }
+    let index = version.ok_or_else(|| anyhow!("missing ir_version"))?;
+    let mut output = bytes.to_vec();
+    output[index] = output[index].min(max & 0x7f);
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +417,17 @@ mod tests {
         groups.insert(0, 0x0b);
         groups.push(0x0c);
         assert!(strip_character_metadata_lf(&[valid.as_slice(), &groups].concat()).is_err());
+    }
+
+    #[test]
+    fn lowers_only_the_ir_version_varint() {
+        let tail = metadata(b"character", b"a\n");
+        let model = [[0x08, 10].as_slice(), &tail].concat();
+        let lowered = lower_ir_version(&model, 9).unwrap();
+        assert_eq!(lowered, [[0x08, 9].as_slice(), &tail].concat());
+        assert_eq!(lower_ir_version(&lowered, 9).unwrap(), lowered);
+        assert!(lower_ir_version(&tail, 9).is_err());
+        assert!(lower_ir_version(&[[0x08, 10, 0x08, 10].as_slice(), &tail].concat(), 9).is_err());
+        assert!(lower_ir_version(&[0x08, 0x8a, 0x00], 9).is_err());
     }
 }

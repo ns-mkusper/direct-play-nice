@@ -191,6 +191,21 @@ class ModelPreparationTests(unittest.TestCase):
                 self.assertRaises(subprocess.CalledProcessError):
             prepare.prepare_models(self.destination.with_name("other"))
 
+    def test_ir10_upstream_is_verified_then_lowered(self):
+        upstream, lowered = b"\x08\x0arest", b"\x08\x09rest"
+        pins = {"MODELS": {"model.onnx": hashlib.sha256(lowered).hexdigest()},
+                "IR10_UPSTREAM": {"model.onnx": hashlib.sha256(upstream).hexdigest()}}
+        with patch.multiple(prepare, **pins):
+            with self.assertRaisesRegex(ValueError, "upstream model hash mismatch"):
+                self.prepare_with(lowered)
+            self.destination = self.destination.with_name("lowered")
+            self.prepare_with(upstream)
+        self.assertEqual((self.destination / "model.onnx").read_bytes(), lowered)
+        bad = self.destination / "bad.onnx"
+        bad.write_bytes(b"\x08\x8a\x00")
+        with self.assertRaisesRegex(ValueError, "ir_version encoding"):
+            prepare.lower_ir_version(bad)
+
     def test_manifest_mismatch_fails_before_creating_directory(self):
         with patch.object(prepare, "URLS", {}), self.assertRaises(ValueError):
             prepare.prepare_models(self.destination)

@@ -179,8 +179,7 @@ pub(in crate::subtitle_ocr) struct PpOcrEngine {
     pub(in crate::subtitle_ocr) japanese_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) korean_ocr: Option<OcrLite>,
     pub(in crate::subtitle_ocr) cjk_ocr: Option<OcrLite>,
-    pub(in crate::subtitle_ocr) experimental_lines:
-        Option<super::whole_line::ExperimentalLineRecognizer>,
+    pub(in crate::subtitle_ocr) experimental_lines: super::whole_line::ProfileLineRecognizers,
     pub(in crate::subtitle_ocr) variant: PpOcrVariant,
 }
 

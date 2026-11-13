@@ -59,6 +59,18 @@ pub(in crate::subtitle_ocr) const PPOCR_V5_EN_REC_MODEL: ModelSpec = ModelSpec {
     sha256: "640E323AC1A4DA562EDDD2A3963B4E1336686F898113983122D76D24DC3AFCFE",
 };
 
+/// PP-OCRv5 Latin recognizer, the only Latin model audited for direct-line OCR.
+/// Upstream ships IR v10, which ORT 1.16 (Maxwell/CUDA-12/cuDNN-8) rejects, so
+/// provisioning verifies `PPOCR_V5_LATIN_REC_UPSTREAM_SHA256`, lowers only the
+/// IR version, and stores the result under this filename and checksum.
+pub(in crate::subtitle_ocr) const PPOCR_V5_LATIN_REC_MODEL: ModelSpec = ModelSpec {
+    filename: "latin_PP-OCRv5_rec_mobile_ir9.onnx",
+    url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx",
+    sha256: "8E6B29F8D68753EE536B465801C918CED32D0FDE29566398F10AB6B88EADAB48",
+};
+const PPOCR_V5_LATIN_REC_UPSTREAM_SHA256: &str =
+    "B20BD37C168A570F583AFBC8CD7925603890EFBCDC000A59E22C269D160B5F5A";
+
 pub(in crate::subtitle_ocr) const PPOCR_V4_LATIN_REC_MODEL: ModelSpec = ModelSpec {
     filename: "latin_PP-OCRv3_rec_mobile.onnx",
     url: "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/latin_PP-OCRv3_rec_mobile.onnx",
@@ -187,6 +199,20 @@ pub(in crate::subtitle_ocr) fn resolve_optional_latin_rec_model(
     model_dir: &Path,
     variant: PpOcrVariant,
 ) -> Result<Option<PathBuf>> {
+    if env::var_os("DPN_OCR_REC_LATIN_MODEL").is_none() {
+        match ensure_ir9_model(
+            model_dir,
+            &PPOCR_V5_LATIN_REC_MODEL,
+            PPOCR_V5_LATIN_REC_UPSTREAM_SHA256,
+        ) {
+            Ok(path) => return Ok(Some(path)),
+            Err(err) => warn!(
+                "{} PP-OCRv5 latin rec model unavailable; using older latin models: {:#}",
+                variant.label(),
+                err
+            ),
+        }
+    }
     resolve_optional_rec_model_with_candidates(
         "DPN_OCR_REC_LATIN_MODEL",
         model_dir,
@@ -448,6 +474,39 @@ pub(in crate::subtitle_ocr) fn ensure_model_file(
         spec.filename, spec.url
     );
     download_model_with_values(&path, spec.url, spec.sha256, spec.filename)?;
+    Ok(path)
+}
+
+/// Provisions `spec` from an upstream IR-v10 file whose hash is `upstream_sha256`.
+fn ensure_ir9_model(model_dir: &Path, spec: &ModelSpec, upstream_sha256: &str) -> Result<PathBuf> {
+    let path = model_dir.join(spec.filename);
+    if path.exists() {
+        return ensure_model_file(model_dir, spec);
+    }
+    let upstream = path.with_extension("upstream.onnx");
+    info!(
+        "Downloading OCR model '{}' from {}",
+        spec.filename, spec.url
+    );
+    download_model_with_values(&upstream, spec.url, upstream_sha256, spec.filename)?;
+    let lowered = fs::read(&upstream)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| super::model_metadata::lower_ir_version(&bytes, 9));
+    let _ = fs::remove_file(&upstream);
+    let lowered = lowered.with_context(|| format!("lowering IR version of '{}'", spec.filename))?;
+    let actual = to_hex_lower(&Sha256::digest(&lowered));
+    if actual != spec.sha256.to_ascii_lowercase() {
+        bail!(
+            "converted OCR model '{}' hash mismatch (got {}, expected {})",
+            spec.filename,
+            actual,
+            spec.sha256
+        );
+    }
+    let tmp_path = path.with_extension("download");
+    fs::write(&tmp_path, &lowered).with_context(|| format!("writing '{}'", tmp_path.display()))?;
+    fs::rename(&tmp_path, &path)
+        .with_context(|| format!("renaming '{}' -> '{}'", tmp_path.display(), path.display()))?;
     Ok(path)
 }
 

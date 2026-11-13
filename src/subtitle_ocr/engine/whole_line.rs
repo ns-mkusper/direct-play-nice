@@ -16,6 +16,7 @@ use std::{
     path::Path,
 };
 
+use super::converters::OcrRecProfile;
 use super::runtime::configure_ort_builder;
 
 // Independently pinned: updating model provisioning must not approve a new model
@@ -25,6 +26,8 @@ const AUDITED_SHA256: [&str; 3] = [
     "e8770c967605983d1570cdf5352041dfb68fa0c21664f49f47b155abd3e0e318",
     "640e323ac1a4da562eddd2a3963b4e1336686f898113983122d76d24dc3afcfe",
 ];
+const AUDITED_LATIN_SHA256: [&str; 1] =
+    ["8e6b29f8d68753ee536b465801c918ced32d0fde29566398f10ab6b88eadab48"];
 const MAX_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_CLASSES: usize = 4096;
@@ -93,6 +96,33 @@ fn parse_bitmap_line_policy(value: Option<&OsStr>) -> Result<BitmapLinePolicy> {
 
 pub(in crate::subtitle_ocr) fn bitmap_line_policy_from_env() -> Result<BitmapLinePolicy> {
     parse_bitmap_line_policy(std::env::var_os("DPN_OCR_EXPERIMENTAL_BITMAP_LINES").as_deref())
+}
+
+#[derive(Default)]
+pub(in crate::subtitle_ocr) struct ProfileLineRecognizers {
+    pub(super) english: Option<ExperimentalLineRecognizer>,
+    pub(super) latin: Option<ExperimentalLineRecognizer>,
+}
+
+impl ProfileLineRecognizers {
+    pub(super) fn get(&self, profile: OcrRecProfile) -> Option<&ExperimentalLineRecognizer> {
+        match profile {
+            OcrRecProfile::English => self.english.as_ref(),
+            OcrRecProfile::Latin => self.latin.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn get_mut(
+        &mut self,
+        profile: OcrRecProfile,
+    ) -> Option<&mut ExperimentalLineRecognizer> {
+        match profile {
+            OcrRecProfile::English => self.english.as_mut(),
+            OcrRecProfile::Latin => self.latin.as_mut(),
+            _ => None,
+        }
+    }
 }
 
 /// Lazily initializes only on a supported bitmap line, once per worker.
@@ -167,6 +197,18 @@ impl WholeLineRecognizer {
         if session.inputs.len() != 1 || session.outputs.len() != 1 {
             bail!("recognizer must have exactly one input and one output");
         }
+        let input_type = &session.inputs[0].input_type;
+        let shape = input_type
+            .tensor_shape()
+            .ok_or_else(|| anyhow!("recognizer input must be a tensor"))?;
+        if input_type.tensor_type() != Some(TensorElementType::Float32)
+            || shape.len() != 4
+            || (shape[0] != -1 && shape[0] != 1)
+            || shape[1] != 3
+            || (shape[2] != -1 && shape[2] != i64::from(HEIGHT))
+        {
+            bail!("recognizer input must support [1, 3, 48, width] float tensors");
+        }
         let input_name = session.inputs[0].name.clone();
         let character = session
             .metadata()?
@@ -220,6 +262,45 @@ impl WholeLineRecognizer {
     }
 }
 
+/// Trims blank columns beyond a margin of a quarter of the crop height.
+///
+/// PGS line crops span the whole rectangle, so a short centered line can sit
+/// after hundreds of blank columns; the PP-OCRv5 Latin model then drops its
+/// first glyphs (`-De hecho,` reads as `hecho,`).
+pub(in crate::subtitle_ocr) fn trim_blank_columns(crop: &RgbImage) -> Option<RgbImage> {
+    let ink = |x: u32| (0..crop.height()).any(|y| crop.get_pixel(x, y).0.iter().any(|&v| v < 245));
+    let first = (0..crop.width()).find(|&x| ink(x))?;
+    let last = (first..crop.width()).rev().find(|&x| ink(x))?;
+    let margin = crop.height() / 4;
+    let left = first.saturating_sub(margin);
+    let right = last.saturating_add(margin + 1).min(crop.width());
+    if left == 0 && right == crop.width() {
+        return None;
+    }
+    Some(image::imageops::crop_imm(crop, left, 0, right - left, crop.height()).to_image())
+}
+
+/// Restores the space that always precedes a Spanish `¿`/`¡` inside a line.
+///
+/// The recognizer often merges the gap after a closing mark (`¡Vamos!¿Qué?`),
+/// and the padded probe only restores spaces between alphanumerics. Openers at
+/// the line start or after another opening mark are left alone.
+pub(in crate::subtitle_ocr) fn space_before_inverted_openers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 2);
+    let mut previous: Option<char> = None;
+    for ch in text.chars() {
+        if matches!(ch, '¿' | '¡')
+            && previous
+                .is_some_and(|prev| !prev.is_whitespace() && !"¿¡\"'«“‘([{—–-".contains(prev))
+        {
+            output.push(' ');
+        }
+        output.push(ch);
+        previous = Some(ch);
+    }
+    output
+}
+
 fn read_bounded_model(path: &Path) -> Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -255,8 +336,21 @@ pub(super) fn read_pinned_model(path: &Path, allowed: &[&str]) -> Result<Vec<u8>
     Ok(bytes)
 }
 
-pub(super) fn read_audited_model(path: &Path) -> Result<Vec<u8>> {
-    read_pinned_model(path, &AUDITED_SHA256).context("experimental recognizer model")
+pub(super) fn read_audited_model_for_profile(
+    path: &Path,
+    profile: OcrRecProfile,
+) -> Result<Vec<u8>> {
+    let hashes: &[&str] = match profile {
+        OcrRecProfile::English => &AUDITED_SHA256,
+        OcrRecProfile::Latin => &AUDITED_LATIN_SHA256,
+        _ => &[],
+    };
+    read_pinned_model(path, hashes).context("experimental recognizer model")
+}
+
+#[cfg(test)]
+fn read_audited_model(path: &Path) -> Result<Vec<u8>> {
+    read_audited_model_for_profile(path, OcrRecProfile::English)
 }
 
 pub(in crate::subtitle_ocr) fn supports_crop_dimensions(width: u32, height: u32) -> bool {
@@ -857,6 +951,13 @@ mod tests {
         }
         let file = tempfile::NamedTempFile::new().unwrap();
         assert!(read_audited_model(file.path()).is_err());
+        for profile in [
+            OcrRecProfile::English,
+            OcrRecProfile::Latin,
+            OcrRecProfile::Multilingual,
+        ] {
+            assert!(read_audited_model_for_profile(file.path(), profile).is_err());
+        }
         assert!(read_audited_model(file.path().parent().unwrap()).is_err());
         file.as_file().set_len(MAX_MODEL_BYTES + 1).unwrap();
         assert!(read_audited_model(file.path()).is_err());
@@ -884,6 +985,23 @@ mod tests {
             Err(err) => err,
         };
         assert!(error.to_string().contains("DPN_OCR_REQUIRE_GPU=1"));
+    }
+
+    #[test]
+    #[ignore = "requires DPN_TEST_AUDITED_LATIN_REC_MODEL and a compatible ORT shared library"]
+    fn latin_model_dictionary_matches_output() {
+        let path = std::env::var_os("DPN_TEST_AUDITED_LATIN_REC_MODEL").unwrap();
+        let model = read_audited_model_for_profile(Path::new(&path), OcrRecProfile::Latin).unwrap();
+        assert!(read_audited_model_for_profile(Path::new(&path), OcrRecProfile::English).is_err());
+        let recognizer = WholeLineRecognizer::preflight_audited_model(&model).unwrap();
+        assert_eq!(recognizer.dictionary.len(), 504);
+        for glyph in ["à", "á", "ä", "é", "ñ", "¿", "¡"] {
+            assert!(
+                recognizer.dictionary.iter().any(|key| key == glyph),
+                "missing {glyph}"
+            );
+        }
+        assert_eq!(recognizer.dictionary.last().unwrap(), " ");
     }
 
     #[test]
@@ -975,5 +1093,32 @@ mod tests {
                 assert!((score - expected[0].text_score).abs() < 1e-5);
             }
         }
+    }
+
+    #[test]
+    fn inverted_openers_get_a_preceding_space_only_inside_a_line() {
+        for (input, expected) in [
+            ("¡Vamos!¿Qué pasa?", "¡Vamos! ¿Qué pasa?"),
+            ("Hola,¿qué tal?", "Hola, ¿qué tal?"),
+            ("¿¡Qué!?", "¿¡Qué!?"),
+            ("—¿Sí?", "—¿Sí?"),
+            ("\"¡Ya!\"", "\"¡Ya!\""),
+            ("Vamos! ¿Qué?", "Vamos! ¿Qué?"),
+            ("No change.", "No change."),
+        ] {
+            assert_eq!(space_before_inverted_openers(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn blank_columns_are_trimmed_to_a_height_relative_margin() {
+        let mut crop = RgbImage::from_pixel(100, 20, image::Rgb([255; 3]));
+        crop.put_pixel(40, 10, image::Rgb([0; 3]));
+        crop.put_pixel(60, 3, image::Rgb([244, 255, 255]));
+        let trimmed = trim_blank_columns(&crop).unwrap();
+        assert_eq!(trimmed.dimensions(), (31, 20));
+        assert_eq!(trimmed.get_pixel(5, 10).0, [0; 3]);
+        assert!(trim_blank_columns(&trimmed).is_none());
+        assert!(trim_blank_columns(&RgbImage::from_pixel(9, 9, image::Rgb([255; 3]))).is_none());
     }
 }
