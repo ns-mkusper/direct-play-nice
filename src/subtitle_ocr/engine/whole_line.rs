@@ -27,7 +27,7 @@ const AUDITED_SHA256: [&str; 3] = [
     "640e323ac1a4da562eddd2a3963b4e1336686f898113983122d76d24dc3afcfe",
 ];
 const AUDITED_LATIN_SHA256: [&str; 1] =
-    ["e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf"];
+    ["8e6b29f8d68753ee536b465801c918ced32d0fde29566398f10ab6b88eadab48"];
 const MAX_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_CLASSES: usize = 4096;
@@ -260,6 +260,27 @@ impl WholeLineRecognizer {
         };
         Ok((result, alignments))
     }
+}
+
+/// Restores the space that always precedes a Spanish `¿`/`¡` inside a line.
+///
+/// The recognizer often merges the gap after a closing mark (`¡Vamos!¿Qué?`),
+/// and the padded probe only restores spaces between alphanumerics. Openers at
+/// the line start or after another opening mark are left alone.
+pub(in crate::subtitle_ocr) fn space_before_inverted_openers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 2);
+    let mut previous: Option<char> = None;
+    for ch in text.chars() {
+        if matches!(ch, '¿' | '¡')
+            && previous
+                .is_some_and(|prev| !prev.is_whitespace() && !"¿¡\"'«“‘([{—–-".contains(prev))
+        {
+            output.push(' ');
+        }
+        output.push(ch);
+        previous = Some(ch);
+    }
+    output
 }
 
 fn read_bounded_model(path: &Path) -> Result<Vec<u8>> {
@@ -955,7 +976,7 @@ mod tests {
         let model = read_audited_model_for_profile(Path::new(&path), OcrRecProfile::Latin).unwrap();
         assert!(read_audited_model_for_profile(Path::new(&path), OcrRecProfile::English).is_err());
         let recognizer = WholeLineRecognizer::preflight_audited_model(&model).unwrap();
-        assert_eq!(recognizer.dictionary.len(), 187);
+        assert_eq!(recognizer.dictionary.len(), 504);
         for glyph in ["à", "á", "ä", "é", "ñ", "¿", "¡"] {
             assert!(
                 recognizer.dictionary.iter().any(|key| key == glyph),
@@ -1053,6 +1074,21 @@ mod tests {
             if let Some(score) = actual.score {
                 assert!((score - expected[0].text_score).abs() < 1e-5);
             }
+        }
+    }
+
+    #[test]
+    fn inverted_openers_get_a_preceding_space_only_inside_a_line() {
+        for (input, expected) in [
+            ("¡Vamos!¿Qué pasa?", "¡Vamos! ¿Qué pasa?"),
+            ("Hola,¿qué tal?", "Hola, ¿qué tal?"),
+            ("¿¡Qué!?", "¿¡Qué!?"),
+            ("—¿Sí?", "—¿Sí?"),
+            ("\"¡Ya!\"", "\"¡Ya!\""),
+            ("Vamos! ¿Qué?", "Vamos! ¿Qué?"),
+            ("No change.", "No change."),
+        ] {
+            assert_eq!(space_before_inverted_openers(input), expected, "{input}");
         }
     }
 }

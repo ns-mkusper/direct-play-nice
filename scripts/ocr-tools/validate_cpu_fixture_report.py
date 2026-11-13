@@ -28,8 +28,8 @@ MODELS = {
         "70581b300b83babd9e0dd1d7d74c5b006869e8796da277a70c2e405bf9d77c82",
     "en_PP-OCRv3_rec_infer.onnx":
         "ef7abd8bd3629ae57ea2c28b425c1bd258a871b93fd2fe7c433946ade9b5d9ea",
-    "latin_PP-OCRv3_rec_mobile.onnx":
-        "e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf",
+    "latin_PP-OCRv5_rec_mobile_ir9.onnx":
+        "8e6b29f8d68753ee536b465801c918ced32d0fde29566398f10ab6b88eadab48",
     "japan_PP-OCRv4_rec_mobile.onnx":
         "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a",
     "korean_PP-OCRv4_rec_mobile.onnx":
@@ -38,7 +38,7 @@ MODELS = {
         "779656d044ce388045e02ea9244724616194e63928606436cdfc6dc3c9528cc6",
 }
 PROFILES = {
-    "latin": "latin_PP-OCRv3_rec_mobile.onnx",
+    "latin": "latin_PP-OCRv5_rec_mobile_ir9.onnx",
     "japanese": "japan_PP-OCRv4_rec_mobile.onnx",
     "korean": "korean_PP-OCRv4_rec_mobile.onnx",
     "cjk": "chinese_cht_PP-OCRv3_rec_mobile.onnx",

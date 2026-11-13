@@ -2062,6 +2062,9 @@ fn cpu_bitmap_line_route_detector_off() {
     );
 }
 
+/// SHA-256 of the IR-v9 PP-OCRv5 Latin recognizer that provisioning produces.
+const LATIN_REC_SHA256: &str = "8e6b29f8d68753ee536b465801c918ced32d0fde29566398f10ab6b88eadab48";
+
 fn assert_latin_model_hash(expected: &str) {
     use sha2::{Digest, Sha256};
     let path = std::env::var_os("DPN_OCR_REC_LATIN_MODEL")
@@ -2071,9 +2074,9 @@ fn assert_latin_model_hash(expected: &str) {
 }
 
 #[test]
-#[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+#[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
 fn cpu_latin_model_metadata() {
-    assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+    assert_latin_model_hash(LATIN_REC_SHA256);
     assert_eq!(std::env::var("DPN_OCR_FORCE_CPU").as_deref(), Ok("1"));
     init_ort_environment().expect("initialize ONNX runtime");
     let model = fs::read(std::env::var_os("DPN_OCR_REC_LATIN_MODEL").unwrap()).unwrap();
@@ -2092,7 +2095,7 @@ fn cpu_latin_model_metadata() {
         .tensor_shape()
         .expect("Latin output must be a tensor");
     assert_eq!(shape.len(), 3);
-    assert_eq!(shape[2], 187);
+    assert_eq!(shape[2], 504);
     let metadata = session
         .metadata()
         .unwrap()
@@ -2107,60 +2110,62 @@ fn cpu_latin_model_metadata() {
             .split('\n'),
     );
     dictionary.push(" ");
-    assert_eq!(dictionary.len(), 187);
+    assert_eq!(dictionary.len(), 504);
     assert_eq!(
-        (dictionary[130], dictionary[131], dictionary[134]),
+        (dictionary[158], dictionary[159], dictionary[162]),
         ("à", "á", "ä")
     );
-    assert_eq!((dictionary[1], dictionary[186]), (" ", " "));
+    assert_eq!((dictionary[95], dictionary[125]), ("¡", "¿"));
+    assert_eq!(dictionary.iter().filter(|key| **key == " ").count(), 1);
+    assert_eq!(dictionary.last(), Some(&" "));
 }
 
 mod cpu_bitmap_line_route_latin_direct {
     use super::*;
 
     fn run(language: &str, fixture: &str, expected: &str) {
-        assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+        assert_latin_model_hash(LATIN_REC_SHA256);
         cpu_bitmap_line_route_case(language, fixture, expected, "auto", true, false);
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn french() {
         run("fra", "latin_french", "Je prépare le café.");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn spanish() {
         run("spa", "latin_spanish", "El corazón late.");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn german() {
         run("deu", "latin_german", "Bären mögen Honig.");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn french_evangile() {
         run("fra", "latin_french_evangile", "C'est l'Évangile.");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn french_qu_a() {
         run("fra", "latin_french_qu_a", "Je crois qu'à midi.");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn spanish_inverted_punctuation() {
         run("spa", "latin_spanish_inverted", "¡Vamos! ¿Qué pasa?");
     }
 
     #[test]
-    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn french_short_words() {
         run(
             "fra",
@@ -2171,9 +2176,9 @@ mod cpu_bitmap_line_route_latin_direct {
 }
 
 #[test]
-#[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+#[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
 fn cpu_bitmap_line_route_latin_detector_off() {
-    assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+    assert_latin_model_hash(LATIN_REC_SHA256);
     cpu_bitmap_line_route_case(
         "fra",
         "latin_french",
