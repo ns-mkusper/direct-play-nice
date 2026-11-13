@@ -30,7 +30,7 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
       - name: Install Rust
@@ -56,7 +56,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg
           key: cargo-vcpkg-linux-v1
@@ -68,19 +68,19 @@ jobs:
         run: cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           prefix-key: linux-vcpkg-v3-ffmpeg8
 
       - name: Cache OCR models
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: target/ocr-models
           key: ocr-models-linux-v1
 
       - name: Cache vcpkg workspace (cross-branch)
         id: vcpkg-root-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -154,7 +154,7 @@ jobs:
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: vcpkg-logs
           path: |
@@ -182,7 +182,7 @@ jobs:
 
       - name: Upload cargo timings
         if: matrix.toolchain == 'stable'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: cargo-timings-linux-stable
           path: target/cargo-timings
@@ -215,7 +215,7 @@ jobs:
         -C link-arg=User32.lib
         -C link-arg=Advapi32.lib
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -241,7 +241,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-win
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg.exe
           key: cargo-vcpkg-windows-v1
@@ -254,19 +254,19 @@ jobs:
         run: cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           prefix-key: windows-vcpkg-v3-ffmpeg8
 
       - name: Cache OCR models
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: target/ocr-models
           key: ocr-models-windows-v1
 
       - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-win
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v4.3.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -373,7 +373,7 @@ jobs:
 
       - name: Save vcpkg workspace cache
         if: (steps.vcpkg-root-cache-win.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1') && success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v4.3.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -393,7 +393,7 @@ jobs:
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: vcpkg-logs-windows
           path: |
@@ -438,7 +438,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
       - name: Install Rust
@@ -464,7 +464,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg
           key: cargo-vcpkg-linux-v1
@@ -476,19 +476,19 @@ jobs:
         run: cargo install cargo-vcpkg --locked
 
       - name: Cache cargo build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           prefix-key: linux-vcpkg-v3-ffmpeg8
 
       - name: Cache OCR models
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: target/ocr-models
           key: ocr-models-linux-v1
 
       - name: Cache vcpkg workspace (cross-branch)
         id: vcpkg-root-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
