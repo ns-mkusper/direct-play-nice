@@ -30,7 +30,7 @@ jobs:
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Resolve benchmark source path
         id: source

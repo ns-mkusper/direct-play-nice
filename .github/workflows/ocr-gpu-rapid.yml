@@ -23,7 +23,7 @@ jobs:
       CARGO_HOME: /tmp/direct-play-nice-gha-home/.cargo
       RUSTUP_HOME: /tmp/direct-play-nice-gha-home/.rustup
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -60,7 +60,7 @@ jobs:
           prefix-key: ocr-rapid-v1
 
       - name: Cache vcpkg artifacts
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -226,7 +226,7 @@ jobs:
 
       - name: Upload rapid OCR artifacts
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ocr-gpu-rapid-${{ github.run_id }}
           path: benchmark_artifacts/rapid
