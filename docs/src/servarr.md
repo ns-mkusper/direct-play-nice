@@ -364,7 +364,13 @@ are not release-searched again until the cooldown expires. For weekly delayed
 sub/dub drops, use
 `--servarr-language-audit-latest-missing-no-candidate-cooldown-days` (or
 `servarr_language_audit_latest_missing_no_candidate_cooldown_days`) to give
-`latest-missing` a shorter retry window than broad backlog sweeps. DPN stores
+`latest-missing` a shorter retry window than broad backlog sweeps. Each
+consecutive no-candidate result for the same item doubles its cooldown (for
+example 2, 4, 8, then 14 days) up to
+`--servarr-language-audit-no-candidate-max-cooldown-days` (or
+`servarr_language_audit_no_candidate_max_cooldown_days`, default `14`), so items
+that never find a release stop costing an indexer search every few days. Set it
+at or below the cooldown to keep a fixed retry window. DPN stores
 this best-effort state in
 `$XDG_CACHE_HOME/direct-play-nice/servarr-language-no-candidate-cache.json` or
 `~/.cache/direct-play-nice/servarr-language-no-candidate-cache.json`; override it
