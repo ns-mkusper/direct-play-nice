@@ -14,7 +14,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
         with:
           fetch-depth: 0
 
@@ -52,7 +52,7 @@ jobs:
 
       - name: Run release-plz update preview
         if: steps.changes.outputs.enforce == 'true'
-        uses: MarcoIeni/release-plz-action@v0.5
+        uses: release-plz/action@v0.5.148
         with:
           command: update
         env:

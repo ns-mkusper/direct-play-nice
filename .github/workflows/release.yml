@@ -66,7 +66,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
       - id: release-context
@@ -99,7 +99,7 @@ jobs:
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.22.0/cargo-dist-installer.sh | sh"
       - name: Cache cargo-dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/cargo-dist
@@ -122,7 +122,7 @@ jobs:
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
@@ -155,7 +155,7 @@ jobs:
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
       - name: "Install vcpkg build dependencies (Linux)"
@@ -169,7 +169,7 @@ jobs:
         run: "choco install nasm strawberryperl -y"
       - name: "Cache cargo-vcpkg binary"
         id: "cargo-vcpkg-cache"
-        uses: "actions/cache@v4"
+        uses: "actions/cache@v4.3.0"
         with:
           "key": "cargo-vcpkg-${{ runner.os }}-${{ runner.arch }}-v1"
           "path": "~/.cargo/bin/cargo-vcpkg"
@@ -178,7 +178,7 @@ jobs:
         run: "cargo install cargo-vcpkg"
       - name: "Cache vcpkg workspace"
         id: "vcpkg-cache"
-        uses: "actions/cache@v4"
+        uses: "actions/cache@v4.3.0"
         with:
           "key": "vcpkg-root-${{ runner.os }}-${{ join(matrix.targets, '_') }}-${{ hashFiles('Cargo.toml') }}"
           "path": |
@@ -220,7 +220,7 @@ jobs:
         run: ${{ matrix.install_dist }}
       # Get the dist-manifest
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -256,7 +256,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
@@ -273,18 +273,18 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
       - name: Install cached cargo-dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/cargo-dist
       # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -302,7 +302,7 @@ jobs:
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: artifacts-build-global
           path: |
@@ -320,7 +320,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
           fetch-depth: 0
@@ -398,18 +398,18 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
       - name: Install cached cargo-dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/cargo-dist
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -422,14 +422,14 @@ jobs:
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
       # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.3.0
         with:
           pattern: artifacts-*
           path: artifacts
@@ -501,6 +501,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
