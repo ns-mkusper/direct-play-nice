@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +36,9 @@ struct NoCandidateRecord {
     checked_at_unix: u64,
     requirements: LanguageRequirements,
     reason: String,
+    /// Consecutive no-candidate results; records from older versions count as one.
+    #[serde(default)]
+    misses: u32,
 }
 
 /// A replacement the language audit grabbed, kept until a later audit run
@@ -95,6 +98,25 @@ fn writes_disabled() -> bool {
     WRITES_DISABLED.load(Ordering::SeqCst)
 }
 
+/// Upper bound for the doubling no-candidate cooldown. Zero keeps the cooldown
+/// at its base length. Set once from `--servarr-language-audit-no-candidate-max-cooldown-days`.
+static NO_CANDIDATE_MAX_COOLDOWN_DAYS: AtomicU32 = AtomicU32::new(0);
+
+/// Lets repeated no-candidate results double the cooldown, up to `days`.
+pub fn set_no_candidate_max_cooldown_days(days: u32) {
+    NO_CANDIDATE_MAX_COOLDOWN_DAYS.store(days, Ordering::SeqCst);
+}
+
+/// Cooldown after `misses` consecutive no-candidate results: `base_days`
+/// doubled for each miss after the first, capped at `max_days` (never below
+/// `base_days`).
+fn no_candidate_cooldown_days(base_days: u32, misses: u32, max_days: u32) -> u32 {
+    let doublings = misses.saturating_sub(1).min(16);
+    base_days
+        .saturating_mul(1 << doublings)
+        .min(max_days.max(base_days))
+}
+
 pub fn record_assessment(
     kind: IntegrationKind,
     path: &Path,
@@ -126,11 +148,13 @@ pub fn no_candidate_cooldown_remaining_days(
     let records = read_no_candidate_records(&cache_path)?;
     let key = no_candidate_key(kind, target_noun, target_id);
     let now = now_unix_secs();
-    let cooldown_secs = u64::from(cooldown_days) * 86_400;
+    let max_days = NO_CANDIDATE_MAX_COOLDOWN_DAYS.load(Ordering::SeqCst);
     Ok(records
         .into_iter()
         .find(|record| record.key == key && record.requirements == *requirements)
         .and_then(|record| {
+            let days = no_candidate_cooldown_days(cooldown_days, record.misses, max_days);
+            let cooldown_secs = u64::from(days) * 86_400;
             let elapsed = now.saturating_sub(record.checked_at_unix);
             if elapsed >= cooldown_secs {
                 None
@@ -292,6 +316,10 @@ fn record_no_candidate_at_path(
     with_cache_lock(cache_path, "language no-candidate cache", || {
         let key = no_candidate_key(kind, target_noun, target_id);
         let mut records = read_no_candidate_records(cache_path)?;
+        let previous_misses = records
+            .iter()
+            .find(|record| record.key == key && record.requirements == *requirements)
+            .map_or(0, |record| record.misses.max(1));
         records.retain(|record| record.key != key);
         records.push(NoCandidateRecord {
             key,
@@ -301,6 +329,7 @@ fn record_no_candidate_at_path(
             checked_at_unix: now_unix_secs(),
             requirements: requirements.clone(),
             reason: reason.to_string(),
+            misses: previous_misses.saturating_add(1),
         });
         records.sort_by(|a, b| a.key.cmp(&b.key));
         write_json_atomically(cache_path, "language no-candidate cache", &records)
@@ -679,6 +708,70 @@ mod tests {
         );
 
         std::env::remove_var("DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE");
+    }
+
+    #[test]
+    fn no_candidate_cooldown_doubles_up_to_the_cap() {
+        assert_eq!(no_candidate_cooldown_days(2, 0, 14), 2);
+        assert_eq!(no_candidate_cooldown_days(2, 1, 14), 2);
+        assert_eq!(no_candidate_cooldown_days(2, 2, 14), 4);
+        assert_eq!(no_candidate_cooldown_days(2, 3, 14), 8);
+        assert_eq!(no_candidate_cooldown_days(2, 4, 14), 14);
+        assert_eq!(no_candidate_cooldown_days(2, u32::MAX, 14), 14);
+        // No cap, or a cap below the base, keeps the base cooldown.
+        assert_eq!(no_candidate_cooldown_days(2, 5, 0), 2);
+        assert_eq!(no_candidate_cooldown_days(14, 5, 7), 14);
+    }
+
+    #[test]
+    fn repeated_no_candidate_results_count_consecutive_misses() {
+        let tmp = TempDir::new().unwrap();
+        let cache_path = tmp.path().join("no-candidates.json");
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let record = |requirements: &LanguageRequirements| {
+            record_no_candidate_at_path(
+                &cache_path,
+                IntegrationKind::Radarr,
+                "movie",
+                7,
+                requirements,
+                "no approved release",
+            )
+            .unwrap();
+            read_no_candidate_records(&cache_path).unwrap()[0].misses
+        };
+
+        assert_eq!(record(&requirements), 1);
+        assert_eq!(record(&requirements), 2);
+        assert_eq!(record(&requirements), 3);
+        // New requirements start a fresh streak.
+        let different_requirements = LanguageRequirements {
+            audio: vec!["jpn".to_string()],
+            ..requirements.clone()
+        };
+        assert_eq!(record(&different_requirements), 1);
+
+        // Records written before misses were tracked count as one miss.
+        fs::write(
+            &cache_path,
+            serde_json::json!([{
+                "key": "Radarr:movie:7",
+                "kind": "Radarr",
+                "target_noun": "movie",
+                "target_id": 7,
+                "checked_at_unix": 10,
+                "requirements": requirements,
+                "reason": "no approved release"
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(read_no_candidate_records(&cache_path).unwrap()[0].misses, 0);
+        assert_eq!(record(&requirements), 2);
     }
 
     #[test]
