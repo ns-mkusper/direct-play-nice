@@ -1,0 +1,4 @@
+# Sites that reject automated link checkers (403, or a 404 after redirecting
+# bots); both pages still load in a browser.
+^https://www\.intel\.com/content/www/us/en/docs/onevpl/
+^https://developer\.roku\.com/docs/specs/
