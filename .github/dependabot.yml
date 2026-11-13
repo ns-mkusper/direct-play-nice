@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Bumps action tags and .github/workflows/actions.lock together. The
+  # cooldown lets a compromised release be caught upstream before we take it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
