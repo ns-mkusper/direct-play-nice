@@ -246,10 +246,12 @@ jobs:
               ARM64) export VCPKGRS_TRIPLET="arm64-linux" ;;
               X64) export VCPKGRS_TRIPLET="x64-linux" ;;
             esac
+            # cargo dist always runs ldd on the binary and fails with a bare
+            # ENOENT on any "not found" line, such as the vcpkg libva.
+            export LD_LIBRARY_PATH="${PWD}/target/vcpkg/installed/${VCPKGRS_TRIPLET}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           fi
-          # Actually do builds and make zips and whatnot. No --print=linkage:
-          # its ldd pass fails on the vcpkg libva that the runner lacks.
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          # Actually do builds and make zips and whatnot
+          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "cargo dist ran successfully"
       - id: cargo-dist
         name: Post-build
