@@ -44,7 +44,8 @@ The binary auto-detects Sonarr/Radarr custom-script invocations:
 
 - `sonarr_eventtype=Download` and `radarr_eventtype=Download` trigger conversion.
 - Upgrades use the same `Download` event, with `sonarr_isupgrade=True` or
-  `radarr_isupgrade=True`; there is no separate `Upgrade` event to configure in DPN.
+  `radarr_isupgrade=True`; there is no separate `Upgrade` event to configure
+  in DPN.
 - Non-download events (for example `Test`, `Grab`, `Rename`) exit cleanly.
 
 ## Naming and replacement notes

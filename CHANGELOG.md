@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.12] - 2026-11-13
+
+### Bitmap Subtitle OCR
+
+- Recognize eligible English bitmap subtitle lines directly, preserving word
+  boundaries and punctuation, with a fallback to the existing detector. (#219)
+- Close remux inputs before replacing the same file, including on Windows. (#219)
+- Extend direct line recognition to French, Spanish and other Latin-script
+  languages with the PP-OCRv5 Latin recognizer, fixing joined words and lost
+  accents and inverted marks. The model is downloaded and converted for ONNX
+  Runtime 1.16 automatically. (#228)
+
+### Servarr Language Audits
+
+- Blocklist replacements that import without the required language and search
+  again; skip matching releases across indexers and continue to the next
+  candidate if a grab is refused. (#221)
+- Skip replacement candidates matching the release already on disk. (#223)
+- Decide whether to force-import a pending download from its actual audio and
+  subtitle tracks, falling back to the previous title-based decision if the
+  file cannot be read. (#225)
+
+### CI
+
+- Lock GitHub Actions to verified commits. (#226)
+- Update the locked GitHub Actions, and skip the self-hosted benchmark smoke
+  test on Dependabot pull requests. (#229)
+- Build the Linux x86_64 and ARM64 release binaries again; beta.9 through
+  beta.11 published none. (#231)
+
 ## [1.1.0-beta.11] - 2026-11-03
 
 ### Re-encode Fidelity

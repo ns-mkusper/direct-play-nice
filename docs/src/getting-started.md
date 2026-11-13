@@ -97,7 +97,7 @@ The input file is only ever read. What happens to the output depends on mode:
   `--delete-source` removes the input only after the output is promoted.
 - **Sonarr/Radarr mode** uses the same staged file, parks the original under a
   `.bak` name, promotes by rename, then deletes the backup. See the
-  [replacement policy](./servarr.html#replacement-policy).
+  [replacement policy](./servarr.md#replacement-policy).
 - Inputs that already satisfy the target devices are left alone and no output
   is produced.
 
@@ -112,4 +112,4 @@ The report names the action (skip, transcode, or remux with OCR subtitles),
 the reasons, every path the real run would create, and what happens to the
 source. Nothing is written, renamed, or deleted. The same flag works inside a
 Sonarr/Radarr `Download` event; see
-[Sonarr/Radarr Integration](./servarr.html#dry-run).
+[Sonarr/Radarr Integration](./servarr.md#dry-run).

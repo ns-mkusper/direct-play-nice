@@ -39,7 +39,7 @@ jobs:
             --exclude-path target
             --exclude-path vendor
             --exclude-path tmp_crates
-            **/*.md
+            '**/*.md'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
