@@ -96,8 +96,6 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-# TEMPORARY: build artifacts on PRs to validate the release fix; remove before merge.
-pr-run-mode = "upload"
 # customize cargo-dist build env (install vcpkg and vcpkg build, etc)
 # see: https://opensource.axo.dev/cargo-dist/book/ci/customizing.html#customizing-build-setup
 github-build-setup = "../templates/build-setup.yml"
