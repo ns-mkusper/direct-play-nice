@@ -155,10 +155,15 @@ impl SubtitleConverter for PpOcrEngine {
         };
         // The spacing probe assumes the crop holds exactly one text band.
         let allow_probe = context == BitmapLineContext::SingleRectangleSingleBand;
-        let mut result = recognizer.recognize_with_spacing_probe(image, allow_probe)?;
-        if profile == OcrRecProfile::Latin {
+        let result = if profile == OcrRecProfile::Latin {
+            let trimmed = super::whole_line::trim_blank_columns(image);
+            let mut result = recognizer
+                .recognize_with_spacing_probe(trimmed.as_ref().unwrap_or(image), allow_probe)?;
             result.text = super::whole_line::space_before_inverted_openers(&result.text);
-        }
+            result
+        } else {
+            recognizer.recognize_with_spacing_probe(image, allow_probe)?
+        };
         Ok(Some(OcrLine {
             text: result.text,
             score: result.score,

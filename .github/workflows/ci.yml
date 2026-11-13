@@ -286,9 +286,9 @@ jobs:
           run_checked 1 cpu_latin_model_metadata 1
           run_checked 1 latin_model_dictionary_matches_output 1
           DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto \
-            run_checked 7 cpu_bitmap_line_route_latin_direct 1
+            run_checked 8 cpu_bitmap_line_route_latin_direct 1
           DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto \
-            run_checked 7 cpu_bitmap_line_route_latin_direct 0
+            run_checked 8 cpu_bitmap_line_route_latin_direct 0
           DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=off \
             run_checked 1 cpu_bitmap_line_route_latin_detector_off 1
           # A valid English model is not an audited Latin recognizer.

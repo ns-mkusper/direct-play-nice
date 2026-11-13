@@ -262,6 +262,24 @@ impl WholeLineRecognizer {
     }
 }
 
+/// Trims blank columns beyond a margin of a quarter of the crop height.
+///
+/// PGS line crops span the whole rectangle, so a short centered line can sit
+/// after hundreds of blank columns; the PP-OCRv5 Latin model then drops its
+/// first glyphs (`-De hecho,` reads as `hecho,`).
+pub(in crate::subtitle_ocr) fn trim_blank_columns(crop: &RgbImage) -> Option<RgbImage> {
+    let ink = |x: u32| (0..crop.height()).any(|y| crop.get_pixel(x, y).0.iter().any(|&v| v < 245));
+    let first = (0..crop.width()).find(|&x| ink(x))?;
+    let last = (first..crop.width()).rev().find(|&x| ink(x))?;
+    let margin = crop.height() / 4;
+    let left = first.saturating_sub(margin);
+    let right = last.saturating_add(margin + 1).min(crop.width());
+    if left == 0 && right == crop.width() {
+        return None;
+    }
+    Some(image::imageops::crop_imm(crop, left, 0, right - left, crop.height()).to_image())
+}
+
 /// Restores the space that always precedes a Spanish `¿`/`¡` inside a line.
 ///
 /// The recognizer often merges the gap after a closing mark (`¡Vamos!¿Qué?`),
@@ -1090,5 +1108,17 @@ mod tests {
         ] {
             assert_eq!(space_before_inverted_openers(input), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn blank_columns_are_trimmed_to_a_height_relative_margin() {
+        let mut crop = RgbImage::from_pixel(100, 20, image::Rgb([255; 3]));
+        crop.put_pixel(40, 10, image::Rgb([0; 3]));
+        crop.put_pixel(60, 3, image::Rgb([244, 255, 255]));
+        let trimmed = trim_blank_columns(&crop).unwrap();
+        assert_eq!(trimmed.dimensions(), (31, 20));
+        assert_eq!(trimmed.get_pixel(5, 10).0, [0; 3]);
+        assert!(trim_blank_columns(&trimmed).is_none());
+        assert!(trim_blank_columns(&RgbImage::from_pixel(9, 9, image::Rgb([255; 3]))).is_none());
     }
 }

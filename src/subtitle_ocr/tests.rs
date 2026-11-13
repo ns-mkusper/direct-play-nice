@@ -2166,6 +2166,12 @@ mod cpu_bitmap_line_route_latin_direct {
 
     #[test]
     #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
+    fn spanish_centered_dialogue() {
+        run("spa", "latin_spanish_centered_dialogue", "-Ya voy.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv5 model and ONNX Runtime"]
     fn french_short_words() {
         run(
             "fra",
