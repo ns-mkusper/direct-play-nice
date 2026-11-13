@@ -24,7 +24,7 @@ jobs:
       RELEASE_PLZ_TOKEN_CONFIGURED: ${{ secrets.RELEASE_PLZ_TOKEN != '' }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           token: ${{ env.EFFECTIVE_GITHUB_TOKEN }}
@@ -52,7 +52,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg
           key: cargo-vcpkg-linux-v1
@@ -63,7 +63,7 @@ jobs:
 
       - name: Cache vcpkg workspace
         id: vcpkg-cache
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -152,7 +152,7 @@ jobs:
           bash ./scripts/generate_release_notes.sh RELEASE_NOTES.md
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: release-notes-preview
           path: RELEASE_NOTES.md
