@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.12] - 2026-11-13
+
+### Subtitle OCR
+
+- Recognize eligible English bitmap subtitle lines directly, preserving word
+  boundaries and punctuation, with a fallback to the existing detector. (#219)
+- Close remux inputs before replacing the same file, including on Windows. (#219)
+
+### Servarr Language Audits
+
+- Blocklist replacements that import without the required language and search
+  again; skip matching releases across indexers and continue to the next
+  candidate if a grab is refused. (#221)
+- Skip replacement candidates matching the release already on disk. (#223)
+- Decide whether to force-import a pending download from its actual audio and
+  subtitle tracks, falling back to the previous title-based decision if the
+  file cannot be read. (#225)
+
+### CI
+
+- Lock GitHub Actions to verified commits. (#226)
+
 ## [1.1.0-beta.11] - 2026-11-03
 
 ### Re-encode Fidelity
