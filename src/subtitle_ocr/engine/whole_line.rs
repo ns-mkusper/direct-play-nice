@@ -16,6 +16,7 @@ use std::{
     path::Path,
 };
 
+use super::converters::OcrRecProfile;
 use super::runtime::configure_ort_builder;
 
 // Independently pinned: updating model provisioning must not approve a new model
@@ -25,6 +26,8 @@ const AUDITED_SHA256: [&str; 3] = [
     "e8770c967605983d1570cdf5352041dfb68fa0c21664f49f47b155abd3e0e318",
     "640e323ac1a4da562eddd2a3963b4e1336686f898113983122d76d24dc3afcfe",
 ];
+const AUDITED_LATIN_SHA256: [&str; 1] =
+    ["e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf"];
 const MAX_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_CLASSES: usize = 4096;
@@ -93,6 +96,33 @@ fn parse_bitmap_line_policy(value: Option<&OsStr>) -> Result<BitmapLinePolicy> {
 
 pub(in crate::subtitle_ocr) fn bitmap_line_policy_from_env() -> Result<BitmapLinePolicy> {
     parse_bitmap_line_policy(std::env::var_os("DPN_OCR_EXPERIMENTAL_BITMAP_LINES").as_deref())
+}
+
+#[derive(Default)]
+pub(in crate::subtitle_ocr) struct ProfileLineRecognizers {
+    pub(super) english: Option<ExperimentalLineRecognizer>,
+    pub(super) latin: Option<ExperimentalLineRecognizer>,
+}
+
+impl ProfileLineRecognizers {
+    pub(super) fn get(&self, profile: OcrRecProfile) -> Option<&ExperimentalLineRecognizer> {
+        match profile {
+            OcrRecProfile::English => self.english.as_ref(),
+            OcrRecProfile::Latin => self.latin.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn get_mut(
+        &mut self,
+        profile: OcrRecProfile,
+    ) -> Option<&mut ExperimentalLineRecognizer> {
+        match profile {
+            OcrRecProfile::English => self.english.as_mut(),
+            OcrRecProfile::Latin => self.latin.as_mut(),
+            _ => None,
+        }
+    }
 }
 
 /// Lazily initializes only on a supported bitmap line, once per worker.
@@ -166,6 +196,18 @@ impl WholeLineRecognizer {
         let session = builder.commit_from_memory(model)?;
         if session.inputs.len() != 1 || session.outputs.len() != 1 {
             bail!("recognizer must have exactly one input and one output");
+        }
+        let input_type = &session.inputs[0].input_type;
+        let shape = input_type
+            .tensor_shape()
+            .ok_or_else(|| anyhow!("recognizer input must be a tensor"))?;
+        if input_type.tensor_type() != Some(TensorElementType::Float32)
+            || shape.len() != 4
+            || (shape[0] != -1 && shape[0] != 1)
+            || shape[1] != 3
+            || (shape[2] != -1 && shape[2] != i64::from(HEIGHT))
+        {
+            bail!("recognizer input must support [1, 3, 48, width] float tensors");
         }
         let input_name = session.inputs[0].name.clone();
         let character = session
@@ -255,8 +297,21 @@ pub(super) fn read_pinned_model(path: &Path, allowed: &[&str]) -> Result<Vec<u8>
     Ok(bytes)
 }
 
-pub(super) fn read_audited_model(path: &Path) -> Result<Vec<u8>> {
-    read_pinned_model(path, &AUDITED_SHA256).context("experimental recognizer model")
+pub(super) fn read_audited_model_for_profile(
+    path: &Path,
+    profile: OcrRecProfile,
+) -> Result<Vec<u8>> {
+    let hashes: &[&str] = match profile {
+        OcrRecProfile::English => &AUDITED_SHA256,
+        OcrRecProfile::Latin => &AUDITED_LATIN_SHA256,
+        _ => &[],
+    };
+    read_pinned_model(path, hashes).context("experimental recognizer model")
+}
+
+#[cfg(test)]
+fn read_audited_model(path: &Path) -> Result<Vec<u8>> {
+    read_audited_model_for_profile(path, OcrRecProfile::English)
 }
 
 pub(in crate::subtitle_ocr) fn supports_crop_dimensions(width: u32, height: u32) -> bool {
@@ -857,6 +912,13 @@ mod tests {
         }
         let file = tempfile::NamedTempFile::new().unwrap();
         assert!(read_audited_model(file.path()).is_err());
+        for profile in [
+            OcrRecProfile::English,
+            OcrRecProfile::Latin,
+            OcrRecProfile::Multilingual,
+        ] {
+            assert!(read_audited_model_for_profile(file.path(), profile).is_err());
+        }
         assert!(read_audited_model(file.path().parent().unwrap()).is_err());
         file.as_file().set_len(MAX_MODEL_BYTES + 1).unwrap();
         assert!(read_audited_model(file.path()).is_err());
@@ -884,6 +946,23 @@ mod tests {
             Err(err) => err,
         };
         assert!(error.to_string().contains("DPN_OCR_REQUIRE_GPU=1"));
+    }
+
+    #[test]
+    #[ignore = "requires DPN_TEST_AUDITED_LATIN_REC_MODEL and a compatible ORT shared library"]
+    fn latin_model_dictionary_matches_output() {
+        let path = std::env::var_os("DPN_TEST_AUDITED_LATIN_REC_MODEL").unwrap();
+        let model = read_audited_model_for_profile(Path::new(&path), OcrRecProfile::Latin).unwrap();
+        assert!(read_audited_model_for_profile(Path::new(&path), OcrRecProfile::English).is_err());
+        let recognizer = WholeLineRecognizer::preflight_audited_model(&model).unwrap();
+        assert_eq!(recognizer.dictionary.len(), 187);
+        for glyph in ["à", "á", "ä", "é", "ñ", "¿", "¡"] {
+            assert!(
+                recognizer.dictionary.iter().any(|key| key == glyph),
+                "missing {glyph}"
+            );
+        }
+        assert_eq!(recognizer.dictionary.last().unwrap(), " ");
     }
 
     #[test]

@@ -1855,13 +1855,22 @@ fn ocr_bitmap_rect(
     backend: OcrEngine,
     engine: &mut dyn SubtitleConverter,
 ) -> String {
+    ocr_bitmap_rect_for_language(rect, backend, engine, "eng")
+}
+
+fn ocr_bitmap_rect_for_language(
+    rect: &mut ffi::AVSubtitleRect,
+    backend: OcrEngine,
+    engine: &mut dyn SubtitleConverter,
+    language: &str,
+) -> String {
     let mut rect_ptr = rect as *mut ffi::AVSubtitleRect;
     let mut subtitle: ffi::AVSubtitle = unsafe { std::mem::zeroed() };
     subtitle.num_rects = 1;
     subtitle.rects = &mut rect_ptr;
     let temp = tempfile::tempdir().expect("create temporary directory");
     let params = super::ocr_pipeline::CueBuildParams {
-        language: "eng",
+        language,
         stream_index: 0,
         stream_codec_id: ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
         packet_seq: 0,
@@ -1921,7 +1930,14 @@ fn strict_synthetic_case(name: &str, expected: &str, backend: OcrEngine) {
 // Exercise the production PGS route with a real engine while recording which
 // converter methods it actually calls. The fixture and label are shared with the
 // strict synthetic suite; these tests must run in separate environment settings.
-fn cpu_bitmap_line_route_case(expect_direct: bool) {
+fn cpu_bitmap_line_route_case(
+    language: &str,
+    fixture: &str,
+    expected: &str,
+    policy: &str,
+    expect_direct: bool,
+    exact_detector_text: bool,
+) {
     struct RouteRecorder<'a> {
         engine: &'a mut PpOcrEngine,
         direct_lines: Vec<String>,
@@ -1960,12 +1976,12 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
     assert!(!require_gpu());
     assert_eq!(
         std::env::var("DPN_OCR_EXPERIMENTAL_BITMAP_LINES").as_deref(),
-        Ok(if expect_direct { "auto" } else { "off" })
+        Ok(policy)
     );
-    assert_eq!(
+    assert!(matches!(
         std::env::var("DPN_OCR_DISABLE_TESS_FALLBACK").as_deref(),
-        Ok("1")
-    );
+        Ok("0" | "1")
+    ));
 
     let mut engine = init_ppocr_v3_engine();
     let mut recorder = RouteRecorder {
@@ -1975,21 +1991,42 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
         detector_calls: 0,
     };
     assert_eq!(
-        recorder.supports_bitmap_line_recognition("eng"),
+        recorder.supports_bitmap_line_recognition(language),
         expect_direct
     );
-    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture("short_words"));
-    let actual = ocr_bitmap_rect(&mut bitmap.rect(), OcrEngine::PpOcrV3, &mut recorder);
-    let expected = "I am on my way to you.";
-    assert_eq!(actual, expected);
+    assert!(!recorder.supports_bitmap_line_recognition("jpn"));
+    let mut bitmap = IndexedSubtitleBitmap::load(&strict_synthetic_fixture(fixture));
+    let actual = ocr_bitmap_rect_for_language(
+        &mut bitmap.rect(),
+        OcrEngine::PpOcrV3,
+        &mut recorder,
+        language,
+    );
     if expect_direct {
-        assert_eq!(recorder.direct_calls, 1);
-        assert_eq!(recorder.direct_lines, [expected]);
+        assert_eq!(
+            recorder.direct_calls, 1,
+            "fixture {fixture}: detector calls={}, output={actual:?}",
+            recorder.detector_calls
+        );
         assert_eq!(
             recorder.detector_calls, 0,
-            "direct path fell back to detector"
+            "fixture {fixture}: direct path fell back to detector; output={actual:?}"
         );
+        assert_eq!(
+            recorder.direct_lines.len(),
+            1,
+            "fixture {fixture}: missing direct output"
+        );
+        assert_eq!(actual, expected, "fixture {fixture}: final output");
     } else {
+        if exact_detector_text {
+            assert_eq!(actual, expected, "fixture {fixture}");
+        } else {
+            assert!(
+                !actual.is_empty(),
+                "detector produced no text for {fixture}"
+            );
+        }
         assert_eq!(recorder.direct_calls, 0, "direct path ran in off mode");
         assert!(recorder.direct_lines.is_empty());
         assert!(
@@ -2002,13 +2039,164 @@ fn cpu_bitmap_line_route_case(expect_direct: bool) {
 #[test]
 #[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
 fn cpu_bitmap_line_route_direct() {
-    cpu_bitmap_line_route_case(true);
+    cpu_bitmap_line_route_case(
+        "eng",
+        "short_words",
+        "I am on my way to you.",
+        "auto",
+        true,
+        true,
+    );
 }
 
 #[test]
 #[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
 fn cpu_bitmap_line_route_detector_off() {
-    cpu_bitmap_line_route_case(false);
+    cpu_bitmap_line_route_case(
+        "eng",
+        "short_words",
+        "I am on my way to you.",
+        "off",
+        false,
+        true,
+    );
+}
+
+fn assert_latin_model_hash(expected: &str) {
+    use sha2::{Digest, Sha256};
+    let path = std::env::var_os("DPN_OCR_REC_LATIN_MODEL")
+        .expect("DPN_OCR_REC_LATIN_MODEL must explicitly select the test model");
+    let bytes = fs::read(path).expect("read Latin test model");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), expected);
+}
+
+#[test]
+#[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+fn cpu_latin_model_metadata() {
+    assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+    assert_eq!(std::env::var("DPN_OCR_FORCE_CPU").as_deref(), Ok("1"));
+    init_ort_environment().expect("initialize ONNX runtime");
+    let model = fs::read(std::env::var_os("DPN_OCR_REC_LATIN_MODEL").unwrap()).unwrap();
+    let session = ort::session::Session::builder()
+        .unwrap()
+        .commit_from_memory(&model)
+        .expect("load pinned Latin model");
+    assert_eq!(session.inputs.len(), 1);
+    assert_eq!(session.outputs.len(), 1);
+    let output = &session.outputs[0].output_type;
+    assert_eq!(
+        output.tensor_type(),
+        Some(ort::tensor::TensorElementType::Float32)
+    );
+    let shape = output
+        .tensor_shape()
+        .expect("Latin output must be a tensor");
+    assert_eq!(shape.len(), 3);
+    assert_eq!(shape[2], 187);
+    let metadata = session
+        .metadata()
+        .unwrap()
+        .custom("character")
+        .unwrap()
+        .unwrap();
+    let mut dictionary = vec!["#"];
+    dictionary.extend(
+        metadata
+            .strip_suffix('\n')
+            .expect("terminal LF")
+            .split('\n'),
+    );
+    dictionary.push(" ");
+    assert_eq!(dictionary.len(), 187);
+    assert_eq!(
+        (dictionary[130], dictionary[131], dictionary[134]),
+        ("à", "á", "ä")
+    );
+    assert_eq!((dictionary[1], dictionary[186]), (" ", " "));
+}
+
+mod cpu_bitmap_line_route_latin_direct {
+    use super::*;
+
+    fn run(language: &str, fixture: &str, expected: &str) {
+        assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+        cpu_bitmap_line_route_case(language, fixture, expected, "auto", true, false);
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn french() {
+        run("fra", "latin_french", "Je prépare le café.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn spanish() {
+        run("spa", "latin_spanish", "El corazón late.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn german() {
+        run("deu", "latin_german", "Bären mögen Honig.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn french_evangile() {
+        run("fra", "latin_french_evangile", "C'est l'Évangile.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn french_qu_a() {
+        run("fra", "latin_french_qu_a", "Je crois qu'à midi.");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn spanish_inverted_punctuation() {
+        run("spa", "latin_spanish_inverted", "¡Vamos! ¿Qué pasa?");
+    }
+
+    #[test]
+    #[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+    fn french_short_words() {
+        run(
+            "fra",
+            "latin_french_short_words",
+            "Il y a de la lumière à Paris.",
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires pinned CPU Latin PP-OCRv3 model and ONNX Runtime"]
+fn cpu_bitmap_line_route_latin_detector_off() {
+    assert_latin_model_hash("e9d7a33667e8aaa702862975186adf2012e3f390cc0f9422865957125f8071cf");
+    cpu_bitmap_line_route_case(
+        "fra",
+        "latin_french",
+        "Je prépare le café.",
+        "off",
+        false,
+        false,
+    );
+}
+
+#[test]
+#[ignore = "requires CPU PP-OCRv3 models and ONNX Runtime"]
+fn cpu_bitmap_line_route_latin_unaudited() {
+    // An English model is valid ONNX but is not an audited Latin recognizer.
+    assert_latin_model_hash("ef7abd8bd3629ae57ea2c28b425c1bd258a871b93fd2fe7c433946ade9b5d9ea");
+    cpu_bitmap_line_route_case(
+        "fra",
+        "latin_french",
+        "Je prépare le café.",
+        "auto",
+        false,
+        false,
+    );
 }
 
 fn synthetic_stage_comparison(actual: &str, expected: &str) -> serde_json::Value {

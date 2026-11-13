@@ -133,9 +133,9 @@ fn ppocr_detect_params_from_env() -> PpOcrDetectParams {
 
 impl SubtitleConverter for PpOcrEngine {
     fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
-        self.experimental_lines.is_some()
-            && is_english_language(language)
-            && rec_profile_for_language(language) == OcrRecProfile::English
+        self.experimental_lines
+            .get(rec_profile_for_language(language))
+            .is_some()
     }
 
     fn recognize_bitmap_line(
@@ -149,7 +149,10 @@ impl SubtitleConverter for PpOcrEngine {
         {
             return Ok(None);
         }
-        let Some(recognizer) = self.experimental_lines.as_mut() else {
+        let Some(recognizer) = self
+            .experimental_lines
+            .get_mut(rec_profile_for_language(language))
+        else {
             return Ok(None);
         };
         // The spacing probe assumes the crop holds exactly one text band.
@@ -667,6 +670,28 @@ fn parse_routing_manifest_from_raw(raw: &str) -> RoutingManifest {
 #[cfg(test)]
 mod seam_variation_tests {
     use super::*;
+
+    #[test]
+    fn bitmap_line_selection_follows_available_profiles() {
+        use super::super::whole_line::{ExperimentalLineRecognizer, ProfileLineRecognizers};
+        let available = ProfileLineRecognizers {
+            english: Some(ExperimentalLineRecognizer::new(Vec::new())),
+            latin: Some(ExperimentalLineRecognizer::new(Vec::new())),
+        };
+        for language in ["eng", "fra", "spa", "deu", "por", "ita", "zzz", "sr-Latn"] {
+            let profile = rec_profile_for_language(language);
+            assert!(available.get(profile).is_some(), "{language}: {profile:?}");
+        }
+        for language in ["jpn", "kor", "zho", "rus", "ell"] {
+            let profile = rec_profile_for_language(language);
+            assert!(available.get(profile).is_none(), "{language}: {profile:?}");
+        }
+        let overridden =
+            rec_profile_for_language_with_test_config("rus", None, Some("rus=latin"), None);
+        assert!(available.get(overridden).is_some());
+        let absent = ProfileLineRecognizers::default();
+        assert!(absent.get(OcrRecProfile::Latin).is_none());
+    }
 
     #[test]
     fn retry_settings_are_relative_and_invalid_values_fail_closed() {
