@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.1.0-beta.12] - 2026-11-13
 
-### Subtitle OCR
+### Bitmap Subtitle OCR
 
 - Recognize eligible English bitmap subtitle lines directly, preserving word
   boundaries and punctuation, with a fallback to the existing detector. (#219)
