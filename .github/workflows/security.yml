@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
@@ -42,10 +42,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2.3.9
+        uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

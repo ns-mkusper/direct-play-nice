@@ -20,10 +20,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
 
       - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v16.0.0
+        uses: DavidAnson/markdownlint-cli2-action@v25.0.0
         with:
           globs: |
             **/*.md
@@ -31,7 +31,7 @@ jobs:
             !tmp_crates/**/*.md
 
       - name: Check links in Markdown
-        uses: lycheeverse/lychee-action@v1.10.0
+        uses: lycheeverse/lychee-action@v2.9.0
         with:
           # Check all Markdown files, skip build dirs
           args: >-
@@ -49,7 +49,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
       - name: Install mdBook
         uses: peaceiris/actions-mdbook@v2.0.0
         with:
