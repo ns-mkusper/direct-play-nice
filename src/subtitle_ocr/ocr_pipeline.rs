@@ -765,10 +765,14 @@ fn may_use_bitmap_lines(
     params: &CueBuildParams<'_>,
     engine: &dyn SubtitleConverter,
     training_requested: bool,
+    force_tesseract_non_english: bool,
 ) -> bool {
-    // Direct lines do not retain detector training metadata, so keep the
-    // detector path when the user explicitly requests training export.
+    // Direct lines do not retain detector training metadata or run the forced
+    // Tesseract fallback, so use the detector path for either policy.
     !training_requested
+        && !(force_tesseract_non_english
+            && !is_english_language(params.language)
+            && language_uses_spaces(params.language))
         && params.stream_codec_id == ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
         && matches!(params.ocr_engine, OcrEngine::PpOcrV3 | OcrEngine::PpOcrV4)
         && matches!(params.ocr_format, OcrFormat::Srt)
@@ -878,7 +882,12 @@ fn recognize_rect_as_bitmap_lines(
     params: &CueBuildParams<'_>,
     cue_rect_count: u32,
 ) -> Result<Option<Vec<OcrLine>>> {
-    if !may_use_bitmap_lines(params, engine, training_export_requested()) {
+    if !may_use_bitmap_lines(
+        params,
+        engine,
+        training_export_requested(),
+        force_tesseract_non_english_enabled(),
+    ) {
         return Ok(None);
     }
     let language = params.language;
@@ -1393,11 +1402,27 @@ fn direct_punctuation_tesseract_attempts(
     pgm: &[u8],
     language: &str,
 ) -> Option<(String, String)> {
+    direct_punctuation_tesseract_attempts_with(
+        work_image_path,
+        pgm,
+        language,
+        resolve_tesseract_fallback_language,
+        run_tesseract_with_psm,
+    )
+}
+
+fn direct_punctuation_tesseract_attempts_with(
+    work_image_path: &Path,
+    pgm: &[u8],
+    language: &str,
+    resolve_language: impl FnOnce(&str) -> Option<String>,
+    mut recognize: impl FnMut(&Path, &str, u8) -> Result<String>,
+) -> Option<(String, String)> {
     use std::io::Write;
     use std::sync::atomic::AtomicU64;
 
     static NEXT_CROP: AtomicU64 = AtomicU64::new(0);
-    let language = resolve_tesseract_fallback_language(language)?;
+    let language = resolve_language(language)?;
     for _ in 0..8 {
         let sequence = NEXT_CROP.fetch_add(1, Ordering::Relaxed);
         let path =
@@ -1412,9 +1437,9 @@ fn direct_punctuation_tesseract_attempts(
         let written = file.write_all(pgm).is_ok();
         drop(file);
         let result = if written {
-            run_tesseract_with_psm(&path, &language, 6)
+            recognize(&path, &language, 6)
                 .ok()
-                .zip(run_tesseract_with_psm(&path, &language, 7).ok())
+                .zip(recognize(&path, &language, 7).ok())
         } else {
             None
         };
@@ -2642,8 +2667,8 @@ mod tests {
             })
         }
 
-        fn supports_bitmap_line_recognition(&self, language: &str) -> bool {
-            self.enabled && is_english_language(language)
+        fn supports_bitmap_line_recognition(&self, _: &str) -> bool {
+            self.enabled
         }
 
         fn recognize_bitmap_line(
@@ -2836,6 +2861,69 @@ mod tests {
     }
 
     #[test]
+    fn direct_punctuation_preserves_latin_glyphs_and_requires_exact_agreement() {
+        let image = punctuation_test_image(3, false);
+        let mut text = "Élève déjà..".to_owned();
+        assert!(recover_direct_line_punctuation_with(
+            &mut text,
+            &image,
+            || { Some(("Élève déjà...".into(), "Élève déjà...".into())) }
+        ));
+        assert_eq!(text, "Élève déjà...");
+
+        for candidate in ["Eleve déjà...", "Élève deja...", "Éle\u{300}ve déjà..."] {
+            let mut text = "Élève déjà..".to_owned();
+            assert!(!recover_direct_line_punctuation_with(
+                &mut text,
+                &image,
+                || { Some(("Élève déjà...".into(), candidate.into())) }
+            ));
+            assert_eq!(text, "Élève déjà..");
+        }
+        let mut text = "Español.".to_owned();
+        assert!(recover_direct_line_punctuation_with(
+            &mut text,
+            &punctuation_test_image(0, true),
+            || Some(("Español,".into(), "Español,".into()))
+        ));
+        assert_eq!(text, "Español,");
+    }
+
+    #[test]
+    fn direct_punctuation_uses_matching_available_tessdata_for_both_psms() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("work.pgm");
+        let available = ["eng".to_owned(), "fra".to_owned()]
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut calls = Vec::new();
+        let attempts = direct_punctuation_tesseract_attempts_with(
+            &path,
+            b"crop",
+            "fre",
+            |language| resolve_tesseract_fallback_language_with_available(language, &available),
+            |crop_path, language, psm| {
+                assert_eq!(fs::read(crop_path).unwrap(), b"crop");
+                calls.push((language.to_owned(), psm));
+                Ok("Élève...".into())
+            },
+        );
+        assert_eq!(attempts, Some(("Élève...".into(), "Élève...".into())));
+        assert_eq!(calls, [("fra".to_owned(), 6), ("fra".to_owned(), 7)]);
+
+        for language in ["spa", "xyz"] {
+            assert!(direct_punctuation_tesseract_attempts_with(
+                &path,
+                b"crop",
+                language,
+                |language| resolve_tesseract_fallback_language_with_available(language, &available),
+                |_, _, _| panic!("missing tessdata must not run recognition"),
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
     fn direct_punctuation_comma_requires_both_shape_and_full_text_agreement() {
         let comma = punctuation_test_image(0, true);
         let mut text = "- A: abc.".to_owned();
@@ -2859,6 +2947,49 @@ mod tests {
             || panic!("period shape must not run recognition")
         ));
         assert_eq!(text, "abc.");
+    }
+
+    #[test]
+    fn bitmap_line_route_respects_engine_capability_and_policies() {
+        let temp = tempfile::tempdir().unwrap();
+        let params = cue_params(
+            "eng",
+            ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE,
+            OcrFormat::Srt,
+            OcrEngine::PpOcrV3,
+            temp.path(),
+        );
+        let engine = DirectBitmapMock {
+            enabled: true,
+            responses: Default::default(),
+            seen_sizes: Vec::new(),
+            detector_calls: 0,
+        };
+        for language in ["eng", "fra", "spa", "xyz", "sr-Latn"] {
+            let params = CueBuildParams { language, ..params };
+            assert!(
+                may_use_bitmap_lines(&params, &engine, false, false),
+                "{language}"
+            );
+            assert!(
+                !may_use_bitmap_lines(&params, &engine, true, false),
+                "{language}"
+            );
+        }
+        // Match the detector's existing forced-fallback language policy exactly.
+        for (language, expected) in [("eng", true), ("fra", false), ("spa", false), ("xyz", true)] {
+            let params = CueBuildParams { language, ..params };
+            assert_eq!(
+                may_use_bitmap_lines(&params, &engine, false, true),
+                expected,
+                "{language}"
+            );
+        }
+        let disabled = DirectBitmapMock {
+            enabled: false,
+            ..engine
+        };
+        assert!(!may_use_bitmap_lines(&params, &disabled, false, false));
     }
 
     #[test]
@@ -2895,14 +3026,15 @@ mod tests {
             seen_sizes: Vec::new(),
             detector_calls: 0,
         };
-        assert!(may_use_bitmap_lines(&params, &direct, false));
-        assert!(!may_use_bitmap_lines(&params, &direct, true));
-        assert!(!may_use_bitmap_lines(
+        assert!(may_use_bitmap_lines(&params, &direct, false, false));
+        assert!(!may_use_bitmap_lines(&params, &direct, true, false));
+        assert!(may_use_bitmap_lines(
             &CueBuildParams {
                 language: "fra",
                 ..params
             },
             &direct,
+            false,
             false
         ));
         assert!(!may_use_bitmap_lines(
@@ -2911,6 +3043,7 @@ mod tests {
                 ..params
             },
             &direct,
+            false,
             false
         ));
         assert!(!may_use_bitmap_lines(
@@ -2919,6 +3052,7 @@ mod tests {
                 ..params
             },
             &direct,
+            false,
             false
         ));
         let (lines, visible) = extract_subtitle_lines(
@@ -2940,6 +3074,32 @@ mod tests {
         assert_eq!(direct.seen_sizes.len(), 2);
         assert_eq!(direct.detector_calls, 0);
         assert!(lines.iter().all(|line| line.bbox.is_none()));
+
+        for (language, text) in [("fra", "Élève déjà"), ("xyz", "Crème brûlée")] {
+            let mut latin = DirectBitmapMock {
+                enabled: true,
+                responses: [Some(text.to_owned()), Some(text.to_owned())].into(),
+                seen_sizes: Vec::new(),
+                detector_calls: 0,
+            };
+            let latin_params = CueBuildParams { language, ..params };
+            let (lines, _) = extract_subtitle_lines(
+                &sub,
+                &latin_params,
+                1_000,
+                &mut latin,
+                &mut OcrQualityBaseline::default(),
+            )
+            .unwrap();
+            assert_eq!(latin.detector_calls, 0, "{language}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .map(|line| line.text.as_str())
+                    .collect::<Vec<_>>(),
+                [text, text]
+            );
+        }
 
         let mut partial = DirectBitmapMock {
             enabled: true,
@@ -2992,7 +3152,7 @@ mod tests {
             seen_sizes: Vec::new(),
             detector_calls: 0,
         };
-        assert!(!may_use_bitmap_lines(&params, &disabled, false));
+        assert!(!may_use_bitmap_lines(&params, &disabled, false, false));
     }
 
     struct RectangleOcr {

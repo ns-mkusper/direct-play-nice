@@ -29,7 +29,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - run: gh extension install github/gh-actions-lock --pin v0.4.1
@@ -54,7 +54,7 @@ jobs:
           - beta
           - nightly
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: Install Rust
@@ -71,7 +71,7 @@ jobs:
 
       - name: Set up sccache
         id: sccache-setup
-        uses: mozilla-actions/sccache-action@v0.0.5
+        uses: mozilla-actions/sccache-action@v0.0.11
         continue-on-error: true
 
       - name: Install dependencies
@@ -87,7 +87,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg
           key: cargo-vcpkg-linux-v1
@@ -105,7 +105,7 @@ jobs:
 
       - name: Cache vcpkg workspace (cross-branch)
         id: vcpkg-root-cache
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -204,7 +204,7 @@ jobs:
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: vcpkg-logs
           path: |
@@ -250,8 +250,10 @@ jobs:
           DPN_OCR_REQUIRE_GPU: "0"
         run: |
           set -euo pipefail
-          sudo apt-get --assume-yes install tesseract-ocr tesseract-ocr-eng
-          tesseract --list-langs 2>/dev/null | grep -Fx eng
+          sudo apt-get --assume-yes install tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra tesseract-ocr-spa
+          for language in eng fra spa; do
+            tesseract --list-langs 2>/dev/null | grep -Fx "$language"
+          done
 
           # The dynamic ort binding needs a CPU runtime. This is the same ORT
           # version supported by the project's legacy runtime configuration.
@@ -271,7 +273,8 @@ jobs:
           python3 scripts/ocr-tools/prepare_cpu_ocr_models.py "$DPN_OCR_MODEL_DIR"
           unset DPN_OCR_REC_ENGLISH_MODEL DPN_OCR_USE_PPOCRV5_EN_REC DPN_OCR_REC_MULTILINGUAL_MODEL
           unset DPN_OCR_REC_PROFILE_OVERRIDES DPN_OCR_LANGUAGE_SCRIPT_HINTS DPN_OCR_ROUTING_MANIFEST
-          export DPN_OCR_REC_LATIN_MODEL="$DPN_OCR_MODEL_DIR/latin_PP-OCRv3_rec_mobile.onnx"
+          export DPN_OCR_REC_LATIN_MODEL="$DPN_OCR_MODEL_DIR/latin_PP-OCRv5_rec_mobile_ir9.onnx"
+          export DPN_TEST_AUDITED_LATIN_REC_MODEL="$DPN_OCR_REC_LATIN_MODEL"
           export DPN_OCR_REC_JAPANESE_MODEL="$DPN_OCR_MODEL_DIR/japan_PP-OCRv4_rec_mobile.onnx"
           export DPN_OCR_REC_KOREAN_MODEL="$DPN_OCR_MODEL_DIR/korean_PP-OCRv4_rec_mobile.onnx"
           export DPN_OCR_REC_CJK_MODEL="$DPN_OCR_MODEL_DIR/chinese_cht_PP-OCRv3_rec_mobile.onnx"
@@ -294,6 +297,20 @@ jobs:
           # off mode gates only the stable short_words fixture, not all 12.
           DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto run_checked 1 cpu_bitmap_line_route_direct 1
           DPN_OCR_EXPERIMENTAL_BITMAP_LINES=off run_checked 1 cpu_bitmap_line_route_detector_off 1
+          # Strict, accented Latin fixtures must take the direct PGS route with
+          # the independently hashed Latin model, never a detector fallback.
+          run_checked 1 cpu_latin_model_metadata 1
+          run_checked 1 latin_model_dictionary_matches_output 1
+          DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto \
+            run_checked 8 cpu_bitmap_line_route_latin_direct 1
+          DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto \
+            run_checked 8 cpu_bitmap_line_route_latin_direct 0
+          DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=off \
+            run_checked 1 cpu_bitmap_line_route_latin_detector_off 1
+          # A valid English model is not an audited Latin recognizer.
+          DPN_OCR_REC_LATIN_MODEL="$DPN_OCR_MODEL_DIR/en_PP-OCRv3_rec_infer.onnx" \
+            DPN_OCR_FORCE_TESS_NON_ENGLISH=0 DPN_OCR_EXPERIMENTAL_BITMAP_LINES=auto \
+            run_checked 1 cpu_bitmap_line_route_latin_unaudited 1
           # Narrow dialogue remains an opt-in diagnostic: on ARM CPU its exact
           # text currently misrecognizes a glyph. Do not mask or relabel it.
 
@@ -342,7 +359,7 @@ jobs:
 
       - name: Upload OCR fixture eval artifacts (Linux stable)
         if: matrix.toolchain == 'stable'
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ocr-fixture-eval-linux-stable
           path: benchmark_artifacts/ocr_fixture_eval
@@ -350,7 +367,7 @@ jobs:
 
       - name: Upload cargo timings
         if: matrix.toolchain == 'stable'
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: cargo-timings-linux-stable
           path: target/cargo-timings
@@ -384,7 +401,7 @@ jobs:
         -C link-arg=User32.lib
         -C link-arg=Advapi32.lib
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -392,7 +409,7 @@ jobs:
 
       - name: Set up sccache
         id: sccache-setup
-        uses: mozilla-actions/sccache-action@v0.0.5
+        uses: mozilla-actions/sccache-action@v0.0.11
         continue-on-error: true
 
       - name: Set job-level RUSTC_WRAPPER
@@ -410,7 +427,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-win
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg.exe
           key: cargo-vcpkg-windows-v1
@@ -427,14 +444,14 @@ jobs:
           prefix-key: windows-vcpkg-v3-ffmpeg8
 
       - name: Cache OCR models
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: target/ocr-models
           key: ocr-models-windows-v1
 
       - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-win
-        uses: actions/cache/restore@v4.3.0
+        uses: actions/cache/restore@v6.1.0
         continue-on-error: true
         with:
           path: |
@@ -542,7 +559,7 @@ jobs:
 
       - name: Save vcpkg workspace cache
         if: (steps.vcpkg-root-cache-win.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1') && success()
-        uses: actions/cache/save@v4.3.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -562,7 +579,7 @@ jobs:
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: vcpkg-logs-windows
           path: |
@@ -630,7 +647,7 @@ jobs:
       CARGO_TERM_COLOR: always
       VCPKG_ROOT: ${{ github.workspace }}/target/vcpkg
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -639,7 +656,7 @@ jobs:
 
       - name: Set up sccache
         id: sccache-setup
-        uses: mozilla-actions/sccache-action@v0.0.5
+        uses: mozilla-actions/sccache-action@v0.0.11
         continue-on-error: true
 
       - name: Set job-level RUSTC_WRAPPER
@@ -656,7 +673,7 @@ jobs:
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-macos
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.cargo/bin/cargo-vcpkg
           key: cargo-vcpkg-${{ matrix.cache_suffix }}-v1
@@ -674,7 +691,7 @@ jobs:
 
       - name: Restore vcpkg workspace (cross-branch)
         id: vcpkg-root-cache-macos
-        uses: actions/cache/restore@v4.3.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -745,7 +762,7 @@ jobs:
 
       - name: Save vcpkg workspace cache
         if: (steps.vcpkg-root-cache-macos.outputs.cache-hit != 'true' || env.VCPKG_CACHE_INVALID == '1') && success()
-        uses: actions/cache/save@v4.3.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             target/vcpkg/.vcpkg-root
@@ -764,7 +781,7 @@ jobs:
 
       - name: Upload vcpkg logs on failure
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: vcpkg-logs-${{ matrix.cache_suffix }}
           path: |
@@ -812,7 +829,7 @@ jobs:
       DPN_OCR_GOLDEN: "1"
       DPN_OCR_MODEL_DIR: ${{ github.workspace }}/target/ocr-models
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: Install Rust

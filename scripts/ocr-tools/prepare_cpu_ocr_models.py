@@ -18,11 +18,29 @@ URLS = {
     for source, names in (
         (HUGGINGFACE, ("ch_PP-OCRv3_det_infer.onnx", "ch_ppocr_mobile_v2.0_cls_train.onnx",
                        "en_PP-OCRv3_rec_infer.onnx")),
-        (MODELSCOPE, ("latin_PP-OCRv3_rec_mobile.onnx", "japan_PP-OCRv4_rec_mobile.onnx",
-                      "korean_PP-OCRv4_rec_mobile.onnx", "chinese_cht_PP-OCRv3_rec_mobile.onnx")),
+        (MODELSCOPE, ("japan_PP-OCRv4_rec_mobile.onnx", "korean_PP-OCRv4_rec_mobile.onnx",
+                      "chinese_cht_PP-OCRv3_rec_mobile.onnx")),
     )
     for name in names
 }
+# Upstream ships IR v10, which ORT 1.16 rejects. As in models.rs, verify the upstream
+# bytes, then lower only the leading ir_version varint; MODELS pins the result.
+URLS["latin_PP-OCRv5_rec_mobile_ir9.onnx"] = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/"
+    "onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx")
+IR10_UPSTREAM = {
+    "latin_PP-OCRv5_rec_mobile_ir9.onnx":
+        "b20bd37c168a570f583afbc8cd7925603890efbcdc000a59e22c269d160b5f5a",
+}
+
+
+def lower_ir_version(path):
+    """Rewrite a leading `ir_version: 10` field to 9 in place."""
+    data = bytearray(path.read_bytes())
+    if data[:2] != b"\x08\x0a":
+        raise ValueError(f"unexpected ir_version encoding: {path.name}")
+    data[1] = 9
+    path.write_bytes(data)
 
 
 def prepare_models(destination):
@@ -34,6 +52,11 @@ def prepare_models(destination):
         path = destination / name
         subprocess.run(["curl", "--fail", "--location", "--retry", "3", "--silent",
                         "--show-error", "--output", str(path), URLS[name]], check=True)
+        upstream = IR10_UPSTREAM.get(name)
+        if upstream is not None:
+            if sha256_file(path) != upstream:
+                raise ValueError(f"upstream model hash mismatch: {name}")
+            lower_ir_version(path)
         if sha256_file(path) != expected:
             raise ValueError(f"model hash mismatch: {name}")
         print(f"Verified {name}", flush=True)

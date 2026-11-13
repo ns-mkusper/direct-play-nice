@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
       - name: Install kind
         env:
           KIND_VERSION: v0.31.0
@@ -36,7 +36,7 @@ jobs:
         run: bash tests/e2e/servarr/run.sh
       - name: Upload synthetic test results and service logs
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: servarr-kind-e2e
           path: |

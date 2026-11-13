@@ -3,7 +3,7 @@
 //! Initializes ORT environment state, builds OcrLite instances per recognizer
 //! profile, and manages per-thread CUDA device affinity for workers.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, info, warn};
 use ort::session::builder::SessionBuilder;
 use paddle_ocr_rs::ocr_lite::OcrLite;
@@ -13,15 +13,15 @@ use std::sync::atomic::Ordering;
 use super::model_metadata::strip_character_metadata_lf;
 use super::models::PpOcrModels;
 use super::whole_line::{
-    bitmap_line_policy_from_env, read_audited_model, read_pinned_model, BitmapLinePolicy,
-    ExperimentalLineRecognizer, WholeLineRecognizer,
+    bitmap_line_policy_from_env, read_audited_model_for_profile, read_pinned_model,
+    BitmapLinePolicy, ExperimentalLineRecognizer, ProfileLineRecognizers, WholeLineRecognizer,
 };
 use super::{
     build_execution_providers, ensure_ppocr_models, force_cpu_execution_providers,
     resolve_optional_cjk_rec_model, resolve_optional_japanese_rec_model,
     resolve_optional_korean_rec_model, resolve_optional_latin_rec_model,
-    resolve_optional_multilingual_rec_model, skip_ppocr_cls, PpOcrEngine, PpOcrVariant,
-    FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT,
+    resolve_optional_multilingual_rec_model, skip_ppocr_cls, OcrRecProfile, PpOcrEngine,
+    PpOcrVariant, FORCE_CPU_EP, ORT_ENV_GPU_AVAILABLE, ORT_ENV_INIT,
 };
 
 /// Builds a clear GPU-required error with the original initialization failure attached.
@@ -49,7 +49,16 @@ pub(in crate::subtitle_ocr) fn init_ppocr_engine(
     let skip_cls = skip_ppocr_cls(variant, require_gpu);
     if line_policy == BitmapLinePolicy::Required {
         let models = ensure_ppocr_models(model_dir, variant, skip_cls)?;
-        audited_line_models(line_policy, variant, &models)?;
+        audited_line_models(
+            line_policy,
+            variant,
+            &models,
+            OcrRecProfile::English,
+            &models.rec,
+        )?;
+        let latin = resolve_optional_latin_rec_model(model_dir, variant)?
+            .context("bitmap-line OCR requires an audited Latin recognizer")?;
+        audited_line_models(line_policy, variant, &models, OcrRecProfile::Latin, &latin)?;
     }
     if skip_cls {
         info!(
@@ -164,9 +173,25 @@ impl PpOcrEngine {
             models.cls.display(),
             models.rec.display()
         );
-        let line_models = audited_line_models(bitmap_line_policy_from_env()?, variant, &models)?;
+        let policy = bitmap_line_policy_from_env()?;
+        let line_models = audited_line_models(
+            policy,
+            variant,
+            &models,
+            OcrRecProfile::English,
+            &models.rec,
+        )?;
+        let mut latin_line_models = match latin_rec.as_deref() {
+            Some(path) => {
+                audited_line_models(policy, variant, &models, OcrRecProfile::Latin, path)?
+            }
+            None if policy == BitmapLinePolicy::Required => {
+                bail!("bitmap-line OCR requires an audited Latin recognizer")
+            }
+            None => None,
+        };
         let english_ocr = match &line_models {
-            Some(line_models) => line_models.init_english_ocr(variant)?,
+            Some(line_models) => line_models.init_ocr(variant)?,
             None => init_ocr_lite(variant, "english", &models.det, &models.cls, &models.rec)?,
         };
 
@@ -176,9 +201,25 @@ impl PpOcrEngine {
                 variant.label(),
                 latin_rec_path.display()
             );
-            match init_ocr_lite(variant, "latin", &models.det, &models.cls, &latin_rec_path) {
+            let result = match &latin_line_models {
+                Some(audited) => match audited.init_ocr(variant) {
+                    Ok(ocr) => Ok(ocr),
+                    Err(err) if policy == BitmapLinePolicy::Required => Err(err),
+                    Err(err) => {
+                        warn!(
+                            "Latin bitmap-line preflight failed; retaining detector path: {err:#}"
+                        );
+                        latin_line_models = None;
+                        init_ocr_lite(variant, "latin", &models.det, &models.cls, &latin_rec_path)
+                    }
+                },
+                None => init_ocr_lite(variant, "latin", &models.det, &models.cls, &latin_rec_path),
+            };
+            match result {
                 Ok(ocr) => Some(ocr),
+                Err(err) if policy == BitmapLinePolicy::Required => return Err(err),
                 Err(err) => {
+                    latin_line_models = None;
                     warn!(
                         "{} latin rec model failed to initialize; falling back to english rec model only: {:#} (debug: {:?})",
                         variant.label(),
@@ -209,8 +250,10 @@ impl PpOcrEngine {
             init_optional_rec_profile(variant, "korean", &models.det, &models.cls, korean_rec);
         let cjk_ocr = init_optional_rec_profile(variant, "cjk", &models.det, &models.cls, cjk_rec);
 
-        let experimental_lines =
-            line_models.map(|line_models| ExperimentalLineRecognizer::new(line_models.rec));
+        let experimental_lines = ProfileLineRecognizers {
+            english: line_models.map(|models| ExperimentalLineRecognizer::new(models.rec)),
+            latin: latin_line_models.map(|models| ExperimentalLineRecognizer::new(models.rec)),
+        };
         Ok(Self {
             english_ocr,
             latin_ocr,
@@ -276,7 +319,7 @@ struct AuditedLineModels {
 }
 
 impl AuditedLineModels {
-    fn init_english_ocr(&self, variant: PpOcrVariant) -> Result<OcrLite> {
+    fn init_ocr(&self, variant: PpOcrVariant) -> Result<OcrLite> {
         // Validate the corrected class width, then release the preflight session
         // before loading the detector; direct-line recognition initializes lazily.
         drop(WholeLineRecognizer::preflight_audited_model(&self.rec)?);
@@ -294,12 +337,14 @@ fn audited_line_models(
     policy: BitmapLinePolicy,
     variant: PpOcrVariant,
     models: &PpOcrModels,
+    profile: OcrRecProfile,
+    rec_path: &Path,
 ) -> Result<Option<AuditedLineModels>> {
     if policy == BitmapLinePolicy::Off {
         return Ok(None);
     }
     let explicit = policy == BitmapLinePolicy::Required;
-    let rec = match read_audited_model(&models.rec) {
+    let rec = match read_audited_model_for_profile(rec_path, profile) {
         Ok(rec) => rec,
         Err(err) if explicit => return Err(err),
         Err(err) => {
@@ -411,11 +456,24 @@ mod audited_aux_tests {
                 cls: file.path().to_path_buf(),
                 rec: file.path().to_path_buf(),
             };
-            assert!(audited_line_models(BitmapLinePolicy::Required, variant, &models).is_err());
+            assert!(audited_line_models(
+                BitmapLinePolicy::Required,
+                variant,
+                &models,
+                OcrRecProfile::English,
+                &models.rec
+            )
+            .is_err());
             for policy in [BitmapLinePolicy::Auto, BitmapLinePolicy::Off] {
-                assert!(audited_line_models(policy, variant, &models)
-                    .unwrap()
-                    .is_none());
+                assert!(audited_line_models(
+                    policy,
+                    variant,
+                    &models,
+                    OcrRecProfile::English,
+                    &models.rec
+                )
+                .unwrap()
+                .is_none());
             }
         }
     }
