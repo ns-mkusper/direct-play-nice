@@ -15,6 +15,9 @@ env:
 jobs:
   benchmark-runner-smoke:
     name: benchmark-runner-smoke
+    # Dependabot PRs get no repository secrets, and automated dependency bumps
+    # must not run unreviewed on the self-hosted media host.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on:
       - self-hosted
       - Linux
