@@ -239,8 +239,17 @@ jobs:
             export VCPKG_DEFAULT_TRIPLET="x64-windows-static"
             export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static -C link-arg=Mfplat.lib -C link-arg=Strmiids.lib -C link-arg=Mfuuid.lib -C link-arg=Bcrypt.lib -C link-arg=Ncrypt.lib -C link-arg=Crypt32.lib -C link-arg=Secur32.lib -C link-arg=Ole32.lib -C link-arg=User32.lib -C link-arg=Advapi32.lib"
           fi
-          # Actually do builds and make zips and whatnot
-          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            # vcpkg-rs cannot infer the ARM64 triplet ("NotMSVC"); match the
+            # Docker build and name the triplet `cargo vcpkg build` produced.
+            case "${RUNNER_ARCH}" in
+              ARM64) export VCPKGRS_TRIPLET="arm64-linux" ;;
+              X64) export VCPKGRS_TRIPLET="x64-linux" ;;
+            esac
+          fi
+          # Actually do builds and make zips and whatnot. No --print=linkage:
+          # its ldd pass fails on the vcpkg libva that the runner lacks.
+          cargo dist build ${{ needs.plan.outputs.tag-flag }} --allow-dirty --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "cargo dist ran successfully"
       - id: cargo-dist
         name: Post-build
