@@ -42,6 +42,7 @@ pub struct Config {
     pub servarr_language_audit_max_searches: Option<usize>,
     pub servarr_language_audit_no_candidate_cooldown_days: Option<u32>,
     pub servarr_language_audit_latest_missing_no_candidate_cooldown_days: Option<u32>,
+    pub servarr_language_audit_no_candidate_max_cooldown_days: Option<u32>,
     pub servarr_language_audit_stale_queue_days: Option<u32>,
     pub servarr_language_audit_stale_queue_max_removals: Option<usize>,
     pub servarr_language_audit_episode_ids: Option<String>,
@@ -328,6 +329,7 @@ mod tests {
             servarr_language_audit_max_searches = 20
             servarr_language_audit_no_candidate_cooldown_days = 14
             servarr_language_audit_latest_missing_no_candidate_cooldown_days = 2
+            servarr_language_audit_no_candidate_max_cooldown_days = 30
             servarr_language_audit_stale_queue_days = 2
             servarr_language_audit_stale_queue_max_removals = 25
             servarr_language_audit_episode_ids = "1,2,3"
@@ -359,6 +361,10 @@ mod tests {
         assert_eq!(
             cfg.servarr_language_audit_latest_missing_no_candidate_cooldown_days,
             Some(2)
+        );
+        assert_eq!(
+            cfg.servarr_language_audit_no_candidate_max_cooldown_days,
+            Some(30)
         );
         assert_eq!(cfg.servarr_language_audit_stale_queue_days, Some(2));
         assert_eq!(

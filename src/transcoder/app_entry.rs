@@ -244,6 +244,9 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
     } else {
         servarr::IntegrationKind::Sonarr
     };
+    servarr::set_no_candidate_max_cooldown_days(
+        args.servarr_language_audit_no_candidate_max_cooldown_days,
+    );
     let summary = servarr::run_language_audit(
         audit_kind,
         &servarr::ApiSettings {

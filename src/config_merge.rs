@@ -196,6 +196,15 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(
+        matches,
+        "servarr_language_audit_no_candidate_max_cooldown_days",
+    ) {
+        if let Some(days) = cfg.servarr_language_audit_no_candidate_max_cooldown_days {
+            args.servarr_language_audit_no_candidate_max_cooldown_days = days;
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_audit_stale_queue_days") {
         if let Some(days) = cfg.servarr_language_audit_stale_queue_days {
             args.servarr_language_audit_stale_queue_days = days;
@@ -456,6 +465,7 @@ mod tests {
             servarr_language_audit_max_searches: Some(20),
             servarr_language_audit_no_candidate_cooldown_days: Some(14),
             servarr_language_audit_latest_missing_no_candidate_cooldown_days: Some(2),
+            servarr_language_audit_no_candidate_max_cooldown_days: Some(30),
             servarr_language_audit_stale_queue_days: Some(2),
             servarr_language_audit_stale_queue_max_removals: Some(25),
             servarr_language_audit_episode_ids: Some("77,88".to_string()),
@@ -484,6 +494,10 @@ mod tests {
         assert_eq!(
             args.servarr_language_audit_latest_missing_no_candidate_cooldown_days,
             Some(2)
+        );
+        assert_eq!(
+            args.servarr_language_audit_no_candidate_max_cooldown_days,
+            30
         );
         assert_eq!(args.servarr_language_audit_stale_queue_days, 2);
         assert_eq!(args.servarr_language_audit_stale_queue_max_removals, 25);
