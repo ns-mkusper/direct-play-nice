@@ -299,6 +299,31 @@ fn run_sonarr_history_language_audit(
     Ok(summary)
 }
 
+/// Moves the targets the audit never searched to the front, then those it
+/// searched longest ago, keeping the given order among equals. Each run's
+/// search budget then works through the whole library instead of searching
+/// the front of it again every night.
+fn order_by_last_search<T>(
+    client: &ApiClient,
+    target_noun: &str,
+    items: &mut [T],
+    target_id: impl Fn(&T) -> i64,
+) {
+    match cache::last_searches(client.kind, target_noun) {
+        Ok(last_searches) => items.sort_by_key(|item| {
+            last_searches
+                .get(&target_id(item))
+                .copied()
+                .unwrap_or_default()
+        }),
+        Err(err) => warn!(
+            "{} language audit could not read its search history; keeping the library order: {:#}",
+            client.kind.label(),
+            err
+        ),
+    }
+}
+
 fn run_sonarr_inventory_language_audit(
     client: &ApiClient,
     requirements: &LanguageRequirements,
@@ -307,7 +332,9 @@ fn run_sonarr_inventory_language_audit(
     active_queue_episode_ids: &BTreeSet<i64>,
 ) -> Result<AuditSummary> {
     let items = if audit_options.episode_ids.is_empty() {
-        client.sonarr_inventory_episode_files()?
+        let mut items = client.sonarr_inventory_episode_files()?;
+        order_by_last_search(client, "episode", &mut items, |(episode_id, _)| *episode_id);
+        items
     } else {
         client.sonarr_inventory_episode_files_for_ids(&audit_options.episode_ids)?
     };
@@ -378,6 +405,9 @@ fn run_sonarr_latest_missing_language_audit(
             .air_day
             .cmp(&left.air_day)
             .then_with(|| right.episode_id.cmp(&left.episode_id))
+    });
+    order_by_last_search(client, "episode", &mut missing_items, |item| {
+        item.episode_id
     });
 
     let no_candidate_cooldown_days = audit_options
@@ -515,6 +545,14 @@ fn process_sonarr_missing_language_audit_item(
     }
     *searched += 1;
     summary.searched += 1;
+    if !redownload_options.dry_run {
+        if let Err(err) = cache::record_search(client.kind, "episode", episode_id) {
+            warn!(
+                "Sonarr language audit could not record the search for episode {}: {:#}",
+                episode_id, err
+            );
+        }
+    }
 
     let history_id = match history_id {
         Some(id) => Some(id),
@@ -530,29 +568,13 @@ fn process_sonarr_missing_language_audit_item(
             }
         },
     };
-    let Some(history_id) = history_id else {
-        if redownload_options.dry_run {
-            client.apply_audit_redownload_outcome(
-                Target::SonarrEpisode { episode_id },
-                0,
-                requirements,
-                redownload_options,
-                no_candidate_cooldown_days,
-                summary,
-            );
-        } else {
-            summary.errors += 1;
-            warn!(
-                "Sonarr inventory language audit could not identify import history for episode {}; refusing to grab replacement.",
-                episode_id
-            );
-        }
-        return;
+    let history = match history_id {
+        Some(id) => HistoryToFail::Id(id),
+        None => HistoryToFail::Untracked,
     };
-
     client.apply_audit_redownload_outcome(
         Target::SonarrEpisode { episode_id },
-        history_id,
+        history,
         requirements,
         redownload_options,
         no_candidate_cooldown_days,
@@ -655,7 +677,8 @@ fn run_radarr_inventory_language_audit(
     audit_options: AuditOptions,
     active_queue_movie_ids: &BTreeSet<i64>,
 ) -> Result<AuditSummary> {
-    let items = client.radarr_inventory_movie_file_items()?;
+    let mut items = client.radarr_inventory_movie_file_items()?;
+    order_by_last_search(client, "movie", &mut items, |item| item.movie_id);
     let mut summary = AuditSummary::default();
     let mut searched = 0usize;
 
@@ -708,6 +731,7 @@ fn run_radarr_latest_missing_language_audit(
             .cmp(&left.release_day)
             .then_with(|| right.movie_id.cmp(&left.movie_id))
     });
+    order_by_last_search(client, "movie", &mut missing_items, |item| item.movie_id);
 
     let no_candidate_cooldown_days = audit_options
         .latest_missing_no_candidate_cooldown_days
@@ -831,6 +855,14 @@ fn process_radarr_missing_language_audit_item(
     }
     *searched += 1;
     summary.searched += 1;
+    if !redownload_options.dry_run {
+        if let Err(err) = cache::record_search(client.kind, "movie", movie_id) {
+            warn!(
+                "Radarr language audit could not record the search for movie {}: {:#}",
+                movie_id, err
+            );
+        }
+    }
 
     let history_id = match history_id {
         Some(id) => Some(id),
@@ -846,29 +878,13 @@ fn process_radarr_missing_language_audit_item(
             }
         },
     };
-    let Some(history_id) = history_id else {
-        if redownload_options.dry_run {
-            client.apply_audit_redownload_outcome(
-                Target::RadarrMovie { movie_id },
-                0,
-                requirements,
-                redownload_options,
-                no_candidate_cooldown_days,
-                summary,
-            );
-        } else {
-            summary.errors += 1;
-            warn!(
-                "Radarr inventory language audit could not identify import history for movie {}; refusing to grab replacement.",
-                movie_id
-            );
-        }
-        return;
+    let history = match history_id {
+        Some(id) => HistoryToFail::Id(id),
+        None => HistoryToFail::Untracked,
     };
-
     client.apply_audit_redownload_outcome(
         Target::RadarrMovie { movie_id },
-        history_id,
+        history,
         requirements,
         redownload_options,
         no_candidate_cooldown_days,
@@ -903,6 +919,9 @@ enum HistoryToFail {
     /// The record of the download that triggered this Arr custom-script
     /// event, resolved from the event environment.
     CurrentDownload,
+    /// The current file has no import record in Arr history (a library scan
+    /// or manual copy added it), so there is no download to blocklist.
+    Untracked,
 }
 
 impl HistoryToFail {
@@ -911,6 +930,9 @@ impl HistoryToFail {
             HistoryToFail::Id(id) => format!("history item {id}"),
             HistoryToFail::CurrentDownload => {
                 "the current history item if identifiable".to_string()
+            }
+            HistoryToFail::Untracked => {
+                "nothing (the current file has no import history)".to_string()
             }
         }
     }
@@ -1069,7 +1091,7 @@ impl ApiClient {
     fn redownload_for_target_with_preference(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         prefer_non_torrent: bool,
@@ -1078,7 +1100,7 @@ impl ApiClient {
         self.redownload_from_releases(
             &releases,
             target,
-            HistoryToFail::Id(history_id),
+            history,
             requirements,
             options,
             prefer_non_torrent,
@@ -1142,13 +1164,14 @@ impl ApiClient {
         }
 
         let history_id = match history {
-            HistoryToFail::Id(id) => id,
-            HistoryToFail::CurrentDownload => self.find_current_history_id(self.kind)?.ok_or_else(|| {
+            HistoryToFail::Id(id) => Some(id),
+            HistoryToFail::CurrentDownload => Some(self.find_current_history_id(self.kind)?.ok_or_else(|| {
                 anyhow!(
                     "{} found a verified replacement but could not identify the current download history record to blacklist; refusing to grab replacement.",
                     label
                 )
-            })?,
+            })?),
+            HistoryToFail::Untracked => None,
         };
 
         let mut attempts = 1;
@@ -1181,13 +1204,15 @@ impl ApiClient {
         }
 
         let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
-        let failed_id = self.history_id_to_mark_failed(target, history_id);
-        self.mark_history_failed(failed_id)?;
-        info!(
-            "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
-            label, failed_id
-        );
-        if matches!(history, HistoryToFail::Id(_)) {
+        if let Some(history_id) = history_id {
+            let failed_id = self.history_id_to_mark_failed(target, history_id);
+            self.mark_history_failed(failed_id)?;
+            info!(
+                "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
+                label, failed_id
+            );
+        }
+        if !matches!(history, HistoryToFail::CurrentDownload) {
             // Audit grabs are checked by the next audit run once Arr imports them.
             let guid = release
                 .get("guid")
@@ -1558,6 +1583,7 @@ impl ApiClient {
                         })
                         .map(ToOwned::to_owned),
                     HistoryToFail::CurrentDownload => download_id(self.kind),
+                    HistoryToFail::Untracked => None,
                 };
                 if let Some(download_id) = current_download_id.filter(|id| !id.is_empty()) {
                     titles.extend(
@@ -2500,7 +2526,7 @@ impl ApiClient {
         };
         self.apply_audit_redownload_outcome_with_preference(
             Target::SonarrEpisode { episode_id },
-            history_id,
+            HistoryToFail::Id(history_id),
             requirements,
             options,
             no_candidate_cooldown_days,
@@ -2760,7 +2786,7 @@ impl ApiClient {
     fn apply_audit_redownload_outcome(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         no_candidate_cooldown_days: u32,
@@ -2768,7 +2794,7 @@ impl ApiClient {
     ) {
         self.apply_audit_redownload_outcome_with_preference(
             target,
-            history_id,
+            history,
             requirements,
             options,
             no_candidate_cooldown_days,
@@ -2781,7 +2807,7 @@ impl ApiClient {
     fn apply_audit_redownload_outcome_with_preference(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         no_candidate_cooldown_days: u32,
@@ -2792,7 +2818,7 @@ impl ApiClient {
         let target_id = target.id();
         match self.redownload_for_target_with_preference(
             target,
-            history_id,
+            history,
             requirements,
             options,
             prefer_non_torrent,
@@ -7009,7 +7035,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7056,7 +7082,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7112,7 +7138,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::RadarrMovie { movie_id: 5 },
-                70,
+                HistoryToFail::Id(70),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7152,7 +7178,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7182,7 +7208,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7224,7 +7250,7 @@ mod tests {
         let err = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7302,7 +7328,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7402,7 +7428,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7652,7 +7678,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7683,7 +7709,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7742,7 +7768,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::RadarrMovie { movie_id: 5 },
-                70,
+                HistoryToFail::Id(70),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7773,7 +7799,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
