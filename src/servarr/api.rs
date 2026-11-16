@@ -299,6 +299,16 @@ fn run_sonarr_history_language_audit(
     Ok(summary)
 }
 
+/// Dubs and translated releases of a new episode or movie often appear a few
+/// weeks after the original. The latest-missing audit keeps searching targets
+/// released this recently ahead of the backlog, every cooldown period, without
+/// letting repeated misses lengthen the cooldown.
+const RECENT_RELEASE_DAYS: i64 = 84;
+
+fn is_recent_release(release_day: Option<i64>, today: i64) -> bool {
+    release_day.is_some_and(|day| day <= today && today - day <= RECENT_RELEASE_DAYS)
+}
+
 /// Moves the targets the audit never searched to the front, then those it
 /// searched longest ago, keeping the given order among equals. Each run's
 /// search budget then works through the whole library instead of searching
@@ -406,9 +416,18 @@ fn run_sonarr_latest_missing_language_audit(
             .cmp(&left.air_day)
             .then_with(|| right.episode_id.cmp(&left.episode_id))
     });
-    order_by_last_search(client, "episode", &mut missing_items, |item| {
-        item.episode_id
-    });
+    // Recent releases first, newest first; the backlog rotates behind them.
+    let today = current_day_number();
+    let backlog_start = missing_items
+        .iter()
+        .position(|item| !is_recent_release(item.air_day, today))
+        .unwrap_or(missing_items.len());
+    order_by_last_search(
+        client,
+        "episode",
+        &mut missing_items[backlog_start..],
+        |item| item.episode_id,
+    );
 
     let no_candidate_cooldown_days = audit_options
         .latest_missing_no_candidate_cooldown_days
@@ -426,6 +445,7 @@ fn run_sonarr_latest_missing_language_audit(
             redownload_options,
             audit_options.max_searches,
             no_candidate_cooldown_days,
+            is_recent_release(item.air_day, today),
             active_queue_episode_ids,
             &mut searched,
             &mut summary,
@@ -465,6 +485,7 @@ fn process_sonarr_language_audit_item(
         redownload_options,
         max_searches,
         no_candidate_cooldown_days,
+        false,
         active_queue_episode_ids,
         searched,
         summary,
@@ -506,6 +527,7 @@ fn process_sonarr_missing_language_audit_item(
     redownload_options: RedownloadOptions,
     max_searches: usize,
     no_candidate_cooldown_days: u32,
+    recent_release: bool,
     active_queue_episode_ids: &BTreeSet<i64>,
     searched: &mut usize,
     summary: &mut AuditSummary,
@@ -524,6 +546,7 @@ fn process_sonarr_missing_language_audit_item(
             episode_id,
             requirements,
             no_candidate_cooldown_days,
+            !recent_release,
         ) {
             Ok(Some(days_remaining)) => {
                 summary.skipped_no_candidate_cooldown += 1;
@@ -731,7 +754,18 @@ fn run_radarr_latest_missing_language_audit(
             .cmp(&left.release_day)
             .then_with(|| right.movie_id.cmp(&left.movie_id))
     });
-    order_by_last_search(client, "movie", &mut missing_items, |item| item.movie_id);
+    // Recent releases first, newest first; the backlog rotates behind them.
+    let today = current_day_number();
+    let backlog_start = missing_items
+        .iter()
+        .position(|item| !is_recent_release(item.release_day, today))
+        .unwrap_or(missing_items.len());
+    order_by_last_search(
+        client,
+        "movie",
+        &mut missing_items[backlog_start..],
+        |item| item.movie_id,
+    );
 
     let no_candidate_cooldown_days = audit_options
         .latest_missing_no_candidate_cooldown_days
@@ -749,6 +783,7 @@ fn run_radarr_latest_missing_language_audit(
             redownload_options,
             audit_options.max_searches,
             no_candidate_cooldown_days,
+            is_recent_release(item.release_day, today),
             active_queue_movie_ids,
             &mut searched,
             &mut summary,
@@ -786,6 +821,7 @@ fn process_radarr_language_audit_item(
         redownload_options,
         max_searches,
         no_candidate_cooldown_days,
+        false,
         active_queue_movie_ids,
         searched,
         summary,
@@ -816,6 +852,7 @@ fn process_radarr_missing_language_audit_item(
     redownload_options: RedownloadOptions,
     max_searches: usize,
     no_candidate_cooldown_days: u32,
+    recent_release: bool,
     active_queue_movie_ids: &BTreeSet<i64>,
     searched: &mut usize,
     summary: &mut AuditSummary,
@@ -834,6 +871,7 @@ fn process_radarr_missing_language_audit_item(
             movie_id,
             requirements,
             no_candidate_cooldown_days,
+            !recent_release,
         ) {
             Ok(Some(days_remaining)) => {
                 summary.skipped_no_candidate_cooldown += 1;
@@ -5325,6 +5363,129 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_latest_missing_audit_searches_recent_release_before_backlog() {
+        // The recent episode was searched last run, the old one never; the
+        // recent one still goes first.
+        let _caches = use_temp_caches();
+        cache::record_search(IntegrationKind::Sonarr, "episode", 78).unwrap();
+        let aired_last_week = iso_date_days_ago(7);
+        let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([
+                    {
+                        "id": 77,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": "2026-01-01T00:00:00Z",
+                        "episodeFileId": 555,
+                        "episodeFile": {
+                            "id": 555,
+                            "path": "/media/old.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    },
+                    {
+                        "id": 78,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": aired_last_week,
+                        "episodeFileId": 556,
+                        "episodeFile": {
+                            "id": 556,
+                            "path": "/media/new.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    }
+                ])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "78".into()))
+            .with_status(200)
+            .with_body(json!([]).to_string())
+            .create();
+        let backlog_search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::LatestMissing,
+                lookback_days: 30,
+                max_searches: 1,
+                no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
+                stale_queue_max_removals: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 2);
+        assert_eq!(summary.missing, 2);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.no_candidate, 1);
+        queue.assert();
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
+        backlog_search.assert();
+    }
+
+    /// `days` days before today as an ISO-8601 UTC timestamp.
+    fn iso_date_days_ago(days: i64) -> String {
+        // Inverse of days_from_civil.
+        let z = current_day_number() - days + 719_468 - days_from_civil(1970, 1, 1);
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        let date = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+        assert_eq!(iso_day_number(&date), Some(current_day_number() - days));
+        date
+    }
+
+    #[test]
     fn sonarr_inventory_audit_skips_redownload_for_active_queue_episode() {
         let mut server = mockito::Server::new();
         let queue = server
@@ -7746,7 +7907,8 @@ mod tests {
             "episode",
             77,
             &english_audio(),
-            14
+            14,
+            true,
         )
         .unwrap()
         .is_some());
@@ -7823,7 +7985,8 @@ mod tests {
                 "episode",
                 77,
                 &english_audio(),
-                14
+                14,
+                true,
             )
             .unwrap(),
             None
