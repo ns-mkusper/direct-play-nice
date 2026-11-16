@@ -133,12 +133,16 @@ pub fn record_assessment(
     record_assessment_at_path(&cache_path, kind, path, requirements, report)
 }
 
+/// Days left on a target's no-candidate cooldown. With `backoff`, repeated
+/// misses lengthen it (see [`set_no_candidate_max_cooldown_days`]); without,
+/// it stays at `cooldown_days`.
 pub fn no_candidate_cooldown_remaining_days(
     kind: IntegrationKind,
     target_noun: &str,
     target_id: i64,
     requirements: &LanguageRequirements,
     cooldown_days: u32,
+    backoff: bool,
 ) -> Result<Option<u32>> {
     if cooldown_days == 0 {
         return Ok(None);
@@ -149,7 +153,11 @@ pub fn no_candidate_cooldown_remaining_days(
     let records = read_no_candidate_records(&cache_path)?;
     let key = no_candidate_key(kind, target_noun, target_id);
     let now = now_unix_secs();
-    let max_days = NO_CANDIDATE_MAX_COOLDOWN_DAYS.load(Ordering::SeqCst);
+    let max_days = if backoff {
+        NO_CANDIDATE_MAX_COOLDOWN_DAYS.load(Ordering::SeqCst)
+    } else {
+        cooldown_days
+    };
     Ok(records
         .into_iter()
         .find(|record| record.key == key && record.requirements == *requirements)
@@ -749,6 +757,7 @@ mod tests {
             42,
             &requirements,
             14,
+            true,
         )
         .unwrap();
         assert_eq!(remaining, Some(14));
@@ -765,6 +774,7 @@ mod tests {
                 42,
                 &different_requirements,
                 14,
+                true,
             )
             .unwrap(),
             None
