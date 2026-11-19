@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use log::warn;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
@@ -132,12 +133,16 @@ pub fn record_assessment(
     record_assessment_at_path(&cache_path, kind, path, requirements, report)
 }
 
+/// Days left on a target's no-candidate cooldown. With `backoff`, repeated
+/// misses lengthen it (see [`set_no_candidate_max_cooldown_days`]); without,
+/// it stays at `cooldown_days`.
 pub fn no_candidate_cooldown_remaining_days(
     kind: IntegrationKind,
     target_noun: &str,
     target_id: i64,
     requirements: &LanguageRequirements,
     cooldown_days: u32,
+    backoff: bool,
 ) -> Result<Option<u32>> {
     if cooldown_days == 0 {
         return Ok(None);
@@ -148,7 +153,11 @@ pub fn no_candidate_cooldown_remaining_days(
     let records = read_no_candidate_records(&cache_path)?;
     let key = no_candidate_key(kind, target_noun, target_id);
     let now = now_unix_secs();
-    let max_days = NO_CANDIDATE_MAX_COOLDOWN_DAYS.load(Ordering::SeqCst);
+    let max_days = if backoff {
+        NO_CANDIDATE_MAX_COOLDOWN_DAYS.load(Ordering::SeqCst)
+    } else {
+        cooldown_days
+    };
     Ok(records
         .into_iter()
         .find(|record| record.key == key && record.requirements == *requirements)
@@ -207,6 +216,40 @@ pub fn clear_no_candidate(kind: IntegrationKind, target_noun: &str, target_id: i
         }
         write_json_atomically(&cache_path, "language no-candidate cache", &records)
     })
+}
+
+/// Remembers that the audit searched releases for a target, so later runs
+/// can start with the targets that have waited longest.
+pub fn record_search(kind: IntegrationKind, target_noun: &str, target_id: i64) -> Result<()> {
+    if writes_disabled() {
+        return Ok(());
+    }
+    let Some(cache_path) = resolve_search_cache_path() else {
+        return Ok(());
+    };
+    with_cache_lock(&cache_path, "language search cache", || {
+        let mut searches = read_searches(&cache_path)?;
+        searches.insert(
+            no_candidate_key(kind, target_noun, target_id),
+            now_unix_secs(),
+        );
+        write_json_atomically(&cache_path, "language search cache", &searches)
+    })
+}
+
+/// When the audit last searched each `target_noun` of `kind`, by target id.
+pub fn last_searches(kind: IntegrationKind, target_noun: &str) -> Result<HashMap<i64, u64>> {
+    let Some(cache_path) = resolve_search_cache_path() else {
+        return Ok(HashMap::new());
+    };
+    let prefix = format!("{:?}:{}:", kind, target_noun);
+    Ok(read_searches(&cache_path)?
+        .into_iter()
+        .filter_map(|(key, searched_at)| {
+            let id = key.strip_prefix(&prefix)?.parse().ok()?;
+            Some((id, searched_at))
+        })
+        .collect())
 }
 
 /// Remembers a replacement grabbed by the audit; replaces any earlier
@@ -398,6 +441,26 @@ fn read_no_candidate_records(path: &Path) -> Result<Vec<NoCandidateRecord>> {
     }
 }
 
+fn read_searches(path: &Path) -> Result<BTreeMap<String, u64>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(searches) => Ok(searches),
+            Err(err) => {
+                warn!(
+                    "Ignoring corrupt language search cache '{}': {}",
+                    path.display(),
+                    err
+                );
+                Ok(BTreeMap::new())
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(err) => {
+            Err(err).with_context(|| format!("reading language search cache '{}'", path.display()))
+        }
+    }
+}
+
 fn with_cache_lock<T>(cache_path: &Path, label: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent)
@@ -473,6 +536,14 @@ fn resolve_no_candidate_cache_path() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     resolve_cache_path().map(|path| path.with_file_name("servarr-language-no-candidate-cache.json"))
+}
+
+fn resolve_search_cache_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    return test_cache_paths()
+        .map(|(_, no_candidates)| no_candidates.with_file_name("servarr-language-searches.json"));
+    #[cfg(not(test))]
+    resolve_cache_path().map(|path| path.with_file_name("servarr-language-searches.json"))
 }
 
 fn no_candidate_key(kind: IntegrationKind, target_noun: &str, target_id: i64) -> String {
@@ -686,6 +757,7 @@ mod tests {
             42,
             &requirements,
             14,
+            true,
         )
         .unwrap();
         assert_eq!(remaining, Some(14));
@@ -702,6 +774,7 @@ mod tests {
                 42,
                 &different_requirements,
                 14,
+                true,
             )
             .unwrap(),
             None

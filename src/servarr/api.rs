@@ -299,6 +299,41 @@ fn run_sonarr_history_language_audit(
     Ok(summary)
 }
 
+/// Dubs and translated releases of a new episode or movie often appear a few
+/// weeks after the original. The latest-missing audit keeps searching targets
+/// released this recently ahead of the backlog, every cooldown period, without
+/// letting repeated misses lengthen the cooldown.
+const RECENT_RELEASE_DAYS: i64 = 84;
+
+fn is_recent_release(release_day: Option<i64>, today: i64) -> bool {
+    release_day.is_some_and(|day| day <= today && today - day <= RECENT_RELEASE_DAYS)
+}
+
+/// Moves the targets the audit never searched to the front, then those it
+/// searched longest ago, keeping the given order among equals. Each run's
+/// search budget then works through the whole library instead of searching
+/// the front of it again every night.
+fn order_by_last_search<T>(
+    client: &ApiClient,
+    target_noun: &str,
+    items: &mut [T],
+    target_id: impl Fn(&T) -> i64,
+) {
+    match cache::last_searches(client.kind, target_noun) {
+        Ok(last_searches) => items.sort_by_key(|item| {
+            last_searches
+                .get(&target_id(item))
+                .copied()
+                .unwrap_or_default()
+        }),
+        Err(err) => warn!(
+            "{} language audit could not read its search history; keeping the library order: {:#}",
+            client.kind.label(),
+            err
+        ),
+    }
+}
+
 fn run_sonarr_inventory_language_audit(
     client: &ApiClient,
     requirements: &LanguageRequirements,
@@ -307,7 +342,9 @@ fn run_sonarr_inventory_language_audit(
     active_queue_episode_ids: &BTreeSet<i64>,
 ) -> Result<AuditSummary> {
     let items = if audit_options.episode_ids.is_empty() {
-        client.sonarr_inventory_episode_files()?
+        let mut items = client.sonarr_inventory_episode_files()?;
+        order_by_last_search(client, "episode", &mut items, |(episode_id, _)| *episode_id);
+        items
     } else {
         client.sonarr_inventory_episode_files_for_ids(&audit_options.episode_ids)?
     };
@@ -379,6 +416,18 @@ fn run_sonarr_latest_missing_language_audit(
             .cmp(&left.air_day)
             .then_with(|| right.episode_id.cmp(&left.episode_id))
     });
+    // Recent releases first, newest first; the backlog rotates behind them.
+    let today = current_day_number();
+    let backlog_start = missing_items
+        .iter()
+        .position(|item| !is_recent_release(item.air_day, today))
+        .unwrap_or(missing_items.len());
+    order_by_last_search(
+        client,
+        "episode",
+        &mut missing_items[backlog_start..],
+        |item| item.episode_id,
+    );
 
     let no_candidate_cooldown_days = audit_options
         .latest_missing_no_candidate_cooldown_days
@@ -396,6 +445,7 @@ fn run_sonarr_latest_missing_language_audit(
             redownload_options,
             audit_options.max_searches,
             no_candidate_cooldown_days,
+            is_recent_release(item.air_day, today),
             active_queue_episode_ids,
             &mut searched,
             &mut summary,
@@ -435,6 +485,7 @@ fn process_sonarr_language_audit_item(
         redownload_options,
         max_searches,
         no_candidate_cooldown_days,
+        false,
         active_queue_episode_ids,
         searched,
         summary,
@@ -476,6 +527,7 @@ fn process_sonarr_missing_language_audit_item(
     redownload_options: RedownloadOptions,
     max_searches: usize,
     no_candidate_cooldown_days: u32,
+    recent_release: bool,
     active_queue_episode_ids: &BTreeSet<i64>,
     searched: &mut usize,
     summary: &mut AuditSummary,
@@ -494,6 +546,7 @@ fn process_sonarr_missing_language_audit_item(
             episode_id,
             requirements,
             no_candidate_cooldown_days,
+            !recent_release,
         ) {
             Ok(Some(days_remaining)) => {
                 summary.skipped_no_candidate_cooldown += 1;
@@ -515,6 +568,14 @@ fn process_sonarr_missing_language_audit_item(
     }
     *searched += 1;
     summary.searched += 1;
+    if !redownload_options.dry_run {
+        if let Err(err) = cache::record_search(client.kind, "episode", episode_id) {
+            warn!(
+                "Sonarr language audit could not record the search for episode {}: {:#}",
+                episode_id, err
+            );
+        }
+    }
 
     let history_id = match history_id {
         Some(id) => Some(id),
@@ -530,29 +591,13 @@ fn process_sonarr_missing_language_audit_item(
             }
         },
     };
-    let Some(history_id) = history_id else {
-        if redownload_options.dry_run {
-            client.apply_audit_redownload_outcome(
-                Target::SonarrEpisode { episode_id },
-                0,
-                requirements,
-                redownload_options,
-                no_candidate_cooldown_days,
-                summary,
-            );
-        } else {
-            summary.errors += 1;
-            warn!(
-                "Sonarr inventory language audit could not identify import history for episode {}; refusing to grab replacement.",
-                episode_id
-            );
-        }
-        return;
+    let history = match history_id {
+        Some(id) => HistoryToFail::Id(id),
+        None => HistoryToFail::Untracked,
     };
-
     client.apply_audit_redownload_outcome(
         Target::SonarrEpisode { episode_id },
-        history_id,
+        history,
         requirements,
         redownload_options,
         no_candidate_cooldown_days,
@@ -655,7 +700,8 @@ fn run_radarr_inventory_language_audit(
     audit_options: AuditOptions,
     active_queue_movie_ids: &BTreeSet<i64>,
 ) -> Result<AuditSummary> {
-    let items = client.radarr_inventory_movie_file_items()?;
+    let mut items = client.radarr_inventory_movie_file_items()?;
+    order_by_last_search(client, "movie", &mut items, |item| item.movie_id);
     let mut summary = AuditSummary::default();
     let mut searched = 0usize;
 
@@ -708,6 +754,18 @@ fn run_radarr_latest_missing_language_audit(
             .cmp(&left.release_day)
             .then_with(|| right.movie_id.cmp(&left.movie_id))
     });
+    // Recent releases first, newest first; the backlog rotates behind them.
+    let today = current_day_number();
+    let backlog_start = missing_items
+        .iter()
+        .position(|item| !is_recent_release(item.release_day, today))
+        .unwrap_or(missing_items.len());
+    order_by_last_search(
+        client,
+        "movie",
+        &mut missing_items[backlog_start..],
+        |item| item.movie_id,
+    );
 
     let no_candidate_cooldown_days = audit_options
         .latest_missing_no_candidate_cooldown_days
@@ -725,6 +783,7 @@ fn run_radarr_latest_missing_language_audit(
             redownload_options,
             audit_options.max_searches,
             no_candidate_cooldown_days,
+            is_recent_release(item.release_day, today),
             active_queue_movie_ids,
             &mut searched,
             &mut summary,
@@ -762,6 +821,7 @@ fn process_radarr_language_audit_item(
         redownload_options,
         max_searches,
         no_candidate_cooldown_days,
+        false,
         active_queue_movie_ids,
         searched,
         summary,
@@ -792,6 +852,7 @@ fn process_radarr_missing_language_audit_item(
     redownload_options: RedownloadOptions,
     max_searches: usize,
     no_candidate_cooldown_days: u32,
+    recent_release: bool,
     active_queue_movie_ids: &BTreeSet<i64>,
     searched: &mut usize,
     summary: &mut AuditSummary,
@@ -810,6 +871,7 @@ fn process_radarr_missing_language_audit_item(
             movie_id,
             requirements,
             no_candidate_cooldown_days,
+            !recent_release,
         ) {
             Ok(Some(days_remaining)) => {
                 summary.skipped_no_candidate_cooldown += 1;
@@ -831,6 +893,14 @@ fn process_radarr_missing_language_audit_item(
     }
     *searched += 1;
     summary.searched += 1;
+    if !redownload_options.dry_run {
+        if let Err(err) = cache::record_search(client.kind, "movie", movie_id) {
+            warn!(
+                "Radarr language audit could not record the search for movie {}: {:#}",
+                movie_id, err
+            );
+        }
+    }
 
     let history_id = match history_id {
         Some(id) => Some(id),
@@ -846,29 +916,13 @@ fn process_radarr_missing_language_audit_item(
             }
         },
     };
-    let Some(history_id) = history_id else {
-        if redownload_options.dry_run {
-            client.apply_audit_redownload_outcome(
-                Target::RadarrMovie { movie_id },
-                0,
-                requirements,
-                redownload_options,
-                no_candidate_cooldown_days,
-                summary,
-            );
-        } else {
-            summary.errors += 1;
-            warn!(
-                "Radarr inventory language audit could not identify import history for movie {}; refusing to grab replacement.",
-                movie_id
-            );
-        }
-        return;
+    let history = match history_id {
+        Some(id) => HistoryToFail::Id(id),
+        None => HistoryToFail::Untracked,
     };
-
     client.apply_audit_redownload_outcome(
         Target::RadarrMovie { movie_id },
-        history_id,
+        history,
         requirements,
         redownload_options,
         no_candidate_cooldown_days,
@@ -903,6 +957,9 @@ enum HistoryToFail {
     /// The record of the download that triggered this Arr custom-script
     /// event, resolved from the event environment.
     CurrentDownload,
+    /// The current file has no import record in Arr history (a library scan
+    /// or manual copy added it), so there is no download to blocklist.
+    Untracked,
 }
 
 impl HistoryToFail {
@@ -911,6 +968,9 @@ impl HistoryToFail {
             HistoryToFail::Id(id) => format!("history item {id}"),
             HistoryToFail::CurrentDownload => {
                 "the current history item if identifiable".to_string()
+            }
+            HistoryToFail::Untracked => {
+                "nothing (the current file has no import history)".to_string()
             }
         }
     }
@@ -1069,7 +1129,7 @@ impl ApiClient {
     fn redownload_for_target_with_preference(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         prefer_non_torrent: bool,
@@ -1078,7 +1138,7 @@ impl ApiClient {
         self.redownload_from_releases(
             &releases,
             target,
-            HistoryToFail::Id(history_id),
+            history,
             requirements,
             options,
             prefer_non_torrent,
@@ -1142,13 +1202,14 @@ impl ApiClient {
         }
 
         let history_id = match history {
-            HistoryToFail::Id(id) => id,
-            HistoryToFail::CurrentDownload => self.find_current_history_id(self.kind)?.ok_or_else(|| {
+            HistoryToFail::Id(id) => Some(id),
+            HistoryToFail::CurrentDownload => Some(self.find_current_history_id(self.kind)?.ok_or_else(|| {
                 anyhow!(
                     "{} found a verified replacement but could not identify the current download history record to blacklist; refusing to grab replacement.",
                     label
                 )
-            })?,
+            })?),
+            HistoryToFail::Untracked => None,
         };
 
         let mut attempts = 1;
@@ -1181,13 +1242,15 @@ impl ApiClient {
         }
 
         let title = release_title(release).unwrap_or_else(|| "<unknown release>".to_string());
-        let failed_id = self.history_id_to_mark_failed(target, history_id);
-        self.mark_history_failed(failed_id)?;
-        info!(
-            "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
-            label, failed_id
-        );
-        if matches!(history, HistoryToFail::Id(_)) {
+        if let Some(history_id) = history_id {
+            let failed_id = self.history_id_to_mark_failed(target, history_id);
+            self.mark_history_failed(failed_id)?;
+            info!(
+                "Marked existing {} download history record {} as failed/blocklisted after grabbing replacement.",
+                label, failed_id
+            );
+        }
+        if !matches!(history, HistoryToFail::CurrentDownload) {
             // Audit grabs are checked by the next audit run once Arr imports them.
             let guid = release
                 .get("guid")
@@ -1558,6 +1621,7 @@ impl ApiClient {
                         })
                         .map(ToOwned::to_owned),
                     HistoryToFail::CurrentDownload => download_id(self.kind),
+                    HistoryToFail::Untracked => None,
                 };
                 if let Some(download_id) = current_download_id.filter(|id| !id.is_empty()) {
                     titles.extend(
@@ -2500,7 +2564,7 @@ impl ApiClient {
         };
         self.apply_audit_redownload_outcome_with_preference(
             Target::SonarrEpisode { episode_id },
-            history_id,
+            HistoryToFail::Id(history_id),
             requirements,
             options,
             no_candidate_cooldown_days,
@@ -2760,7 +2824,7 @@ impl ApiClient {
     fn apply_audit_redownload_outcome(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         no_candidate_cooldown_days: u32,
@@ -2768,7 +2832,7 @@ impl ApiClient {
     ) {
         self.apply_audit_redownload_outcome_with_preference(
             target,
-            history_id,
+            history,
             requirements,
             options,
             no_candidate_cooldown_days,
@@ -2781,7 +2845,7 @@ impl ApiClient {
     fn apply_audit_redownload_outcome_with_preference(
         &self,
         target: Target,
-        history_id: i64,
+        history: HistoryToFail,
         requirements: &LanguageRequirements,
         options: RedownloadOptions,
         no_candidate_cooldown_days: u32,
@@ -2792,7 +2856,7 @@ impl ApiClient {
         let target_id = target.id();
         match self.redownload_for_target_with_preference(
             target,
-            history_id,
+            history,
             requirements,
             options,
             prefer_non_torrent,
@@ -4988,6 +5052,214 @@ mod tests {
     }
 
     #[test]
+    fn sonarr_inventory_audit_grabs_replacement_for_file_without_import_history() {
+        let _caches = use_temp_caches();
+        let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "id": 77,
+                    "seriesId": 1,
+                    "hasFile": true,
+                    "episodeFileId": 555,
+                    "episodeFile": {
+                        "id": 555,
+                        "path": "/media/example.mkv",
+                        "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                    }
+                }])
+                .to_string(),
+            )
+            .create();
+        // A library scan added the file, so Arr has no import record for it.
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .expect_at_least(1)
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .with_status(200)
+            .with_body(
+                json!([{
+                    "title": "target replacement",
+                    "rejected": false,
+                    "languages": [{"name":"English"}, {"name":"Japanese"}],
+                    "subtitleLanguages": [{"name":"English"}]
+                }])
+                .to_string(),
+            )
+            .create();
+        let grab = server
+            .mock("POST", "/api/v3/release")
+            .match_header("x-api-key", "test-key")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let blocklist = server
+            .mock("POST", "/api/v3/history/failed/1234")
+            .match_header("x-api-key", "test-key")
+            .with_status(200)
+            .with_body("{}")
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: false,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::Inventory,
+                lookback_days: 30,
+                max_searches: 10,
+                no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
+                stale_queue_max_removals: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 1);
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.grabbed, 1);
+        assert_eq!(summary.errors, 0);
+        queue.assert();
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
+        grab.assert();
+        blocklist.assert();
+    }
+
+    #[test]
+    fn sonarr_inventory_audit_searches_least_recently_searched_episode_first() {
+        let _caches = use_temp_caches();
+        cache::record_search(IntegrationKind::Sonarr, "episode", 77).unwrap();
+        let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([
+                    {
+                        "id": 77,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "episodeFileId": 555,
+                        "episodeFile": {
+                            "id": 555,
+                            "path": "/media/one.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    },
+                    {
+                        "id": 78,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "episodeFileId": 556,
+                        "episodeFile": {
+                            "id": 556,
+                            "path": "/media/two.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    }
+                ])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "78".into()))
+            .with_status(200)
+            .with_body(json!([]).to_string())
+            .create();
+        let searched_last_run = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::Inventory,
+                lookback_days: 30,
+                max_searches: 1,
+                no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
+                stale_queue_max_removals: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 1);
+        assert_eq!(summary.missing, 1);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.no_candidate, 1);
+        queue.assert();
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
+        searched_last_run.assert();
+    }
+
+    #[test]
     fn sonarr_latest_missing_audit_searches_newest_missing_episode_first() {
         let mut server = mockito::Server::new();
         let queue = mock_empty_queue(&mut server);
@@ -5080,6 +5352,129 @@ mod tests {
         episodes.assert();
         history.assert();
         search.assert();
+    }
+
+    #[test]
+    fn sonarr_latest_missing_audit_searches_recent_release_before_backlog() {
+        // The recent episode was searched last run, the old one never; the
+        // recent one still goes first.
+        let _caches = use_temp_caches();
+        cache::record_search(IntegrationKind::Sonarr, "episode", 78).unwrap();
+        let aired_last_week = iso_date_days_ago(7);
+        let mut server = mockito::Server::new();
+        let queue = mock_empty_queue(&mut server);
+        let series = server
+            .mock("GET", "/api/v3/series")
+            .with_status(200)
+            .with_body(json!([{ "id": 1, "title": "Example" }]).to_string())
+            .create();
+        let episodes = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(
+                json!([
+                    {
+                        "id": 77,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": "2026-01-01T00:00:00Z",
+                        "episodeFileId": 555,
+                        "episodeFile": {
+                            "id": 555,
+                            "path": "/media/old.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    },
+                    {
+                        "id": 78,
+                        "seriesId": 1,
+                        "hasFile": true,
+                        "airDateUtc": aired_last_week,
+                        "episodeFileId": 556,
+                        "episodeFile": {
+                            "id": 556,
+                            "path": "/media/new.mkv",
+                            "mediaInfo": { "audioLanguages": "jpn", "subtitles": "eng" }
+                        }
+                    }
+                ])
+                .to_string(),
+            )
+            .create();
+        let history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_body(json!({ "records": [] }).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "78".into()))
+            .with_status(200)
+            .with_body(json!([]).to_string())
+            .create();
+        let backlog_search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::UrlEncoded("episodeId".into(), "77".into()))
+            .expect(0)
+            .create();
+
+        let summary = run_sonarr_language_audit(
+            &ApiSettings {
+                url: Some(server.url()),
+                api_key: Some("test-key".to_string()),
+            },
+            &LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".to_string(), "jpn".to_string()],
+                subtitles: vec!["eng".to_string()],
+            },
+            RedownloadOptions {
+                dry_run: true,
+                candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+            },
+            AuditOptions {
+                scope: ServarrLanguageAuditScope::LatestMissing,
+                lookback_days: 30,
+                max_searches: 1,
+                no_candidate_cooldown_days: 0,
+                latest_missing_no_candidate_cooldown_days: None,
+                stale_queue_days: 0,
+                stale_queue_max_removals: 0,
+                episode_ids: Vec::new(),
+                untagged_retag: UntaggedRetagOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.checked, 2);
+        assert_eq!(summary.missing, 2);
+        assert_eq!(summary.searched, 1);
+        assert_eq!(summary.no_candidate, 1);
+        queue.assert();
+        series.assert();
+        episodes.assert();
+        history.assert();
+        search.assert();
+        backlog_search.assert();
+    }
+
+    /// `days` days before today as an ISO-8601 UTC timestamp.
+    fn iso_date_days_ago(days: i64) -> String {
+        // Inverse of days_from_civil.
+        let z = current_day_number() - days + 719_468 - days_from_civil(1970, 1, 1);
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        let date = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+        assert_eq!(iso_day_number(&date), Some(current_day_number() - days));
+        date
     }
 
     #[test]
@@ -6977,7 +7372,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7024,7 +7419,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7080,7 +7475,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::RadarrMovie { movie_id: 5 },
-                70,
+                HistoryToFail::Id(70),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7120,7 +7515,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7150,7 +7545,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7192,7 +7587,7 @@ mod tests {
         let err = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7270,7 +7665,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7370,7 +7765,7 @@ mod tests {
         client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7480,7 +7875,8 @@ mod tests {
             "episode",
             77,
             &english_audio(),
-            14
+            14,
+            true,
         )
         .unwrap()
         .is_some());
@@ -7557,7 +7953,8 @@ mod tests {
                 "episode",
                 77,
                 &english_audio(),
-                14
+                14,
+                true,
             )
             .unwrap(),
             None
@@ -7620,7 +8017,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
@@ -7651,7 +8048,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7710,7 +8107,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::RadarrMovie { movie_id: 5 },
-                70,
+                HistoryToFail::Id(70),
                 &english_audio(),
                 RedownloadOptions {
                     dry_run: true,
@@ -7741,7 +8138,7 @@ mod tests {
         let outcome = client
             .redownload_for_target_with_preference(
                 Target::SonarrEpisode { episode_id: 77 },
-                1234,
+                HistoryToFail::Id(1234),
                 &english_audio(),
                 apply_options(),
                 false,
