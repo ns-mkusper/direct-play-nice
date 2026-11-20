@@ -209,12 +209,26 @@ fn proof_output_folder(
 }
 
 #[cfg(target_os = "linux")]
-fn require_sonarr_view_binding() -> Result<()> {
+fn require_sonarr_view_binding(episode_id: i64, queue_id: i64) -> Result<()> {
     #[cfg(test)]
-    if tests::mock_sonarr_view_binding() {
-        return Ok(());
+    if let Some(bound) = tests::mock_sonarr_view_binding() {
+        if bound {
+            return Ok(());
+        }
+        bail!("Sonarr filesystem view attestation is missing or invalid");
     }
-    bail!("Sonarr filesystem view cannot be positively bound to the inspected local file and output folder; manual review required")
+    let expected = format!(
+        "I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:{episode_id}:{queue_id}"
+    );
+    if std::env::var("DPN_SONARR_PROOF_IMPORT_FILESYSTEM_ATTESTATION")
+        .ok()
+        .as_deref()
+        != Some(expected.as_str())
+    {
+        bail!("Sonarr filesystem view is not verified by DPN; set DPN_SONARR_PROOF_IMPORT_FILESYSTEM_ATTESTATION to the exact per-episode and queue confirmation after independently checking both file and output-folder identities");
+    }
+    warn!("Operator attests that Sonarr and DPN see the same file and output folder for episode {episode_id}, queue item {queue_id}; DPN cannot verify this mapping and the import is not atomic.");
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -258,84 +272,446 @@ fn proof_additional_protected_roots() -> Result<Vec<PathBuf>> {
 }
 
 #[cfg(target_os = "linux")]
-fn proof_download_outside_protected_filesystems(path: &Path, roots: &[PathBuf]) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.nlink() != 1 {
-        bail!("proof download must be a regular file without hard links");
+#[derive(Debug)]
+struct ProofMount {
+    id: u64,
+    major: u32,
+    minor: u32,
+    filesystem_root: PathBuf,
+    point: PathBuf,
+    filesystem: String,
+}
+
+#[cfg(target_os = "linux")]
+fn proof_mount_path(raw: &str) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let raw = raw.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'\\' {
+            if i + 3 >= raw.len() || !raw[i + 1..=i + 3].iter().all(|b| (b'0'..=b'7').contains(b)) {
+                bail!("invalid mount path escape");
+            }
+            let value = (raw[i + 1] - b'0') as u16 * 64
+                + (raw[i + 2] - b'0') as u16 * 8
+                + (raw[i + 3] - b'0') as u16;
+            bytes.push(u8::try_from(value).context("invalid mount path escape")?);
+            i += 4;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
     }
-    let device = metadata.dev();
-    let mut protected = roots.to_vec();
-    let mut mounts = Vec::new();
+    let path = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        bail!("invalid mount path");
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "linux")]
+fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
         .context("cannot inspect mounted filesystems")?;
     if mountinfo.lines().count() > 100_000 {
         bail!("too many mounts to verify download isolation");
     }
+    let mut mounts = Vec::new();
+    let mut ids = BTreeSet::new();
     for line in mountinfo.lines() {
         let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.len() < 10 || !fields.contains(&"-") {
+        if fields.len() < 10 {
             bail!("invalid mount information");
         }
-        let raw = fields[4].as_bytes();
-        let mut bytes = Vec::with_capacity(raw.len());
-        let mut i = 0;
-        while i < raw.len() {
-            if raw[i] == b'\\' {
-                if i + 3 >= raw.len()
-                    || !raw[i + 1..=i + 3].iter().all(|b| (b'0'..=b'7').contains(b))
-                {
-                    bail!("invalid mount path escape");
-                }
-                let value = (raw[i + 1] - b'0') as u16 * 64
-                    + (raw[i + 2] - b'0') as u16 * 8
-                    + (raw[i + 3] - b'0') as u16;
-                bytes.push(u8::try_from(value).context("invalid mount path escape")?);
-                i += 4;
-            } else {
-                bytes.push(raw[i]);
-                i += 1;
-            }
-        }
-        let mount = PathBuf::from(String::from_utf8(bytes).context("mount path is not UTF-8")?);
-        if !mount.is_absolute() {
-            bail!("invalid mount path");
-        }
+        let id = fields[0].parse::<u64>().context("invalid mount ID")?;
+        let (major, minor) = fields[2].split_once(':').context("invalid mount device")?;
+        let major = major.parse::<u32>().context("invalid mount device")?;
+        let minor = minor.parse::<u32>().context("invalid mount device")?;
+        let filesystem_root = proof_mount_path(fields[3])?;
+        let point = proof_mount_path(fields[4])?;
         let separator = fields
             .iter()
             .position(|field| *field == "-")
             .context("invalid mount information")?;
         let filesystem = fields
             .get(separator + 1)
-            .context("mount has no filesystem type")?;
-        if roots.iter().any(|root| mount.starts_with(root)) {
-            protected.push(mount.clone());
+            .context("mount has no filesystem type")?
+            .to_string();
+        if id == 0 || !ids.insert(id) {
+            bail!("duplicate or invalid mount ID");
         }
-        mounts.push((mount, *filesystem));
+        mounts.push(ProofMount {
+            id,
+            major,
+            minor,
+            filesystem_root,
+            point,
+            filesystem,
+        });
     }
-    let check_mount = |path: &Path| -> Result<()> {
-        let mut candidates: Vec<_> = mounts
-            .iter()
-            .filter(|(mount, _)| path.starts_with(mount))
-            .collect();
-        candidates.sort_by_key(|(mount, _)| std::cmp::Reverse(mount.components().count()));
-        let first = candidates
-            .first()
-            .context("no mount covers protected path")?;
-        if candidates.get(1).is_some_and(|second| second.0 == first.0) {
-            bail!("ambiguous stacked mount prevents filesystem isolation");
-        }
-        if !matches!(first.1, "ext4" | "xfs" | "btrfs" | "tmpfs") {
-            bail!("filesystem type cannot establish proof download isolation");
-        }
-        Ok(())
+    if mounts.is_empty() {
+        bail!("empty mount information");
+    }
+    Ok((mountinfo, mounts))
+}
+
+#[cfg(target_os = "linux")]
+fn proof_open_mount_identity(
+    path: &Path,
+) -> Result<(std::fs::File, std::fs::Metadata, u64, u32, u32)> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        bail!("unsafe path for mount identity");
+    }
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
+        mode: 0,
+        resolve: 0x04 | 0x02,
     };
-    check_mount(path)?;
-    for root in protected {
-        check_mount(&root)?;
-        if path.starts_with(&root) || std::fs::metadata(&root)?.dev() == device {
-            bail!("proof download is not isolated from a managed or recovery filesystem");
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            name.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("opening path without symlinks for mount identity");
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd as i32) };
+    let metadata = file.metadata()?;
+    let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            libc::STATX_MNT_ID,
+            &mut stat,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("reading path mount identity");
+    }
+    if stat.stx_mask & libc::STATX_MNT_ID == 0 || stat.stx_mnt_id == 0 {
+        bail!("mount identity is unavailable");
+    }
+    Ok((
+        file,
+        metadata,
+        stat.stx_mnt_id,
+        stat.stx_dev_major,
+        stat.stx_dev_minor,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn proof_anchor_walk(
+    anchor: &std::fs::File,
+    relative: &Path,
+) -> Result<(std::fs::Metadata, Vec<(u64, u64)>)> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    if relative.is_absolute() {
+        bail!("anchor path is not relative");
+    }
+    let mut directory = anchor.try_clone()?;
+    let mut meta = directory.metadata()?;
+    if !meta.is_dir() {
+        bail!("mount anchor is not a directory");
+    }
+    let mut ancestors = vec![(meta.dev(), meta.ino())];
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            bail!("unsafe anchor path");
+        };
+        if ancestors.len() > 256 {
+            bail!("anchor path exceeds depth limit");
         }
+        let name = std::ffi::CString::new(name.as_bytes())?;
+        let how = OpenHow {
+            flags: (libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
+            mode: 0,
+            resolve: 0x01 | 0x02 | 0x04,
+        };
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                &how,
+                std::mem::size_of::<OpenHow>(),
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("resolving mount anchor without crossing mounts or symlinks");
+        }
+        directory = unsafe { std::fs::File::from_raw_fd(fd as i32) };
+        meta = directory.metadata()?;
+        if meta.file_type().is_symlink() {
+            bail!("anchor path contains a symlink");
+        }
+        if meta.is_dir() {
+            ancestors.push((meta.dev(), meta.ino()));
+        }
+    }
+    Ok((meta, ancestors))
+}
+
+#[cfg(target_os = "linux")]
+fn proof_resolve_same_device_mounts(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    source: &ProofMount,
+    root: &Path,
+    root_metadata: &std::fs::Metadata,
+    root_mount: &ProofMount,
+    mounts: &[ProofMount],
+) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let source_relative = path
+        .strip_prefix(&source.point)
+        .context("download path does not match its mount")?;
+    let root_relative = root
+        .strip_prefix(&root_mount.point)
+        .context("protected root does not match its mount")?;
+    let source_backing = source.filesystem_root.join(source_relative);
+    let root_backing = root_mount.filesystem_root.join(root_relative);
+    for anchor in mounts.iter().filter(|mount| {
+        (mount.major, mount.minor) == (source.major, source.minor)
+            && mount.filesystem == "ext4"
+            && source_backing.starts_with(&mount.filesystem_root)
+            && root_backing.starts_with(&mount.filesystem_root)
+    }) {
+        if mounts
+            .iter()
+            .filter(|mount| mount.point == anchor.point)
+            .count()
+            != 1
+        {
+            continue;
+        }
+        let Ok((anchor_file, anchor_metadata, id, major, minor)) =
+            proof_open_mount_identity(&anchor.point)
+        else {
+            continue;
+        };
+        if !anchor_metadata.is_dir()
+            || id != anchor.id
+            || (major, minor) != (anchor.major, anchor.minor)
+        {
+            continue;
+        }
+        let Ok((source_check, source_ancestors)) = proof_anchor_walk(
+            &anchor_file,
+            source_backing.strip_prefix(&anchor.filesystem_root)?,
+        ) else {
+            continue;
+        };
+        let Ok((root_check, _)) = proof_anchor_walk(
+            &anchor_file,
+            root_backing.strip_prefix(&anchor.filesystem_root)?,
+        ) else {
+            continue;
+        };
+        if (source_check.dev(), source_check.ino()) != (metadata.dev(), metadata.ino())
+            || (root_check.dev(), root_check.ino()) != (root_metadata.dev(), root_metadata.ino())
+        {
+            continue;
+        }
+        return Ok(source_ancestors.contains(&(root_metadata.dev(), root_metadata.ino())));
+    }
+    bail!("same-device mount aliases cannot be resolved through a common visible anchor")
+}
+
+#[cfg(target_os = "linux")]
+fn proof_download_outside_protected_filesystems(path: &Path, roots: &[PathBuf]) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let (mountinfo, mounts) = proof_mounts()?;
+    let (_source, metadata, source_mount, major, minor) = proof_open_mount_identity(path)?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        bail!("proof download must be a regular file without hard links");
+    }
+    let source_entry = mounts
+        .iter()
+        .find(|mount| mount.id == source_mount)
+        .context("download mount is absent from mountinfo")?;
+    if mounts
+        .iter()
+        .filter(|mount| mount.point == source_entry.point)
+        .count()
+        != 1
+    {
+        bail!("download mount is stacked or ambiguous");
+    }
+    if (source_entry.major, source_entry.minor) != (major, minor)
+        || !matches!(
+            source_entry.filesystem.as_str(),
+            "ext4" | "xfs" | "btrfs" | "tmpfs"
+        )
+    {
+        bail!("download filesystem or mount identity cannot be established");
+    }
+    let source_parents = proof_download_parents(path)?;
+    let mut root_identities = Vec::with_capacity(roots.len());
+    for root in roots {
+        let (_root_file, root_meta, root_mount, root_major, root_minor) =
+            proof_open_mount_identity(root)?;
+        if !root_meta.is_dir() {
+            bail!("protected root is not a directory");
+        }
+        root_identities.push((
+            root.clone(),
+            root_meta.dev(),
+            root_meta.ino(),
+            root_mount,
+            root_major,
+            root_minor,
+        ));
+        let root_entry = mounts
+            .iter()
+            .find(|mount| mount.id == root_mount)
+            .context("protected root mount is absent from mountinfo")?;
+        if mounts
+            .iter()
+            .filter(|mount| mount.point == root_entry.point)
+            .count()
+            != 1
+        {
+            bail!("protected root mount is stacked or ambiguous");
+        }
+        if (root_entry.major, root_entry.minor) != (root_major, root_minor)
+            || !matches!(
+                root_entry.filesystem.as_str(),
+                "ext4" | "xfs" | "btrfs" | "tmpfs"
+            )
+        {
+            bail!("protected filesystem or mount identity cannot be established");
+        }
+        if source_parents
+            .iter()
+            .any(|(_, dev, ino)| (*dev, *ino) == (root_meta.dev(), root_meta.ino()))
+        {
+            bail!("proof download is inside a managed or recovery root");
+        }
+        if (major, minor) == (root_major, root_minor) {
+            if source_entry.filesystem != "ext4" || root_entry.filesystem != "ext4" {
+                bail!("same-device non-ext4 mappings cannot be safely resolved");
+            }
+            if source_mount != root_mount
+                && proof_resolve_same_device_mounts(
+                    path,
+                    &metadata,
+                    source_entry,
+                    root,
+                    &root_meta,
+                    root_entry,
+                    &mounts,
+                )?
+            {
+                bail!("proof download aliases a managed or recovery root through a bind mount");
+            }
+        }
+        for mount in &mounts {
+            if mount.id == root_mount {
+                continue;
+            }
+            let lexically_inside = mount.point.starts_with(root) && mount.point != *root;
+            let same_device = (mount.major, mount.minor) == (major, minor);
+            let identity_inside = if same_device && !lexically_inside {
+                let ancestors = proof_download_parents(&mount.point).context(
+                    "cannot establish whether a same-device mount is inside a protected root",
+                )?;
+                ancestors
+                    .iter()
+                    .any(|(_, dev, ino)| (*dev, *ino) == (root_meta.dev(), root_meta.ino()))
+            } else {
+                false
+            };
+            if lexically_inside || identity_inside {
+                if !matches!(
+                    mount.filesystem.as_str(),
+                    "ext4" | "xfs" | "btrfs" | "tmpfs"
+                ) {
+                    bail!("protected root contains an unsupported submount");
+                }
+                if same_device {
+                    bail!("same-device submount under a protected root is ambiguous");
+                }
+            }
+        }
+    }
+    let (_named_source, source_after, mount_after, major_after, minor_after) =
+        proof_open_mount_identity(path)?;
+    if (
+        source_after.dev(),
+        source_after.ino(),
+        source_after.size(),
+        source_after.mtime(),
+        source_after.mtime_nsec(),
+        source_after.ctime(),
+        source_after.ctime_nsec(),
+        source_after.nlink(),
+        mount_after,
+        major_after,
+        minor_after,
+    ) != (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.size(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+        metadata.nlink(),
+        source_mount,
+        major,
+        minor,
+    ) {
+        bail!("download identity changed during mount verification");
+    }
+    for (root, device, inode, mount_id, root_major, root_minor) in root_identities {
+        let (_file, after, id, major, minor) = proof_open_mount_identity(&root)?;
+        if !after.is_dir()
+            || (after.dev(), after.ino(), id, major, minor)
+                != (device, inode, mount_id, root_major, root_minor)
+        {
+            bail!("protected root changed during mount verification");
+        }
+    }
+    if std::fs::read_to_string("/proc/self/mountinfo")? != mountinfo {
+        bail!("mount table changed during proof download isolation");
+    }
+    if proof_download_parents(path)? != source_parents {
+        bail!("download path changed during mount verification");
     }
     Ok(())
 }
@@ -5064,7 +5440,12 @@ impl ApiClient {
         {
             bail!("proof import files or pending record changed after revalidation");
         }
-        require_sonarr_view_binding()?;
+        let queue_id = queue
+            .get("id")
+            .and_then(Value::as_i64)
+            .filter(|id| *id > 0)
+            .context("proof queue item has no positive ID")?;
+        require_sonarr_view_binding(grab.target_id, queue_id)?;
         Ok((
             item,
             ProofDownloadIdentity {
@@ -8764,11 +9145,11 @@ mod tests {
         // Scheduling/Arr mock tests do not create real media files. Opt in
         // explicitly; file-verification tests leave this disabled.
         static MOCK_AUDIT_MEDIA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        static MOCK_SONARR_VIEW_BOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static MOCK_SONARR_VIEW_BOUND: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
         static PROOF_ADDITIONAL_ROOTS: std::cell::RefCell<Option<Option<String>>> = const { std::cell::RefCell::new(None) };
     }
 
-    pub(super) fn mock_sonarr_view_binding() -> bool {
+    pub(super) fn mock_sonarr_view_binding() -> Option<bool> {
         MOCK_SONARR_VIEW_BOUND.with(std::cell::Cell::get)
     }
 
@@ -13227,6 +13608,243 @@ mod tests {
         no_post.assert();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_same_device_ext4_siblings_are_safe_but_protected_files_and_links_are_not() {
+        use std::os::unix::fs::MetadataExt;
+        let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let library = parent.path().join("library");
+        let recovery = parent.path().join("recovery");
+        let downloads = parent.path().join("downloads");
+        for path in [&library, &recovery, &downloads] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let source = downloads.join("download.mkv");
+        std::fs::write(&source, b"download").unwrap();
+        let (_, _, id, _, _) = proof_open_mount_identity(&source).unwrap();
+        let (_, mounts) = proof_mounts().unwrap();
+        if mounts
+            .iter()
+            .find(|mount| mount.id == id)
+            .unwrap()
+            .filesystem
+            != "ext4"
+        {
+            eprintln!("same-device ext4 test requires an ext4 working directory");
+            return;
+        }
+        assert_eq!(
+            std::fs::metadata(&source).unwrap().dev(),
+            std::fs::metadata(&library).unwrap().dev()
+        );
+        let roots = vec![library.clone(), recovery.clone()];
+        proof_download_outside_protected_filesystems(&source, &roots).unwrap();
+        let protected_file = library.join("episode.mkv");
+        std::fs::write(&protected_file, b"media").unwrap();
+        assert!(proof_download_outside_protected_filesystems(&protected_file, &roots).is_err());
+        let hardlink = library.join("hardlink.mkv");
+        std::fs::hard_link(&source, &hardlink).unwrap();
+        assert!(proof_download_outside_protected_filesystems(&source, &roots).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_same_device_unresolvable_mount_mapping_fails_closed() {
+        let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let library = parent.path().join("library");
+        std::fs::create_dir(&library).unwrap();
+        let file = parent.path().join("download.mkv");
+        std::fs::write(&file, b"download").unwrap();
+        let source = ProofMount {
+            id: 10,
+            major: 8,
+            minor: 33,
+            filesystem_root: PathBuf::from("/unrelated-a"),
+            point: parent.path().to_path_buf(),
+            filesystem: "ext4".into(),
+        };
+        let protected = ProofMount {
+            id: 11,
+            major: 8,
+            minor: 33,
+            filesystem_root: PathBuf::from("/unrelated-b"),
+            point: parent.path().to_path_buf(),
+            filesystem: "ext4".into(),
+        };
+        let mounts = [source, protected];
+        let result = proof_resolve_same_device_mounts(
+            &file,
+            &std::fs::metadata(&file).unwrap(),
+            &mounts[0],
+            &library,
+            &std::fs::metadata(&library).unwrap(),
+            &mounts[1],
+            &mounts,
+        );
+        assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_mountinfo_path_decoding_rejects_invalid_escapes() {
+        assert_eq!(
+            proof_mount_path(r"/media/a\040b").unwrap(),
+            PathBuf::from("/media/a b")
+        );
+        assert!(proof_mount_path(r"/media/bad\09x").is_err());
+        assert!(proof_mount_path("/media/../unsafe").is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "child process for isolated bind-mount tests"]
+    fn proof_same_device_bind_mount_child() {
+        use std::os::unix::ffi::OsStrExt;
+        let Some(parent) = env::var_os("DPN_TEST_PROOF_BIND_DIR") else {
+            return;
+        };
+        let parent = PathBuf::from(parent);
+        let scenario = env::var("DPN_TEST_PROOF_BIND_SCENARIO").unwrap();
+        let library = parent.join("library");
+        let downloads = parent.join("downloads");
+        let alias = parent.join("alias");
+        let (source, target, candidate, expected) = match scenario.as_str() {
+            "protected" => (
+                library.join("nested"),
+                alias.clone(),
+                alias.join("episode.mkv"),
+                false,
+            ),
+            "disjoint" => (
+                downloads.clone(),
+                alias.clone(),
+                alias.join("download.mkv"),
+                true,
+            ),
+            "stacked" => (
+                downloads.clone(),
+                alias.clone(),
+                alias.join("download.mkv"),
+                false,
+            ),
+            "nested" => (
+                downloads.clone(),
+                library.join("nested"),
+                downloads.join("download.mkv"),
+                false,
+            ),
+            _ => panic!("unknown bind test"),
+        };
+        let source = std::ffi::CString::new(source.as_os_str().as_bytes()).unwrap();
+        let target = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+        let rc = unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(
+            rc,
+            0,
+            "bind mount failed: {}",
+            std::io::Error::last_os_error()
+        );
+        if scenario == "stacked" {
+            let rc = unsafe {
+                libc::mount(
+                    source.as_ptr(),
+                    target.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            };
+            assert_eq!(
+                rc,
+                0,
+                "second bind mount failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        let result = proof_download_outside_protected_filesystems(&candidate, &[library]);
+        if scenario == "protected" {
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|err| format!("{err:#}").contains("aliases a managed")),
+                "{result:?}"
+            );
+        }
+        if scenario == "stacked" {
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|err| format!("{err:#}").contains("stacked")),
+                "{result:?}"
+            );
+        }
+        assert_eq!(result.is_ok(), expected, "{scenario}: {result:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_same_device_bind_mount_aliases_are_checked_in_isolated_namespace() {
+        let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let library = parent.path().join("library");
+        let downloads = parent.path().join("downloads");
+        let alias = parent.path().join("alias");
+        for path in [&library, &downloads, &alias] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::create_dir(library.join("nested")).unwrap();
+        std::fs::write(library.join("nested/episode.mkv"), b"media").unwrap();
+        std::fs::write(downloads.join("download.mkv"), b"download").unwrap();
+        let (_, _, id, _, _) = proof_open_mount_identity(&downloads.join("download.mkv")).unwrap();
+        let (_, mounts) = proof_mounts().unwrap();
+        if mounts
+            .iter()
+            .find(|mount| mount.id == id)
+            .unwrap()
+            .filesystem
+            != "ext4"
+        {
+            eprintln!("bind-mount test requires an ext4 working directory");
+            return;
+        }
+        let supported = std::process::Command::new("unshare")
+            .args(["--user", "--map-root-user", "--mount", "true"])
+            .output()
+            .is_ok_and(|result| result.status.success());
+        if !supported {
+            eprintln!("isolated bind-mount tests require unprivileged user and mount namespaces");
+            return;
+        }
+        for scenario in ["protected", "disjoint", "nested", "stacked"] {
+            let result = std::process::Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "servarr::api::tests::proof_same_device_bind_mount_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("DPN_TEST_PROOF_BIND_DIR", parent.path())
+                .env("DPN_TEST_PROOF_BIND_SCENARIO", scenario)
+                .output()
+                .expect("unshare is required for the bind-mount regression");
+            assert!(
+                result.status.success(),
+                "{scenario}: {} {}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
     #[cfg(all(target_os = "linux", feature = "ffmpeg-cli-tests"))]
     struct ProofImportFixture {
         _cache: tempfile::TempDir,
@@ -13244,21 +13862,21 @@ mod tests {
     impl Drop for ProofImportFixture {
         fn drop(&mut self) {
             PROOF_ADDITIONAL_ROOTS.with(|value| *value.borrow_mut() = None);
-            MOCK_SONARR_VIEW_BOUND.with(|value| value.set(false));
+            MOCK_SONARR_VIEW_BOUND.with(|value| value.set(None));
         }
     }
 
     #[cfg(all(target_os = "linux", feature = "ffmpeg-cli-tests"))]
     fn proof_import_fixture() -> ProofImportFixture {
         PROOF_ADDITIONAL_ROOTS.with(|value| *value.borrow_mut() = Some(Some("[]".into())));
-        MOCK_SONARR_VIEW_BOUND.with(|value| value.set(true));
+        MOCK_SONARR_VIEW_BOUND.with(|value| value.set(Some(true)));
         let cache = use_temp_caches();
         let cache_dir = cache.path().to_path_buf();
         let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let library = parent.path().join("library");
         std::fs::create_dir(&library).unwrap();
         let source = library.join("old.mkv");
-        let download_dir = tempfile::tempdir_in("/dev/shm").unwrap();
+        let download_dir = tempfile::tempdir_in(parent.path()).unwrap();
         let download = download_dir.path().join("download.mkv");
         for (path, language) in [(&source, "jpn"), (&download, "eng")] {
             assert!(std::process::Command::new("ffmpeg")
@@ -13979,7 +14597,7 @@ mod tests {
             "missing_roots",
             "unknown_association",
             "recovery_path",
-            "same_device",
+            "wrong_output_path",
             "undeclared_roots",
             "invalid_extra_roots",
             "unavailable_extra_root",
@@ -14136,8 +14754,8 @@ mod tests {
                     fixture._download_dir.path().join("extra"),
                 )
                 .unwrap(),
-                "view_unbound" => MOCK_SONARR_VIEW_BOUND.with(|value| value.set(false)),
-                "recovery_path" | "same_device" => {
+                "view_unbound" => MOCK_SONARR_VIEW_BOUND.with(|value| value.set(Some(false))),
+                "recovery_path" | "wrong_output_path" => {
                     let parent = if case == "recovery_path" {
                         &fixture.root
                     } else {

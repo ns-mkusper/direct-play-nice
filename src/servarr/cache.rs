@@ -357,7 +357,8 @@ pub fn finish_proof_import(
         || expected.guid != intent.guid
         || expected.recovery_manifest != intent.recovery_manifest
         || intent.proof.as_ref().is_none_or(|proof| {
-            expected.proof.as_ref() != Some(&proof.identity) || expected.requirements != proof.requirements
+            expected.proof.as_ref() != Some(&proof.identity)
+                || expected.requirements != proof.requirements
         })
     {
         anyhow::bail!("proof import intent or pending target changed");
@@ -1839,24 +1840,38 @@ mod tests {
     #[test]
     #[ignore = "child process for cooperative proof-work lock test"]
     fn proof_work_guard_child() {
-        let Some(dir) = std::env::var_os("DPN_TEST_PROOF_WORK_DIR") else { return; };
+        let Some(dir) = std::env::var_os("DPN_TEST_PROOF_WORK_DIR") else {
+            return;
+        };
         let dir = PathBuf::from(dir);
         use_test_cache_paths(dir.join("pending.json"), dir.join("no-candidates.json"));
         let available = acquire_proof_work_guard().is_ok();
-        assert_eq!(available, std::env::var("DPN_TEST_PROOF_WORK_AVAILABLE").unwrap() == "yes");
+        assert_eq!(
+            available,
+            std::env::var("DPN_TEST_PROOF_WORK_AVAILABLE").unwrap() == "yes"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn proof_work_guard_is_exclusive_across_processes() {
         let tmp = TempDir::new().unwrap();
-        use_test_cache_paths(tmp.path().join("pending.json"), tmp.path().join("no-candidates.json"));
+        use_test_cache_paths(
+            tmp.path().join("pending.json"),
+            tmp.path().join("no-candidates.json"),
+        );
         let run_child = |available: &str| {
             std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "servarr::cache::tests::proof_work_guard_child", "--ignored"])
+                .args([
+                    "--exact",
+                    "servarr::cache::tests::proof_work_guard_child",
+                    "--ignored",
+                ])
                 .env("DPN_TEST_PROOF_WORK_DIR", tmp.path())
                 .env("DPN_TEST_PROOF_WORK_AVAILABLE", available)
-                .status().unwrap().success()
+                .status()
+                .unwrap()
+                .success()
         };
         let guard = acquire_proof_work_guard().unwrap();
         assert!(run_child("no"));
@@ -1867,17 +1882,46 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pending_removal_rewrites_durably_and_preserves_other_records_on_failure() {
-        for (exact, phase) in [(false, "before-rename"), (false, "after-rename"), (true, "before-rename"), (true, "after-rename")] {
+        for (exact, phase) in [
+            (false, "before-rename"),
+            (false, "after-rename"),
+            (true, "before-rename"),
+            (true, "after-rename"),
+        ] {
             let tmp = TempDir::new().unwrap();
-            use_test_cache_paths(tmp.path().join("pending.json"), tmp.path().join("no-candidates.json"));
-            let requirements = LanguageRequirements { enabled: true, audio: vec!["eng".into()], subtitles: vec![] };
-            let mut target = PendingGrab::new(IntegrationKind::Sonarr, "episode", 2, "target", Some("a".into()), &requirements);
+            use_test_cache_paths(
+                tmp.path().join("pending.json"),
+                tmp.path().join("no-candidates.json"),
+            );
+            let requirements = LanguageRequirements {
+                enabled: true,
+                audio: vec!["eng".into()],
+                subtitles: vec![],
+            };
+            let mut target = PendingGrab::new(
+                IntegrationKind::Sonarr,
+                "episode",
+                2,
+                "target",
+                Some("a".into()),
+                &requirements,
+            );
             target.grabbed_at_unix = 10;
-            let mut other = target.clone(); other.target_id = 3;
-            record_pending_grab(target.clone()).unwrap(); record_pending_grab(other.clone()).unwrap();
+            let mut other = target.clone();
+            other.target_id = 3;
+            record_pending_grab(target.clone()).unwrap();
+            record_pending_grab(other.clone()).unwrap();
             set_durable_write_fault(Some(phase));
-            let result = if exact { remove_pending_grab_exact(IntegrationKind::Sonarr, &target).map(|_| ()) }
-                else { remove_pending_grab(IntegrationKind::Sonarr, "episode", 2, target.grabbed_at_unix) };
+            let result = if exact {
+                remove_pending_grab_exact(IntegrationKind::Sonarr, &target).map(|_| ())
+            } else {
+                remove_pending_grab(
+                    IntegrationKind::Sonarr,
+                    "episode",
+                    2,
+                    target.grabbed_at_unix,
+                )
+            };
             set_durable_write_fault(None);
             assert!(result.is_err());
             let records = pending_grabs_strict(IntegrationKind::Sonarr).unwrap();

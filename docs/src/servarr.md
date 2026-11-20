@@ -435,12 +435,22 @@ comma-separated episode ID list. Pending verification is limited to those IDs.
 Queue cleanup also requires every identified episode in an item to be in the
 list; items with missing or invalid episode identity are left untouched.
 
-A normal Sonarr audit targeting exactly one episode has a proof-backed import
-path, but **that path currently fails closed before posting**. The available
-Sonarr API does not establish that Sonarr sees the same file and output folder
-that DPN inspected. There is no production filesystem-view binding yet; use
-manual review instead. The checks below describe requirements for this path, not
-permission to force the import.
+A normal Sonarr audit targeting exactly one episode can request a proof-backed
+manual import. **DPN cannot verify that Sonarr sees the same file or output
+folder as DPN.** Immediately before each action, independently compare both
+identities in Sonarr's mount namespace and DPN's namespace. Only then provide an
+operator attestation for that episode and queue item:
+
+```text
+DPN_SONARR_PROOF_IMPORT_FILESYSTEM_ATTESTATION=I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:<episode-id>:<queue-id>
+```
+
+Replace both placeholders with the exact decimal IDs. The value must match
+exactly; missing, incorrect, or stale IDs stop the import. This is an operator
+attestation, **not a filesystem check or an atomic guarantee**. Set it only for
+the individual audit invocation, not in a persistent service environment. DPN
+does not consume or expire the variable, so reusing it would reuse the
+attestation without another verification.
 
 The audit must use the original recovery root, the same language requirements,
 and no unknown-stream retagging. Do not pass the one-shot proof options again.
@@ -463,19 +473,20 @@ only if no such roots exist. DPN cannot discover those other roots itself; the
 operator must keep the list complete. An unset, invalid, or inaccessible root
 prevents the import.
 
-DPN requires the download to be on a different filesystem from each declared
-root, each Sonarr library root, and the configured recovery root. It also checks
-mounts inside those roots and rejects hard-linked downloads. The supported
-filesystem types for this check are ext4, xfs, btrfs, and tmpfs. A download on
-the same device as a managed root remains blocked, even when the paths differ.
-Other types, including network and overlay filesystems, require manual review. The tracked
+A download may share an ext4 filesystem with a managed or recovery root if DPN
+can establish that the paths are separate. DPN checks mount IDs, directory
+identities, bind mounts and hardlinks. It rejects unresolved mappings and
+same-device submounts under protected roots. Same-device xfs, btrfs and tmpfs
+remain blocked. The checks require Linux `openat2`, `statx` mount IDs, and a
+readable mount table; missing information requires manual review. Other types,
+including network and overlay filesystems, also require manual review. The tracked
 output path must be a real directory containing only the selected file directly;
 nested directories, extra entries and uncertain cleanup scope fail closed.
-When filesystem-view binding is available, the import path requests Sonarr's
-`copy` mode. Sonarr controls how it executes that request.
+The import path requests Sonarr's `copy` mode. Sonarr controls how it executes
+that request.
 
-A dry run performs the read-only eligibility checks, including the unavailable
-view binding, but does not reserve the target for a later apply. DPN keeps the
+A dry run performs the same read-only eligibility checks and requires the same
+attestation, but does not reserve the target for a later apply. DPN keeps the
 pending proof and backup until a later audit verifies the import. If the command
 outcome or resulting file is uncertain, it also retains the import intent for
 review. Once an import is confirmed, DPN durably binds its download ID to the

@@ -101,6 +101,270 @@ fn language_proof_cannot_be_combined_with_probe_mode() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn sonarr_proof_import_requires_explicit_filesystem_attestation_in_production_binary() {
+    use mockito::Matcher;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let library = parent.path().join("library");
+    let downloads = parent.path().join("downloads");
+    let recovery = parent.path().join("recovery");
+    let cache = parent.path().join("cache");
+    for dir in [&library, &downloads, &recovery, &cache] {
+        fs::create_dir(dir).unwrap();
+    }
+    fs::set_permissions(&recovery, fs::Permissions::from_mode(0o700)).unwrap();
+    let original = library.join("old.mkv");
+    let download = downloads.join("download.mkv");
+    for (path, language) in [(&original, "jpn"), (&download, "eng")] {
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=0.2",
+                "-metadata:s:a:0",
+                &format!("language={language}"),
+                "-c:a",
+                "aac"
+            ])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let recovery_dir = recovery.join(".dpn-recovery-test");
+    fs::create_dir(&recovery_dir).unwrap();
+    fs::set_permissions(&recovery_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let blob = recovery_dir.join("0000.blob");
+    fs::copy(&original, &blob).unwrap();
+    fs::set_permissions(&blob, fs::Permissions::from_mode(0o600)).unwrap();
+    let source_meta = fs::metadata(&original).unwrap();
+    let media_hash = format!("{:x}", Sha256::digest(fs::read(&original).unwrap()));
+    let manifest = recovery_dir.join("manifest.json");
+    let contents = serde_json::to_vec(&json!({"version":1,"files":[{
+        "original_path":original,"backup_file":"0000.blob","size":source_meta.len(),"sha256":media_hash,
+        "original_metadata":{"mode":source_meta.mode(),"uid":source_meta.uid(),"gid":source_meta.gid(),
+        "atime_secs":source_meta.atime(),"atime_nsec":source_meta.atime_nsec(),"mtime_secs":source_meta.mtime(),"mtime_nsec":source_meta.mtime_nsec(),
+        "ctime_secs":source_meta.ctime(),"ctime_nsec":source_meta.ctime_nsec()}}]})).unwrap();
+    fs::write(&manifest, &contents).unwrap();
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).unwrap();
+    let root_meta = fs::metadata(&recovery).unwrap();
+    let dir_meta = fs::metadata(&recovery_dir).unwrap();
+    let manifest_meta = fs::metadata(&manifest).unwrap();
+    let blob_meta = fs::metadata(&blob).unwrap();
+    let lock_name = format!(
+        ".dpn-target-{:x}.lock",
+        Sha256::digest(original.to_str().unwrap().to_lowercase().as_bytes())
+    );
+    let lock = recovery.join(lock_name);
+    fs::write(&lock, b"").unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let proof_hash = format!("{:x}", Sha256::digest(fs::read(&download).unwrap()));
+    let checkpoint = json!({"version":1,"manifest_sha256":format!("{:x}", Sha256::digest(&contents)),"manifest_size":contents.len(),
+        "recovery_root":recovery,"manifest_path":manifest,"media_path":original,"root_device":root_meta.dev(),"root_inode":root_meta.ino(),
+        "directory_device":dir_meta.dev(),"directory_inode":dir_meta.ino(),"manifest_device":manifest_meta.dev(),"manifest_inode":manifest_meta.ino(),
+        "blobs":[{"device":blob_meta.dev(),"inode":blob_meta.ino()}],"sidecars":[]});
+    let pending_path = cache.join("servarr-language-pending-grabs.json");
+    let grabbed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let date = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .unwrap();
+    assert!(date.status.success());
+    let history_date = String::from_utf8(date.stdout).unwrap().trim().to_owned();
+    let pending = json!([{"kind":"Sonarr","target_noun":"episode","target_id":77,"release_title":"Example Show S01E01",
+        "guid":"proof-guid","download_id":null,"grabbed_at_unix":grabbed_at,"requirements":{"enabled":true,"audio":["eng"],"subtitles":[]},
+        "recovery_manifest":manifest,"proof":{"sha256":proof_hash,"series_id":9,"indexer_id":3,"recovery_checkpoint":checkpoint,
+        "previous_file":{"file_id":555,"path":original,"unverified_history_id":null}}}]);
+    fs::write(&pending_path, serde_json::to_vec(&pending).unwrap()).unwrap();
+    let pending_before = fs::read(&pending_path).unwrap();
+    let config = parent.path().join("empty.toml");
+    fs::write(&config, "").unwrap();
+    let mut server = mockito::Server::new();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let episode_state = posts.clone();
+    let _episode = server
+        .mock("GET", "/api/v3/episode/77")
+        .with_chunked_body(move |writer| {
+            let file_id = if episode_state.load(Ordering::SeqCst) == 0 {
+                555
+            } else {
+                556
+            };
+            write!(
+                writer,
+                "{}",
+                json!({"id":77,"seriesId":9,"episodeFileId":file_id})
+            )
+        })
+        .create();
+    let _episodes = server
+        .mock("GET", "/api/v3/episode")
+        .match_query(Matcher::Any)
+        .with_body(json!([{"id":77,"seriesId":9,"episodeFileId":555}]).to_string())
+        .create();
+    let _series = server
+        .mock("GET", "/api/v3/series")
+        .with_body(json!([{"id":9}]).to_string())
+        .create();
+    let _root = server
+        .mock("GET", "/api/v3/rootfolder")
+        .with_body(json!([{"path":library}]).to_string())
+        .create();
+    let _file = server
+        .mock("GET", "/api/v3/episodefile/555")
+        .with_body(json!({"id":555,"path":original}).to_string())
+        .create();
+    let _imported_file = server
+        .mock("GET", "/api/v3/episodefile/556")
+        .with_body(json!({"id":556,"path":download}).to_string())
+        .create();
+    let _queue = server.mock("GET", "/api/v3/queue").match_query(Matcher::Any).with_body(json!({"totalRecords":1,"records":[{"id":90,"episodeId":77,"seriesId":9,
+        "downloadId":"download-1","outputPath":downloads,"title":"Example Show S01E01","status":"completed","trackedDownloadState":"importBlocked",
+        "trackedDownloadStatus":"warning","statusMessages":[{"messages":["Existing file meets cutoff: Unknown"]}]}]}).to_string()).create();
+    let history_state = posts.clone();
+    let imported_path = download.clone();
+    let _history = server.mock("GET", "/api/v3/history").match_query(Matcher::Any)
+        .with_chunked_body(move |writer| {
+            let mut records = vec![json!({"id":101,"episodeId":77,"seriesId":9,"eventType":"grabbed",
+                "sourceTitle":"Example Show S01E01","date":history_date,"downloadId":"download-1","data":{"guid":"proof-guid","indexerId":3}})];
+            if history_state.load(Ordering::SeqCst) > 0 {
+                records.push(json!({"id":102,"episodeId":77,"seriesId":9,"eventType":"downloadFolderImported",
+                    "date":history_date,"downloadId":"download-1","data":{"fileId":"556","importedPath":imported_path}}));
+            }
+            write!(writer, "{}", json!({"totalRecords":records.len(),"records":records}))
+        }).create();
+    let _manual = server
+        .mock("GET", "/api/v3/manualimport")
+        .match_query(Matcher::Any)
+        .with_body(
+            json!([{"path":download,"episodes":[{"id":77}],"seriesId":9,"downloadId":"download-1",
+        "quality":{"quality":{"id":4}},"languages":[{"id":1,"name":"English"}],"rejections":[]}])
+            .to_string(),
+        )
+        .create();
+    let observed = posts.clone();
+    let post = server.mock("POST", "/api/v3/command").match_body(Matcher::PartialJson(json!({"name":"ManualImport","importMode":"copy","files":[{"episodeIds":[77],"downloadId":"download-1"}]})))
+        .with_status(201).with_chunked_body(move |writer| { observed.fetch_add(1, Ordering::SeqCst); write!(writer, "{{\"id\":9}}") }).expect(1).create();
+    let _command = server
+        .mock("GET", "/api/v3/command/9")
+        .with_body(json!({"id":9,"status":"completed"}).to_string())
+        .create();
+    let no_delete = server.mock("DELETE", Matcher::Any).expect(0).create();
+    let no_grab = server.mock("POST", "/api/v3/release").expect(0).create();
+    let run = |attestation: Option<&str>, dry: bool| {
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+        cmd.env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", parent.path())
+            .env(
+                "DIRECT_PLAY_NICE_LANGUAGE_CACHE",
+                cache.join("language.json"),
+            )
+            .env("DPN_SERVARR_PROOF_ADDITIONAL_ROOTS", "[]")
+            .env("RUST_LOG", "info")
+            .args([
+                "--config-file",
+                config.to_str().unwrap(),
+                "--servarr-language-audit",
+                "--servarr-language-audit-episode-ids",
+                "77",
+                "--servarr-language-audit-max-searches",
+                "1",
+                "--required-audio-languages",
+                "eng",
+                "--servarr-api-url",
+                &server.url(),
+                "--servarr-api-key",
+                "test-key",
+                "--servarr-language-recovery-root",
+                recovery.to_str().unwrap(),
+            ]);
+        if let Some(value) = std::env::var_os("LD_LIBRARY_PATH") {
+            cmd.env("LD_LIBRARY_PATH", value);
+        }
+        if let Some(value) = attestation {
+            cmd.env("DPN_SONARR_PROOF_IMPORT_FILESYSTEM_ATTESTATION", value);
+        }
+        if dry {
+            cmd.arg("--servarr-language-dry-run");
+        }
+        cmd.output().unwrap()
+    };
+    for invalid in [
+        None,
+        Some(""),
+        Some("yes"),
+        Some("I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:78:90"),
+        Some("I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:77:91"),
+        Some("I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:77:90 "),
+    ] {
+        for dry in [true, false] {
+            let output = run(invalid, dry);
+            assert!(
+                !output.status.success(),
+                "unexpected success for {invalid:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("DPN_SONARR_PROOF_IMPORT_FILESYSTEM_ATTESTATION"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(posts.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read(&pending_path).unwrap(), pending_before);
+        }
+    }
+    let confirmation = "I_VERIFIED_SONARR_AND_DPN_FILE_AND_OUTPUT_FOLDER_IDENTITIES:77:90";
+    let dry = run(Some(confirmation), true);
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(String::from_utf8_lossy(&dry.stderr).contains("Operator attests"));
+    assert_eq!(posts.load(Ordering::SeqCst), 0);
+    let apply = run(Some(confirmation), false);
+    assert!(
+        apply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&apply.stderr)
+    );
+    assert_eq!(posts.load(Ordering::SeqCst), 1);
+    let bound: serde_json::Value =
+        serde_json::from_slice(&fs::read(&pending_path).unwrap()).unwrap();
+    assert_eq!(bound[0]["download_id"], "download-1");
+    assert_eq!(bound[0]["proof"], pending[0]["proof"]);
+    assert_eq!(
+        bound[0]["recovery_manifest"],
+        pending[0]["recovery_manifest"]
+    );
+    let intents: serde_json::Value = serde_json::from_slice(
+        &fs::read(cache.join("servarr-language-grab-intents.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(intents.as_object().unwrap().is_empty());
+    post.assert();
+    no_delete.assert();
+    no_grab.assert();
+}
+
 #[test]
 fn sonarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
