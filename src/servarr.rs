@@ -300,11 +300,20 @@ fn prepare_download(
             let mut report = language::check_file(input_path, &view.language_requirements)
                 .with_context(|| format!("checking languages for '{}'", input_path.display()))?;
             if !report.satisfied() && view.untagged_retag.enabled() {
-                match language::retag_unknown_streams(
-                    input_path,
-                    &view.language_requirements,
-                    &view.untagged_retag,
-                ) {
+                let retag = if original_audio.is_some() {
+                    language::retag_unknown_streams_for_original(
+                        input_path,
+                        &view.language_requirements,
+                        &view.untagged_retag,
+                    )
+                } else {
+                    language::retag_unknown_streams(
+                        input_path,
+                        &view.language_requirements,
+                        &view.untagged_retag,
+                    )
+                };
+                match retag {
                     Ok(retag) if retag.changed() => {
                         info!(
                             "{} {}retagged unknown stream language metadata for '{}': audio={}, subtitles={}",

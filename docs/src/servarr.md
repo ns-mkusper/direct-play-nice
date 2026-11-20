@@ -270,18 +270,26 @@ The option is off by default. When language checking is enabled, DPN requires
 English and the title's original language from Sonarr or Radarr, in addition to
 the configured audio and subtitle requirements. Unknown or conflicting original
 metadata prevents actions for that target. With this option, an automatic
-replacement for a non-English original must include that language in its Arr
-release metadata. A title or custom format alone cannot establish the original
-language, so DPN may skip an available release when metadata is missing. English
+replacement must include every required non-English audio language in its Arr
+release metadata. A title or custom format alone cannot establish those
+languages, so DPN may skip an available release when metadata is missing. English
 may still use the hints allowed by the configured candidate policy. Release
 metadata is not proof of the downloaded file's streams; DPN continues to check
-the imported file against the stored requirements. Configure a recovery root if
-you need a retained copy before a replacement.
+the imported file against the stored requirements. Configure
+`servarr_language_recovery_root` to retain a copy before a DPN-initiated
+replacement. Arr can import independently before DPN checks the replacement;
+the backup does not make that import atomic or automatically restore the file.
+A hook cannot recover a file that Arr already replaced before the hook ran.
+
+Existing pending records keep their historical requirements. When the option is
+enabled, DPN retains a pending record for review if its snapshot lacks English or
+the current original language, or if the original cannot be established. It does
+not rewrite the snapshot to match today's policy.
 
 With the option enabled, DPN uses inference for untagged audio only when the
-configured language matches the title's identified original language.
-Independent subtitle inference is unchanged. Untagged audio is not itself
-evidence of a language.
+configured language matches the title's identified original language and that
+language is missing. Independent subtitle inference is unchanged. Untagged audio
+is not itself evidence of a language.
 
 Untagged streams are handled conservatively. By default, `und`/empty language
 metadata does not satisfy a required language. If a library is known to be

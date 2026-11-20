@@ -2266,6 +2266,7 @@ fn assess_sonarr_language_audit_item(
             episode_file,
             requirements,
             &untagged_retag,
+            client.preserve_original_audio,
             report,
         )?;
     }
@@ -4066,6 +4067,30 @@ impl ApiClient {
             forget();
             return;
         };
+        if self.preserve_original_audio {
+            let original = match self.original_language_for_target(target) {
+                Ok(original) => original,
+                Err(err) => {
+                    summary.errors += 1;
+                    warn!("{} pending grab for {} {} retained for review: original language unavailable: {:#}", label, target.noun(), target.id(), err);
+                    return;
+                }
+            };
+            let snapshot_audio: BTreeSet<_> = grab
+                .requirements
+                .audio
+                .iter()
+                .filter_map(|language| normalize_language_tag(language))
+                .collect();
+            if !grab.requirements.enabled
+                || !snapshot_audio.contains("eng")
+                || !snapshot_audio.contains(&original)
+            {
+                summary.errors += 1;
+                warn!("{} pending grab for {} {} retained for review: historical requirements do not cover English and the current original language.", label, target.noun(), target.id());
+                return;
+            }
+        }
         let ImportedPendingIdentity {
             grabbed_id,
             imported_path,
@@ -8418,9 +8443,16 @@ fn radarr_queue_movie_identity_consistent(item: &Value) -> bool {
         .and_then(|movie| movie.get("id"))
         .and_then(Value::as_i64)
         .filter(|id| *id > 0);
-    !(direct.is_some() && direct_id.is_none())
-        && !(nested.is_some() && nested_id.is_none())
-        && !(direct_id.is_some() && nested_id.is_some() && direct_id != nested_id)
+    if direct.is_some() && direct_id.is_none() {
+        return false;
+    }
+    if nested.is_some() && nested_id.is_none() {
+        return false;
+    }
+    match (direct_id, nested_id) {
+        (Some(direct), Some(nested)) => direct == nested,
+        _ => true,
+    }
 }
 
 fn radarr_queue_item_movie_id(queue_item: &Value) -> Option<i64> {
@@ -8658,6 +8690,7 @@ fn maybe_retag_audit_file(
     media_file: &Value,
     requirements: &LanguageRequirements,
     untagged_retag: &UntaggedRetagOptions,
+    preserve_original_audio: bool,
     current_report: LanguageCheckReport,
 ) -> Result<LanguageCheckReport> {
     let Some(path) = media_file
@@ -8670,7 +8703,12 @@ fn maybe_retag_audit_file(
     if !path.exists() {
         return Ok(current_report);
     }
-    match super::language::retag_unknown_streams(&path, requirements, untagged_retag) {
+    let retag = if preserve_original_audio {
+        super::language::retag_unknown_streams_for_original(&path, requirements, untagged_retag)
+    } else {
+        super::language::retag_unknown_streams(&path, requirements, untagged_retag)
+    };
+    match retag {
         Ok(retag) if retag.changed() => {
             info!(
                 "{} {}retagged unknown stream language metadata for '{}': audio={}, subtitles={}",
@@ -8808,37 +8846,133 @@ fn parse_original_language(metadata: &Value, kind: IntegrationKind) -> Result<St
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| anyhow!("originalLanguage has no name"))?;
-    let (expected_id, tag) = match name.to_ascii_lowercase().as_str() {
-        "english" => (1, "eng"),
-        "french" => (2, "fra"),
-        "spanish" => (3, "spa"),
-        "german" => (4, "deu"),
-        "italian" => (5, "ita"),
-        "danish" => (6, "dan"),
-        "dutch" => (7, "nld"),
-        "japanese" => (8, "jpn"),
-        "chinese" => (10, "zho"),
-        "russian" => (11, "rus"),
-        "polish" => (12, "pol"),
-        "swedish" => (14, "swe"),
-        "norwegian" => (15, "nor"),
-        "finnish" => (16, "fin"),
-        "portuguese" => (18, "por"),
-        "korean" => (21, "kor"),
-        "persian" => (
-            match kind {
-                IntegrationKind::Sonarr => 37,
-                IntegrationKind::Radarr => 33,
-            },
-            "fas",
-        ),
-        "indonesian" => (44, "ind"),
-        _ => bail!("unsupported original language '{name}'"),
+    let catalog: &[&str] = match kind {
+        IntegrationKind::Sonarr => &[
+            "English",
+            "French",
+            "Spanish",
+            "German",
+            "Italian",
+            "Danish",
+            "Dutch",
+            "Japanese",
+            "Icelandic",
+            "Chinese",
+            "Russian",
+            "Polish",
+            "Vietnamese",
+            "Swedish",
+            "Norwegian",
+            "Finnish",
+            "Turkish",
+            "Portuguese",
+            "Flemish",
+            "Greek",
+            "Korean",
+            "Hungarian",
+            "Hebrew",
+            "Lithuanian",
+            "Czech",
+            "Arabic",
+            "Hindi",
+            "Bulgarian",
+            "Malayalam",
+            "Ukrainian",
+            "Slovak",
+            "Thai",
+            "Portuguese (Brazil)",
+            "Spanish (Latino)",
+            "Romanian",
+            "Latvian",
+            "Persian",
+            "Catalan",
+            "Croatian",
+            "Serbian",
+            "Bosnian",
+            "Estonian",
+            "Tamil",
+            "Indonesian",
+            "Macedonian",
+            "Slovenian",
+            "Azerbaijani",
+            "Uzbek",
+            "Malay",
+            "Urdu",
+            "Romansh",
+            "Georgian",
+            "Irish",
+        ],
+        IntegrationKind::Radarr => &[
+            "English",
+            "French",
+            "Spanish",
+            "German",
+            "Italian",
+            "Danish",
+            "Dutch",
+            "Japanese",
+            "Icelandic",
+            "Chinese",
+            "Russian",
+            "Polish",
+            "Vietnamese",
+            "Swedish",
+            "Norwegian",
+            "Finnish",
+            "Turkish",
+            "Portuguese",
+            "Flemish",
+            "Greek",
+            "Korean",
+            "Hungarian",
+            "Hebrew",
+            "Lithuanian",
+            "Czech",
+            "Hindi",
+            "Romanian",
+            "Thai",
+            "Bulgarian",
+            "Portuguese (Brazil)",
+            "Arabic",
+            "Ukrainian",
+            "Persian",
+            "Bengali",
+            "Slovak",
+            "Latvian",
+            "Spanish (Latino)",
+            "Catalan",
+            "Croatian",
+            "Serbian",
+            "Bosnian",
+            "Estonian",
+            "Tamil",
+            "Indonesian",
+            "Telugu",
+            "Macedonian",
+            "Slovenian",
+            "Malayalam",
+            "Kannada",
+            "Albanian",
+            "Afrikaans",
+            "Marathi",
+            "Tagalog",
+            "Urdu",
+            "Romansh",
+            "Mongolian",
+            "Georgian",
+            "Irish",
+        ],
     };
-    if id != expected_id {
+    let expected = usize::try_from(id - 1)
+        .ok()
+        .and_then(|index| catalog.get(index))
+        .ok_or_else(|| anyhow!("unsupported original language ID {id}"))?;
+    if !name.eq_ignore_ascii_case(expected) {
         bail!("originalLanguage ID conflicts with its name '{name}'");
     }
-    Ok(tag.to_owned())
+    super::language::canonical_arr_language(expected)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("unsupported original language '{name}'"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8920,11 +9054,35 @@ fn verified_release_candidates<'a>(
         .filter(|release| release_matches_target(release, target))
         .filter(|release| release_can_be_language_upgrade_candidate(release))
         .filter(|release| {
-            original_audio.is_none_or(|original| {
-                original == "eng" || release_languages(release).contains(original)
-            })
+            if let Some(original) = original_audio {
+                let languages = release_languages(release);
+                (original == "eng" || languages.contains(original))
+                    && requirements
+                        .audio
+                        .iter()
+                        .all(|language| language == "eng" || languages.contains(language))
+            } else {
+                true
+            }
         })
-        .filter(|release| release_satisfies_languages(release, requirements, policy))
+        .filter(|release| {
+            if original_audio.is_none() {
+                return release_satisfies_languages(release, requirements, policy);
+            }
+            let languages = release_languages(release);
+            let audio_ok = if requirements
+                .audio
+                .iter()
+                .all(|language| languages.contains(language))
+            {
+                release_audio_satisfies(release, requirements, policy)
+            } else {
+                policy != ServarrLanguageCandidatePolicy::Strict
+                    && !languages.contains("eng")
+                    && release_has_audio_hint_for_policy(release, &["eng".to_owned()], policy)
+            };
+            audio_ok && release_subtitles_satisfy(release, requirements, policy)
+        })
         .collect::<Vec<_>>();
     // Reverse before the stable sort so ties keep the release listed last
     // first, as `Iterator::max_by_key` picked it before candidates were ranked.
@@ -10055,26 +10213,114 @@ mod tests {
 
     #[test]
     fn original_audio_pending_verification_uses_stored_snapshot() {
-        use_mock_audit_media_for_test();
         let _caches = use_temp_caches();
         let pending = pending_grab(MULTI_TITLE, 3_600);
         assert_eq!(pending.requirements, english_audio());
-        cache::record_pending_grab(pending).unwrap();
+        cache::record_pending_grab(pending.clone()).unwrap();
         let mut server = mockito::Server::new();
-        let _history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
-        let _file = mock_sonarr_episode_file(&mut server, "eng");
-        let no_series = server.mock("GET", "/api/v3/series/1").expect(0).create();
+        let episode = server
+            .mock("GET", "/api/v3/episode/77")
+            .with_body(json!({"id":77,"seriesId":1}).to_string())
+            .expect(1)
+            .create();
+        let series = server
+            .mock("GET", "/api/v3/series/1")
+            .with_body(json!({"id":1,"originalLanguage":{"id":8,"name":"Japanese"}}).to_string())
+            .expect(1)
+            .create();
+        let no_history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .expect(0)
+            .create();
         let no_post = server.mock("POST", Matcher::Any).expect(0).create();
         let mut client = test_client(IntegrationKind::Sonarr, server.url());
         client.preserve_original_audio = true;
         let mut summary = AuditSummary::default();
         client.verify_pending_grabs(false, &UntaggedRetagOptions::default(), &mut summary);
+        assert_eq!(summary.errors, 1);
+        assert_eq!(
+            cache::pending_grabs_strict(IntegrationKind::Sonarr).unwrap(),
+            vec![pending]
+        );
+        episode.assert();
+        series.assert();
+        no_history.assert();
+        no_post.assert();
+    }
+
+    #[test]
+    fn original_audio_pending_alias_snapshot_is_checked_without_rewrite() {
+        use_mock_audit_media_for_test();
+        let _caches = use_temp_caches();
+        let mut pending = pending_grab(MULTI_TITLE, 3_600);
+        pending.requirements.audio.push("dut".into());
+        cache::record_pending_grab(pending.clone()).unwrap();
+        let mut server = mockito::Server::new();
+        let _history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
+        let _file = mock_sonarr_episode_file(&mut server, "eng/nld");
+        let series = server
+            .mock("GET", "/api/v3/series/1")
+            .with_body(json!({"id":1,"originalLanguage":{"id":7,"name":"Dutch"}}).to_string())
+            .expect(1)
+            .create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let mut client = test_client(IntegrationKind::Sonarr, server.url());
+        client.preserve_original_audio = true;
+        let mut summary = AuditSummary::default();
+        client.verify_pending_grabs(true, &UntaggedRetagOptions::default(), &mut summary);
+        assert_eq!(summary.errors, 0);
+        assert_eq!(
+            cache::pending_grabs_strict(IntegrationKind::Sonarr).unwrap(),
+            vec![pending]
+        );
+        client.verify_pending_grabs(false, &UntaggedRetagOptions::default(), &mut summary);
         assert_eq!(summary.errors, 0);
         assert!(cache::pending_grabs_strict(IntegrationKind::Sonarr)
             .unwrap()
             .is_empty());
-        no_series.assert();
+        series.assert();
         no_post.assert();
+    }
+
+    #[test]
+    fn original_audio_pending_unknown_metadata_retains_snapshot() {
+        for dry_run in [false, true] {
+            let _caches = use_temp_caches();
+            let pending = PendingGrab::new(
+                IntegrationKind::Radarr,
+                "movie",
+                88,
+                "legacy",
+                Some("guid".into()),
+                &english_audio(),
+            );
+            cache::record_pending_grab(pending.clone()).unwrap();
+            let mut server = mockito::Server::new();
+            let movie = server
+                .mock("GET", "/api/v3/movie/88")
+                .with_status(500)
+                .expect(1)
+                .create();
+            let history = server
+                .mock("GET", "/api/v3/history")
+                .match_query(Matcher::Any)
+                .expect(0)
+                .create();
+            let post = server.mock("POST", Matcher::Any).expect(0).create();
+            let mut client = test_client(IntegrationKind::Radarr, server.url());
+            client.preserve_original_audio = true;
+            let mut summary = AuditSummary::default();
+            client.verify_pending_grabs(dry_run, &UntaggedRetagOptions::default(), &mut summary);
+            assert_eq!(summary.errors, 1);
+            assert_eq!(
+                cache::pending_grabs_strict(IntegrationKind::Radarr).unwrap(),
+                vec![pending]
+            );
+            movie.assert();
+            history.assert();
+            post.assert();
+        }
     }
 
     #[test]
@@ -10087,6 +10333,11 @@ mod tests {
         let mut server = mockito::Server::new();
         let _history = mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
         let _file = mock_sonarr_episode_file(&mut server, "eng");
+        let _series = server
+            .mock("GET", "/api/v3/series/1")
+            .with_body(json!({"id":1,"originalLanguage":{"id":8,"name":"Japanese"}}).to_string())
+            .expect(1)
+            .create();
         let mark = server
             .mock("POST", "/api/v3/history/failed/1200")
             .expect(1)
@@ -10098,6 +10349,294 @@ mod tests {
         assert_eq!(summary.rejected_imports, 1);
         assert_eq!(summary.errors, 0);
         mark.assert();
+    }
+
+    #[test]
+    fn original_audio_live_arr_catalog_fixtures() {
+        // Cross-checked with Sonarr v4.0.20.3014 and Radarr v7.0.3.10918 Language.cs.
+        let sonarr = [
+            (26, "Arabic", "ara"),
+            (41, "Bosnian", "bos"),
+            (28, "Bulgarian", "bul"),
+            (38, "Catalan", "cat"),
+            (10, "Chinese", "zho"),
+            (39, "Croatian", "hrv"),
+            (25, "Czech", "ces"),
+            (6, "Danish", "dan"),
+            (7, "Dutch", "nld"),
+            (1, "English", "eng"),
+            (42, "Estonian", "est"),
+            (16, "Finnish", "fin"),
+            (19, "Flemish", "nld"),
+            (2, "French", "fra"),
+            (4, "German", "deu"),
+            (20, "Greek", "ell"),
+            (23, "Hebrew", "heb"),
+            (27, "Hindi", "hin"),
+            (22, "Hungarian", "hun"),
+            (9, "Icelandic", "isl"),
+            (44, "Indonesian", "ind"),
+            (5, "Italian", "ita"),
+            (8, "Japanese", "jpn"),
+            (21, "Korean", "kor"),
+            (36, "Latvian", "lav"),
+            (24, "Lithuanian", "lit"),
+            (45, "Macedonian", "mkd"),
+            (29, "Malayalam", "mal"),
+            (15, "Norwegian", "nor"),
+            (37, "Persian", "fas"),
+            (12, "Polish", "pol"),
+            (18, "Portuguese", "por"),
+            (33, "Portuguese (Brazil)", "por"),
+            (35, "Romanian", "ron"),
+            (11, "Russian", "rus"),
+            (40, "Serbian", "srp"),
+            (31, "Slovak", "slk"),
+            (46, "Slovenian", "slv"),
+            (3, "Spanish", "spa"),
+            (34, "Spanish (Latino)", "spa"),
+            (14, "Swedish", "swe"),
+            (43, "Tamil", "tam"),
+            (32, "Thai", "tha"),
+            (17, "Turkish", "tur"),
+            (30, "Ukrainian", "ukr"),
+            (13, "Vietnamese", "vie"),
+        ];
+        let radarr = [
+            (51, "Afrikaans", "afr"),
+            (50, "Albanian", "sqi"),
+            (31, "Arabic", "ara"),
+            (34, "Bengali", "ben"),
+            (41, "Bosnian", "bos"),
+            (29, "Bulgarian", "bul"),
+            (38, "Catalan", "cat"),
+            (10, "Chinese", "zho"),
+            (39, "Croatian", "hrv"),
+            (25, "Czech", "ces"),
+            (6, "Danish", "dan"),
+            (7, "Dutch", "nld"),
+            (1, "English", "eng"),
+            (42, "Estonian", "est"),
+            (16, "Finnish", "fin"),
+            (19, "Flemish", "nld"),
+            (2, "French", "fra"),
+            (57, "Georgian", "kat"),
+            (4, "German", "deu"),
+            (20, "Greek", "ell"),
+            (23, "Hebrew", "heb"),
+            (26, "Hindi", "hin"),
+            (22, "Hungarian", "hun"),
+            (9, "Icelandic", "isl"),
+            (44, "Indonesian", "ind"),
+            (5, "Italian", "ita"),
+            (8, "Japanese", "jpn"),
+            (49, "Kannada", "kan"),
+            (21, "Korean", "kor"),
+            (36, "Latvian", "lav"),
+            (24, "Lithuanian", "lit"),
+            (46, "Macedonian", "mkd"),
+            (48, "Malayalam", "mal"),
+            (52, "Marathi", "mar"),
+            (56, "Mongolian", "mon"),
+            (15, "Norwegian", "nor"),
+            (33, "Persian", "fas"),
+            (12, "Polish", "pol"),
+            (18, "Portuguese", "por"),
+            (30, "Portuguese (Brazil)", "por"),
+            (27, "Romanian", "ron"),
+            (55, "Romansh", "roh"),
+            (11, "Russian", "rus"),
+            (40, "Serbian", "srp"),
+            (35, "Slovak", "slk"),
+            (47, "Slovenian", "slv"),
+            (3, "Spanish", "spa"),
+            (37, "Spanish (Latino)", "spa"),
+            (14, "Swedish", "swe"),
+            (53, "Tagalog", "tgl"),
+            (43, "Tamil", "tam"),
+            (45, "Telugu", "tel"),
+            (28, "Thai", "tha"),
+            (17, "Turkish", "tur"),
+            (32, "Ukrainian", "ukr"),
+            (54, "Urdu", "urd"),
+            (13, "Vietnamese", "vie"),
+        ];
+        assert_eq!(sonarr.len(), 46);
+        assert_eq!(radarr.len(), 57);
+        for (kind, catalog) in [
+            (IntegrationKind::Sonarr, sonarr.as_slice()),
+            (IntegrationKind::Radarr, radarr.as_slice()),
+        ] {
+            for &(id, name, expected) in catalog {
+                let metadata = json!({"originalLanguage":{"id":id,"name":name}});
+                assert_eq!(
+                    parse_original_language(&metadata, kind).unwrap(),
+                    expected,
+                    "{kind:?}: {id} {name}"
+                );
+            }
+            for (id, name) in [(0, "Unknown"), (-1, "Any"), (-2, "Original")] {
+                assert!(parse_original_language(
+                    &json!({"originalLanguage":{"id":id,"name":name}}),
+                    kind
+                )
+                .is_err());
+            }
+        }
+        assert!(parse_original_language(
+            &json!({"originalLanguage":{"id":26,"name":"Arabic"}}),
+            IntegrationKind::Radarr
+        )
+        .is_err());
+        assert!(parse_original_language(
+            &json!({"originalLanguage":{"id":26,"name":"Hindi"}}),
+            IntegrationKind::Sonarr
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn original_audio_complete_arr_catalogs_and_identity_validation() {
+        let sonarr = "English|French|Spanish|German|Italian|Danish|Dutch|Japanese|Icelandic|Chinese|Russian|Polish|Vietnamese|Swedish|Norwegian|Finnish|Turkish|Portuguese|Flemish|Greek|Korean|Hungarian|Hebrew|Lithuanian|Czech|Arabic|Hindi|Bulgarian|Malayalam|Ukrainian|Slovak|Thai|Portuguese (Brazil)|Spanish (Latino)|Romanian|Latvian|Persian|Catalan|Croatian|Serbian|Bosnian|Estonian|Tamil|Indonesian|Macedonian|Slovenian|Azerbaijani|Uzbek|Malay|Urdu|Romansh|Georgian|Irish";
+        let radarr = "English|French|Spanish|German|Italian|Danish|Dutch|Japanese|Icelandic|Chinese|Russian|Polish|Vietnamese|Swedish|Norwegian|Finnish|Turkish|Portuguese|Flemish|Greek|Korean|Hungarian|Hebrew|Lithuanian|Czech|Hindi|Romanian|Thai|Bulgarian|Portuguese (Brazil)|Arabic|Ukrainian|Persian|Bengali|Slovak|Latvian|Spanish (Latino)|Catalan|Croatian|Serbian|Bosnian|Estonian|Tamil|Indonesian|Telugu|Macedonian|Slovenian|Malayalam|Kannada|Albanian|Afrikaans|Marathi|Tagalog|Urdu|Romansh|Mongolian|Georgian|Irish";
+        for (kind, names) in [
+            (IntegrationKind::Sonarr, sonarr),
+            (IntegrationKind::Radarr, radarr),
+        ] {
+            for (index, name) in names.split('|').enumerate() {
+                let id = index + 1;
+                let result = parse_original_language(
+                    &json!({"originalLanguage":{"id":id,"name":name}}),
+                    kind,
+                )
+                .unwrap();
+                assert_eq!(
+                    Some(result.as_str()),
+                    super::super::language::canonical_arr_language(name),
+                    "{kind:?} {id} {name}"
+                );
+                assert!(parse_original_language(
+                    &json!({"originalLanguage":{"id":id,"name":"Unknown"}}),
+                    kind
+                )
+                .is_err());
+            }
+        }
+        for (kind, id, name, expected) in [
+            (IntegrationKind::Sonarr, 26, "Arabic", "ara"),
+            (IntegrationKind::Radarr, 31, "Arabic", "ara"),
+            (IntegrationKind::Sonarr, 27, "Hindi", "hin"),
+            (IntegrationKind::Radarr, 26, "Hindi", "hin"),
+            (IntegrationKind::Sonarr, 17, "Turkish", "tur"),
+            (IntegrationKind::Radarr, 30, "Portuguese (Brazil)", "por"),
+        ] {
+            assert_eq!(
+                parse_original_language(&json!({"originalLanguage":{"id":id,"name":name}}), kind)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(parse_original_language(
+            &json!({"originalLanguage":{"id":26,"name":"Arabic"}}),
+            IntegrationKind::Radarr
+        )
+        .is_err());
+        assert!(parse_original_language(
+            &json!({"originalLanguage":{"id":0,"name":"Unknown"}}),
+            IntegrationKind::Sonarr
+        )
+        .is_err());
+        assert!(parse_original_language(
+            &json!({"originalLanguage":{"id":-2,"name":"Original"}}),
+            IntegrationKind::Radarr
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn original_audio_extra_non_english_requirements_are_explicit() {
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".into(), "jpn".into(), "spa".into()],
+            subtitles: vec![],
+        };
+        let target = Target::RadarrMovie { movie_id: 7 };
+        let weak = json!({"title":"Dual Audio", "languages":[{"name":"Japanese"}], "customFormats":[{"name":"Multi Audio"}]});
+        let enough = json!({"title":"Dual Audio", "languages":[{"name":"Japanese"},{"name":"Spanish"}], "customFormats":[{"name":"Multi Audio"}]});
+        let no_english_hint =
+            json!({"title":"Japanese", "languages":[{"name":"Japanese"},{"name":"Spanish"}]});
+        for policy in [
+            ServarrLanguageCandidatePolicy::CustomFormat,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            ServarrLanguageCandidatePolicy::TitleGuess,
+        ] {
+            assert!(verified_release_candidates(
+                std::slice::from_ref(&weak),
+                target,
+                &requirements,
+                policy,
+                false,
+                Some("jpn")
+            )
+            .is_empty());
+            assert_eq!(
+                verified_release_candidates(
+                    std::slice::from_ref(&weak),
+                    target,
+                    &requirements,
+                    policy,
+                    false,
+                    None
+                )
+                .len(),
+                1
+            );
+            assert_eq!(
+                verified_release_candidates(
+                    std::slice::from_ref(&enough),
+                    target,
+                    &requirements,
+                    policy,
+                    false,
+                    Some("jpn")
+                )
+                .len(),
+                1
+            );
+            assert!(verified_release_candidates(
+                std::slice::from_ref(&no_english_hint),
+                target,
+                &requirements,
+                policy,
+                false,
+                Some("jpn")
+            )
+            .is_empty());
+        }
+        assert!(verified_release_candidates(
+            std::slice::from_ref(&enough),
+            target,
+            &requirements,
+            ServarrLanguageCandidatePolicy::Strict,
+            false,
+            Some("jpn")
+        )
+        .is_empty());
+        let english_original = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".into(), "spa".into()],
+            subtitles: vec![],
+        };
+        let english_only = json!({"title":"Dual Audio", "languages":[{"name":"English"}]});
+        assert!(verified_release_candidates(
+            std::slice::from_ref(&english_only),
+            target,
+            &english_original,
+            ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+            false,
+            Some("eng")
+        )
+        .is_empty());
     }
 
     #[test]
@@ -10357,6 +10896,28 @@ mod tests {
     }
 
     #[test]
+    fn original_audio_radarr_queue_movie_identity_validation() {
+        for (item, valid) in [
+            (json!({}), true),
+            (json!({"movieId":null,"movie":null}), true),
+            (json!({"movieId":7}), true),
+            (json!({"movie":{"id":7}}), true),
+            (json!({"movieId":7,"movie":{"id":7}}), true),
+            (json!({"movieId":7,"movie":{"id":8}}), false),
+            (json!({"movieId":0}), false),
+            (json!({"movieId":"7"}), false),
+            (json!({"movie":{}}), false),
+            (json!({"movie":{"id":-1}}), false),
+        ] {
+            assert_eq!(
+                radarr_queue_movie_identity_consistent(&item),
+                valid,
+                "{item}"
+            );
+        }
+    }
+
+    #[test]
     fn original_audio_radarr_conflicting_queue_aborts_audit_before_pending() {
         let _caches = use_temp_caches();
         let mut server = mockito::Server::new();
@@ -10589,6 +11150,88 @@ mod tests {
         match previous_file_id {
             Some(value) => env::set_var("radarr_moviefile_movie_id", value),
             None => env::remove_var("radarr_moviefile_movie_id"),
+        }
+    }
+
+    #[cfg(all(feature = "ffmpeg-cli-tests", unix))]
+    #[test]
+    fn original_audio_retag_only_when_inferred_language_is_missing() {
+        let dir = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let subtitle = dir.path().join("source.srt");
+        std::fs::write(
+            &subtitle,
+            "1\n00:00:00,000 --> 00:00:01,000\nHello there.\n",
+        )
+        .unwrap();
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".into(), "jpn".into()],
+            subtitles: vec!["eng".into()],
+        };
+        let options = UntaggedRetagOptions {
+            audio_language: Some("jpn".into()),
+            subtitle_language: Some("eng".into()),
+            dry_run: false,
+        };
+        for (tag, audio_count) in [("jpn", 0), ("eng", 1)] {
+            let path = dir.path().join(format!("{tag}.mkv"));
+            assert!(std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=500:duration=1",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=1000:duration=1",
+                    "-i",
+                ])
+                .arg(&subtitle)
+                .args([
+                    "-map",
+                    "0:a",
+                    "-map",
+                    "1:a",
+                    "-map",
+                    "2:s",
+                    "-c:a",
+                    "aac",
+                    "-c:s",
+                    "srt",
+                    "-fflags",
+                    "+bitexact",
+                    "-metadata:s:a:0",
+                    &format!("language={tag}"),
+                    "-metadata:s:a:1",
+                    "language=und",
+                    "-metadata:s:s:0",
+                    "language=und",
+                ])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success());
+            let result = super::super::language::retag_unknown_streams_for_original(
+                &path,
+                &requirements,
+                &options,
+            )
+            .unwrap();
+            assert_eq!(
+                (result.audio_streams, result.subtitle_streams),
+                (audio_count, 1)
+            );
+            let report = super::super::language::check_file(&path, &requirements).unwrap();
+            assert_eq!(report.present_subtitles, ["eng"]);
+            assert!(report.present_audio.contains(&"jpn".to_string()));
+            if tag == "jpn" {
+                assert_eq!(report.missing_audio, ["eng"]);
+            }
         }
     }
 

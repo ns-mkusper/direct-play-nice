@@ -97,13 +97,19 @@ pub fn parse_language_list(raw: Option<&str>) -> Vec<String> {
 }
 
 pub fn parse_language_tokens(raw: &str) -> Vec<String> {
-    raw.split([',', '/', ';', '|', ' '])
+    let mut tags = BTreeSet::new();
+    for group in raw
+        .split([',', '/', ';', '|'])
         .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .filter_map(normalize_language_tag)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
+        .filter(|group| !group.is_empty())
+    {
+        if let Some(tag) = canonical_arr_language(group) {
+            tags.insert(tag.to_owned());
+        } else {
+            tags.extend(group.split_whitespace().filter_map(normalize_language_tag));
+        }
+    }
+    tags.into_iter().collect()
 }
 
 pub fn report_from_present(
@@ -176,13 +182,43 @@ pub fn retag_unknown_streams(
     requirements: &LanguageRequirements,
     options: &UntaggedRetagOptions,
 ) -> Result<UntaggedRetagReport> {
+    retag_unknown_streams_impl(path, requirements, options, false)
+}
+
+pub(super) fn retag_unknown_streams_for_original(
+    path: &Path,
+    requirements: &LanguageRequirements,
+    options: &UntaggedRetagOptions,
+) -> Result<UntaggedRetagReport> {
+    retag_unknown_streams_impl(path, requirements, options, true)
+}
+
+fn retag_unknown_streams_impl(
+    path: &Path,
+    requirements: &LanguageRequirements,
+    options: &UntaggedRetagOptions,
+    only_inferred_audio_missing: bool,
+) -> Result<UntaggedRetagReport> {
     if !options.enabled() {
         return Ok(UntaggedRetagReport::default());
     }
 
     let initial_report = check_file(path, requirements)?;
-    let should_tag_audio =
-        options.audio_language.is_some() && !initial_report.missing_audio.is_empty();
+    let inferred = options
+        .audio_language
+        .as_deref()
+        .and_then(normalize_language_tag);
+    let should_tag_audio = options.audio_language.is_some()
+        && if only_inferred_audio_missing {
+            inferred.as_ref().is_some_and(|tag| {
+                initial_report
+                    .missing_audio
+                    .iter()
+                    .any(|missing| normalize_language_tag(missing).as_ref() == Some(tag))
+            })
+        } else {
+            !initial_report.missing_audio.is_empty()
+        };
     let should_tag_subtitles =
         options.subtitle_language.is_some() && !initial_report.missing_subtitles.is_empty();
     if !should_tag_audio && !should_tag_subtitles {
@@ -565,6 +601,7 @@ fn sidecar_language(tag: &str) -> Option<String> {
             | "russian"
             | "nl"
             | "nld"
+            | "dut"
             | "pl"
             | "pol"
             | "sv"
@@ -572,6 +609,9 @@ fn sidecar_language(tag: &str) -> Option<String> {
             | "no"
             | "nb"
             | "nor"
+            | "nn"
+            | "nob"
+            | "nno"
             | "da"
             | "dan"
             | "fi"
@@ -1280,18 +1320,28 @@ fn check_sets(
     present_subtitles: Vec<String>,
     requirements: &LanguageRequirements,
 ) -> LanguageCheckReport {
-    let audio_set = present_audio.iter().cloned().collect::<BTreeSet<_>>();
-    let subtitle_set = present_subtitles.iter().cloned().collect::<BTreeSet<_>>();
+    let audio_set = present_audio
+        .iter()
+        .filter_map(|language| normalize_language_tag(language))
+        .collect::<BTreeSet<_>>();
+    let subtitle_set = present_subtitles
+        .iter()
+        .filter_map(|language| normalize_language_tag(language))
+        .collect::<BTreeSet<_>>();
     let missing_audio = requirements
         .audio
         .iter()
-        .filter(|lang| !audio_set.contains(*lang))
+        .filter(|lang| {
+            normalize_language_tag(lang).is_none_or(|language| !audio_set.contains(&language))
+        })
         .cloned()
         .collect();
     let missing_subtitles = requirements
         .subtitles
         .iter()
-        .filter(|lang| !subtitle_set.contains(*lang))
+        .filter(|lang| {
+            normalize_language_tag(lang).is_none_or(|language| !subtitle_set.contains(&language))
+        })
         .cloned()
         .collect();
 
@@ -1324,6 +1374,70 @@ fn extract_language_tag_from_metadata(dict: &AVDictionary) -> Option<String> {
     None
 }
 
+pub(super) fn canonical_arr_language(name: &str) -> Option<&'static str> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "english" => "eng",
+        "french" => "fra",
+        "spanish" | "spanish (latino)" => "spa",
+        "german" => "deu",
+        "italian" => "ita",
+        "danish" => "dan",
+        "dutch" | "flemish" => "nld",
+        "japanese" => "jpn",
+        "icelandic" => "isl",
+        "chinese" => "zho",
+        "russian" => "rus",
+        "polish" => "pol",
+        "vietnamese" => "vie",
+        "swedish" => "swe",
+        "norwegian" => "nor",
+        "finnish" => "fin",
+        "turkish" => "tur",
+        "portuguese" | "portuguese (brazil)" => "por",
+        "greek" => "ell",
+        "korean" => "kor",
+        "hungarian" => "hun",
+        "hebrew" => "heb",
+        "lithuanian" => "lit",
+        "czech" => "ces",
+        "arabic" => "ara",
+        "hindi" => "hin",
+        "romanian" => "ron",
+        "thai" => "tha",
+        "bulgarian" => "bul",
+        "ukrainian" => "ukr",
+        "persian" => "fas",
+        "bengali" => "ben",
+        "slovak" => "slk",
+        "latvian" => "lav",
+        "catalan" => "cat",
+        "croatian" => "hrv",
+        "serbian" => "srp",
+        "bosnian" => "bos",
+        "estonian" => "est",
+        "tamil" => "tam",
+        "indonesian" => "ind",
+        "telugu" => "tel",
+        "macedonian" => "mkd",
+        "slovenian" => "slv",
+        "malayalam" => "mal",
+        "kannada" => "kan",
+        "albanian" => "sqi",
+        "afrikaans" => "afr",
+        "marathi" => "mar",
+        "tagalog" => "tgl",
+        "urdu" => "urd",
+        "romansh" => "roh",
+        "mongolian" => "mon",
+        "georgian" => "kat",
+        "irish" => "gle",
+        "azerbaijani" => "aze",
+        "uzbek" => "uzb",
+        "malay" => "msa",
+        _ => return None,
+    })
+}
+
 pub(super) fn normalize_language_tag(input: &str) -> Option<String> {
     let primary = input
         .trim()
@@ -1336,6 +1450,9 @@ pub(super) fn normalize_language_tag(input: &str) -> Option<String> {
         return None;
     }
 
+    if let Some(tag) = canonical_arr_language(&primary) {
+        return Some(tag.to_string());
+    }
     let normalized = match primary.as_str() {
         "en" | "eng" | "english" => "eng",
         "fr" | "fre" | "fra" | "french" => "fra",
@@ -1347,10 +1464,10 @@ pub(super) fn normalize_language_tag(input: &str) -> Option<String> {
         "ko" | "kor" | "korean" => "kor",
         "zh" | "zho" | "chi" | "chinese" => "zho",
         "ru" | "rus" | "russian" => "rus",
-        "nl" | "dutch" => "nld",
+        "nl" | "dut" => "nld",
         "pl" | "polish" => "pol",
         "sv" | "swedish" => "swe",
-        "no" | "nb" | "norwegian" => "nor",
+        "no" | "nb" | "nn" | "nob" | "nno" => "nor",
         "da" | "danish" => "dan",
         "fi" | "finnish" => "fin",
         "cs" => "ces",
@@ -1362,6 +1479,37 @@ pub(super) fn normalize_language_tag(input: &str) -> Option<String> {
         "tr" => "tur",
         "th" => "tha",
         "vi" => "vie",
+        "is" | "ice" => "isl",
+        "ro" | "rum" => "ron",
+        "sk" | "slo" => "slk",
+        "mk" | "mac" => "mkd",
+        "ka" | "geo" => "kat",
+        "sq" | "alb" => "sqi",
+        "ms" | "may" => "msa",
+        "az" => "aze",
+        "uz" => "uzb",
+        "ur" => "urd",
+        "ga" => "gle",
+        "bn" => "ben",
+        "ta" => "tam",
+        "te" => "tel",
+        "kn" => "kan",
+        "ml" => "mal",
+        "bg" => "bul",
+        "hu" => "hun",
+        "lt" => "lit",
+        "lv" => "lav",
+        "et" => "est",
+        "ca" => "cat",
+        "hr" => "hrv",
+        "sr" => "srp",
+        "bs" => "bos",
+        "sl" => "slv",
+        "af" => "afr",
+        "mr" => "mar",
+        "tl" => "tgl",
+        "mn" => "mon",
+        "rm" => "roh",
         "id" | "indonesian" => "ind",
         "fa" | "fas" | "per" | "persian" => "fas",
         "uk" => "ukr",
@@ -2244,6 +2392,28 @@ mod tests {
         assert!(format!("{error:#}").contains("without overwrite"));
         assert_eq!(std::fs::read(&staged).unwrap(), b"pre-existing file");
         assert_eq!(std::fs::read(&unsupported).unwrap(), bytes);
+    }
+
+    #[test]
+    fn original_audio_aliases_match_without_changing_requirements() {
+        assert_eq!(normalize_language_tag("dut").as_deref(), Some("nld"));
+        assert_eq!(normalize_language_tag("nob").as_deref(), Some("nor"));
+        assert_eq!(normalize_language_tag("nno").as_deref(), Some("nor"));
+        assert_eq!(sidecar_language("dut").as_deref(), Some("nld"));
+        assert_eq!(sidecar_language("nob").as_deref(), Some("nor"));
+        assert_eq!(sidecar_language("nno").as_deref(), Some("nor"));
+        assert_eq!(
+            parse_language_list(Some("Portuguese (Brazil), Spanish (Latino), dut nob")),
+            ["nld", "nor", "por", "spa"]
+        );
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["dut".into(), "nob".into()],
+            subtitles: vec![],
+        };
+        let report = check_sets(vec!["nld".into(), "nno".into()], vec![], &requirements);
+        assert!(report.satisfied());
+        assert_eq!(requirements.audio, ["dut", "nob"]);
     }
 
     #[test]
