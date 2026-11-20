@@ -353,6 +353,14 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_check: bool,
 
+    /// Require English and each title's Arr original audio language in enabled Servarr checks.
+    #[arg(
+        long = "servarr-preserve-original-audio",
+        default_value_t = false,
+        id = "servarr_preserve_original_audio"
+    )]
+    pub(crate) servarr_preserve_original_audio: bool,
+
     /// Required audio languages for --servarr-language-check, comma-separated ISO-639 tags (e.g. eng,jpn).
     #[arg(
         long = "required-audio-languages",

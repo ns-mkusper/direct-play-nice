@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -166,7 +167,7 @@ class OfflineSeedTests(unittest.TestCase):
                     db.execute("CREATE TABLE QualityProfiles (Id INTEGER PRIMARY KEY)")
                     db.execute("INSERT INTO QualityProfiles VALUES (2)")
                     if app == "sonarr":
-                        db.execute('CREATE TABLE Series (Id INTEGER PRIMARY KEY, Title TEXT NOT NULL, Path TEXT NOT NULL, QualityProfileId INTEGER NOT NULL)')
+                        db.execute('CREATE TABLE Series (Id INTEGER PRIMARY KEY, Title TEXT NOT NULL, Path TEXT NOT NULL, QualityProfileId INTEGER NOT NULL, OriginalLanguage INTEGER NOT NULL)')
                         db.execute('CREATE TABLE Episodes (Id INTEGER PRIMARY KEY, SeriesId INTEGER NOT NULL, EpisodeFileId INTEGER NOT NULL, EpisodeNumber INTEGER NOT NULL)')
                     else:
                         db.execute('CREATE TABLE MovieMetadata (Id INTEGER PRIMARY KEY, Title TEXT NOT NULL, TmdbId INTEGER NOT NULL, OriginalLanguage INTEGER NOT NULL)')
@@ -176,8 +177,31 @@ class OfflineSeedTests(unittest.TestCase):
                     self.assertTrue(seed["metadata_only"])
                     self.assertEqual(seed["entity_id"], 1)
                     self.assertEqual(json.loads((root / "data/seed.json").read_text()), seed)
+                    self.assertEqual(len(seed["policy"]), len(harness.POLICY_CASES))
+                    self.assertEqual(len({case["entity_id"] for case in seed["policy"]}), len(harness.POLICY_CASES))
+                    with sqlite3.connect(database) as db:
+                        table = "Series" if app == "sonarr" else "MovieMetadata"
+                        languages = db.execute(f'SELECT OriginalLanguage FROM {table} ORDER BY Id').fetchall()
+                        self.assertEqual(languages, [(1,)] + [(case[1],) for case in harness.POLICY_CASES])
                     with self.assertRaisesRegex(harness.HarnessError, "nonempty library"):
                         harness.seed_offline(app, root / "config.xml", root / "data", os.getuid(), os.getgid())
+
+
+    def test_missing_original_language_rolls_back_seed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "sonarr.db"
+            with sqlite3.connect(database) as db:
+                db.execute('CREATE TABLE QualityProfiles (Id INTEGER PRIMARY KEY)')
+                db.execute('INSERT INTO QualityProfiles VALUES (1)')
+                db.execute('CREATE TABLE Series (Id INTEGER PRIMARY KEY, Title TEXT NOT NULL)')
+                db.execute('CREATE TABLE Episodes (Id INTEGER PRIMARY KEY, SeriesId INTEGER NOT NULL)')
+            with mock.patch.object(harness, "assert_app_stopped"):
+                with self.assertRaisesRegex(harness.HarnessError, "Missing Series.OriginalLanguage"):
+                    harness.seed_offline("sonarr", root / "config.xml", root / "data", os.getuid(), os.getgid())
+            with sqlite3.connect(database) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM Series').fetchone()[0], 0)
+                self.assertEqual(db.execute('SELECT count(*) FROM Episodes').fetchone()[0], 0)
 
 
 @contextlib.contextmanager
@@ -288,6 +312,87 @@ class MediaTests(unittest.TestCase):
             with mock.patch.object(harness, "run_process", side_effect=generate):
                 result = harness.generate_fixture(path, "red", os.getuid(), os.getgid())
             self.assertEqual(result["mode"], 0o644)
+
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools unavailable")
+    def test_real_synthetic_multitrack_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for language in ("jpn", "kor", "pol"):
+                path = Path(temporary) / f"{language}.mkv"
+                harness.generate_fixture(path, "blue", os.getuid(), os.getgid(), ("eng", language))
+                result = harness.verify_media(path, "mpeg4", "blue", ("eng", language))
+                self.assertEqual(result["audio_languages"], ["eng", language])
+                with self.assertRaisesRegex(harness.HarnessError, "Unexpected audio tracks"):
+                    harness.verify_media(path, "mpeg4", "blue", ("eng",))
+
+
+class PolicyTests(unittest.TestCase):
+    def cases_and_records(self, app):
+        cases, records, warnings = [], [], []
+        for index, (name, language_id, language_name, tracks) in enumerate(harness.POLICY_CASES, 1):
+            case = {"name": name, "entity_id": index, "episode_id": index + 100,
+                    "original_language": {"id": language_id, "name": language_name},
+                    "tracks": tracks, "file_path": f"/data/library/{name}.mkv"}
+            cases.append(case)
+            expected = harness.policy_expected(case)
+            if expected is None:
+                noun, target = ("episode", index + 100) if app == "sonarr" else ("movie", index)
+                warnings.append(f"language audit skipping {noun} {target}: cannot establish original audio language")
+            else:
+                required, present, missing = expected
+                records.append({"path": case["file_path"],
+                                "requirements": {"enabled": True, "audio": list(required), "subtitles": []},
+                                "report": {"present_audio": list(present), "missing_audio": list(missing),
+                                           "missing_subtitles": []}})
+        return cases, records, "\n".join(warnings)
+
+    def test_exact_per_item_policy_and_missing_tracks(self):
+        for app in ("sonarr", "radarr"):
+            cases, records, log = self.cases_and_records(app)
+            results = harness.check_policy_assessments(cases, records, log, app)
+            by_name = {result["name"]: result for result in results}
+            self.assertEqual(by_name["english-eng"]["required_audio"], ["eng"])
+            self.assertEqual(by_name["english-jpn"]["missing_audio"], ["eng"])
+            for name, tag in (("japanese", "jpn"), ("korean", "kor"), ("polish", "pol")):
+                self.assertEqual(by_name[f"{name}-eng"]["missing_audio"], [tag])
+                self.assertEqual(by_name[f"{name}-{tag}"]["missing_audio"], ["eng"])
+                self.assertEqual(by_name[f"{name}-both"]["status"], "satisfied")
+            self.assertEqual(by_name["unknown-eng"]["status"], "skipped-invalid-metadata")
+            self.assertEqual(by_name["conflict-eng"]["status"], "skipped-invalid-metadata")
+
+    def test_bad_assessment_or_missing_invalid_warning_fails(self):
+        cases, records, log = self.cases_and_records("sonarr")
+        records[0]["requirements"]["audio"].append("jpn")
+        with self.assertRaisesRegex(harness.HarnessError, "Wrong policy requirements"):
+            harness.check_policy_assessments(cases, records, log, "sonarr")
+        cases, records, log = self.cases_and_records("radarr")
+        with self.assertRaisesRegex(harness.HarnessError, "Missing fail-closed"):
+            harness.check_policy_assessments(cases, records, "", "radarr")
+
+    def test_proxy_forwards_real_response_but_blocks_release_and_mutations(self):
+        upstream = [{"id": 7, "originalLanguage": {"id": 8, "name": "Japanese"}},
+                    {"id": 8, "originalLanguage": {"id": 1, "name": "English"}}]
+        with http_fixture(upstream) as (base, upstream_calls):
+            with harness.audit_proxy("sonarr", 7, base.rstrip("/")) as (proxy, calls, conflicts):
+                request = urllib.request.Request(proxy + "/api/v3/series", headers={"X-Api-Key": "unit-secret"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    result = json.load(response)
+                self.assertEqual(result[0]["originalLanguage"], {"id": 8, "name": "Korean"})
+                self.assertEqual(result[1], upstream[1])
+                for path, method in (("/api/v3/release", "GET"), ("/api/v3/series", "POST"),
+                                     ("/api/v3/series/%2e%2e/release", "GET")):
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(urllib.request.Request(proxy + path, method=method), timeout=5)
+                    self.assertEqual(error.exception.code, 403)
+                self.assertEqual(conflicts, [7])
+                self.assertEqual(len(upstream_calls), 1)
+                self.assertEqual([item["blocked"] for item in calls], [False, True, True, True])
+                self.assertNotIn("unit-secret", json.dumps(calls))
+
+    def test_proxy_refuses_non_loopback_upstream(self):
+        with self.assertRaisesRegex(harness.HarnessError, "loopback"):
+            with harness.audit_proxy("radarr", 7, "http://example.com"):
+                pass
 
 
 class SafetyTests(unittest.TestCase):

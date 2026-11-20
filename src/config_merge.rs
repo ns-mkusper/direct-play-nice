@@ -229,6 +229,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_preserve_original_audio") {
+        if let Some(enabled) = cfg.servarr_preserve_original_audio {
+            args.servarr_preserve_original_audio = enabled;
+        }
+    }
+
     if !cli_value_provided(matches, "required_audio_languages") {
         if let Some(languages) = cfg.required_audio_languages.as_ref() {
             args.required_audio_languages = Some(languages.clone());
@@ -459,6 +465,26 @@ mod tests {
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert_eq!(args.servarr_output_extension.as_deref(), Some("mov"));
+    }
+
+    #[test]
+    fn original_audio_config_and_cli_precedence() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        assert!(!args.servarr_preserve_original_audio);
+        let cfg: config::Config = toml::from_str("servarr_preserve_original_audio = true").unwrap();
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_preserve_original_audio);
+
+        let (mut args, matches) =
+            parse_args(&["direct_play_nice", "--servarr-preserve-original-audio"]);
+        let cfg: config::Config =
+            toml::from_str("servarr_preserve_original_audio = false").unwrap();
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_preserve_original_audio);
+
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.servarr_preserve_original_audio);
     }
 
     #[test]

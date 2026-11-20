@@ -264,6 +264,25 @@ allowed; a file with English plus Japanese audio still satisfies
 dub is required. Leave `required_subtitle_languages` empty if missing subtitles
 are acceptable.
 
+For a library with multiple languages, opt in to per-title original audio with
+`servarr_preserve_original_audio = true` or `--servarr-preserve-original-audio`.
+The option is off by default. When language checking is enabled, DPN requires
+English and the title's original language from Sonarr or Radarr, in addition to
+the configured audio and subtitle requirements. Unknown or conflicting original
+metadata prevents actions for that target. With this option, an automatic
+replacement for a non-English original must include that language in its Arr
+release metadata. A title or custom format alone cannot establish the original
+language, so DPN may skip an available release when metadata is missing. English
+may still use the hints allowed by the configured candidate policy. Release
+metadata is not proof of the downloaded file's streams; DPN continues to check
+the imported file against the stored requirements. Configure a recovery root if
+you need a retained copy before a replacement.
+
+With the option enabled, DPN uses inference for untagged audio only when the
+configured language matches the title's identified original language.
+Independent subtitle inference is unchanged. Untagged audio is not itself
+evidence of a language.
+
 Untagged streams are handled conservatively. By default, `und`/empty language
 metadata does not satisfy a required language. If a library is known to be
 English-native, set `servarr_untagged_audio_language = "eng"` or pass

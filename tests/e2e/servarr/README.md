@@ -42,8 +42,8 @@ reviewed together with metadata seed compatibility and both apps' E2E results.
 
 The real Add Series/Movie APIs fetch metadata from public services even when
 metadata is supplied. To avoid that dependency, the suite starts Arr to migrate
-an empty database, stops the app, and seeds only one synthetic series/episode
-or movie's metadata. The seeder refuses running apps and nonempty libraries.
+an empty database, stops the app, and seeds synthetic series/episodes or movies.
+The seeder refuses running apps and nonempty libraries.
 No media-file, history, notification, or command records are manufactured.
 
 After restart, configuration, Custom Script registration, manual imports,
@@ -70,12 +70,23 @@ handling, not mid-encode corruption or atomic promotion rollback, which remain
 covered by the focused CLI regressions in `tests/cli_servarr.rs`.
 Repeated rescans must not duplicate files or trigger repeated conversion.
 
+The original-audio policy regression imports separate locally generated tagged
+media for English, Japanese, Korean, and Polish originals, plus unknown and
+conflicting-metadata controls. It verifies title metadata from the real Arr API,
+then runs a zero-search-budget language audit in dry-run mode and checks each
+file's effective requirements and missing tracks. A loopback-only read proxy
+forwards the real API and rejects searches and write requests. It deliberately
+changes one Japanese response to a conflicting ID/name for the negative control.
+Both apps must have no configured indexers or download clients. This does not
+exercise provider metadata retrieval, a real release search, or guarantee that
+all pod egress is blocked.
+
 ## CI and diagnostics
 
 `.github/workflows/servarr-e2e.yml` runs on pull requests, main pushes, and manual
 dispatch on an isolated GitHub-hosted Linux runner. The driver uses bounded
 polling of actual command and hook completion, not fixed sleeps as a substitute
 for readiness. Failure still collects app logs, hook events and output, API
-transcripts, result JSON, and dependency versions under
-`artifacts/servarr-e2e`. The private kubeconfig and Arr credential file are not
-uploaded. Set `E2E_ARTIFACTS` to change the artifact directory.
+transcripts, policy audit/cache/proxy evidence, result JSON, and dependency
+versions under `artifacts/servarr-e2e`. The private kubeconfig and Arr credential
+file are not uploaded. Set `E2E_ARTIFACTS` to change the artifact directory.

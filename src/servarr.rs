@@ -166,6 +166,7 @@ pub struct ArgsView<'a> {
     pub desired_suffix: &'a str,
     pub desired_video_quality: VideoQuality,
     pub language_requirements: LanguageRequirements,
+    pub preserve_original_audio: bool,
     pub untagged_retag: language::UntaggedRetagOptions,
     pub api_settings: ApiSettings,
     pub redownload_options: RedownloadOptions,
@@ -218,7 +219,7 @@ fn handle_event(
 fn prepare_download(
     kind: IntegrationKind,
     event_type: String,
-    view: ArgsView<'_>,
+    mut view: ArgsView<'_>,
 ) -> Result<IntegrationPreparation> {
     crate::logging::log_relevant_env(kind);
 
@@ -255,6 +256,20 @@ fn prepare_download(
             "{} integration did not receive any media file paths.",
             kind.label()
         );
+    }
+
+    let mut original_audio = None;
+    if view.preserve_original_audio && view.language_requirements.enabled {
+        let (requirements, retag, policy) = api::original_audio_requirements_from_env(
+            kind,
+            &view.api_settings,
+            &view.language_requirements,
+            &view.untagged_retag,
+        )
+        .context("resolving original audio for Download event; leaving media untouched")?;
+        view.language_requirements = requirements;
+        view.untagged_retag = retag;
+        original_audio = Some(policy);
     }
 
     let effective_suffix = if view.desired_suffix.trim().is_empty() {
@@ -346,6 +361,7 @@ fn prepare_download(
             &view.api_settings,
             &view.language_requirements,
             view.redownload_options,
+            original_audio.as_ref(),
         )? {
             api::RedownloadOutcome::Grabbed { title } => {
                 return Ok(IntegrationPreparation::Skip {

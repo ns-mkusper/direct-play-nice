@@ -33,14 +33,17 @@ rescan, and REQUIRE Arr to associate the converted output before upgrading.
 This repair is measured, not silently represented as hook-side reconciliation.
 
 Require DPN_E2E_EPHEMERAL=1 and loopback HTTP; never target a live installation.
-Results and API transcripts persist even on failure under /data. The harness
-never directly invokes DPN, nor invokes the wrapper to simulate Arr events.
+Results and API transcripts persist even on failure under /data. The six import
+scenarios invoke DPN only through the real Arr wrapper; the separate original-
+audio regression runs the DPN audit directly through a read-only loopback proxy.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import http.server
 import json
 import os
 import re
@@ -50,6 +53,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.error
@@ -61,6 +65,25 @@ from datetime import datetime, timezone
 
 TITLE = "DPN E2E Fixture"
 EXTERNAL_ID = 990000001
+# (fixture name, Arr language ID/name, audio tracks); each title is independent.
+POLICY_CASES = [
+    ("english-eng", 1, "English", ("eng",)),
+    ("english-jpn", 1, "English", ("jpn",)),
+    ("japanese-eng", 8, "Japanese", ("eng",)),
+    ("japanese-jpn", 8, "Japanese", ("jpn",)),
+    ("japanese-both", 8, "Japanese", ("eng", "jpn")),
+    ("korean-eng", 21, "Korean", ("eng",)),
+    ("korean-kor", 21, "Korean", ("kor",)),
+    ("korean-both", 21, "Korean", ("eng", "kor")),
+    ("polish-eng", 12, "Polish", ("eng",)),
+    ("polish-pol", 12, "Polish", ("pol",)),
+    ("polish-both", 12, "Polish", ("eng", "pol")),
+    ("unknown-eng", 0, "Unknown", ("eng",)),
+    # This real Japanese title's API response is deliberately altered by the
+    # read-only audit proxy to test conflicting ID/name handling.
+    ("conflict-eng", 8, "Japanese", ("eng",)),
+]
+AUDIO_FREQUENCIES = {"eng": 440, "jpn": 550, "kor": 660, "pol": 770}
 COLORS = {
     "blue": (0, 0, 255), "red": (255, 0, 0), "green": (0, 128, 0),
     "yellow": (255, 255, 0), "magenta": (255, 0, 255), "cyan": (0, 255, 255),
@@ -167,24 +190,31 @@ def run_process(argv, timeout=120):
     return result.stdout
 
 
-def generate_fixture(path, color, uid, gid):
+def generate_fixture(path, color, uid, gid, languages=("eng",)):
     """All fixture generation occurs in the app pod; no downloaded media."""
     path = Path(path)
     owned_directory(path.parent, uid, gid)
     require(color in COLORS, f"Unknown color: {color}")
-    run_process(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                 "-f", "lavfi", "-i", f"color=c={color}:s=640x360:r=24:d=4",
-                 "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4",
-                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg4", "-q:v", "3",
-                 "-threads", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2",
-                 "-metadata:s:a:0", "language=eng", "-shortest", path])
+    require(languages and len(set(languages)) == len(languages)
+            and all(language in AUDIO_FREQUENCIES for language in languages), "Invalid fixture languages")
+    argv = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-f", "lavfi", "-i", f"color=c={color}:s=640x360:r=24:d=4"]
+    for language in languages:
+        argv += ["-f", "lavfi", "-i", f"sine=frequency={AUDIO_FREQUENCIES[language]}:sample_rate=48000:duration=4"]
+    argv += ["-map", "0:v:0"]
+    for index in range(len(languages)):
+        argv += ["-map", f"{index + 1}:a:0"]
+    argv += ["-c:v", "mpeg4", "-q:v", "3", "-threads", "1", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2"]
+    for index, language in enumerate(languages):
+        argv += [f"-metadata:s:a:{index}", f"language={language}"]
+    run_process(argv + ["-shortest", path])
     if os.geteuid() == 0:
         os.chown(path, uid, gid)
     path.chmod(0o644)
     return file_snapshot(path)
 
 
-def verify_media(path, codec, color):
+def verify_media(path, codec, color, languages=("eng",)):
     probe = json.loads(run_process(["ffprobe", "-v", "error", "-show_streams",
                                    "-show_format", "-of", "json", path]))
     videos = [s for s in probe["streams"] if s["codec_type"] == "video"]
@@ -192,8 +222,9 @@ def verify_media(path, codec, color):
     require(len(videos) == 1 and videos[0]["codec_name"] == codec,
             f"Unexpected video streams at {path}: {videos}")
     require((videos[0]["width"], videos[0]["height"]) == (640, 360), "Wrong output dimensions")
-    require(audios and audios[0].get("channels") == 2, "Missing stereo audio")
-    require(audios[0].get("tags", {}).get("language") == "eng", "Lost audio language tag")
+    actual_languages = [audio.get("tags", {}).get("language") for audio in audios]
+    require(actual_languages == list(languages) and all(audio.get("channels") == 2 for audio in audios),
+            f"Unexpected audio tracks at {path}: {actual_languages}")
     require(3.8 <= float(probe["format"]["duration"]) <= 4.5, "Truncated or extended output")
     # Decode every video and audio packet, not just the container header.
     run_process(["ffmpeg", "-v", "error", "-xerror", "-nostdin", "-i", path,
@@ -203,7 +234,7 @@ def verify_media(path, codec, color):
                        "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
     require(len(rgb) == 3 and all(abs(a - b) <= 25 for a, b in zip(rgb, COLORS[color])),
             f"Decoded content is not {color}: RGB={list(rgb)}")
-    return {"codec": codec, "color": color, "decoded_rgb": list(rgb),
+    return {"codec": codec, "color": color, "decoded_rgb": list(rgb), "audio_languages": actual_languages,
             "duration": float(probe["format"]["duration"]), "width": 640, "height": 360}
 
 
@@ -252,6 +283,125 @@ class Api:
                     f"{name} command failed: {current}")
             return current if status == "completed" else None
         return poll(completed, f"{name} command {command['id']}", self.timeout)
+
+
+@contextlib.contextmanager
+def audit_proxy(app, conflict_id, upstream=None):
+    """Loopback-only read proxy; block release searches and all mutations."""
+    prefix = f"/{app}"
+    upstream = upstream or f"http://127.0.0.1:{8989 if app == 'sonarr' else 7878}"
+    parsed_upstream = urllib.parse.urlsplit(upstream)
+    require(parsed_upstream.scheme == "http" and parsed_upstream.hostname == "127.0.0.1"
+            and parsed_upstream.username is None and not parsed_upstream.path
+            and not parsed_upstream.query and not parsed_upstream.fragment,
+            "Audit proxy must target loopback")
+    calls, conflicts = [], []
+    allowed = {"queue", "series", "episode", "episodefile", "movie", "moviefile", "history", "blocklist"}
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def handle_request(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            path = parsed.path
+            relative = path[len(prefix):] if path.startswith(prefix + "/") else ""
+            parts = relative.split("/")
+            resource = parts[3] if len(parts) > 3 and parts[:3] == ["", "api", "v3"] else ""
+            allowed_request = (self.command == "GET" and resource in allowed and not parsed.fragment
+                               and all(part not in {".", ".."} for part in urllib.parse.unquote(relative).split("/")))
+            calls.append({"method": self.command, "path": relative, "blocked": not allowed_request})
+            if not allowed_request:
+                self.send_error(403)
+                return
+            url = upstream + relative + ("?" + parsed.query if parsed.query else "")
+            request = urllib.request.Request(url, headers={"X-Api-Key": self.headers.get("X-Api-Key", "")})
+            try:
+                with opener.open(request, timeout=15) as response:
+                    body, status = response.read(), response.status
+                collection = "/api/v3/series" if app == "sonarr" else "/api/v3/movie"
+                if relative == collection or relative == f"{collection}/{conflict_id}":
+                    value = json.loads(body)
+                    items = value if isinstance(value, list) else [value]
+                    for item in items:
+                        if item.get("id") == conflict_id:
+                            require(item.get("originalLanguage") == {"id": 8, "name": "Japanese"},
+                                    "Conflict source must be real Japanese metadata")
+                            item["originalLanguage"] = {"id": 8, "name": "Korean"}
+                            conflicts.append(conflict_id)
+                    body = json.dumps(value).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (OSError, ValueError, HarnessError, urllib.error.URLError):
+                self.send_error(502)
+
+        do_GET = handle_request
+        do_POST = handle_request
+        do_PUT = handle_request
+        do_DELETE = handle_request
+        do_PATCH = handle_request
+        do_HEAD = handle_request
+        do_OPTIONS = handle_request
+        do_TRACE = handle_request
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}{prefix}", calls, conflicts
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def policy_expected(case):
+    tags = {"English": "eng", "Japanese": "jpn", "Korean": "kor", "Polish": "pol"}
+    original = case["original_language"]["name"]
+    if case["name"] in {"unknown-eng", "conflict-eng"}:
+        return None
+    require(original in tags, f"Unexpected policy fixture original: {original}")
+    required = {"eng", tags[original]}
+    return required, set(case["tracks"]), required - set(case["tracks"])
+
+
+def check_policy_assessments(cases, records, audit_log, app):
+    by_path = {record["path"]: record for record in records}
+    require(len(by_path) == len(records), "Duplicate policy cache paths")
+    results = []
+    for case in cases:
+        expected = policy_expected(case)
+        record = by_path.pop(case["file_path"], None)
+        if expected is None:
+            target = case["episode_id"] if app == "sonarr" else case["entity_id"]
+            noun = "episode" if app == "sonarr" else "movie"
+            require(record is None, f"Invalid metadata was assessed: {case['name']}")
+            require(re.search(rf"language audit skipping {noun} {target}: cannot establish original audio language", audit_log),
+                    f"Missing fail-closed audit result: {case['name']}")
+            results.append({"name": case["name"], "status": "skipped-invalid-metadata"})
+            continue
+        required, present, missing = expected
+        require(record is not None, f"Missing policy assessment: {case['name']}")
+        requirements, report = record["requirements"], record["report"]
+        require(requirements["enabled"] and len(requirements["audio"]) == len(required)
+                and set(requirements["audio"]) == required and not requirements["subtitles"],
+                f"Wrong policy requirements: {case['name']}")
+        require(set(report["present_audio"]) == present and set(report["missing_audio"]) == missing
+                and not report["missing_subtitles"], f"Wrong policy assessment: {case['name']}")
+        results.append({"name": case["name"], "status": "missing" if missing else "satisfied",
+                        "required_audio": sorted(required), "present_audio": sorted(present),
+                        "missing_audio": sorted(missing)})
+    require(not by_path, f"Unexpected policy cache records: {list(by_path)}")
+    return results
 
 
 def insert_metadata(db, table, values):
@@ -332,10 +482,40 @@ def seed_offline(app, config, data, uid, gid):
             metadata_id = insert_metadata(db, "MovieMetadata", common)
             entity_id = insert_metadata(db, "Movies", {**common, "MovieMetadataId": metadata_id})
             episode_id = None
+        language_table = "Series" if app == "sonarr" else "MovieMetadata"
+        columns = {row[1] for row in db.execute(f'PRAGMA table_info("{language_table}")')}
+        require("OriginalLanguage" in columns, f"Missing {language_table}.OriginalLanguage")
+        policy = []
+        for index, (name, language_id, language_name, tracks) in enumerate(POLICY_CASES, 1):
+            title = f"DPN Policy {name}"
+            clean = "dpnpolicy" + name.replace("-", "")
+            path = owned_directory(library / (title if app == "sonarr" else f"{title} (2020)"), uid, gid)
+            external_id = EXTERNAL_ID + 100 + index * 2
+            values = {**common, "Title": title, "OriginalTitle": title, "CleanTitle": clean,
+                      "CleanOriginalTitle": clean, "SortTitle": title.lower(), "TitleSlug": f"dpn-policy-{name}",
+                      "TvdbId": external_id, "TmdbId": external_id, "Path": str(path),
+                      "OriginalLanguage": language_id}
+            if app == "sonarr":
+                policy_id = insert_metadata(db, "Series", values)
+                policy_episode = insert_metadata(db, "Episodes", {
+                    "SeriesId": policy_id, "TvdbId": external_id + 1, "TvDbEpisodeId": external_id + 1,
+                    "SeasonNumber": 1, "EpisodeNumber": 1, "Title": "Synthetic Pilot",
+                    "Overview": "Generated color and tones", "Monitored": 1, "Ignored": 0,
+                    "EpisodeFileId": 0, "AirDate": "2020-01-01", "AirDateUtc": "2020-01-01 00:00:00",
+                    "Runtime": 1, "Images": "[]", "Ratings": "{}", "AbsoluteEpisodeNumber": 1,
+                    "UnverifiedSceneNumbering": 0})
+            else:
+                metadata_id = insert_metadata(db, "MovieMetadata", values)
+                policy_id = insert_metadata(db, "Movies", {**values, "MovieMetadataId": metadata_id})
+                policy_episode = None
+            policy.append({"name": name, "entity_id": policy_id, "episode_id": policy_episode,
+                           "title": title, "path": str(path), "external_id": external_id,
+                           "original_language": {"id": language_id, "name": language_name},
+                           "tracks": list(tracks)})
         db.commit()
     seed = {"app": app, "entity_id": entity_id, "episode_id": episode_id,
             "path": str(destination), "title": TITLE, "external_id": EXTERNAL_ID,
-            "metadata_only": True}
+            "metadata_only": True, "policy": policy}
     atomic_json(data / "seed.json", seed)
     return seed
 
@@ -385,6 +565,11 @@ class Harness:
         naming = self.api.get("config/naming")
         naming["renameEpisodes" if self.sonarr else "renameMovies"] = False
         self.api.request("PUT", f"config/naming/{naming['id']}", naming)
+        definitions = self.api.get("qualitydefinition")
+        self.qualities = {entry["quality"]["name"]: entry["quality"] for entry in definitions}
+        require("HDTV-720p" in self.qualities and "HDTV-1080p" in self.qualities,
+                "Expected built-in quality definitions are missing")
+        self.run_original_audio_policy()
         schema = next(item for item in self.api.get("notification/schema")
                       if item["implementation"] == "CustomScript")
         schema.pop("id", None)
@@ -398,10 +583,95 @@ class Harness:
             elif field["name"].lower() == "arguments":
                 field["value"] = ""
         self.notification = self.api.request("POST", "notification", schema)
-        definitions = self.api.get("qualitydefinition")
-        self.qualities = {entry["quality"]["name"]: entry["quality"] for entry in definitions}
-        require("HDTV-720p" in self.qualities and "HDTV-1080p" in self.qualities,
-                "Expected built-in quality definitions are missing")
+
+    def run_original_audio_policy(self):
+        require(not self.api.get("indexer") and not self.api.get("downloadclient"),
+                "Policy E2E requires no indexers or download clients")
+        require(not self.api.get("notification"), "Policy imports require an empty notification list")
+        cases = self.seed["policy"]
+        require(len(cases) == len(POLICY_CASES), "Incomplete policy seed")
+        for case in cases:
+            entity = self.api.get(f"{self.entity_kind}/{case['entity_id']}")
+            require(entity["id"] == case["entity_id"] and entity["title"] == case["title"]
+                    and entity["path"] == case["path"]
+                    and entity.get("originalLanguage") == case["original_language"],
+                    f"Wrong real Arr metadata for {case['name']}")
+            if self.sonarr:
+                episode = self.api.get(f"episode/{case['episode_id']}")
+                require(episode["id"] == case["episode_id"] and episode["seriesId"] == case["entity_id"],
+                        f"Wrong series association for {case['name']}")
+            token = "S01E01" if self.sonarr else "2020"
+            filename = f"DPN.Policy.{case['name']}.{token}.HDTV-720p.mkv"
+            source = self.data / "downloads" / f"policy-{case['name']}" / filename
+            before = generate_fixture(source, "blue", self.args.uid, self.args.gid, case["tracks"])
+            verify_media(source, "mpeg4", "blue", case["tracks"])
+            payload = {"path": str(source), "folderName": source.parent.name,
+                       "quality": {"quality": self.qualities["HDTV-720p"],
+                                   "revision": {"version": 1, "real": 0, "isRepack": False}},
+                       "languages": [{"id": 1, "name": "English"}], "releaseGroup": "E2E", "indexerFlags": 0}
+            if self.sonarr:
+                payload.update({"seriesId": case["entity_id"], "episodeIds": [case["episode_id"]]})
+            else:
+                payload["movieId"] = case["entity_id"]
+            self.api.command("ManualImport", files=[payload], importMode="copy")
+            key = "seriesId" if self.sonarr else "movieId"
+            files = self.api.get(self.file_kind, **{key: case["entity_id"]})
+            require(len(files) == 1, f"Expected one policy file for {case['name']}: {files}")
+            file = files[0]
+            path = Path(file.get("path") or str(Path(case["path"]) / file["relativePath"]))
+            require(path.is_relative_to(Path(case["path"])) and path.is_file(),
+                    f"Policy file is missing or outside its title: {case['name']}")
+            if self.sonarr:
+                episode = self.api.get(f"episode/{case['episode_id']}")
+                require(episode["hasFile"] and episode["episodeFileId"] == file["id"],
+                        f"Policy episode association is stale: {case['name']}")
+            else:
+                entity = self.api.get(f"movie/{case['entity_id']}")
+                require(entity["hasFile"] and entity["movieFile"]["id"] == file["id"],
+                        f"Policy movie association is stale: {case['name']}")
+            verify_media(path, "mpeg4", "blue", case["tracks"])
+            require(file_snapshot(source)["sha256"] == before["sha256"], "Policy import changed source")
+            case["file_path"] = str(path)
+            case["before_audit"] = file_snapshot(path)
+        require(not self.downloads(), "Policy fixtures unexpectedly invoked a Download hook")
+
+        conflict = next(case for case in cases if case["name"] == "conflict-eng")
+        cache = self.data / "policy-audit.json"
+        require(not cache.exists(), "Policy audit requires a fresh assessment cache")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.data),
+               "RUST_LOG": "info", "DIRECT_PLAY_NICE_LANGUAGE_CACHE": str(cache),
+               f"DIRECT_PLAY_NICE_{self.args.app.upper()}_API_KEY": self.api.key}
+        with audit_proxy(self.args.app, conflict["entity_id"]) as (url, calls, conflicts):
+            argv = ["/opt/dpn/direct_play_nice", "--servarr-language-audit",
+                    "--servarr-language-audit-scope", "latest-missing",
+                    "--servarr-language-audit-max-searches", "0", "--servarr-language-dry-run",
+                    "--servarr-preserve-original-audio", "--required-audio-languages", "eng",
+                    "--servarr-api-url", url]
+            completed = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       timeout=self.args.timeout)
+        log = completed.stdout.decode(errors="replace").replace(self.api.key, "[redacted]")
+        (self.data / "policy-audit.log").write_text(log)
+        atomic_json(self.data / "policy-proxy.json", {"calls": calls, "conflict_injections": len(conflicts)})
+        require(completed.returncode == 0, f"Policy audit exited {completed.returncode}; inspect policy-audit.log")
+        require(conflicts and all(item == conflict["entity_id"] for item in conflicts),
+                "Conflict response was not exercised")
+        require(calls and not any(call["blocked"] for call in calls), "Audit attempted a search or disallowed action")
+        require(cache.is_file(), "Policy audit did not write its assessment cache")
+        assessments = json.loads(cache.read_text())
+        results = check_policy_assessments(cases, assessments, log, self.args.app)
+        missing_count = sum(result["status"] == "missing" for result in results)
+        invalid_count = sum(result["status"] == "skipped-invalid-metadata" for result in results)
+        summary_pattern = (rf"language audit complete: checked={len(cases)}, missing={missing_count}, "
+                           rf"searched=0, dry_run=0, grabbed=0, no_candidate=0, "
+                           rf"skipped_no_candidate_cooldown=0, rejected_imports=0, errors={invalid_count}\b")
+        require(re.search(summary_pattern, log), "Unexpected policy audit summary; inspect policy-audit.log")
+        for case in cases:
+            require(file_snapshot(case["file_path"]) == case["before_audit"],
+                    f"Policy audit changed media: {case['name']}")
+        self.results["original_audio_policy"] = {"status": "passed", "cases": results,
+                                                  "proxy_calls": calls, "conflict_injections": len(conflicts)}
+        atomic_json(self.data / "e2e-results.json", self.results)
+        print(f"PASS {self.args.app}: original audio policy ({len(results)} cases)", flush=True)
 
     def upgrades_enabled(self, enabled):
         self.mode("normal")  # Provider validation may send a real Test event.

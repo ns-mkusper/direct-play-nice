@@ -246,8 +246,8 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
         audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
         subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
     };
-    if !requirements.is_effective() {
-        bail!("--servarr-language-audit requires --required-audio-languages and/or --required-subtitle-languages");
+    if !requirements.is_effective() && !args.servarr_preserve_original_audio {
+        bail!("--servarr-language-audit requires --required-audio-languages and/or --required-subtitle-languages, or --servarr-preserve-original-audio");
     }
     let audit_kind = if args.servarr_api_url.as_deref().is_some_and(|url| {
         url.to_ascii_lowercase().contains("7878") || url.to_ascii_lowercase().contains("radarr")
@@ -286,6 +286,7 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
             untagged_retag: servarr_untagged_retag_options(args),
             proof_title: args.servarr_language_proof_title.clone(),
             proof_file: args.servarr_language_proof_file.clone(),
+            preserve_original_audio: args.servarr_preserve_original_audio,
         },
     )?;
     info!("Servarr language audit summary: {:?}", summary);
@@ -324,6 +325,7 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
             audio: servarr::parse_language_list(args.required_audio_languages.as_deref()),
             subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
         },
+        preserve_original_audio: args.servarr_preserve_original_audio,
         untagged_retag: servarr_untagged_retag_options(args),
         api_settings: servarr::ApiSettings {
             url: args.servarr_api_url.clone(),

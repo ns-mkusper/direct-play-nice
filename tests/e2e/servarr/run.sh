@@ -24,7 +24,7 @@ collect_and_cleanup() {
             # Only synthetic media and test config exist in this cluster. Do not
             # collect /config/config.xml (API key) or the private kubeconfig.
             kubectl exec -n dpn-e2e "$app" -- sh -c \
-                'tar -czf - /data/hook*.log /data/hook-events.jsonl /data/e2e-results.json /data/api-transcript.jsonl /data/seed.json /config/logs /opt/dpn/Cargo.lock 2>/dev/null' \
+                'tar -czf - /data/hook*.log /data/hook-events.jsonl /data/e2e-results.json /data/api-transcript.jsonl /data/seed.json /data/policy-audit.log /data/policy-audit.json /data/policy-proxy.json /config/logs /opt/dpn/Cargo.lock 2>/dev/null' \
                 > "$ARTIFACTS/$app-debug.tar.gz" 2>/dev/null || true
         done
         kind delete cluster --name "$CLUSTER" || true
