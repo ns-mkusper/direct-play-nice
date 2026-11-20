@@ -32,7 +32,7 @@ pub(super) fn discover_candidates(
             }
             Some(OcrSkipReason::LanguageNotListed) => {
                 info!(
-                    "Skipping OCR for bitmap subtitle stream {}: its language is not in --ocr-languages; the track is not carried into the output.",
+                    "Skipping OCR for bitmap subtitle stream {}: its language is not in --ocr-languages.",
                     stream.index
                 );
                 continue;
@@ -769,10 +769,10 @@ fn may_use_bitmap_lines(
 ) -> bool {
     // Direct lines do not retain detector training metadata or run the forced
     // Tesseract fallback, so use the detector path for either policy.
-    !training_requested
-        && !(force_tesseract_non_english
+    !(training_requested
+        || (force_tesseract_non_english
             && !is_english_language(params.language)
-            && language_uses_spaces(params.language))
+            && language_uses_spaces(params.language)))
         && params.stream_codec_id == ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
         && matches!(params.ocr_engine, OcrEngine::PpOcrV3 | OcrEngine::PpOcrV4)
         && matches!(params.ocr_format, OcrFormat::Srt)

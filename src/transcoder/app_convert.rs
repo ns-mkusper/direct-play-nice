@@ -10,6 +10,7 @@ use crate::transcoder::prelude::*;
 /// keeping all other inputs identical.
 pub(crate) struct ConversionParams<'a> {
     pub(crate) sub_mode: SubMode,
+    pub(crate) output_is_matroska: bool,
     pub(crate) target_video_codec: ffi::AVCodecID,
     pub(crate) target_audio_codec: ffi::AVCodecID,
     pub(crate) h264_constraints: Option<(H264Profile, H264Level)>,
@@ -42,6 +43,7 @@ pub(crate) fn convert_video_file(
 ) -> Result<ConversionOutcome> {
     let ConversionParams {
         sub_mode,
+        output_is_matroska,
         target_video_codec,
         target_audio_codec,
         h264_constraints,
@@ -74,11 +76,24 @@ pub(crate) fn convert_video_file(
     }
 
     let mut output_format_context = AVFormatContextOutput::create(output_file)?;
+    if output_is_matroska {
+        crate::ffmpeg_utils::copy_matroska_metadata(
+            &input_format_context,
+            &mut output_format_context,
+        )?;
+        // OCR is timed against the original input; do not rebase the A/V
+        // timeline when the AAC encoder emits negative priming timestamps.
+        unsafe {
+            (*output_format_context.as_mut_ptr()).avoid_negative_ts =
+                ffi::AVFMT_AVOID_NEG_TS_DISABLED as i32;
+        }
+    }
 
     let output_path_buf = cstr_to_path_buf(output_file);
     let output_path = output_path_buf.as_path();
 
     let mut stream_contexts: Vec<StreamProcessingContext> = Vec::new();
+    let mut copied_streams = vec![None; input_format_context.streams().len()];
     let mut progress_tracker = create_progress_tracker(&mut input_format_context);
 
     info!(
@@ -126,6 +141,35 @@ pub(crate) fn convert_video_file(
 
     for stream in input_format_context.streams() {
         let input_codec_type = stream.codecpar().codec_type;
+        let copy_subtitle =
+            input_codec_type == ffi::AVMEDIA_TYPE_SUBTITLE && !matches!(sub_mode, SubMode::Skip);
+        if output_is_matroska && (input_codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT || copy_subtitle)
+        {
+            let mut output_stream = output_format_context.new_stream();
+            output_stream.set_time_base(stream.time_base);
+            let mut codecpar = stream.codecpar().clone();
+            unsafe {
+                (*codecpar.as_mut_ptr()).codec_tag = 0;
+                (*output_stream.as_mut_ptr()).disposition = stream_disposition(stream);
+            }
+            output_stream.set_codecpar(codecpar);
+            output_stream.set_metadata(stream.metadata().as_deref().cloned());
+            copied_streams[stream.index as usize] = Some(output_stream.index);
+            info!(
+                "Copying Matroska stream {} ({}) without conversion",
+                stream.index,
+                codec_name(stream.codecpar().codec_id)
+            );
+            if copy_subtitle
+                && matches!(
+                    stream.codecpar().codec_id,
+                    ffi::AV_CODEC_ID_ASS | ffi::AV_CODEC_ID_SSA
+                )
+            {
+                warn!("ASS subtitles are preserved in Matroska, but rendering and attached-font support depend on the player.");
+            }
+            continue;
+        }
         if should_skip_auxiliary_stream(stream, input_codec_type) {
             continue;
         }
@@ -649,6 +693,12 @@ pub(crate) fn convert_video_file(
             }
         }
 
+        if output_is_matroska {
+            // Matroska requires codec private data in its header, before packets.
+            unsafe {
+                (*encode_context.as_mut_ptr()).flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+            }
+        }
         let open_result = encode_context
             .open(None)
             .with_context(|| format!("Error opening {} encoder", media_label));
@@ -699,6 +749,8 @@ pub(crate) fn convert_video_file(
     process_packets(
         &mut input_format_context,
         &mut stream_contexts,
+        &copied_streams,
+        output_is_matroska,
         &mut output_format_context,
         &mut progress_tracker,
     )?;
@@ -857,6 +909,8 @@ fn write_output_header(
 fn process_packets(
     input_format_context: &mut AVFormatContextInput,
     stream_contexts: &mut [StreamProcessingContext],
+    copied_streams: &[Option<i32>],
+    output_is_matroska: bool,
     output_format_context: &mut AVFormatContextOutput,
     progress_tracker: &mut Option<ProgressTracker>,
 ) -> Result<()> {
@@ -865,6 +919,30 @@ fn process_packets(
             Some(x) => x,
             None => break,
         };
+
+        let input_index = usize::try_from(packet.stream_index)
+            .context("Input packet has a negative stream index")?;
+        if let Some(output_index) = copied_streams.get(input_index).copied().flatten() {
+            let input_time_base = input_format_context.streams()[input_index].time_base;
+            let output_time_base = output_format_context.streams()[output_index as usize].time_base;
+            let is_subtitle = input_format_context.streams()[input_index]
+                .codecpar()
+                .codec_type
+                == ffi::AVMEDIA_TYPE_SUBTITLE;
+            let input_duration = packet.duration;
+            if is_subtitle && packet.pts == ffi::AV_NOPTS_VALUE {
+                bail!("Cannot preserve Matroska subtitle packet without a presentation timestamp");
+            }
+            packet.set_stream_index(output_index);
+            packet.rescale_ts(input_time_base, output_time_base);
+            if is_subtitle && input_duration > 0 && packet.duration <= 0 {
+                bail!("Cannot preserve Matroska subtitle duration in output time base");
+            }
+            output_format_context
+                .interleaved_write_frame(&mut packet)
+                .context("Could not copy Matroska subtitle or attachment packet")?;
+            continue;
+        }
 
         let Some(stream_processing_context) = stream_contexts
             .iter_mut()
@@ -892,6 +970,7 @@ fn process_packets(
                 input_stream,
                 output_format_context,
                 &mut packet,
+                output_is_matroska,
             )?,
             ffi::AVMEDIA_TYPE_SUBTITLE => process_subtitle_stream(
                 stream_processing_context,

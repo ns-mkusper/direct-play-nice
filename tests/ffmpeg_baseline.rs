@@ -685,7 +685,7 @@ fn baseline_text_subtitles_mp4() -> TestResult {
     assert_baseline("text_subtitles_mp4", &output, &input)
 }
 
-/// The public Matroska route: transcode via MP4 then copy-remux.
+/// The public Matroska route with subtitles explicitly skipped.
 #[test]
 fn baseline_matroska_remux() -> TestResult {
     let tmp = TempDir::new()?;

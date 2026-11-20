@@ -213,6 +213,14 @@ servarr_api_key = "..."
 environment variables. Supported env names include `SONARR_URL`,
 `SONARR_API_KEY`, `RADARR_URL`, and `RADARR_API_KEY`.
 
+To keep a verified recovery copy before DPN requests a language replacement,
+set `servarr_language_recovery_root` to an existing private directory outside
+all managed libraries. DPN copies the current media and recognized sidecars,
+records hashes and file metadata, and retains the copy for manual recovery.
+It does not automatically restore a file if Arr replaces it. The recovery root
+must have sufficient space; DPN enforces built-in safety limits and does
+not automatically delete old backups.
+
 After grabbing a verified replacement, DPN marks the current download failed in
 Arr history so the old release is blocklisted. It resolves that history item
 from the Arr download id when available, or from
@@ -223,8 +231,10 @@ cannot blocklist a release from its import record.
 Candidates whose title is already on the item's Arr blocklist are skipped, since
 Arr matches its blocklist per indexer and would otherwise grab the same release
 from another indexer. Candidates that are the release behind the current file,
-identified from its Arr history and scene name, are skipped as well. If Arr
-refuses a grab, DPN tries the next candidate (up to three).
+identified from its Arr history and scene name, are skipped as well. DPN records
+an intent before requesting a grab. If the request fails or its outcome is
+uncertain, DPN retains that intent for review rather than automatically trying
+another candidate.
 
 Release titles do not always list every audio track, so the audit checks its own
 grabs after Arr imports them. Each grab is remembered in DPN's cache next to the
@@ -233,17 +243,19 @@ of each remembered grab in Arr history and assesses the imported file against
 the languages the grab was meant to provide. If a required language is still
 missing, DPN marks that release's `grabbed` history record failed so Arr
 blocklists it, clears the item's no-candidate cooldown, and the same run
-searches the item again. Grabs that are not imported within 14 days are
-forgotten. With `servarr_language_dry_run`, DPN only reports what it would
-blocklist.
+can search the item again. If DPN cannot establish the imported file's identity
+or inspect its streams, it retains the pending record for review instead of
+assuming success or forgetting it. With `servarr_language_dry_run`, DPN only
+reports what it would blocklist.
 
 For Sonarr/Radarr, a language-better file can be stuck as a completed queue item
 when Arr considers it a quality downgrade. Audit mode checks those pending
-imports; when the pending file satisfies DPN's language policy, apply mode
-deletes the old episode/movie-file entry, posts manual import, and removes the
-completed queue item without deleting the downloaded replacement. DPN decides
-from the audio and subtitle tracks of the downloaded file when it can read it,
-and from the release title and custom formats otherwise.
+imports; when the pending file satisfies DPN's language policy, apply mode asks
+Arr to perform a manual import and removes the completed queue item without
+deleting the downloaded replacement. DPN must be able to inspect the exact
+file submitted to Arr; release titles and custom formats are not a substitute.
+Arr controls the replacement, so a failed or uncertain import does not guarantee
+that the previous file remains in place.
 
 The default examples above require English audio only. Extra audio languages are
 allowed; a file with English plus Japanese audio still satisfies
@@ -270,6 +282,43 @@ Candidate policies control how much DPN infers before a replacement is grabbed:
 - `custom-format-or-title`: custom formats plus strong title tokens such as
   `Dual-Audio`, `Multi-Audio`, `Multi-Subs`, or `MSubs`.
 - `title-guess`: looser title matching. Use dry-run first.
+
+### Proof-backed Sonarr checks
+
+With proof options on the command line, DPN checks one exact release against a
+local file. The operator attests that the file corresponds to the release; the
+initial grab does not verify the downloaded bytes before Sonarr imports them.
+This feature is available only on Linux and requires a private recovery root.
+It is a one-shot Sonarr audit: pass exactly one episode ID, set the search limit
+to one, and supply both `--servarr-language-proof-title` and
+`--servarr-language-proof-file`. Disable unknown-stream retagging for the run.
+DPN applies a 512 MiB limit to both the proof file and the later imported file.
+The sealed snapshot uses shared memory roughly equal to the file size.
+
+DPN takes a nonblocking lock on the recovery root before creating a snapshot.
+Only one cooperating proof check can run at a time for that root. If the lock is
+busy, retry later. A later audit must use the same recovery root to check the
+pending import; otherwise, the pending record remains for review. Proof dry runs
+also take this lock, but do not create a lock file or update scheduling state.
+
+Only cooperating processes that use the same recovery root and a filesystem
+with working advisory locks share this lock. Arr can still import a download;
+the backup does not make the import atomic.
+In proof mode, DPN keeps the previous backup and does not send Arr a failure for
+the old release. Before it records a grab intent, DPN saves a checkpoint for the
+published backup. A later audit checks that the manifest and every backup blob
+still match that checkpoint. Records created before checkpoints were added remain
+pending for manual review. The checkpoint detects changes to recovery evidence;
+it does not authenticate evidence against someone who can also change the ledger.
+Do not run an older DPN version against the same pending records: it may ignore
+the checkpoint.
+
+Checkpoint verification reads every backup blob. It accepts a manifest of at
+most 64 MiB, one media file and up to 4,096 sidecars, with at most 512 GiB of
+backup data in total. The checkpoint verifier uses no-follow filesystem operations
+on Linux and macOS and fails closed on other platforms. Proof-backed audits
+still require Linux. An imported file with a different hash remains pending for
+operator review.
 
 DPN always treats the already-imported file differently from candidate releases:
 actual file compliance is based on FFmpeg stream metadata, then cached by DPN.
@@ -354,9 +403,10 @@ up to `--servarr-language-audit-max-searches`. Use
 library inventory instead of only recent import history. Inventory scope walks
 series episode files, checks current media metadata, then uses each missing
 item's latest import history entry before any apply-mode grab/blocklist action.
-Use `--servarr-language-audit-scope latest-missing` to inspect inventory, keep
-only currently non-compliant files, sort those by newest air/release date first,
-and spend the search budget on recent delayed dubs/subs before older backlog.
+Use `--servarr-language-audit-scope latest-missing` to inspect inventory and keep
+only files that lack required languages. Recent releases take priority, but DPN
+rotates targets by their last attempt and reserves part of the budget for older
+items. Future-dated releases are treated as backlog.
 
 If early inventory items repeatedly return no approved replacement, set
 `--servarr-language-audit-no-candidate-cooldown-days` (or
@@ -377,10 +427,69 @@ this best-effort state in
 `~/.cache/direct-play-nice/servarr-language-no-candidate-cache.json`; override it
 with `DIRECT_PLAY_NICE_LANGUAGE_NO_CANDIDATE_CACHE`. This lets later inventory
 items get searched on subsequent capped audit runs instead of reprocessing the
-same no-candidate edge every day.
+same no-candidate edge every day. A language dry run does not create or extend
+these cooldowns.
 
 For focused Sonarr batches, pass `--servarr-language-audit-episode-ids` with a
-comma-separated episode ID list.
+comma-separated episode ID list. Pending verification is limited to those IDs.
+Queue cleanup also requires every identified episode in an item to be in the
+list; items with missing or invalid episode identity are left untouched.
+
+A normal Sonarr audit targeting exactly one episode has a proof-backed import
+path, but **that path currently fails closed before posting**. The available
+Sonarr API does not establish that Sonarr sees the same file and output folder
+that DPN inspected. There is no production filesystem-view binding yet; use
+manual review instead. The checks below describe requirements for this path, not
+permission to force the import.
+
+The audit must use the original recovery root, the same language requirements,
+and no unknown-stream retagging. Do not pass the one-shot proof options again.
+DPN checks the original file and backup,
+the queue and history identity, and a single matching manual item. The queue
+status must be OK or a warning with recognized quality reasons. The manual item
+must include a rejection list that is empty or contains only recognized quality
+reasons. At least one recognized quality rejection must appear in the queue or
+manual item. Missing or unrecognized rejection metadata stops the import. DPN
+hashes and probes the downloaded file against the saved proof before posting
+the import. An unresolved intent or a legacy proof without a checkpoint requires
+review. DPN also checks that no other episode in Sonarr refers to the original
+file. It compares the current subtitle sidecars with the checkpoint. A checkpoint
+that predates sidecar identity recording needs review if it contains sidecars.
+
+Before this import, set `DPN_SERVARR_PROOF_ADDITIONAL_ROOTS` to a JSON array of
+absolute paths for **every other** managed library and recovery root. Include
+roots managed by applications other than this Sonarr instance. Set it to `[]`
+only if no such roots exist. DPN cannot discover those other roots itself; the
+operator must keep the list complete. An unset, invalid, or inaccessible root
+prevents the import.
+
+DPN requires the download to be on a different filesystem from each declared
+root, each Sonarr library root, and the configured recovery root. It also checks
+mounts inside those roots and rejects hard-linked downloads. The supported
+filesystem types for this check are ext4, xfs, btrfs, and tmpfs. A download on
+the same device as a managed root remains blocked, even when the paths differ.
+Other types, including network and overlay filesystems, require manual review. The tracked
+output path must be a real directory containing only the selected file directly;
+nested directories, extra entries and uncertain cleanup scope fail closed.
+When filesystem-view binding is available, the import path requests Sonarr's
+`copy` mode. Sonarr controls how it executes that request.
+
+A dry run performs the read-only eligibility checks, including the unavailable
+view binding, but does not reserve the target for a later apply. DPN keeps the
+pending proof and backup until a later audit verifies the import. If the command
+outcome or resulting file is uncertain, it also retains the import intent for
+review. Once an import is confirmed, DPN durably binds its download ID to the
+pending record before removing the intent.
+
+Sonarr audits defer ordinary force-import and queue cleanup while any proof
+pending record or intent remains. Entries may share a download or output folder,
+so the code cannot safely attribute them from incomplete state. A cooperative
+lock coordinates these actions only among DPN processes that use the same cache
+and honor the lock; independent writers are not controlled.
+
+Sonarr may import a download independently before these checks run. It or another
+writer may also change the pathname after DPN checks it. The check and Sonarr's
+import are not atomic.
 
 DPN also checks completed pending imports that Sonarr/Radarr refused for quality
 hierarchy reasons. When deciding whether to force-import a pending language
@@ -397,9 +506,31 @@ multi-episode mappings are removed and blocklisted, while quality-only warnings
 are left for possible force-import. Set
 `--servarr-language-audit-stale-queue-days` to also remove and blocklist
 zero-size torrent queue items that have not acquired metadata after the given
-number of days. DPN immediately searches for a replacement after stale cleanup,
-preferring non-torrent candidates when possible; use
-`--servarr-language-audit-stale-queue-max-removals` to cap churn per run. Keep
+number of days. Before removing a stale item, DPN checks the import history and
+searches for a verified replacement. It keeps the item if any episode cannot be
+checked safely. A pack that exceeds the available search budget must wait. You
+can raise the budget or resolve it manually, but reserved audit capacity and
+other items may still prevent cleanup. An item without import history also needs
+manual attention or restored history. DPN reserves at least one search for the
+selected audit scope when the budget is greater than one. With one search, it
+uses prior attempts to alternate between cleanup and the audit when possible.
+In apply mode, a stale item with no candidate waits five minutes before another
+attempt.
+
+DPN stores preflight attempts in `servarr-language-preflights.json` beside the
+language cache. In apply mode, DPN holds a per-target lock while checking and
+grabbing a replacement. After claiming a target, DPN checks the current queue
+and cooldown again before searching. If DPN cannot claim a target because the cache cannot
+be read or written, it skips the search and reports an error. A language dry run
+reads scheduling state but does not update it, so repeated dry runs may show the
+same targets. A process that exits unexpectedly can leave a claim that delays
+another attempt for up to one hour. Do not remove lock files while an audit is
+running. The locks only coordinate processes that share the same cache and a
+filesystem that supports advisory locks. Other clients and separate caches can
+still race. Arr state can change after removal, and DPN cannot restore an item
+if a later recheck or grab fails.
+
+Use `--servarr-language-audit-stale-queue-max-removals` to cap churn per run. Keep
 dry-run enabled while reviewing reports; remove
 `--servarr-language-dry-run` only when you want DPN to grab selected
 language-upgrade candidates, blocklist the old history item, force-import
@@ -429,7 +560,7 @@ observable batches. A safe operator workflow is:
    ```
 
 2. **Use `latest-missing` dry-run for delayed dub/sub follow-up.** This
-   prioritizes newest aired/released non-compliant files before older backlog:
+   prioritizes recent non-compliant files while reserving a share for older items:
 
    ```bash
    /path/to/direct_play_nice \

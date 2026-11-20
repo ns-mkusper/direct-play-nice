@@ -5,7 +5,6 @@ mod tests {
     use crate::devices::{self, ContainerFormat};
     use crate::servarr::*;
     use crate::transcoder::VideoQuality;
-    use std::ffi::CString;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -360,37 +359,5 @@ mod tests {
                 .to_string()
                 .contains("not compatible")
         );
-    }
-
-    #[test]
-    fn finalize_success_restores_original_when_promote_fails() {
-        let tmp = tempdir().unwrap();
-        let input = tmp.path().join("Episode.mkv");
-        let backup = tmp.path().join("Episode.backup.mkv");
-        let temp_output = tmp.path().join("Episode.tmp.mp4");
-        let final_output = tmp.path().join("missing").join("Episode.mp4");
-
-        std::fs::write(&input, b"original").unwrap();
-        std::fs::write(&temp_output, b"converted").unwrap();
-
-        let plan = ReplacePlan {
-            kind: IntegrationKind::Sonarr,
-            event_type: "Download".to_string(),
-            display_name: None,
-            is_upgrade: None,
-            input_path: input.clone(),
-            final_output_path: final_output,
-            temp_output_path: temp_output.clone(),
-            backup_path: backup.clone(),
-            input_cstring: CString::new(input.to_string_lossy().to_string()).unwrap(),
-            temp_output_cstring: CString::new(temp_output.to_string_lossy().to_string()).unwrap(),
-        };
-
-        let err = plan
-            .finalize_success()
-            .expect_err("promotion should fail when target parent directory is missing");
-        assert!(err.to_string().contains("could not promote"));
-        assert!(input.exists(), "original input should be restored");
-        assert!(!backup.exists(), "backup should not remain after restore");
     }
 }

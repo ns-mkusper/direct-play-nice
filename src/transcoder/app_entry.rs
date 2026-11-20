@@ -39,6 +39,18 @@ use crate::types::{OcrFormat, OutputFormat};
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let plex_refresher = prepare_runtime_configuration(&mut args, &matches_snapshot)?;
+    if args.servarr_language_proof_title.is_some() || args.servarr_language_proof_file.is_some() {
+        if !args.servarr_language_audit {
+            bail!("language release proof options require --servarr-language-audit");
+        }
+        if args.probe_streams
+            || args.probe_ocr_fixtures.is_some()
+            || args.probe_hw
+            || args.probe_codecs
+        {
+            bail!("language release proof options cannot be combined with probe modes");
+        }
+    }
     if args.dry_run {
         enable_dry_run(&mut args);
     }
@@ -252,6 +264,7 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
         &servarr::ApiSettings {
             url: args.servarr_api_url.clone(),
             api_key: args.servarr_api_key.clone(),
+            recovery_root: args.servarr_language_recovery_root.clone(),
         },
         &requirements,
         servarr::RedownloadOptions {
@@ -271,9 +284,28 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
                 args.servarr_language_audit_episode_ids.as_deref(),
             )?,
             untagged_retag: servarr_untagged_retag_options(args),
+            proof_title: args.servarr_language_proof_title.clone(),
+            proof_file: args.servarr_language_proof_file.clone(),
         },
     )?;
     info!("Servarr language audit summary: {:?}", summary);
+    if args.servarr_language_proof_title.is_some() || args.servarr_language_proof_file.is_some() {
+        let completed = if args.servarr_language_dry_run {
+            summary.dry_run
+        } else {
+            summary.grabbed
+        };
+        require_one_shot_outcome(summary.errors, completed)?;
+    }
+    Ok(())
+}
+
+fn require_one_shot_outcome(errors: usize, completed: usize) -> Result<()> {
+    if errors != 0 || completed != 1 {
+        bail!(
+            "proof-backed audit did not complete its requested action (errors={errors}, completed={completed}); inspect the audit log and intent state"
+        );
+    }
     Ok(())
 }
 
@@ -296,6 +328,7 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
         api_settings: servarr::ApiSettings {
             url: args.servarr_api_url.clone(),
             api_key: args.servarr_api_key.clone(),
+            recovery_root: args.servarr_language_recovery_root.clone(),
         },
         redownload_options: servarr::RedownloadOptions {
             dry_run: args.servarr_language_dry_run,
@@ -424,7 +457,7 @@ fn run_batch(
 
 fn run_conversion(
     base_args: &Args,
-    plan: Option<ReplacePlan>,
+    mut plan: Option<ReplacePlan>,
     plex_refresher: &Option<plex::PlexRefresher>,
 ) -> Result<()> {
     let mut args = base_args.clone();
@@ -437,6 +470,28 @@ fn run_conversion(
         bail!(
             "<INPUT_FILE> and <OUTPUT_FILE> are required unless you use --probe-* flags or run inside a Sonarr/Radarr Download event."
         );
+    }
+
+    if args.dry_run {
+        if let Some(plan) = plan.as_mut() {
+            plan.temp_output_path = planned_staging_path(&plan.final_output_path, "output");
+            plan.temp_output_cstring = path_to_cstring(&plan.temp_output_path)?;
+            plan.backup_path = plan
+                .temp_output_path
+                .parent()
+                .unwrap()
+                .join("source-backup");
+            args.output_file = Some(plan.temp_output_cstring.clone());
+        }
+    }
+    if !args.dry_run {
+        if let Some(plan) = plan.as_ref() {
+            if args.input_file.as_deref() != Some(plan.input_cstring.as_c_str())
+                || args.output_file.as_deref() != Some(plan.temp_output_cstring.as_c_str())
+            {
+                bail!("Servarr input or output path does not match its replacement plan");
+            }
+        }
     }
 
     let mut quality_limits = QualityLimits::default();
@@ -613,14 +668,12 @@ fn run_conversion(
     let ocr_stream_filter =
         subtitle_ocr::OcrStreamFilter::new(args.skip_redundant_ocr, args.ocr_languages.as_deref());
 
-    // Direct conversion stages its output the same way Servarr replacement does:
-    // write to `<output>.direct-play-nice.tmp.<ext>`, promote by rename on
-    // success, remove on failure. Servarr plans already hand us their staging
-    // path as the output, so only the direct path needs a stage here.
+    // Keep a planned private path for dry-run reporting. Real staging is
+    // created only after compatibility assessment determines work is needed.
     let direct_staging = if plan.is_none() {
         Some(DirectStaging {
             final_path: output_path.clone(),
-            staged_cstring: path_to_cstring(&servarr::staging_path_for(&output_path))?,
+            staged_cstring: path_to_cstring(&planned_staging_path(&output_path, "output"))?,
         })
     } else {
         None
@@ -689,7 +742,56 @@ fn run_conversion(
         }
     }
 
-    let temp_output_cstring = if needs_conversion && output_is_mkv {
+    // A compatible file with no selected bitmap subtitles needs no output.
+    // In particular, do not require the destination directory to be writable
+    // just to skip a conversion.
+    if !args.dry_run && !needs_conversion && should_ocr {
+        let selected_bitmap = if matches!(args.sub_mode, crate::types::SubMode::Skip) {
+            false
+        } else {
+            let input = rsmpeg::avformat::AVFormatContextInput::open(input_file)?;
+            let facts = subtitle_ocr::subtitle_stream_facts(&input);
+            let skipped = ocr_stream_filter.skipped(&facts);
+            facts
+                .iter()
+                .any(|fact| fact.bitmap && !skipped.contains_key(&fact.index))
+        };
+        if !selected_bitmap {
+            info!(
+                "No selected bitmap subtitles require OCR; leaving the compatible input unchanged."
+            );
+            return Ok(());
+        }
+    }
+
+    let mut owned_staging = if args.dry_run {
+        None
+    } else {
+        let destination = plan
+            .as_ref()
+            .map(|p| p.final_output_path.as_path())
+            .or_else(|| direct_staging.as_ref().map(|s| s.final_path.as_path()))
+            .unwrap_or(output_path.as_path());
+        reject_unsafe_destination(&cstr_to_path_buf(input_file), destination, plan.is_some())?;
+        Some(OwnedStagingDir::create(destination)?)
+    };
+    let staged_output = owned_staging
+        .as_ref()
+        .map(|staging| path_to_cstring(&staging.output_path("output")))
+        .transpose()?;
+    if let (Some(plan), Some(staging), Some(output)) = (
+        plan.as_mut(),
+        owned_staging.as_ref(),
+        staged_output.as_ref(),
+    ) {
+        plan.temp_output_path = staging.output_path("output");
+        plan.temp_output_cstring = output.clone();
+        plan.backup_path = staging.directory.join("source-backup");
+    }
+    let output_file = staged_output.as_deref().unwrap_or(output_file);
+    let output_path = cstr_to_path_buf(output_file);
+
+    let temp_output_cstring = if needs_conversion && output_is_mkv && should_ocr {
         let base_output = plan
             .as_ref()
             .map(|plan| plan.final_output_path.as_path())
@@ -699,7 +801,10 @@ fn run_conversion(
                     .map(|staging| staging.final_path.as_path())
             })
             .unwrap_or(&output_path);
-        let tmp_path = crate::staging::path_for(base_output, "conv").with_extension("mp4");
+        let tmp_path = owned_staging
+            .as_ref()
+            .map(|staging| staging.output_path("conv"))
+            .unwrap_or_else(|| planned_staging_path(base_output, "conv"));
         Some(path_to_cstring(&tmp_path)?)
     } else {
         None
@@ -726,8 +831,19 @@ fn run_conversion(
         return Ok(());
     }
 
+    // All conversion, OCR and verification opens must refer to the same inode,
+    // even if Arr replaces the import path while the conversion is running.
+    let pinned_input = if let (Some(plan), Some(staging)) = (plan.as_ref(), owned_staging.as_mut())
+    {
+        Some(path_to_cstring(&staging.pin_source(&plan.input_path)?)?)
+    } else {
+        None
+    };
+    let input_file = pinned_input.as_deref().unwrap_or(input_file);
+
     let conversion_params = ConversionParams {
         sub_mode: args.sub_mode,
+        output_is_matroska: output_is_mkv,
         target_video_codec,
         target_audio_codec: common_audio_codec,
         h264_constraints,
@@ -816,7 +932,8 @@ fn run_conversion(
         }
     }
 
-    let mut output_ready = conversion_result.is_ok() && needs_conversion && !output_is_mkv;
+    let mut output_ready =
+        conversion_result.is_ok() && needs_conversion && temp_output_cstring.is_none();
 
     if conversion_result.is_ok() && should_ocr {
         let mux_source_file = if needs_conversion {
@@ -842,12 +959,40 @@ fn run_conversion(
             Ok(outcome)
         });
         if conversion_result.is_ok() && !output_ready && needs_conversion && output_is_mkv {
-            subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
-            output_ready = true;
+            conversion_result = conversion_result.and_then(|outcome| {
+                // Avoid an unnecessary remux when the intermediate contains
+                // subtitles or attachments that should remain byte-for-byte intact.
+                let intermediate =
+                    rsmpeg::avformat::AVFormatContextInput::open(conversion_output_file)?;
+                let has_preserved_streams = intermediate.streams().iter().any(|stream| {
+                    matches!(
+                        stream.codecpar().codec_type,
+                        ffi::AVMEDIA_TYPE_SUBTITLE | ffi::AVMEDIA_TYPE_ATTACHMENT
+                    )
+                });
+                drop(intermediate);
+                if has_preserved_streams {
+                    servarr::promote_staged_output(
+                        &cstr_to_path_buf(conversion_output_file),
+                        &output_path,
+                    )?;
+                } else {
+                    subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
+                }
+                output_ready = true;
+                Ok(outcome)
+            });
         }
-    } else if conversion_result.is_ok() && needs_conversion && output_is_mkv {
-        subtitle_ocr::remux_copy_streams(conversion_output_file, output_file)?;
-        output_ready = true;
+    }
+
+    if conversion_result.is_ok() && output_ready && output_is_mkv {
+        if let Err(err) = crate::transcoder::verification::validate_matroska_copied_streams(
+            input_file,
+            output_file,
+            !matches!(args.sub_mode, crate::types::SubMode::Skip),
+        ) {
+            conversion_result = Err(err);
+        }
     }
 
     if conversion_result.is_ok() && output_ready && args.validate_output {
@@ -865,6 +1010,36 @@ fn run_conversion(
             },
         ) {
             conversion_result = Err(err);
+        }
+    }
+
+    if conversion_result.is_ok() && output_ready {
+        if let (Some(plan), Some(snapshot)) = (
+            plan.as_ref(),
+            owned_staging
+                .as_ref()
+                .and_then(|staging| staging.source_snapshot.as_deref()),
+        ) {
+            if !same_file_identity(&plan.input_path, snapshot) {
+                conversion_result = Err(anyhow!(
+                    "Servarr source '{}' changed during conversion; refusing to publish",
+                    plan.input_path.display()
+                ));
+            }
+        }
+    }
+
+    let mut sidecars = SidecarPublishGuard::default();
+    if conversion_result.is_ok() && output_ready && args.ocr_write_srt_sidecar {
+        let final_path = plan
+            .as_ref()
+            .map(|p| p.final_output_path.as_path())
+            .or_else(|| direct_staging.as_ref().map(|s| s.final_path.as_path()))
+            .unwrap_or(output_path.as_path());
+        if let Some(staging) = owned_staging.as_ref() {
+            if let Err(err) = sidecars.publish(staging, final_path) {
+                conversion_result = Err(err);
+            }
         }
     }
 
@@ -887,7 +1062,12 @@ fn run_conversion(
                 return Ok(());
             }
             let replaced_path = plan.input_path.clone();
-            let final_path = plan.finalize_success()?;
+            let snapshot = owned_staging
+                .as_ref()
+                .and_then(|staging| staging.source_snapshot.as_deref())
+                .context("Servarr source snapshot is missing")?;
+            let final_path = finalize_servarr_no_clobber(plan, snapshot)?;
+            sidecars.commit();
             if let Some(ref refresher) = plex_refresher {
                 if let Err(err) = refresher.refresh_replaced(&final_path, Some(&replaced_path)) {
                     warn!(
@@ -912,7 +1092,7 @@ fn run_conversion(
             let final_output_path = match direct_staging.as_ref() {
                 Some(staging) => {
                     if output_ready {
-                        servarr::promote_staged_output(&output_path, &staging.final_path)?;
+                        publish_no_clobber(&output_path, &staging.final_path)?;
                     } else {
                         let _ = fs::remove_file(&output_path);
                     }
@@ -920,6 +1100,9 @@ fn run_conversion(
                 }
                 None => output_path.clone(),
             };
+            if output_ready {
+                sidecars.commit();
+            }
             let mut deleted_source = None;
             if args.delete_source.unwrap_or(false) && output_ready {
                 if !outcome.profile_verified() {
@@ -973,6 +1156,483 @@ fn run_conversion(
             Err(err)
         }
     }
+}
+
+struct OwnedStagingDir {
+    directory: std::path::PathBuf,
+    extension: std::ffi::OsString,
+    source_snapshot: Option<std::path::PathBuf>,
+}
+
+impl OwnedStagingDir {
+    fn create(final_path: &std::path::Path) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NONCE: AtomicU64 = AtomicU64::new(0);
+        let parent = final_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let extension = final_path
+            .extension()
+            .context("Output needs a container extension")?
+            .to_os_string();
+        for _ in 0..128 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let name = format!(
+                ".direct-play-nice-{}-{now}-{}",
+                std::process::id(),
+                NONCE.fetch_add(1, Ordering::Relaxed)
+            );
+            let directory = parent.join(name);
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&directory) {
+                Ok(()) => {
+                    return Ok(Self {
+                        directory,
+                        extension,
+                        source_snapshot: None,
+                    })
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "creating private staging directory beside '{}'",
+                            final_path.display()
+                        )
+                    })
+                }
+            }
+        }
+        bail!(
+            "could not reserve a unique staging directory beside '{}'",
+            final_path.display()
+        )
+    }
+
+    fn output_path(&self, name: &str) -> std::path::PathBuf {
+        self.directory.join(name).with_extension(&self.extension)
+    }
+
+    fn pin_source(&mut self, source: &std::path::Path) -> Result<std::path::PathBuf> {
+        #[cfg(not(any(unix, windows)))]
+        bail!("Cannot safely identify a Servarr source on this platform");
+        #[cfg(any(unix, windows))]
+        {
+            let mut snapshot = self.directory.join("source-snapshot");
+            if let Some(extension) = source.extension() {
+                snapshot.set_extension(extension);
+            }
+            fs::hard_link(source, &snapshot)
+                .with_context(|| format!("pinning Servarr source '{}'", source.display()))?;
+            self.source_snapshot = Some(snapshot.clone());
+            let metadata = fs::symlink_metadata(&snapshot)?;
+            if !metadata.file_type().is_file() || !is_safe_source_file(&metadata) {
+                bail!(
+                    "Servarr source '{}' is not a safe regular file",
+                    source.display()
+                );
+            }
+            #[cfg(unix)]
+            let matches = same_file_identity(source, &snapshot);
+            #[cfg(windows)]
+            let matches = windows_same_file(source, &snapshot, false).with_context(|| {
+                format!(
+                    "Cannot verify Windows file identity for Servarr source '{}'",
+                    source.display()
+                )
+            })?;
+            if !matches {
+                bail!(
+                    "Servarr source '{}' changed while being pinned",
+                    source.display()
+                );
+            }
+            Ok(snapshot)
+        }
+    }
+}
+
+impl Drop for OwnedStagingDir {
+    fn drop(&mut self) {
+        if let Some(snapshot) = &self.source_snapshot {
+            if let Err(err) = fs::remove_file(snapshot) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        "Unable to remove source snapshot '{}': {}",
+                        snapshot.display(),
+                        err
+                    );
+                }
+            }
+        }
+        for name in ["output", "conv", "published"] {
+            let path = self.output_path(name);
+            for file in [path.clone(), crate::staging::path_for(&path, "ocr")] {
+                if let Err(err) = fs::remove_file(&file) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        warn!(
+                            "Unable to remove staging file '{}': {}",
+                            file.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+        if let Ok(entries) = fs::read_dir(&self.directory) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .is_some_and(|s| s.starts_with("output.") && s.ends_with(".srt"))
+                    && entry.file_type().is_ok_and(|t| t.is_file())
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        if let Err(err) = fs::remove_dir(&self.directory) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    "Preserving non-empty staging directory '{}': {}",
+                    self.directory.display(),
+                    err
+                );
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct SidecarPublishGuard {
+    linked: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    committed: bool,
+}
+
+impl SidecarPublishGuard {
+    fn publish(&mut self, staging: &OwnedStagingDir, output: &std::path::Path) -> Result<()> {
+        #[cfg(unix)]
+        let parent = output
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        #[cfg(unix)]
+        let stem = output
+            .file_stem()
+            .context("Output has no filename for OCR sidecars")?;
+        #[cfg(not(unix))]
+        let _ = output;
+        for entry in fs::read_dir(&staging.directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(suffix) = name.to_str().and_then(|name| name.strip_prefix("output.")) else {
+                continue;
+            };
+            if !suffix.ends_with(".srt") {
+                continue;
+            }
+            if !entry.file_type()?.is_file() {
+                bail!("OCR sidecar staging path is not a regular file");
+            }
+            #[cfg(not(unix))]
+            bail!("OCR sidecars cannot be safely rolled back on this platform");
+            #[cfg(unix)]
+            {
+                let mut target_name = stem.to_os_string();
+                target_name.push(".");
+                target_name.push(suffix);
+                let target = parent.join(target_name);
+                fs::hard_link(entry.path(), &target).with_context(|| {
+                    format!(
+                        "publishing OCR sidecar '{}' without overwriting",
+                        target.display()
+                    )
+                })?;
+                self.linked.push((entry.path(), target));
+            }
+        }
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+        for (_, destination) in &self.linked {
+            info!("Published OCR sidecar '{}'", destination.display());
+        }
+    }
+}
+
+impl Drop for SidecarPublishGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            for (source, destination) in &self.linked {
+                if same_file_identity(source, destination) {
+                    if let Err(err) = fs::remove_file(destination) {
+                        warn!(
+                            "Unable to roll back OCR sidecar '{}': {}",
+                            destination.display(),
+                            err
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn planned_staging_path(final_path: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let parent = final_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut path = parent.join(".direct-play-nice-{unique}").join(name);
+    if let Some(extension) = final_path.extension() {
+        path.set_extension(extension);
+    }
+    path
+}
+
+fn reject_unsafe_destination(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    servarr: bool,
+) -> Result<()> {
+    match fs::symlink_metadata(output) {
+        Ok(_) if servarr && input == output => Ok(()),
+        Ok(metadata) if servarr && metadata.file_type().is_dir() => Ok(()),
+        Ok(_) if servarr && !same_target_identity(input, output) => Ok(()),
+        Ok(_) => bail!(
+            "Refusing to overwrite existing output or input alias '{}'",
+            output.display()
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("checking output '{}'", output.display())),
+    }
+}
+
+fn publish_no_clobber(staged: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    fs::hard_link(staged, output).with_context(|| {
+        format!(
+            "could not promote '{}' without overwriting an existing file",
+            output.display()
+        )
+    })?;
+    if let Err(err) = fs::remove_file(staged) {
+        warn!(
+            "Published '{}' but could not remove staging link '{}': {}",
+            output.display(),
+            staged.display(),
+            err
+        );
+    }
+    Ok(())
+}
+
+fn finalize_servarr_no_clobber(
+    plan: ReplacePlan,
+    snapshot: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let input = &plan.input_path;
+    if !same_file_identity(input, snapshot) {
+        bail!(
+            "Servarr source '{}' changed during conversion; refusing to publish",
+            input.display()
+        );
+    }
+
+    // The identity check and rename cannot be atomic against independent writers.
+    // Check the moved file as well, and never overwrite a racing replacement when
+    // restoring it. A failed restoration leaves the moved file in staging.
+    fs::rename(input, &plan.backup_path)
+        .with_context(|| format!("moving Servarr source '{}' to backup", input.display()))?;
+    let result = (|| -> Result<std::path::PathBuf> {
+        if !same_file_identity(&plan.backup_path, snapshot) {
+            bail!(
+                "Servarr source '{}' changed during finalization; refusing to publish",
+                input.display()
+            );
+        }
+        match fs::symlink_metadata(input) {
+            Ok(_) => bail!(
+                "Servarr source '{}' was replaced during finalization; refusing to publish",
+                input.display()
+            ),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "checking Servarr source '{}' before publication",
+                        input.display()
+                    )
+                })
+            }
+        }
+        publish_no_clobber(&plan.temp_output_path, &plan.final_output_path)?;
+        Ok(plan.final_output_path.clone())
+    })();
+
+    if result.is_ok() {
+        if let Err(err) = fs::remove_file(&plan.backup_path) {
+            warn!(
+                "Retained source backup '{}': {}",
+                plan.backup_path.display(),
+                err
+            );
+        }
+        return result;
+    }
+
+    if fs::hard_link(&plan.backup_path, input).is_ok()
+        || same_file_identity(&plan.backup_path, input)
+    {
+        if let Err(err) = fs::remove_file(&plan.backup_path) {
+            warn!(
+                "Restored source but retained backup '{}': {}",
+                plan.backup_path.display(),
+                err
+            );
+        }
+        result
+    } else {
+        result.with_context(|| {
+            format!(
+                "moved source remains safely at '{}'",
+                plan.backup_path.display()
+            )
+        })
+    }
+}
+
+#[cfg(unix)]
+fn is_safe_source_file(_metadata: &fs::Metadata) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn is_safe_source_file(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+#[cfg(unix)]
+fn same_target_identity(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(a), fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        // If identity cannot be established, reject rather than risk an alias.
+        _ => true,
+    }
+}
+
+#[cfg(windows)]
+fn same_target_identity(a: &std::path::Path, b: &std::path::Path) -> bool {
+    windows_same_file(a, b, true).unwrap_or(true)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_target_identity(a: &std::path::Path, b: &std::path::Path) -> bool {
+    // Conservative on platforms without an available filesystem identity.
+    let _ = (a, b);
+    true
+}
+
+#[cfg(unix)]
+fn same_file_identity(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn same_file_identity(a: &std::path::Path, b: &std::path::Path) -> bool {
+    windows_same_file(a, b, false).unwrap_or(false)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_identity(_a: &std::path::Path, _b: &std::path::Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_same_file(
+    a: &std::path::Path,
+    b: &std::path::Path,
+    follow: bool,
+) -> std::io::Result<bool> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_ID_INFO_CLASS: i32 = 18;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const SHARE_READ_WRITE_DELETE: u32 = 0x7;
+
+    #[repr(C)]
+    #[derive(PartialEq, Eq)]
+    struct FileIdInfo {
+        volume_serial_number: u64,
+        file_id: [u8; 16],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(
+            file: std::os::windows::io::RawHandle,
+            info_class: i32,
+            info: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    fn open_id(path: &std::path::Path, follow: bool) -> std::io::Result<(fs::File, FileIdInfo)> {
+        let flags = FILE_FLAG_BACKUP_SEMANTICS
+            | if follow {
+                0
+            } else {
+                FILE_FLAG_OPEN_REPARSE_POINT
+            };
+        let file = fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(SHARE_READ_WRITE_DELETE)
+            .custom_flags(flags)
+            .open(path)?;
+        let mut info = std::mem::MaybeUninit::<FileIdInfo>::zeroed();
+        // The handle remains open during both identity queries and comparison.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FILE_ID_INFO_CLASS,
+                info.as_mut_ptr().cast(),
+                std::mem::size_of::<FileIdInfo>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let info = unsafe { info.assume_init() };
+        if info.volume_serial_number == 0 || info.file_id == [0; 16] {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows file identity is unavailable",
+            ));
+        }
+        Ok((file, info))
+    }
+
+    let (_a_handle, a_id) = open_id(a, follow)?;
+    let (_b_handle, b_id) = open_id(b, follow)?;
+    Ok(a_id == b_id)
 }
 
 /// Staging bookkeeping for direct conversion: the user-facing output path and
@@ -1098,6 +1758,175 @@ mod tests {
             temp_output_path,
             backup_path,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn servarr_destination_check_rejects_aliases_but_allows_distinct_paths() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.mkv");
+        let hardlink = tmp.path().join("hardlink.mkv");
+        let symbolic = tmp.path().join("symbolic.mkv");
+        let unrelated = tmp.path().join("unrelated.mkv");
+        fs::write(&source, b"source").unwrap();
+        fs::hard_link(&source, &hardlink).unwrap();
+        symlink(&source, &symbolic).unwrap();
+        fs::write(&unrelated, b"unrelated").unwrap();
+        assert!(reject_unsafe_destination(&source, &source, true).is_ok());
+        assert!(reject_unsafe_destination(&source, &source, false).is_err());
+        assert!(reject_unsafe_destination(&source, &hardlink, true).is_err());
+        assert!(reject_unsafe_destination(&source, &symbolic, true).is_err());
+        assert!(reject_unsafe_destination(&source, &unrelated, true).is_ok());
+        assert!(reject_unsafe_destination(&source, &unrelated, false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_sidecar_is_rolled_back_if_media_publication_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = tmp.path().join("output.mp4");
+        let staging = OwnedStagingDir::create(&output).unwrap();
+        let staged_sidecar = staging.directory.join("output.eng.srt");
+        let sidecar = tmp.path().join("output.eng.srt");
+        fs::write(&staged_sidecar, b"subtitle").unwrap();
+        let mut guard = SidecarPublishGuard::default();
+        guard.publish(&staging, &output).unwrap();
+        assert_eq!(fs::read(&sidecar).unwrap(), b"subtitle");
+        drop(guard);
+        assert!(!sidecar.exists());
+        let directory = staging.directory.clone();
+        drop(staging);
+        assert!(!directory.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn promotion_never_overwrites_racing_destination_and_restores_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("source.mkv");
+        let output = tmp.path().join("result.mkv");
+        fs::write(&input, b"source bytes").unwrap();
+        let mut staging = OwnedStagingDir::create(&output).unwrap();
+        let staged = staging.output_path("output");
+        fs::write(&staged, b"converted bytes").unwrap();
+        fs::write(&output, b"racing destination").unwrap();
+        assert!(publish_no_clobber(&staged, &output).is_err());
+        assert_eq!(fs::read(&staged).unwrap(), b"converted bytes");
+        assert_eq!(fs::read(&output).unwrap(), b"racing destination");
+        let mut plan = make_plan("no-clobber-test");
+        plan.input_path = input.clone();
+        plan.final_output_path = output.clone();
+        plan.temp_output_path = staged;
+        plan.backup_path = staging.directory.join("source-backup");
+        let snapshot = staging.pin_source(&input).unwrap();
+        assert!(finalize_servarr_no_clobber(plan, &snapshot).is_err());
+        assert_eq!(fs::read(&input).unwrap(), b"source bytes");
+        assert_eq!(fs::read(&output).unwrap(), b"racing destination");
+        let directory = staging.directory.clone();
+        drop(staging);
+        assert!(!directory.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn servarr_finalization_rejects_source_replaced_after_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("source.mkv");
+        let output = tmp.path().join("result.mkv");
+        fs::write(&input, b"original").unwrap();
+        let mut staging = OwnedStagingDir::create(&output).unwrap();
+        let snapshot = staging.pin_source(&input).unwrap();
+        let staged = staging.output_path("output");
+        fs::write(&staged, b"converted").unwrap();
+        let replacement = tmp.path().join("replacement.mkv");
+        fs::write(&replacement, b"replacement").unwrap();
+        fs::rename(&replacement, &input).unwrap();
+        let mut plan = make_plan("replaced-test");
+        plan.input_path = input.clone();
+        plan.final_output_path = output.clone();
+        plan.temp_output_path = staged;
+        plan.backup_path = staging.directory.join("source-backup");
+        assert!(finalize_servarr_no_clobber(plan, &snapshot).is_err());
+        assert_eq!(fs::read(&input).unwrap(), b"replacement");
+        assert!(!output.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn servarr_publication_failure_restores_original_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("source.mkv");
+        let output = tmp.path().join("result.mkv");
+        fs::write(&input, b"original").unwrap();
+        let mut staging = OwnedStagingDir::create(&output).unwrap();
+        let snapshot = staging.pin_source(&input).unwrap();
+        let staged = staging.output_path("output");
+        fs::write(&staged, b"converted").unwrap();
+        let mut plan = make_plan("restore-test");
+        plan.input_path = input.clone();
+        plan.final_output_path = tmp.path().join("missing").join("result.mkv");
+        plan.temp_output_path = staged.clone();
+        plan.backup_path = staging.directory.join("source-backup");
+        assert!(finalize_servarr_no_clobber(plan, &snapshot).is_err());
+        assert_eq!(fs::read(&input).unwrap(), b"original");
+        assert_eq!(fs::read(&staged).unwrap(), b"converted");
+        assert!(!staging.directory.join("source-backup").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_servarr_source_identity_and_successful_finalization() {
+        for in_place in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let input = tmp.path().join("source.mkv");
+            let output = if in_place {
+                input.clone()
+            } else {
+                tmp.path().join("result.mkv")
+            };
+            let unrelated = tmp.path().join("unrelated.mkv");
+            let alias = tmp.path().join("alias.mkv");
+            fs::write(&input, b"original").unwrap();
+            fs::write(&unrelated, b"original").unwrap();
+            fs::hard_link(&input, &alias).unwrap();
+            assert!(same_file_identity(&input, &alias));
+            assert!(!same_file_identity(&input, &unrelated));
+            assert!(!same_file_identity(&input, &tmp.path().join("missing")));
+            assert!(reject_unsafe_destination(&input, &alias, true).is_err());
+            assert!(reject_unsafe_destination(&input, &unrelated, true).is_ok());
+
+            let mut staging = OwnedStagingDir::create(&output).unwrap();
+            let snapshot = staging.pin_source(&input).unwrap();
+            assert!(same_file_identity(&input, &snapshot));
+            let staged = staging.output_path("output");
+            fs::write(&staged, b"converted").unwrap();
+            let mut plan = make_plan("windows-success");
+            plan.input_path = input.clone();
+            plan.final_output_path = output.clone();
+            plan.temp_output_path = staged;
+            plan.backup_path = staging.directory.join("source-backup");
+            assert_eq!(
+                finalize_servarr_no_clobber(plan, &snapshot).unwrap(),
+                output
+            );
+            assert_eq!(fs::read(&output).unwrap(), b"converted");
+            assert_eq!(fs::read(&alias).unwrap(), b"original");
+            if !in_place {
+                assert!(!input.exists());
+            }
+            let directory = staging.directory.clone();
+            drop(staging);
+            assert!(!directory.exists());
+        }
+    }
+
+    #[test]
+    fn proof_audit_requires_exactly_one_success_and_no_errors() {
+        assert!(require_one_shot_outcome(0, 1).is_ok());
+        assert!(require_one_shot_outcome(0, 0).is_err());
+        assert!(require_one_shot_outcome(1, 1).is_err());
+        assert!(require_one_shot_outcome(0, 2).is_err());
     }
 
     #[test]

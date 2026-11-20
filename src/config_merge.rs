@@ -253,6 +253,12 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_language_recovery_root") {
+        if let Some(root) = cfg.servarr_language_recovery_root.as_ref() {
+            args.servarr_language_recovery_root = Some(root.clone());
+        }
+    }
+
     if !cli_value_provided(matches, "servarr_language_dry_run") {
         if let Some(dry_run) = cfg.servarr_language_dry_run {
             args.servarr_language_dry_run = dry_run;
@@ -474,6 +480,7 @@ mod tests {
             required_subtitle_languages: Some("eng".to_string()),
             servarr_api_url: Some("http://localhost:8989".to_string()),
             servarr_api_key: Some("secret".to_string()),
+            servarr_language_recovery_root: Some("/var/lib/dpn-recovery".into()),
             servarr_language_dry_run: Some(true),
             servarr_untagged_audio_language: Some("eng".to_string()),
             servarr_untagged_subtitle_language: Some("eng".to_string()),
@@ -513,6 +520,10 @@ mod tests {
             Some("http://localhost:8989")
         );
         assert_eq!(args.servarr_api_key.as_deref(), Some("secret"));
+        assert_eq!(
+            args.servarr_language_recovery_root.as_deref(),
+            Some(std::path::Path::new("/var/lib/dpn-recovery"))
+        );
         assert!(args.servarr_language_dry_run);
         assert_eq!(args.servarr_untagged_audio_language.as_deref(), Some("eng"));
         assert_eq!(
@@ -532,15 +543,22 @@ mod tests {
             "--servarr-language-check",
             "--required-audio-languages",
             "eng",
+            "--servarr-language-recovery-root",
+            "/tmp/cli-recovery",
         ]);
         let cfg = config::Config {
             servarr_language_check: Some(false),
             required_audio_languages: Some("jpn".to_string()),
+            servarr_language_recovery_root: Some("/tmp/config-recovery".into()),
             ..Default::default()
         };
         apply_config_overrides(&mut args, &cfg, &matches);
         assert!(args.servarr_language_check);
         assert_eq!(args.required_audio_languages.as_deref(), Some("eng"));
+        assert_eq!(
+            args.servarr_language_recovery_root.as_deref(),
+            Some(std::path::Path::new("/tmp/cli-recovery"))
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::transcoder::pipeline_audio_errors::{AudioDecodeErrorAction, AudioTime
 use crate::transcoder::pipeline_codec::preferred_audio_frame_size;
 use crate::transcoder::pipeline_colour::colour_aware_sws_context;
 use crate::transcoder::timestamp::{
-    best_effort_frame_pts, enforce_monotonic_dts, rescale_timestamp, subtitle_dts, subtitle_pts,
+    best_effort_frame_pts, rescale_timestamp, subtitle_dts, subtitle_pts,
 };
 use crate::types::{ResizeBackend, ResizeQuality, SubtitleFailurePolicy};
 
@@ -333,6 +333,7 @@ pub(crate) fn process_audio_stream(
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
+    preserve_initial_timestamp: bool,
 ) -> Result<()> {
     packet.rescale_ts(
         input_stream.time_base,
@@ -357,6 +358,16 @@ pub(crate) fn process_audio_stream(
         Ok(_) | Err(RsmpegError::DecoderFlushedError) => {}
         Err(e) if is_eagain_error(&e) => return Ok(()),
         Err(e) if is_invalid_data_error(&e) => {
+            if preserve_initial_timestamp
+                && stream_processing_context
+                    .audio_decode_errors
+                    .next_sample
+                    .is_none()
+            {
+                bail!(
+                    "Cannot preserve Matroska audio timing after an invalid initial audio packet"
+                );
+            }
             return drop_invalid_audio_packet(
                 stream_processing_context,
                 output_format_context,
@@ -407,6 +418,14 @@ pub(crate) fn process_audio_stream(
                 break;
             }
             Err(e) if is_invalid_data_error(&e) => {
+                if preserve_initial_timestamp
+                    && stream_processing_context
+                        .audio_decode_errors
+                        .next_sample
+                        .is_none()
+                {
+                    bail!("Cannot preserve Matroska audio timing after an invalid initial audio frame");
+                }
                 // The decoder consumed the packet but could not produce its
                 // frame; later frames may still be pending, so keep receiving.
                 drop_invalid_audio_packet(
@@ -441,7 +460,12 @@ pub(crate) fn process_audio_stream(
         stream_processing_context
             .audio_decode_errors
             .last_frame_samples = frame.nb_samples;
-        fill_audio_timestamp_gap(stream_processing_context, output_format_context, &frame)?;
+        fill_audio_timestamp_gap(
+            stream_processing_context,
+            output_format_context,
+            &frame,
+            preserve_initial_timestamp,
+        )?;
 
         let Some(fifo) = stream_processing_context.frame_buffer.as_mut() else {
             bail!(
@@ -577,6 +601,7 @@ fn fill_audio_timestamp_gap(
     stream_processing_context: &mut StreamProcessingContext,
     output_format_context: &mut AVFormatContextOutput,
     frame: &AVFrame,
+    preserve_initial_timestamp: bool,
 ) -> Result<()> {
     let sample_rate = stream_processing_context.encode_context.sample_rate;
     let pts = best_effort_frame_pts(frame);
@@ -590,6 +615,37 @@ fn fill_audio_timestamp_gap(
             },
         )
     });
+    if preserve_initial_timestamp
+        && stream_processing_context
+            .audio_decode_errors
+            .next_sample
+            .is_none()
+        && stream_processing_context.audio_decode_errors.dropped == 0
+        && stream_processing_context.last_written_dts.is_none()
+        && stream_processing_context
+            .frame_buffer
+            .as_ref()
+            .is_some_and(|fifo| fifo.size() == 0)
+    {
+        let start = frame_start
+            .context("Cannot preserve Matroska audio timing without an initial timestamp")?;
+        stream_processing_context
+            .pts
+            .store(start, Ordering::Relaxed);
+    }
+    if preserve_initial_timestamp {
+        if let (Some(start), Some(expected)) = (
+            frame_start,
+            stream_processing_context.audio_decode_errors.next_sample,
+        ) {
+            let max_backward_jitter = (f64::from(sample_rate)
+                * crate::transcoder::pipeline_audio_errors::AUDIO_GAP_FILL_MIN_SECS)
+                as i64;
+            if start.saturating_add(max_backward_jitter) < expected {
+                bail!("Cannot preserve Matroska audio timing after a backward timestamp discontinuity");
+            }
+        }
+    }
     match stream_processing_context.audio_decode_errors.place_frame(
         frame_start,
         frame.nb_samples,
@@ -608,6 +664,11 @@ fn fill_audio_timestamp_gap(
             )
         }
         AudioTimelineAction::Discontinuity(samples) => {
+            if preserve_initial_timestamp {
+                bail!(
+                    "Cannot preserve Matroska audio timing after a {samples}-sample discontinuity"
+                );
+            }
             warn!(
                 "Audio stream {} timestamps jump by {} samples at pts {}; not filling the jump",
                 stream_processing_context.input_stream_index, samples, pts
@@ -755,12 +816,23 @@ pub(crate) fn process_subtitle_stream(
                     },
                 )?;
 
-                let pts = subtitle_pts(
+                // AVSubtitle::pts is in AV_TIME_BASE units, unlike packet.pts.
+                let decoded_pts = rescale_timestamp(
                     subtitle.pts,
-                    packet.pts,
-                    stream_processing_context.last_written_dts,
+                    ffi::AVRational {
+                        num: 1,
+                        den: ffi::AV_TIME_BASE as i32,
+                    },
+                    stream_processing_context.decode_context.time_base,
                 );
+                if packet.pts == ffi::AV_NOPTS_VALUE && decoded_pts == ffi::AV_NOPTS_VALUE {
+                    bail!("Subtitle stream {} has no presentation timestamp; cannot preserve subtitle timing", stream_processing_context.input_stream_index);
+                }
+                let pts = subtitle_pts(decoded_pts, packet.pts, None);
                 let dts = subtitle_dts(packet.dts, pts);
+                if dts != pts {
+                    bail!("Subtitle stream {} has differing presentation and decode timestamps; cannot preserve subtitle timing", stream_processing_context.input_stream_index);
+                }
 
                 encoded_packet
                     .set_stream_index(stream_processing_context.output_stream_index.as_i32());
@@ -777,17 +849,25 @@ pub(crate) fn process_subtitle_stream(
                     output_time_base,
                 );
 
-                if let Some((packet_dts, adjusted)) = enforce_monotonic_dts(
-                    &mut encoded_packet,
-                    stream_processing_context.last_written_dts,
-                ) {
-                    debug!(
-                        "Subtitle stream {} adjusted DTS from {} to {}",
-                        stream_processing_context.input_stream_index, packet_dts, adjusted
-                    );
-                }
+                // A MOV_TEXT sample ends at the next sample's timestamp. Merely
+                // making DTS monotonic truncates overlapping cues, potentially to
+                // a single tick. Fail the whole conversion regardless of the
+                // skip-stream policy: that policy cannot retract an already
+                // written partial subtitle track.
+                let previous_end = stream_processing_context
+                    .last_written_dts
+                    .map(|_| stream_processing_context.pts.load(Ordering::Relaxed));
+                let end =
+                    subtitle_sample_end(encoded_packet.pts, encoded_packet.duration, previous_end)
+                        .with_context(|| {
+                            format!(
+                                "Subtitle stream {} cannot preserve timing",
+                                stream_processing_context.input_stream_index
+                            )
+                        })?;
 
                 stream_processing_context.last_written_dts = Some(encoded_packet.dts);
+                stream_processing_context.pts.store(end, Ordering::Relaxed);
                 debug!(
                     "Subtitle stream {} final pts={} dts={} duration={} (tb={}/{})",
                     stream_processing_context.input_stream_index,
@@ -833,6 +913,18 @@ pub(crate) fn process_subtitle_stream(
     }
 
     Ok(())
+}
+
+fn subtitle_sample_end(start: i64, duration: i64, previous_end: Option<i64>) -> Result<i64> {
+    if duration <= 0 {
+        bail!("subtitle cue has non-positive duration");
+    }
+    if previous_end.is_some_and(|end| start < end) {
+        bail!("overlapping subtitle cues cannot be represented as separate MOV_TEXT samples");
+    }
+    start
+        .checked_add(duration)
+        .ok_or_else(|| anyhow!("subtitle cue end timestamp overflow"))
 }
 
 /// Applies the configured subtitle failure policy.
@@ -1121,6 +1213,20 @@ pub(crate) fn load_encode_and_write(
 #[cfg(test)]
 mod resize_quality_tests {
     use super::*;
+
+    #[test]
+    fn subtitle_sample_timing_rejects_overlap_and_invalid_durations() {
+        assert_eq!(subtitle_sample_end(1_000, 3_000, None).unwrap(), 4_000);
+        assert_eq!(
+            subtitle_sample_end(4_000, 1_000, Some(4_000)).unwrap(),
+            5_000
+        );
+        assert!(subtitle_sample_end(1_000, 1_000, Some(4_000)).is_err());
+        assert!(subtitle_sample_end(3_990, 1_000, Some(4_000)).is_err());
+        assert!(subtitle_sample_end(4_000, 0, Some(4_000)).is_err());
+        assert!(subtitle_sample_end(4_000, -1, Some(4_000)).is_err());
+        assert!(subtitle_sample_end(i64::MAX, 1, None).is_err());
+    }
 
     #[test]
     fn subtitle_style_sanitizer_removes_html_font_tags() {

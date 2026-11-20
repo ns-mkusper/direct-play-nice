@@ -14,6 +14,7 @@ mod env_helpers;
 mod language;
 mod media_paths;
 mod path_policy;
+mod recovery;
 
 pub use api::{run_language_audit, ApiSettings, AuditOptions, RedownloadOptions};
 pub use cache::disable_writes as disable_cache_writes;
@@ -125,73 +126,6 @@ impl ReplacePlan {
         if let Some(upgrade) = self.is_upgrade {
             info!("{} reported upgrade flag: {}", self.kind.label(), upgrade);
         }
-    }
-
-    pub fn finalize_success(self) -> Result<PathBuf> {
-        use std::fs;
-
-        let had_original = self.input_path.exists();
-
-        // Move the original aside first, so final promotion can be an atomic rename.
-        if had_original {
-            fs::rename(&self.input_path, &self.backup_path).with_context(|| {
-                format!(
-                    "{} integration failed to move original file '{}' to backup '{}'",
-                    self.kind.label(),
-                    self.input_path.display(),
-                    self.backup_path.display()
-                )
-            })?;
-        }
-
-        // Promote the converted temp file into place; restore backup on failure.
-        if let Err(promote_err) = crate::staging::promote(
-            &self.temp_output_path,
-            &self.final_output_path,
-            "Servarr replacement",
-        ) {
-            if had_original && self.backup_path.exists() && !self.input_path.exists() {
-                if let Err(restore_err) = crate::staging::promote(
-                    &self.backup_path,
-                    &self.input_path,
-                    "Servarr backup restoration",
-                ) {
-                    return Err(promote_err).with_context(|| {
-                        format!(
-                            "{} integration could not promote '{}' to '{}' and failed to restore backup '{}': {}",
-                            self.kind.label(),
-                            self.temp_output_path.display(),
-                            self.final_output_path.display(),
-                            self.input_path.display(),
-                            restore_err
-                        )
-                    });
-                }
-            }
-            return Err(promote_err).with_context(|| {
-                format!(
-                    "{} integration could not promote '{}' to '{}'",
-                    self.kind.label(),
-                    self.temp_output_path.display(),
-                    self.final_output_path.display()
-                )
-            });
-        }
-
-        match fs::remove_file(&self.backup_path) {
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                warn!(
-                    "{} integration left a backup file at '{}': {}",
-                    self.kind.label(),
-                    self.backup_path.display(),
-                    err
-                );
-            }
-        }
-
-        Ok(self.final_output_path)
     }
 
     pub fn abort_on_failure(&self) -> Result<()> {

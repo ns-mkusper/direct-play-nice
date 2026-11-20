@@ -51,6 +51,7 @@ pub struct Config {
     pub required_subtitle_languages: Option<String>,
     pub servarr_api_url: Option<String>,
     pub servarr_api_key: Option<String>,
+    pub servarr_language_recovery_root: Option<PathBuf>,
     pub servarr_language_dry_run: Option<bool>,
     pub servarr_untagged_audio_language: Option<String>,
     pub servarr_untagged_subtitle_language: Option<String>,
@@ -338,6 +339,7 @@ mod tests {
             required_subtitle_languages = "eng,spa"
             servarr_api_url = "http://localhost:8989"
             servarr_api_key = "secret"
+            servarr_language_recovery_root = "/tmp/dpn-recovery"
             servarr_language_dry_run = true
             servarr_untagged_audio_language = "eng"
             servarr_untagged_subtitle_language = "eng"
@@ -383,6 +385,10 @@ mod tests {
             Some("http://localhost:8989")
         );
         assert_eq!(cfg.servarr_api_key.as_deref(), Some("secret"));
+        assert_eq!(
+            cfg.servarr_language_recovery_root.as_deref(),
+            Some(Path::new("/tmp/dpn-recovery"))
+        );
         assert_eq!(cfg.servarr_language_dry_run, Some(true));
         assert_eq!(cfg.servarr_untagged_audio_language.as_deref(), Some("eng"));
         assert_eq!(

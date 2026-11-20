@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use clap::{value_parser, Parser};
 use log::debug;
 use rsmpeg::avcodec::AVCodecContext;
-use rsmpeg::avformat::AVFormatContextOutput;
+use rsmpeg::avformat::{AVFormatContextInput, AVFormatContextOutput};
 use rsmpeg::avutil::{AVAudioFifo, AVDictionary, AVFrame, AVSamples};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
@@ -329,6 +329,22 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_audit_episode_ids: Option<String>,
 
+    /// One-shot exact release title to test against an independently verified local file.
+    #[arg(
+        long = "servarr-language-proof-title",
+        value_name = "TITLE",
+        id = "servarr_language_proof_title"
+    )]
+    pub(crate) servarr_language_proof_title: Option<String>,
+
+    /// Local media file independently verified to be the named release.
+    #[arg(
+        long = "servarr-language-proof-file",
+        value_name = "FILE",
+        id = "servarr_language_proof_file"
+    )]
+    pub(crate) servarr_language_proof_file: Option<PathBuf>,
+
     /// Enable Sonarr/Radarr media language checks before conversion. Off by default.
     #[arg(
         long = "servarr-language-check",
@@ -360,6 +376,14 @@ pub(crate) struct Args {
     /// Sonarr/Radarr API key used with --servarr-language-check replacement handling.
     #[arg(long = "servarr-api-key", value_name = "KEY", id = "servarr_api_key")]
     pub(crate) servarr_api_key: Option<String>,
+
+    /// Optional existing directory outside the media library for verified recovery copies before language replacements.
+    #[arg(
+        long = "servarr-language-recovery-root",
+        value_name = "DIR",
+        id = "servarr_language_recovery_root"
+    )]
+    pub(crate) servarr_language_recovery_root: Option<PathBuf>,
 
     /// Evaluate Servarr language mismatches and replacement candidates without grabbing or blocklisting anything.
     #[arg(
@@ -758,6 +782,170 @@ impl std::fmt::Display for OutputStreamId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
+}
+
+/// Copy container tags and chapters before writing a Matroska header.
+/// FFmpeg owns the allocated chapter array and dictionaries once attached to output.
+pub(crate) fn copy_matroska_metadata(
+    input: &AVFormatContextInput,
+    output: &mut AVFormatContextOutput,
+) -> Result<()> {
+    let source = unsafe { &*input.as_ptr() };
+    let dest = unsafe { &mut *output.as_mut_ptr() };
+    if dest.nb_chapters != 0 || !dest.chapters.is_null() || !dest.metadata.is_null() {
+        bail!("Matroska output metadata was already initialized");
+    }
+    let result = unsafe {
+        ffi::av_dict_copy(
+            &mut dest.metadata,
+            source.metadata,
+            ffi::AV_DICT_MULTIKEY as i32,
+        )
+    };
+    if result < 0 {
+        bail!("Failed to copy Matroska format metadata (FFmpeg error {result})");
+    }
+    let count = source.nb_chapters as usize;
+    if count == 0 {
+        return Ok(());
+    }
+    if source.chapters.is_null() {
+        bail!("Invalid Matroska chapter array");
+    }
+    dest.chapters = unsafe { ffi::av_calloc(count, std::mem::size_of::<*mut ffi::AVChapter>()) }
+        as *mut *mut ffi::AVChapter;
+    if dest.chapters.is_null() {
+        bail!("Could not allocate Matroska chapter array");
+    }
+    for index in 0..count {
+        let original = unsafe { *source.chapters.add(index) };
+        if original.is_null() {
+            bail!("Invalid Matroska chapter {index}");
+        }
+        let original = unsafe { &*original };
+        if original.time_base.num <= 0
+            || original.time_base.den <= 0
+            || original.start < 0
+            || original.end < original.start
+        {
+            bail!("Invalid Matroska chapter timing at index {index}");
+        }
+        let chapter = unsafe { ffi::av_mallocz(std::mem::size_of::<ffi::AVChapter>()) }
+            as *mut ffi::AVChapter;
+        if chapter.is_null() {
+            bail!("Could not allocate Matroska chapter {index}");
+        }
+        unsafe {
+            *dest.chapters.add(index) = chapter;
+            dest.nb_chapters += 1;
+            (*chapter).id = original.id;
+            (*chapter).time_base = original.time_base;
+            (*chapter).start = original.start;
+            (*chapter).end = original.end;
+            let result = ffi::av_dict_copy(
+                &mut (*chapter).metadata,
+                original.metadata,
+                ffi::AV_DICT_MULTIKEY as i32,
+            );
+            if result < 0 {
+                bail!(
+                    "Failed to copy metadata for Matroska chapter {index} (FFmpeg error {result})"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify exposed chapter IDs, exact times and metadata after reopening the file.
+pub(crate) fn validate_matroska_metadata(
+    input: &AVFormatContextInput,
+    output: &AVFormatContextInput,
+) -> Result<()> {
+    let source = unsafe { &*input.as_ptr() };
+    let dest = unsafe { &*output.as_ptr() };
+    ensure_metadata_preserved(source.metadata, dest.metadata, true)
+        .context("Matroska format metadata changed")?;
+    if source.nb_chapters != dest.nb_chapters {
+        bail!(
+            "Matroska chapter count changed from {} to {}",
+            source.nb_chapters,
+            dest.nb_chapters
+        );
+    }
+    if source.nb_chapters > 0 && (source.chapters.is_null() || dest.chapters.is_null()) {
+        bail!("Invalid Matroska chapter array during verification");
+    }
+    for index in 0..source.nb_chapters as usize {
+        let a = unsafe { *source.chapters.add(index) };
+        let b = unsafe { *dest.chapters.add(index) };
+        if a.is_null() || b.is_null() {
+            bail!("Invalid Matroska chapter {index} during verification");
+        }
+        let (a, b) = unsafe { (&*a, &*b) };
+        if a.id != b.id
+            || !same_chapter_time(a.start, a.time_base, b.start, b.time_base)
+            || !same_chapter_time(a.end, a.time_base, b.end, b.time_base)
+        {
+            bail!("Matroska chapter {index} ID or timing changed");
+        }
+        ensure_metadata_preserved(a.metadata, b.metadata, false)
+            .with_context(|| format!("Matroska chapter {index} metadata changed"))?;
+    }
+    Ok(())
+}
+
+fn same_chapter_time(a: i64, at: ffi::AVRational, b: i64, bt: ffi::AVRational) -> bool {
+    at.num > 0
+        && at.den > 0
+        && bt.num > 0
+        && bt.den > 0
+        && i128::from(a) * i128::from(at.num) * i128::from(bt.den)
+            == i128::from(b) * i128::from(bt.num) * i128::from(at.den)
+}
+
+fn ensure_metadata_preserved(
+    source: *const ffi::AVDictionary,
+    output: *const ffi::AVDictionary,
+    format_metadata: bool,
+) -> Result<()> {
+    fn entries(dict: *const ffi::AVDictionary) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let mut result = Vec::new();
+        let mut previous = std::ptr::null();
+        loop {
+            let entry = unsafe { ffi::av_dict_iterate(dict, previous) };
+            if entry.is_null() {
+                break;
+            }
+            let (key, value) = unsafe { ((*entry).key, (*entry).value) };
+            if key.is_null() || value.is_null() {
+                bail!("Invalid metadata entry");
+            }
+            result.push((
+                unsafe { CStr::from_ptr(key) }
+                    .to_bytes()
+                    .to_ascii_lowercase(),
+                unsafe { CStr::from_ptr(value) }.to_bytes().to_vec(),
+            ));
+            previous = entry;
+        }
+        Ok(result)
+    }
+    let mut remaining = entries(output)?;
+    for entry in entries(source)? {
+        // The muxer writes its own encoder identifier after transcoding/remuxing.
+        if format_metadata && entry.0 == b"encoder" {
+            continue;
+        }
+        let Some(index) = remaining.iter().position(|candidate| candidate == &entry) else {
+            bail!(
+                "Metadata key '{}' was lost or changed",
+                String::from_utf8_lossy(&entry.0)
+            );
+        };
+        remaining.remove(index);
+    }
+    Ok(())
 }
 
 /// Per-stream state carried across decode/encode/mux iterations.

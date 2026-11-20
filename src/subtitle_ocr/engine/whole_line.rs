@@ -659,7 +659,11 @@ fn decode_output(shape: &[i64], data: &[f32], dictionary: &[String]) -> Result<R
         last_index = max_index;
     }
     // Match Paddle's mean confidence, without a NaN score for an empty line.
-    let score = (!text.is_empty()).then(|| (score_sum / score_count as f64) as f32);
+    let score = if text.is_empty() {
+        None
+    } else {
+        Some((score_sum / score_count as f64) as f32)
+    };
     Ok(RecognizedLine { text, score })
 }
 

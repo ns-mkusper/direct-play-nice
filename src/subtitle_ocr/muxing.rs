@@ -62,6 +62,79 @@ fn replace_output_file(tmp_out: &Path, output_path: &Path, context: &str) -> Res
     crate::staging::promote(tmp_out, output_path, context)
 }
 
+fn validate_matroska_copied_streams(
+    input: &AVFormatContextInput,
+    output_path: &CStr,
+) -> Result<()> {
+    let output =
+        AVFormatContextInput::open(output_path).context("reopening Matroska remux output")?;
+    crate::ffmpeg_utils::validate_matroska_metadata(input, &output)?;
+    let mut indices = HashMap::<ffi::AVMediaType, usize>::new();
+    for source in input.streams() {
+        let source_codec = source.codecpar();
+        let media_type = source_codec.codec_type;
+        let ordinal = indices.entry(media_type).or_default();
+        let output_streams = output.streams();
+        let copied = output_streams
+            .iter()
+            .filter(|stream| stream.codecpar().codec_type == media_type)
+            .nth(*ordinal)
+            .ok_or_else(|| anyhow!("Matroska remux lost stream {}", source.index))?;
+        *ordinal += 1;
+        let copied_codec = copied.codecpar();
+        let source_disposition = unsafe { (*source.as_ptr()).disposition };
+        let copied_disposition = unsafe { (*copied.as_ptr()).disposition };
+        if source_codec.codec_id != copied_codec.codec_id
+            || source_disposition != copied_disposition
+        {
+            bail!(
+                "Matroska remux cannot preserve codec or disposition of stream {}",
+                source.index
+            );
+        }
+        if media_type == ffi::AVMEDIA_TYPE_ATTACHMENT {
+            if source_codec.extradata_size <= 0
+                || source_codec.extradata.is_null()
+                || copied_codec.extradata_size != source_codec.extradata_size
+                || copied_codec.extradata.is_null()
+            {
+                bail!(
+                    "Matroska remux cannot preserve attachment data for stream {}",
+                    source.index
+                );
+            }
+            // Codec parameter buffers are owned by the open input contexts.
+            let length = source_codec.extradata_size as usize;
+            let same = unsafe {
+                std::slice::from_raw_parts(source_codec.extradata, length)
+                    == std::slice::from_raw_parts(copied_codec.extradata, length)
+            };
+            if !same {
+                bail!(
+                    "Matroska remux changed attachment data for stream {}",
+                    source.index
+                );
+            }
+            for key in [cstr::cstr!("filename"), cstr::cstr!("mimetype")] {
+                let value = |stream: &rsmpeg::avformat::AVStreamRef<'_>| {
+                    stream.metadata().and_then(|metadata| {
+                        metadata
+                            .get(key, None, 0)
+                            .map(|entry| entry.value().to_bytes().to_vec())
+                    })
+                };
+                if value(source) != value(copied) {
+                    bail!(
+                        "Matroska remux changed attachment metadata for stream {}",
+                        source.index
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     let output_path = PathBuf::from(output_file.to_string_lossy().into_owned());
     let output_extension = output_path
@@ -76,6 +149,13 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
     let tmp_cstr = CString::new(tmp_out.to_string_lossy().to_string())
         .context("output path has interior NUL")?;
     let mut output_ctx = AVFormatContextOutput::create(tmp_cstr.as_c_str())?;
+    if is_mkv {
+        crate::ffmpeg_utils::copy_matroska_metadata(&input_ctx, &mut output_ctx)?;
+        // Keep copied A/V and newly generated OCR cues on the same timeline.
+        unsafe {
+            (*output_ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_DISABLED as i32;
+        }
+    }
 
     let mut stream_index_map = Vec::with_capacity(input_ctx.streams().len());
     for stream in input_ctx.streams() {
@@ -89,6 +169,10 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
         }
         out_stream.set_codecpar(codecpar);
         out_stream.set_metadata(stream.metadata().as_deref().cloned());
+        // Both streams are live and owned by their respective format contexts.
+        unsafe {
+            (*out_stream.as_mut_ptr()).disposition = (*stream.as_ptr()).disposition;
+        }
         stream_index_map.push(out_stream.index);
     }
 
@@ -116,6 +200,12 @@ pub fn remux_copy_streams(input_file: &CStr, output_file: &CStr) -> Result<()> {
 
     output_ctx.write_trailer()?;
     drop(output_ctx);
+    if is_mkv {
+        if let Err(err) = validate_matroska_copied_streams(&input_ctx, tmp_cstr.as_c_str()) {
+            crate::staging::discard(&tmp_out);
+            return Err(err);
+        }
+    }
     // Input and destination can be the same file; close it before replacement.
     drop(input_ctx);
 
@@ -157,6 +247,13 @@ pub fn mux_text_tracks_from(
     let tmp_cstr = CString::new(tmp_out.to_string_lossy().to_string())
         .context("output path has interior NUL")?;
     let mut output_ctx = AVFormatContextOutput::create(tmp_cstr.as_c_str())?;
+    if is_mkv {
+        crate::ffmpeg_utils::copy_matroska_metadata(&input_ctx, &mut output_ctx)?;
+        // Keep copied A/V and newly generated OCR cues on the same timeline.
+        unsafe {
+            (*output_ctx.as_mut_ptr()).avoid_negative_ts = ffi::AVFMT_AVOID_NEG_TS_DISABLED as i32;
+        }
+    }
 
     let mut stream_index_map = Vec::with_capacity(input_ctx.streams().len());
     for stream in input_ctx.streams() {
@@ -170,6 +267,10 @@ pub fn mux_text_tracks_from(
         }
         out_stream.set_codecpar(codecpar);
         out_stream.set_metadata(stream.metadata().as_deref().cloned());
+        // Both streams are live and owned by their respective format contexts.
+        unsafe {
+            (*out_stream.as_mut_ptr()).disposition = (*stream.as_ptr()).disposition;
+        }
         stream_index_map.push(out_stream.index);
     }
 
@@ -230,6 +331,12 @@ pub fn mux_text_tracks_from(
 
     output_ctx.write_trailer()?;
     drop(output_ctx);
+    if is_mkv {
+        if let Err(err) = validate_matroska_copied_streams(&input_ctx, tmp_cstr.as_c_str()) {
+            crate::staging::discard(&tmp_out);
+            return Err(err);
+        }
+    }
     // The converted input is often also the destination on the MP4 OCR path.
     drop(input_ctx);
 
@@ -453,7 +560,7 @@ pub(super) fn packet_ts(packet: &AVPacket, time_base: ffi::AVRational) -> i64 {
 mod tests {
     use super::replace_output_file;
     #[cfg(feature = "ffmpeg-cli-tests")]
-    use super::{mux_text_tracks_from, remux_copy_streams};
+    use super::{mux_text_tracks_from, remux_copy_streams, validate_matroska_copied_streams};
     #[cfg(feature = "ffmpeg-cli-tests")]
     use crate::subtitle_ocr::OcrSubtitleTrack;
     #[cfg(feature = "ffmpeg-cli-tests")]
@@ -522,6 +629,243 @@ mod tests {
     #[cfg(feature = "ffmpeg-cli-tests")]
     fn cstring_path(path: &Path) -> CString {
         CString::new(path.to_string_lossy().to_string()).expect("path cstring")
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    fn preserved_subtitle_and_attachment(path: &Path) -> (i32, Vec<u8>) {
+        let context = AVFormatContextInput::open(cstring_path(path).as_c_str()).unwrap();
+        let streams = context.streams();
+        let subtitle = streams
+            .iter()
+            .find(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_SUBTITLE)
+            .unwrap();
+        let attachment = streams
+            .iter()
+            .find(|stream| stream.codecpar().codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT)
+            .unwrap();
+        let disposition = unsafe { (*subtitle.as_ptr()).disposition };
+        let codec = attachment.codecpar();
+        assert!(codec.extradata_size > 0 && !codec.extradata.is_null());
+        let bytes =
+            unsafe { std::slice::from_raw_parts(codec.extradata, codec.extradata_size as usize) }
+                .to_vec();
+        (disposition, bytes)
+    }
+
+    #[cfg(feature = "ffmpeg-cli-tests")]
+    #[test]
+    fn remux_preserves_subtitle_disposition_and_font_attachment() {
+        ensure_ffmpeg_present();
+        let tmp = tempfile::tempdir().unwrap();
+        let video = tmp.path().join("video.mkv");
+        let input = tmp.path().join("input.mkv");
+        let subtitles = tmp.path().join("input.srt");
+        let ocr = tmp.path().join("ocr.srt");
+        let font = tmp.path().join("font.ttf");
+        let chapters = tmp.path().join("chapters.ffmeta");
+        let copied = tmp.path().join("copied.mkv");
+        let with_ocr = tmp.path().join("with-ocr.mkv");
+        write_test_video(&video);
+        write_srt(&subtitles);
+        write_srt(&ocr);
+        fs::write(&font, b"binary font attachment\0\x01\xff").unwrap();
+        fs::write(&chapters, ";FFMETADATA1\ntitle=Episode Title\nartist=Series Artist\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=125\nEND=500\ntitle=Opening\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=500\nEND=975\ntitle=Episode\n").unwrap();
+        let result = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&video)
+            .arg("-i")
+            .arg(&subtitles)
+            .arg("-i")
+            .arg(&chapters)
+            .args([
+                "-map_metadata",
+                "2",
+                "-map_chapters",
+                "2",
+                "-map",
+                "0",
+                "-map",
+                "1:s",
+                "-c",
+                "copy",
+                "-c:s",
+                "srt",
+                "-disposition:s:0",
+                "default+forced",
+                "-attach",
+            ])
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=application/x-truetype-font"])
+            .arg(&input)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let expected = preserved_subtitle_and_attachment(&input);
+        let source = AVFormatContextInput::open(cstring_path(&input).as_c_str()).unwrap();
+        assert_eq!(source.nb_chapters, 2);
+        assert_ne!(expected.0 & ffi::AV_DISPOSITION_DEFAULT as i32, 0);
+        assert_ne!(expected.0 & ffi::AV_DISPOSITION_FORCED as i32, 0);
+        assert_eq!(expected.1, fs::read(&font).unwrap());
+        remux_copy_streams(
+            cstring_path(&input).as_c_str(),
+            cstring_path(&copied).as_c_str(),
+        )
+        .unwrap();
+        assert_eq!(preserved_subtitle_and_attachment(&copied), expected);
+        let copied_context = AVFormatContextInput::open(cstring_path(&copied).as_c_str()).unwrap();
+        crate::ffmpeg_utils::validate_matroska_metadata(&source, &copied_context).unwrap();
+        let mut altered = AVFormatContextInput::open(cstring_path(&copied).as_c_str()).unwrap();
+        unsafe {
+            let chapter = *(*altered.as_mut_ptr()).chapters;
+            (*chapter).start += 1;
+            assert!(format!(
+                "{:#}",
+                crate::ffmpeg_utils::validate_matroska_metadata(&source, &altered).unwrap_err()
+            )
+            .contains("timing"));
+            (*chapter).start -= 1;
+            assert_eq!(
+                ffi::av_dict_set(
+                    &mut (*chapter).metadata,
+                    cstr::cstr!("title").as_ptr(),
+                    cstr::cstr!("Wrong title").as_ptr(),
+                    0
+                ),
+                0
+            );
+        }
+        assert!(format!(
+            "{:#}",
+            crate::ffmpeg_utils::validate_matroska_metadata(&source, &altered).unwrap_err()
+        )
+        .contains("chapter 0 metadata"));
+        let mut altered_format =
+            AVFormatContextInput::open(cstring_path(&copied).as_c_str()).unwrap();
+        unsafe {
+            assert_eq!(
+                ffi::av_dict_set(
+                    &mut (*altered_format.as_mut_ptr()).metadata,
+                    cstr::cstr!("title").as_ptr(),
+                    cstr::cstr!("Wrong episode").as_ptr(),
+                    0
+                ),
+                0
+            );
+        }
+        assert!(format!(
+            "{:#}",
+            crate::ffmpeg_utils::validate_matroska_metadata(&source, &altered_format).unwrap_err()
+        )
+        .contains("format metadata"));
+        let track = [OcrSubtitleTrack {
+            language: "spa".into(),
+            subtitle_path: ocr,
+            format: OcrFormat::Srt,
+        }];
+        mux_text_tracks_from(
+            cstring_path(&input).as_c_str(),
+            cstring_path(&with_ocr).as_c_str(),
+            &track,
+        )
+        .unwrap();
+        assert_eq!(preserved_subtitle_and_attachment(&with_ocr), expected);
+        let ocr_context = AVFormatContextInput::open(cstring_path(&with_ocr).as_c_str()).unwrap();
+        crate::ffmpeg_utils::validate_matroska_metadata(&source, &ocr_context).unwrap();
+        let no_chapters = tmp.path().join("no-chapters.mkv");
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&input)
+            .args(["-map", "0", "-map_chapters", "-1", "-c", "copy"])
+            .arg(&no_chapters)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let error =
+            validate_matroska_copied_streams(&source, cstring_path(&no_chapters).as_c_str())
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("chapter count"));
+
+        let lost_flags = tmp.path().join("lost-flags.mkv");
+        let result = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&input)
+            .args(["-map", "0", "-c", "copy", "-disposition:s:0", "0"])
+            .arg(&lost_flags)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            preserved_subtitle_and_attachment(&lost_flags).0 & ffi::AV_DISPOSITION_FORCED as i32,
+            0
+        );
+        let input_context = AVFormatContextInput::open(cstring_path(&input).as_c_str()).unwrap();
+        assert!(validate_matroska_copied_streams(
+            &input_context,
+            cstring_path(&lost_flags).as_c_str()
+        )
+        .is_err());
+        let lost_font = tmp.path().join("lost-font.mkv");
+        let result = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&input)
+            .args(["-map", "0:v", "-map", "0:a", "-map", "0:s", "-c", "copy"])
+            .arg(&lost_font)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(validate_matroska_copied_streams(
+            &input_context,
+            cstring_path(&lost_font).as_c_str()
+        )
+        .is_err());
+        drop(input_context);
+
+        // MP4 cannot represent this Matroska attachment; failure must not
+        // overwrite either the original or an existing destination.
+        let unsupported = tmp.path().join("unsupported.mp4");
+        fs::write(&unsupported, b"existing output").unwrap();
+        let font_only = tmp.path().join("font-only.mkv");
+        let result = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&video)
+            .args(["-map", "0", "-c", "copy", "-attach"])
+            .arg(&font)
+            .args(["-metadata:s:t", "mimetype=application/x-truetype-font"])
+            .arg(&font_only)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let original = fs::read(&font_only).unwrap();
+        assert!(remux_copy_streams(
+            cstring_path(&font_only).as_c_str(),
+            cstring_path(&unsupported).as_c_str()
+        )
+        .is_err());
+        assert_eq!(fs::read(&unsupported).unwrap(), b"existing output");
+        assert!(mux_text_tracks_from(
+            cstring_path(&font_only).as_c_str(),
+            cstring_path(&unsupported).as_c_str(),
+            &track,
+        )
+        .is_err());
+        assert_eq!(fs::read(&unsupported).unwrap(), b"existing output");
+        assert_eq!(fs::read(&font_only).unwrap(), original);
     }
 
     #[test]

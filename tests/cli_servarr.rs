@@ -76,6 +76,32 @@ fn gen_direct_play_mp4(path: &Path) {
 }
 
 #[test]
+fn language_proof_cannot_be_combined_with_probe_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = TempDir::new()?;
+    let config = tmp.path().join("empty.toml");
+    fs::write(&config, "")?;
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .env_remove("DIRECT_PLAY_NICE_CONFIG")
+        .args([
+            "--config-file",
+            config.to_str().unwrap(),
+            "--servarr-language-audit",
+            "--servarr-language-proof-title",
+            "Verified release",
+            "--probe-codecs",
+        ])
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("language release proof options cannot be combined with probe modes"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
 fn sonarr_test_event_short_circuits() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));

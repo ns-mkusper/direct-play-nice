@@ -18,6 +18,7 @@ use crate::ffmpeg_utils::{
     is_eagain_error, DEFAULT_VISUAL_FAILURE_RATIO, DEFAULT_VISUAL_SAMPLE_INTERVAL,
     DEFAULT_VISUAL_SCAN_FRAMES,
 };
+use crate::transcoder::ffmpeg_ext::stream_disposition;
 use crate::transcoder::helpers::{describe_codec, enable_strict_decode_failure};
 use crate::transcoder::pipeline_assessment::rational_to_f64;
 
@@ -68,10 +69,90 @@ impl OutputValidationOptions {
     }
 }
 
+/// Verify that post-processing did not drop copied subtitles, font attachments,
+/// language metadata or dispositions. This also runs when optional A/V validation
+/// is disabled: the Matroska copy path must not publish a lossy result.
+pub(crate) fn validate_matroska_copied_streams(
+    input_file: &CStr,
+    output_file: &CStr,
+    copy_subtitles: bool,
+) -> Result<()> {
+    let input = AVFormatContextInput::open(input_file)
+        .context("Reopening input for Matroska subtitle verification")?;
+    let output = AVFormatContextInput::open(output_file)
+        .context("Reopening output for Matroska subtitle verification")?;
+    crate::ffmpeg_utils::validate_matroska_metadata(&input, &output)?;
+    for (label, media_type) in [
+        ("subtitle", ffi::AVMEDIA_TYPE_SUBTITLE),
+        ("attachment", ffi::AVMEDIA_TYPE_ATTACHMENT),
+    ] {
+        if media_type == ffi::AVMEDIA_TYPE_SUBTITLE && !copy_subtitles {
+            continue;
+        }
+        let wanted = |stream: &&AVStreamRef<'_>| {
+            let codecpar = stream.codecpar();
+            codecpar.codec_type == media_type
+        };
+        let source: Vec<_> = input.streams().iter().filter(wanted).collect();
+        let result: Vec<_> = output.streams().iter().filter(wanted).collect();
+        if result.len() < source.len()
+            || (media_type == ffi::AVMEDIA_TYPE_ATTACHMENT && result.len() != source.len())
+        {
+            bail!("Matroska verification failed: {label} stream count changed");
+        }
+        for (before, after) in source.iter().zip(result.iter()) {
+            let a = before.codecpar();
+            let b = after.codecpar();
+            if a.codec_id != b.codec_id
+                || stream_disposition(before) != stream_disposition(after)
+                || codec_extradata(&a)? != codec_extradata(&b)?
+            {
+                bail!(
+                    "Matroska verification failed: {label} codec, disposition, or header changed"
+                );
+            }
+            for key in [
+                cstr::cstr!("language"),
+                cstr::cstr!("title"),
+                cstr::cstr!("filename"),
+                cstr::cstr!("mimetype"),
+            ] {
+                let original = stream_metadata_value(before, key);
+                if original.is_some() && original != stream_metadata_value(after, key) {
+                    bail!(
+                        "Matroska verification failed: {label} metadata {} changed",
+                        key.to_string_lossy()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stream_metadata_value(stream: &AVStreamRef<'_>, key: &CStr) -> Option<Vec<u8>> {
+    stream.metadata().and_then(|metadata| {
+        metadata
+            .get(key, None, 0)
+            .map(|entry| entry.value().to_bytes().to_vec())
+    })
+}
+
+fn codec_extradata<'a>(codec: &'a rsmpeg::avcodec::AVCodecParametersRef<'_>) -> Result<&'a [u8]> {
+    if codec.extradata_size < 0 || (codec.extradata_size > 0 && codec.extradata.is_null()) {
+        bail!("Invalid codec extradata");
+    }
+    if codec.extradata_size == 0 {
+        return Ok(&[]);
+    }
+    // The codec parameters are owned by an open input context for this borrow.
+    Ok(unsafe { std::slice::from_raw_parts(codec.extradata, codec.extradata_size as usize) })
+}
+
 /// Reopens the completed output and verifies the minimum stream contract the
 /// converter promised: a primary video stream with the requested codec, a
-/// compatible audio stream, sane video dimensions, no attachment/data streams in
-/// the output, and no severe temporal collapse relative to the source video.
+/// compatible audio stream, sane video dimensions, no unsupported auxiliary streams,
+/// and no severe temporal collapse relative to the source video.
 pub(crate) fn validate_output_file(
     input_file: &CStr,
     output_file: &CStr,
@@ -87,6 +168,12 @@ pub(crate) fn validate_output_file(
             output_file.to_string_lossy()
         )
     })?;
+    let output_is_matroska = output_ctx
+        .iformat()
+        .name()
+        .to_bytes()
+        .split(|b| *b == b',')
+        .any(|name| name == b"matroska");
     let mut saw_expected_video = false;
     let mut saw_expected_audio = false;
 
@@ -110,6 +197,7 @@ pub(crate) fn validate_output_file(
                 saw_expected_audio = true;
             }
             ffi::AVMEDIA_TYPE_AUDIO => {}
+            ffi::AVMEDIA_TYPE_ATTACHMENT if output_is_matroska => {}
             ffi::AVMEDIA_TYPE_ATTACHMENT | ffi::AVMEDIA_TYPE_DATA => {
                 bail!(
                     "Output validation failed: unsupported auxiliary stream {} remains in '{}'",

@@ -161,23 +161,42 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
         .expect("temp_outputs array");
     assert_eq!(
         temps.len(),
-        2,
-        "direct MKV output stages through the promoted temp file plus the MP4 intermediate beside the final path"
+        1,
+        "direct MKV conversion stages directly in Matroska when OCR is not requested"
     );
     assert_eq!(
         temps[0],
         tmp.path()
-            .join("out.direct-play-nice.tmp.mkv")
+            .join(".direct-play-nice-{unique}/output.mkv")
             .to_string_lossy()
             .as_ref()
     );
+    let mut ocr_cmd = isolated_cmd(&tmp);
+    ocr_cmd
+        .args([
+            "-s",
+            "roku",
+            "--sub-mode",
+            "skip",
+            "--ocr-format",
+            "ass",
+            "--dry-run",
+            "--output",
+            "json",
+        ])
+        .arg(&input)
+        .arg(&output);
+    let ocr_report: serde_json::Value = serde_json::from_str(&run_and_capture(ocr_cmd))?;
+    let ocr_temps = ocr_report["temp_outputs"].as_array().unwrap();
+    assert_eq!(ocr_temps.len(), 2);
     assert_eq!(
-        temps[1],
+        ocr_temps[1],
         tmp.path()
-            .join("out.direct-play-nice.conv.mp4")
+            .join(".direct-play-nice-{unique}/conv.mkv")
             .to_string_lossy()
             .as_ref()
     );
+    assert_unchanged(&before, &snapshot(tmp.path()));
     assert!(!report["reasons"].as_array().unwrap().is_empty());
     Ok(())
 }
@@ -188,8 +207,8 @@ fn sonarr_dry_run_reports_replacement_paths_and_writes_nothing() -> Result<(), B
     let tmp = TempDir::new()?;
     let (input, _) = gen_problem_input(&tmp);
     let final_path = tmp.path().join("input.fixed.mp4");
-    let temp_path = tmp.path().join("input.fixed.direct-play-nice.tmp.mp4");
-    let backup_path = tmp.path().join("input.direct-play-nice.bak.mkv");
+    let temp_path = tmp.path().join(".direct-play-nice-{unique}/output.mp4");
+    let backup_path = tmp.path().join(".direct-play-nice-{unique}/source-backup");
 
     let mut cmd = isolated_cmd(&tmp);
     cmd.env("sonarr_eventtype", "Download")
