@@ -292,8 +292,15 @@ This feature is available only on Linux and requires a private recovery root.
 It is a one-shot Sonarr audit: pass exactly one episode ID, set the search limit
 to one, and supply both `--servarr-language-proof-title` and
 `--servarr-language-proof-file`. Disable unknown-stream retagging for the run.
-DPN applies a 512 MiB limit to both the proof file and the later imported file.
-The sealed snapshot uses shared memory roughly equal to the file size.
+DPN limits the proof file, the downloaded file, and the later imported file to
+2 GiB each. Each sealed snapshot uses shared memory roughly equal to the file
+size, plus probe and system overhead. Check available memory and service or
+container limits before running a proof check. Checks using different recovery
+roots can run concurrently and consume memory at the same time.
+
+If the current file has no identifiable release, the proof fallback requires a
+verified missing audio or subtitle language. It also retains the history,
+identity, sidecar, backup, and proof checks described below.
 
 DPN takes a nonblocking lock on the recovery root before creating a snapshot.
 Only one cooperating proof check can run at a time for that root. If the lock is

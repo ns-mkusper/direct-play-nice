@@ -1050,9 +1050,17 @@ fn review_intent(kind: IntegrationKind, command: &str, dry_run: bool) -> Result<
     Ok(())
 }
 
-// The sealed snapshot uses shmem; cap each proof verification at 512 MiB.
+// Each sealed snapshot uses up to 2 GiB of shmem, plus probe overhead.
 #[cfg(target_os = "linux")]
-const MAX_PROOF_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_PROOF_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+fn proof_check_file_size(size: u64) -> Result<()> {
+    if size > MAX_PROOF_FILE_BYTES {
+        bail!("proof-backed verification refuses files larger than 2 GiB; use manual review for this release");
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "linux")]
 struct ProofLock {
@@ -1221,9 +1229,7 @@ fn proof_file_checked_with<T>(
         bail!("proof file must be a readable regular file");
     }
     let size = initial.len();
-    if size > MAX_PROOF_FILE_BYTES {
-        bail!("proof-backed verification refuses files larger than 512 MiB; use manual review for this release");
-    }
+    proof_check_file_size(size)?;
     let expected = identity(&initial);
     let unchanged = |source: &std::fs::File| -> Result<()> {
         let current = source.metadata()?;
@@ -3306,9 +3312,6 @@ impl ApiClient {
                 .recovery_root
                 .as_deref()
                 .ok_or_else(|| anyhow!("proof fallback requires a recovery root"))?;
-            if requirements.subtitles.is_empty() {
-                bail!("proof fallback requires at least one required subtitle language");
-            }
             let current = self.proof_current_file_identity(target, attestation.series_id)?;
             validate_untracked_proof_history(&records, target, current.0, attestation.series_id)?;
             let file_identity = backup_file_identity(&current.1)?;
@@ -3318,8 +3321,8 @@ impl ApiClient {
             if current_hash == attestation.sha256 {
                 bail!("current media is byte-identical to the proof; refusing to re-grab it");
             }
-            if current_report.missing_subtitles.is_empty() {
-                bail!("current media does not lack a required subtitle language");
+            if current_report.satisfied() {
+                bail!("current media does not lack a required audio or subtitle language");
             }
             if self.proof_current_file_identity(target, attestation.series_id)? != current
                 || backup_file_identity(&current.1)? != file_identity
@@ -16209,7 +16212,10 @@ mod tests {
         let link = dir.path().join("link.mkv");
         symlink(&source, &link).unwrap();
         assert!(proof_file_checked_with(&link, &root, |_| Ok(())).is_err());
-        const { assert!(MAX_PROOF_FILE_BYTES >= 324_000_000) };
+        assert_eq!(MAX_PROOF_FILE_BYTES, 2 * 1024 * 1024 * 1024);
+        assert!(proof_check_file_size(MAX_PROOF_FILE_BYTES - 1).is_ok());
+        assert!(proof_check_file_size(MAX_PROOF_FILE_BYTES).is_ok());
+        assert!(proof_check_file_size(MAX_PROOF_FILE_BYTES + 1).is_err());
         let large = dir.path().join("large.mkv");
         std::fs::File::create(&large)
             .unwrap()
@@ -16551,6 +16557,28 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+        let dual_proof = parent.path().join("dual-proof.mkv");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&proof)
+            .args([
+                "-map",
+                "0:a:0",
+                "-map",
+                "0:a:0",
+                "-map",
+                "0:s:0",
+                "-c",
+                "copy",
+                "-metadata:s:a:0",
+                "language=jpn",
+                "-metadata:s:a:1",
+                "language=eng",
+            ])
+            .arg(&dual_proof)
+            .status()
+            .unwrap();
+        assert!(status.success());
         let plain = parent.path().join("plain.mkv");
         let status = std::process::Command::new("ffmpeg")
             .args([
@@ -16580,6 +16608,11 @@ mod tests {
         for scenario in [
             "large_dry_run",
             "untracked_old_history",
+            "audio_old_history_apply",
+            "audio_only_apply",
+            "audio_compliant",
+            "audio_history_now_matches",
+            "audio_conflicting_history",
             "apply",
             "backup_failure",
             "history_error",
@@ -16599,6 +16632,28 @@ mod tests {
             "possible_sidecar",
             "missing_current",
         ] {
+            let audio_case = scenario.starts_with("audio_");
+            let applying = matches!(
+                scenario,
+                "apply" | "audio_old_history_apply" | "audio_only_apply"
+            );
+            let requirements = if audio_case {
+                LanguageRequirements {
+                    enabled: true,
+                    audio: vec!["eng".into(), "jpn".into()],
+                    subtitles: if scenario == "audio_only_apply" {
+                        vec![]
+                    } else {
+                        vec!["eng".into()]
+                    },
+                }
+            } else {
+                requirements.clone()
+            };
+            let selected_proof = if audio_case { &dual_proof } else { &proof };
+            assert!(check_file(selected_proof, &requirements)
+                .unwrap()
+                .satisfied());
             let caches = use_temp_caches();
             MOCK_AUDIT_MEDIA.with(|value| value.set(scenario != "large_dry_run"));
             let library = caches.path().join("library");
@@ -16606,7 +16661,11 @@ mod tests {
             let current = library.join("current.mkv");
             if scenario != "missing_current" {
                 std::fs::copy(
-                    if matches!(scenario, "identical" | "missing_subtitles_no_longer") {
+                    if scenario == "audio_compliant" {
+                        &dual_proof
+                    } else if audio_case
+                        || matches!(scenario, "identical" | "missing_subtitles_no_longer")
+                    {
                         &proof
                     } else {
                         &plain
@@ -16614,7 +16673,7 @@ mod tests {
                     &current,
                 )
                 .unwrap();
-                if scenario == "missing_subtitles_no_longer" {
+                if matches!(scenario, "missing_subtitles_no_longer" | "audio_compliant") {
                     use std::io::Write;
                     std::fs::OpenOptions::new()
                         .append(true)
@@ -16622,6 +16681,11 @@ mod tests {
                         .unwrap()
                         .write_all(b"padding")
                         .unwrap();
+                }
+                if audio_case && scenario != "audio_compliant" {
+                    let report = check_file(&current, &requirements).unwrap();
+                    assert_eq!(report.missing_audio, vec!["eng"]);
+                    assert!(report.missing_subtitles.is_empty());
                 }
                 if scenario == "large_dry_run" {
                     std::fs::OpenOptions::new()
@@ -16685,19 +16749,27 @@ mod tests {
             let _history = server
                 .mock("GET", "/api/v3/history")
                 .match_query(Matcher::UrlEncoded("pageSize".into(), "20".into()))
-                .with_body(if scenario == "untracked_old_history" {
-                    old_history.to_string()
-                } else {
-                    json!({"totalRecords":0,"records":[]}).to_string()
-                })
+                .with_body(
+                    if matches!(
+                        scenario,
+                        "untracked_old_history" | "audio_old_history_apply"
+                    ) {
+                        old_history.to_string()
+                    } else {
+                        json!({"totalRecords":0,"records":[]}).to_string()
+                    },
+                )
                 .create();
             let strict_body = match scenario {
                 "malformed_history" => {
                     json!({"totalRecords":1,"records":[{"id":20,"eventType":"downloadFolderImported","data":{}}]})
                 }
-                "untracked_old_history" => old_history,
-                "history_now_matches" => {
+                "untracked_old_history" | "audio_old_history_apply" => old_history,
+                "history_now_matches" | "audio_history_now_matches" => {
                     json!({"totalRecords":1,"records":[{"id":20,"episodeId":11865,"seriesId":9,"eventType":"downloadFolderImported","data":{"fileId":"555"}}]})
+                }
+                "audio_conflicting_history" => {
+                    json!({"totalRecords":1,"records":[{"id":20,"episodeId":11865,"seriesId":10,"eventType":"downloadFolderImported","data":{"fileId":"444"}}]})
                 }
                 _ => json!({"totalRecords":0,"records":[]}),
             };
@@ -16753,21 +16825,23 @@ mod tests {
                 })
                 .expect_at_least(0)
                 .create();
-            let roots =
-                if scenario == "backup_failure" {
-                    server
-                        .mock("GET", "/api/v3/rootfolder")
-                        .with_status(500)
-                        .expect(1)
-                        .create()
+            let roots = if scenario == "backup_failure" {
+                server
+                    .mock("GET", "/api/v3/rootfolder")
+                    .with_status(500)
+                    .expect(1)
+                    .create()
+            } else {
+                mock_recovery_library_root(&mut server, &library).expect(if applying {
+                    2
                 } else {
-                    mock_recovery_library_root(&mut server, &library)
-                        .expect(if scenario == "apply" { 2 } else { 0 })
-                };
+                    0
+                })
+            };
             let grab = server
                 .mock("POST", "/api/v3/release")
                 .with_body("{}")
-                .expect(usize::from(scenario == "apply"))
+                .expect(usize::from(applying))
                 .create();
             let old_failed = server
                 .mock("POST", Matcher::Regex("^/api/v3/history/failed/".into()))
@@ -16778,7 +16852,7 @@ mod tests {
                 episode_ids: vec![11865],
                 max_searches: 1,
                 proof_title: Some(title.into()),
-                proof_file: Some(proof.clone()),
+                proof_file: Some(selected_proof.clone()),
                 ..AuditOptions::default()
             };
             let settings = ApiSettings {
@@ -16790,7 +16864,7 @@ mod tests {
                 &settings,
                 &requirements,
                 RedownloadOptions {
-                    dry_run: !matches!(scenario, "apply" | "backup_failure"),
+                    dry_run: !applying && scenario != "backup_failure",
                     ..apply_options()
                 },
                 options,
@@ -16806,7 +16880,7 @@ mod tests {
                     ),
                     (1, 1, 0, 0)
                 ),
-                "apply" => {
+                "apply" | "audio_old_history_apply" | "audio_only_apply" => {
                     assert_eq!(
                         (summary.searched, summary.grabbed, summary.errors),
                         (1, 1, 0)
@@ -16814,6 +16888,20 @@ mod tests {
                     let pending = cache::pending_grabs_strict(IntegrationKind::Sonarr).unwrap();
                     assert_eq!(pending.len(), 1);
                     assert!(pending[0].recovery_manifest.as_ref().unwrap().is_file());
+                    let proof = pending[0].proof.as_ref().unwrap();
+                    assert!(proof.recovery_checkpoint.is_some());
+                    super::super::recovery::verify_checkpoint(
+                        &current,
+                        &recovery,
+                        pending[0].recovery_manifest.as_deref().unwrap(),
+                        proof.recovery_checkpoint.as_ref(),
+                    )
+                    .unwrap();
+                    assert_eq!(pending[0].requirements, requirements);
+                    assert_eq!(
+                        proof.previous_file.as_ref().unwrap().unverified_history_id,
+                        None
+                    );
                     assert_eq!(
                         pending[0]
                             .proof
@@ -16836,7 +16924,7 @@ mod tests {
                     "{scenario}"
                 ),
             }
-            if scenario != "apply" {
+            if !applying {
                 assert!(
                     cache::pending_grabs_strict(IntegrationKind::Sonarr)
                         .unwrap()
