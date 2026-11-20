@@ -214,15 +214,13 @@ fn sonarr_proof_import_requires_explicit_filesystem_attestation_in_production_bi
             )
         })
         .create();
-    let _episodes = server
+    let episodes = server
         .mock("GET", "/api/v3/episode")
-        .match_query(Matcher::Any)
+        .match_query(Matcher::Exact("episodeFileId=555".into()))
         .with_body(json!([{"id":77,"seriesId":9,"episodeFileId":555}]).to_string())
+        .expect_at_least(8)
         .create();
-    let _series = server
-        .mock("GET", "/api/v3/series")
-        .with_body(json!([{"id":9}]).to_string())
-        .create();
+    let no_series = server.mock("GET", "/api/v3/series").expect(0).create();
     let _root = server
         .mock("GET", "/api/v3/rootfolder")
         .with_body(json!([{"path":library}]).to_string())
@@ -361,6 +359,8 @@ fn sonarr_proof_import_requires_explicit_filesystem_attestation_in_production_bi
     .unwrap();
     assert!(intents.as_object().unwrap().is_empty());
     post.assert();
+    episodes.assert();
+    no_series.assert();
     no_delete.assert();
     no_grab.assert();
 }

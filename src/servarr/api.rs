@@ -277,7 +277,7 @@ struct ProofMount {
     id: u64,
     major: u32,
     minor: u32,
-    filesystem_root: PathBuf,
+    filesystem_root: Option<PathBuf>,
     point: PathBuf,
     filesystem: String,
 }
@@ -315,9 +315,7 @@ fn proof_mount_path(raw: &str) -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
-        .context("cannot inspect mounted filesystems")?;
+fn proof_parse_mounts(mountinfo: &str) -> Result<Vec<ProofMount>> {
     if mountinfo.lines().count() > 100_000 {
         bail!("too many mounts to verify download isolation");
     }
@@ -332,7 +330,6 @@ fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
         let (major, minor) = fields[2].split_once(':').context("invalid mount device")?;
         let major = major.parse::<u32>().context("invalid mount device")?;
         let minor = minor.parse::<u32>().context("invalid mount device")?;
-        let filesystem_root = proof_mount_path(fields[3])?;
         let point = proof_mount_path(fields[4])?;
         let separator = fields
             .iter()
@@ -342,6 +339,20 @@ fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
             .get(separator + 1)
             .context("mount has no filesystem type")?
             .to_string();
+        let filesystem_root = if filesystem == "nsfs" && !fields[3].starts_with('/') {
+            let (kind, inode) = fields[3].split_once(":[").context("invalid nsfs root")?;
+            let inode = inode.strip_suffix(']').context("invalid nsfs root")?;
+            if kind.is_empty()
+                || !kind.bytes().all(|b| b.is_ascii_lowercase())
+                || inode.is_empty()
+                || !inode.bytes().all(|b| b.is_ascii_digit())
+            {
+                bail!("invalid nsfs root");
+            }
+            None
+        } else {
+            Some(proof_mount_path(fields[3])?)
+        };
         if id == 0 || !ids.insert(id) {
             bail!("duplicate or invalid mount ID");
         }
@@ -357,6 +368,14 @@ fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
     if mounts.is_empty() {
         bail!("empty mount information");
     }
+    Ok(mounts)
+}
+
+#[cfg(target_os = "linux")]
+fn proof_mounts() -> Result<(String, Vec<ProofMount>)> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")
+        .context("cannot inspect mounted filesystems")?;
+    let mounts = proof_parse_mounts(&mountinfo)?;
     Ok((mountinfo, mounts))
 }
 
@@ -503,14 +522,27 @@ fn proof_resolve_same_device_mounts(
     let root_relative = root
         .strip_prefix(&root_mount.point)
         .context("protected root does not match its mount")?;
-    let source_backing = source.filesystem_root.join(source_relative);
-    let root_backing = root_mount.filesystem_root.join(root_relative);
+    let source_backing = source
+        .filesystem_root
+        .as_ref()
+        .context("download mount root is opaque")?
+        .join(source_relative);
+    let root_backing = root_mount
+        .filesystem_root
+        .as_ref()
+        .context("protected mount root is opaque")?
+        .join(root_relative);
     for anchor in mounts.iter().filter(|mount| {
         (mount.major, mount.minor) == (source.major, source.minor)
             && mount.filesystem == "ext4"
-            && source_backing.starts_with(&mount.filesystem_root)
-            && root_backing.starts_with(&mount.filesystem_root)
+            && mount.filesystem_root.as_ref().is_some_and(|root| {
+                source_backing.starts_with(root) && root_backing.starts_with(root)
+            })
     }) {
+        let anchor_root = anchor
+            .filesystem_root
+            .as_ref()
+            .context("anchor mount root is opaque")?;
         if mounts
             .iter()
             .filter(|mount| mount.point == anchor.point)
@@ -530,16 +562,14 @@ fn proof_resolve_same_device_mounts(
         {
             continue;
         }
-        let Ok((source_check, source_ancestors)) = proof_anchor_walk(
-            &anchor_file,
-            source_backing.strip_prefix(&anchor.filesystem_root)?,
-        ) else {
+        let Ok((source_check, source_ancestors)) =
+            proof_anchor_walk(&anchor_file, source_backing.strip_prefix(anchor_root)?)
+        else {
             continue;
         };
-        let Ok((root_check, _)) = proof_anchor_walk(
-            &anchor_file,
-            root_backing.strip_prefix(&anchor.filesystem_root)?,
-        ) else {
+        let Ok((root_check, _)) =
+            proof_anchor_walk(&anchor_file, root_backing.strip_prefix(anchor_root)?)
+        else {
             continue;
         };
         if (source_check.dev(), source_check.ino()) != (metadata.dev(), metadata.ino())
@@ -573,6 +603,7 @@ fn proof_download_outside_protected_filesystems(path: &Path, roots: &[PathBuf]) 
         bail!("download mount is stacked or ambiguous");
     }
     if (source_entry.major, source_entry.minor) != (major, minor)
+        || source_entry.filesystem_root.is_none()
         || !matches!(
             source_entry.filesystem.as_str(),
             "ext4" | "xfs" | "btrfs" | "tmpfs"
@@ -609,6 +640,7 @@ fn proof_download_outside_protected_filesystems(path: &Path, roots: &[PathBuf]) 
             bail!("protected root mount is stacked or ambiguous");
         }
         if (root_entry.major, root_entry.minor) != (root_major, root_minor)
+            || root_entry.filesystem_root.is_none()
             || !matches!(
                 root_entry.filesystem.as_str(),
                 "ext4" | "xfs" | "btrfs" | "tmpfs"
@@ -646,6 +678,9 @@ fn proof_download_outside_protected_filesystems(path: &Path, roots: &[PathBuf]) 
             }
             let lexically_inside = mount.point.starts_with(root) && mount.point != *root;
             let same_device = (mount.major, mount.minor) == (major, minor);
+            if same_device && mount.filesystem_root.is_none() {
+                bail!("same-device mount has an opaque filesystem root");
+            }
             let identity_inside = if same_device && !lexically_inside {
                 let ancestors = proof_download_parents(&mount.point).context(
                     "cannot establish whether a same-device mount is inside a protected root",
@@ -5229,56 +5264,21 @@ impl ApiClient {
         series_id: i64,
         file_id: i64,
     ) -> Result<()> {
-        let series = self.get(&format!("{}/api/v3/series", self.base_url))?;
-        let series = series
+        if episode_id <= 0 || series_id <= 0 || !(1..=i64::from(i32::MAX)).contains(&file_id) {
+            bail!("invalid Sonarr episode, series, or file ID");
+        }
+        let records = self.get(&format!(
+            "{}/api/v3/episode?episodeFileId={file_id}",
+            self.base_url
+        ))?;
+        let records = records
             .as_array()
-            .context("Sonarr series inventory is not an array")?;
-        if series.is_empty() || series.len() > 100_000 {
-            bail!("Sonarr series inventory is incomplete");
-        }
-        let mut series_ids = BTreeSet::new();
-        let mut episode_ids = BTreeSet::new();
-        let mut associations = Vec::new();
-        for item in series {
-            let id = item
-                .get("id")
-                .and_then(Value::as_i64)
-                .filter(|id| *id > 0)
-                .context("series inventory has no positive ID")?;
-            if !series_ids.insert(id) {
-                bail!("duplicate Sonarr series ID");
-            }
-            let records = self.get(&format!("{}/api/v3/episode?seriesId={id}", self.base_url))?;
-            let records = records
-                .as_array()
-                .context("Sonarr episode inventory is not an array")?;
-            if records.len() > 100_000 {
-                bail!("Sonarr episode inventory exceeds the limit");
-            }
-            for episode in records {
-                let id_episode = episode
-                    .get("id")
-                    .and_then(Value::as_i64)
-                    .filter(|id| *id > 0)
-                    .context("episode inventory has no positive ID")?;
-                let id_series = episode
-                    .get("seriesId")
-                    .and_then(Value::as_i64)
-                    .context("episode inventory has no series ID")?;
-                let id_file = episode
-                    .get("episodeFileId")
-                    .and_then(Value::as_i64)
-                    .filter(|id| *id >= 0)
-                    .context("episode inventory has no valid file ID")?;
-                if id_series != id || !episode_ids.insert(id_episode) {
-                    bail!("episode inventory is inconsistent");
-                }
-                if id_file == file_id {
-                    associations.push((id_episode, id_series));
-                }
-            }
-        }
-        if associations != [(episode_id, series_id)] {
+            .context("Sonarr episode file associations are not an array")?;
+        if records.len() != 1
+            || records[0].get("id").and_then(Value::as_i64) != Some(episode_id)
+            || records[0].get("seriesId").and_then(Value::as_i64) != Some(series_id)
+            || records[0].get("episodeFileId").and_then(Value::as_i64) != Some(file_id)
+        {
             bail!("original episode file is shared or its exclusive association is unknown");
         }
         Ok(())
@@ -13610,6 +13610,90 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn verify_exclusive_episode_file_requires_one_exact_association() {
+        let correct = json!({"id":11865,"seriesId":9,"episodeFileId":555});
+        let cases = vec![
+            (json!([correct.clone()]), true),
+            (
+                json!([correct.clone(), {"id":11866,"seriesId":9,"episodeFileId":555}]),
+                false,
+            ),
+            (json!([correct.clone(), correct.clone()]), false),
+            (json!([]), false),
+            (json!({"id":11865,"seriesId":9,"episodeFileId":555}), false),
+            (json!([null]), false),
+            (json!([{"seriesId":9,"episodeFileId":555}]), false),
+            (json!([{"id":11865,"episodeFileId":555}]), false),
+            (json!([{"id":11865,"seriesId":9}]), false),
+            (
+                json!([{"id":"11865","seriesId":9,"episodeFileId":555}]),
+                false,
+            ),
+            (
+                json!([{"id":11866,"seriesId":9,"episodeFileId":555}]),
+                false,
+            ),
+            (
+                json!([{"id":11865,"seriesId":10,"episodeFileId":555}]),
+                false,
+            ),
+            (
+                json!([{"id":11865,"seriesId":9,"episodeFileId":556}]),
+                false,
+            ),
+        ];
+        for (body, expected) in cases {
+            let mut server = mockito::Server::new();
+            let query = server
+                .mock("GET", "/api/v3/episode")
+                .match_query(Matcher::Exact("episodeFileId=555".into()))
+                .with_body(body.to_string())
+                .expect(1)
+                .create();
+            let no_series = server.mock("GET", "/api/v3/series").expect(0).create();
+            let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+            let no_delete = server.mock("DELETE", Matcher::Any).expect(0).create();
+            let client = test_client(IntegrationKind::Sonarr, server.url());
+            assert_eq!(
+                client.verify_exclusive_episode_file(11865, 9, 555).is_ok(),
+                expected,
+                "{body}"
+            );
+            query.assert();
+            no_series.assert();
+            no_post.assert();
+            no_delete.assert();
+        }
+        let mut server = mockito::Server::new();
+        let error = server
+            .mock("GET", "/api/v3/episode")
+            .match_query(Matcher::Exact("episodeFileId=555".into()))
+            .with_status(500)
+            .expect(1)
+            .create();
+        let no_series = server.mock("GET", "/api/v3/series").expect(0).create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let no_delete = server.mock("DELETE", Matcher::Any).expect(0).create();
+        let client = test_client(IntegrationKind::Sonarr, server.url());
+        assert!(client.verify_exclusive_episode_file(11865, 9, 555).is_err());
+        for (episode, series, file) in [
+            (0, 9, 555),
+            (11865, 0, 555),
+            (11865, 9, 0),
+            (11865, 9, i64::from(i32::MAX) + 1),
+        ] {
+            assert!(client
+                .verify_exclusive_episode_file(episode, series, file)
+                .is_err());
+        }
+        error.assert();
+        no_series.assert();
+        no_post.assert();
+        no_delete.assert();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn proof_same_device_ext4_siblings_are_safe_but_protected_files_and_links_are_not() {
         use std::os::unix::fs::MetadataExt;
         let parent = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
@@ -13659,7 +13743,7 @@ mod tests {
             id: 10,
             major: 8,
             minor: 33,
-            filesystem_root: PathBuf::from("/unrelated-a"),
+            filesystem_root: Some(PathBuf::from("/unrelated-a")),
             point: parent.path().to_path_buf(),
             filesystem: "ext4".into(),
         };
@@ -13667,7 +13751,7 @@ mod tests {
             id: 11,
             major: 8,
             minor: 33,
-            filesystem_root: PathBuf::from("/unrelated-b"),
+            filesystem_root: Some(PathBuf::from("/unrelated-b")),
             point: parent.path().to_path_buf(),
             filesystem: "ext4".into(),
         };
@@ -13682,6 +13766,33 @@ mod tests {
             &mounts,
         );
         assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_mountinfo_nsfs_roots_are_retained_and_malformed_paths_rejected() {
+        let ext4 = "10 1 8:33 / /mnt/data rw - ext4 /dev/test rw";
+        let nsfs = "639 1 0:4 net:[4026531833] /run/docker/netns/default rw - nsfs nsfs rw";
+        let mounts = proof_parse_mounts(&format!("{ext4}\n{nsfs}\n")).unwrap();
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[1].id, 639);
+        assert_eq!((mounts[1].major, mounts[1].minor), (0, 4));
+        assert_eq!(mounts[1].point, PathBuf::from("/run/docker/netns/default"));
+        assert_eq!(mounts[1].filesystem, "nsfs");
+        assert!(mounts[1].filesystem_root.is_none());
+        assert_eq!(mounts[0].filesystem_root.as_deref(), Some(Path::new("/")));
+        for bad in [
+            "net:[]",
+            "net:[not-a-number]",
+            "net:[1",
+            "NET:[1]",
+            "net:[1]extra",
+        ] {
+            let line = format!("639 1 0:4 {bad} /run/netns rw - nsfs nsfs rw");
+            assert!(proof_parse_mounts(&line).is_err(), "{bad}");
+        }
+        assert!(proof_parse_mounts("639 1 0:4 net:[1] relative rw - nsfs nsfs rw").is_err());
+        assert!(proof_parse_mounts("10 1 8:33 net:[1] /mnt/data rw - ext4 /dev/test rw").is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -13730,6 +13841,18 @@ mod tests {
             "nested" => (
                 downloads.clone(),
                 library.join("nested"),
+                downloads.join("download.mkv"),
+                false,
+            ),
+            "nsfs-outside" => (
+                PathBuf::from("/proc/self/ns/net"),
+                parent.join("namespace"),
+                downloads.join("download.mkv"),
+                true,
+            ),
+            "nsfs-inside" => (
+                PathBuf::from("/proc/self/ns/net"),
+                library.join("namespace"),
                 downloads.join("download.mkv"),
                 false,
             ),
@@ -13786,6 +13909,13 @@ mod tests {
                 "{result:?}"
             );
         }
+        if scenario == "nsfs-inside" {
+            assert!(
+                result.as_ref().is_err_and(|err| format!("{err:#}")
+                    .contains("protected root contains an unsupported submount")),
+                "{result:?}"
+            );
+        }
         assert_eq!(result.is_ok(), expected, "{scenario}: {result:?}");
     }
 
@@ -13800,6 +13930,8 @@ mod tests {
             std::fs::create_dir(path).unwrap();
         }
         std::fs::create_dir(library.join("nested")).unwrap();
+        std::fs::write(parent.path().join("namespace"), b"").unwrap();
+        std::fs::write(library.join("namespace"), b"").unwrap();
         std::fs::write(library.join("nested/episode.mkv"), b"media").unwrap();
         std::fs::write(downloads.join("download.mkv"), b"download").unwrap();
         let (_, _, id, _, _) = proof_open_mount_identity(&downloads.join("download.mkv")).unwrap();
@@ -13822,7 +13954,14 @@ mod tests {
             eprintln!("isolated bind-mount tests require unprivileged user and mount namespaces");
             return;
         }
-        for scenario in ["protected", "disjoint", "nested", "stacked"] {
+        for scenario in [
+            "protected",
+            "disjoint",
+            "nested",
+            "stacked",
+            "nsfs-outside",
+            "nsfs-inside",
+        ] {
             let result = std::process::Command::new("unshare")
                 .args(["--user", "--map-root-user", "--mount"])
                 .arg(std::env::current_exe().unwrap())
@@ -13993,18 +14132,12 @@ mod tests {
                 })
                 .create(),
         );
-        mocks.push(
-            server
-                .mock("GET", "/api/v3/series")
-                .with_body(json!([{"id":9}]).to_string())
-                .create(),
-        );
         let marker = fixture._parent.path().join("shared-original");
         let missing_episode_field = fixture._parent.path().join("missing-episode-field");
         mocks.push(
             server
                 .mock("GET", "/api/v3/episode")
-                .match_query(Matcher::Any)
+                .match_query(Matcher::Exact("episodeFileId=555".into()))
                 .with_chunked_body(move |writer| {
                     let mut episodes = vec![json!({"id":11865,"seriesId":9,"episodeFileId":555})];
                     if marker.exists() {
