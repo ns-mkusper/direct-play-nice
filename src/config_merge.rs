@@ -229,6 +229,11 @@ pub(crate) fn apply_config_overrides(args: &mut Args, cfg: &config::Config, matc
         }
     }
 
+    if !cli_value_provided(matches, "servarr_keep_present_original_audio") {
+        if let Some(enabled) = cfg.servarr_keep_present_original_audio {
+            args.servarr_keep_present_original_audio = enabled;
+        }
+    }
     if !cli_value_provided(matches, "servarr_preserve_original_audio") {
         if let Some(enabled) = cfg.servarr_preserve_original_audio {
             args.servarr_preserve_original_audio = enabled;

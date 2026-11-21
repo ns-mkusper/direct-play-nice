@@ -47,6 +47,7 @@ pub struct Config {
     pub servarr_language_audit_stale_queue_max_removals: Option<usize>,
     pub servarr_language_audit_episode_ids: Option<String>,
     pub servarr_language_check: Option<bool>,
+    pub servarr_keep_present_original_audio: Option<bool>,
     pub servarr_preserve_original_audio: Option<bool>,
     pub required_audio_languages: Option<String>,
     pub required_subtitle_languages: Option<String>,

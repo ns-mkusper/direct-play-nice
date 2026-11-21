@@ -353,6 +353,15 @@ pub(crate) struct Args {
     )]
     pub(crate) servarr_language_check: bool,
 
+    /// Keep identifiable original audio already present when replacing media (true/false).
+    #[arg(
+        long = "servarr-keep-present-original-audio",
+        action = clap::ArgAction::Set,
+        default_value_t = true,
+        id = "servarr_keep_present_original_audio"
+    )]
+    pub(crate) servarr_keep_present_original_audio: bool,
+
     /// Require English and each title's Arr original audio language in enabled Servarr checks.
     #[arg(
         long = "servarr-preserve-original-audio",

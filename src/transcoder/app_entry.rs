@@ -287,6 +287,7 @@ fn run_servarr_language_audit(args: &Args) -> Result<()> {
             proof_title: args.servarr_language_proof_title.clone(),
             proof_file: args.servarr_language_proof_file.clone(),
             preserve_original_audio: args.servarr_preserve_original_audio,
+            keep_present_original_audio: args.servarr_keep_present_original_audio,
         },
     )?;
     info!("Servarr language audit summary: {:?}", summary);
@@ -326,6 +327,7 @@ fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
             subtitles: servarr::parse_language_list(args.required_subtitle_languages.as_deref()),
         },
         preserve_original_audio: args.servarr_preserve_original_audio,
+        keep_present_original_audio: args.servarr_keep_present_original_audio,
         untagged_retag: servarr_untagged_retag_options(args),
         api_settings: servarr::ApiSettings {
             url: args.servarr_api_url.clone(),

@@ -167,6 +167,7 @@ pub struct ArgsView<'a> {
     pub desired_video_quality: VideoQuality,
     pub language_requirements: LanguageRequirements,
     pub preserve_original_audio: bool,
+    pub keep_present_original_audio: bool,
     pub untagged_retag: language::UntaggedRetagOptions,
     pub api_settings: ApiSettings,
     pub redownload_options: RedownloadOptions,

@@ -787,6 +787,7 @@ pub struct AuditOptions {
     pub proof_title: Option<String>,
     pub proof_file: Option<PathBuf>,
     pub preserve_original_audio: bool,
+    pub keep_present_original_audio: bool,
 }
 
 impl Default for AuditOptions {
@@ -804,6 +805,7 @@ impl Default for AuditOptions {
             proof_title: None,
             proof_file: None,
             preserve_original_audio: false,
+            keep_present_original_audio: true,
         }
     }
 }
@@ -1451,6 +1453,7 @@ fn run_sonarr_proof_audit(
         .ok_or_else(|| anyhow!("proof override requires a recovery root"))?;
     let mut client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
     client.preserve_original_audio = audit.preserve_original_audio;
+    client.keep_present_original_audio = audit.keep_present_original_audio;
     let target = Target::SonarrEpisode {
         episode_id: audit.episode_ids[0],
     };
@@ -1641,6 +1644,7 @@ pub fn run_sonarr_language_audit(
     }
     let mut client = ApiClient::from_settings(IntegrationKind::Sonarr, settings)?;
     client.preserve_original_audio = audit_options.preserve_original_audio;
+    client.keep_present_original_audio = audit_options.keep_present_original_audio;
     if maybe_review_intent(&client, redownload_options.dry_run)? {
         return Ok(AuditSummary::default());
     }
@@ -2053,6 +2057,28 @@ fn audit_target_requirements(
     }
 }
 
+fn audit_target_replacement_requirements(
+    client: &ApiClient,
+    target: Target,
+    requirements: &LanguageRequirements,
+    summary: &mut AuditSummary,
+) -> Option<LanguageRequirements> {
+    match client.replacement_requirements(target, requirements) {
+        Ok(effective) => Some(effective),
+        Err(err) => {
+            summary.errors += 1;
+            warn!(
+                "{} cannot safely preserve current original audio for {} {}: {:#}",
+                client.kind.label(),
+                target.noun(),
+                target.id(),
+                err
+            );
+            None
+        }
+    }
+}
+
 fn run_sonarr_inventory_language_audit(
     client: &ApiClient,
     requirements: &LanguageRequirements,
@@ -2312,6 +2338,15 @@ fn process_sonarr_missing_language_audit_item(
         );
         return;
     }
+    let Some(effective) = audit_target_replacement_requirements(
+        client,
+        Target::SonarrEpisode { episode_id },
+        requirements,
+        summary,
+    ) else {
+        return;
+    };
+    let requirements = &effective;
     if no_candidate_cooldown_days > 0 {
         match cache::no_candidate_cooldown_remaining_days(
             client.kind,
@@ -2403,6 +2438,7 @@ pub fn run_radarr_language_audit(
     }
     let mut client = ApiClient::from_settings(IntegrationKind::Radarr, settings)?;
     client.preserve_original_audio = audit_options.preserve_original_audio;
+    client.keep_present_original_audio = audit_options.keep_present_original_audio;
     if maybe_review_intent(&client, redownload_options.dry_run)? {
         return Ok(AuditSummary::default());
     }
@@ -2719,6 +2755,15 @@ fn process_radarr_missing_language_audit_item(
         );
         return;
     }
+    let Some(effective) = audit_target_replacement_requirements(
+        client,
+        Target::RadarrMovie { movie_id },
+        requirements,
+        summary,
+    ) else {
+        return;
+    };
+    let requirements = &effective;
     if no_candidate_cooldown_days > 0 {
         match cache::no_candidate_cooldown_remaining_days(
             client.kind,
@@ -2963,6 +3008,8 @@ struct ApiClient {
     audit_claims_failed: RefCell<bool>,
     audit_finish_errors: RefCell<usize>,
     preserve_original_audio: bool,
+    keep_present_original_audio: bool,
+    present_originals: RefCell<BTreeMap<Target, Option<String>>>,
     original_override: Option<DownloadOriginalAudio>,
     original_series: RefCell<BTreeMap<i64, Result<String, String>>>,
     episode_series: RefCell<BTreeMap<i64, Result<i64, String>>>,
@@ -3029,6 +3076,8 @@ impl ApiClient {
             audit_claims_failed: RefCell::new(false),
             audit_finish_errors: RefCell::new(0),
             preserve_original_audio: false,
+            keep_present_original_audio: false,
+            present_originals: RefCell::new(BTreeMap::new()),
             original_override: None,
             original_series: RefCell::new(BTreeMap::new()),
             episode_series: RefCell::new(BTreeMap::new()),
@@ -3037,7 +3086,9 @@ impl ApiClient {
     }
 
     fn remember_original(&self, id: i64, metadata: &Value, sonarr: bool) {
-        if !self.preserve_original_audio || metadata.get("originalLanguage").is_none() {
+        if !(self.preserve_original_audio || self.keep_present_original_audio)
+            || metadata.get("originalLanguage").is_none()
+        {
             return;
         }
         let parsed = parse_original_language(metadata, self.kind).map_err(|err| format!("{err:#}"));
@@ -3057,7 +3108,7 @@ impl ApiClient {
     }
 
     fn remember_episode_series(&self, episode_id: i64, episode: &Value, expected: Option<i64>) {
-        if !self.preserve_original_audio {
+        if !(self.preserve_original_audio || self.keep_present_original_audio) {
             return;
         }
         let reported = episode
@@ -3179,6 +3230,73 @@ impl ApiClient {
             }
         }
         Ok(effective)
+    }
+
+    fn replacement_requirements(
+        &self,
+        target: Target,
+        base: &LanguageRequirements,
+    ) -> Result<LanguageRequirements> {
+        if !base.enabled || !self.keep_present_original_audio || self.preserve_original_audio {
+            return Ok(base.clone());
+        }
+        let original = self.original_language_for_target(target)?;
+        let mut summary = AuditSummary::default();
+        let file = match target {
+            Target::SonarrEpisode { episode_id } => {
+                self.sonarr_current_episode_file(episode_id, &mut summary)
+            }
+            Target::RadarrMovie { movie_id } => {
+                self.radarr_current_movie_file(movie_id, &mut summary)
+            }
+        }
+        .ok_or_else(|| {
+            anyhow!("cannot establish the current file for original-audio preservation")
+        })?;
+        let report = language_report_from_media_file(&file, base)
+            .context("cannot verify current file audio for original-audio preservation")?;
+        let present = report
+            .present_audio
+            .iter()
+            .any(|language| language == &original);
+        self.present_originals
+            .borrow_mut()
+            .insert(target, present.then_some(original.clone()));
+        let mut result = base.clone();
+        if present && !result.audio.contains(&original) {
+            result.audio.push(original);
+        }
+        Ok(result)
+    }
+
+    fn replacement_original(
+        &self,
+        target: Target,
+        requirements: &LanguageRequirements,
+    ) -> Result<Option<String>> {
+        if !requirements.enabled {
+            return Ok(None);
+        }
+        if self.preserve_original_audio {
+            return self.original_language_for_target(target).map(Some);
+        }
+        if self.keep_present_original_audio {
+            return self
+                .present_originals
+                .borrow()
+                .get(&target)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow!("current original audio has not been verified for this replacement")
+                });
+        }
+        Ok(None)
+    }
+
+    fn present_original_evidenced(&self, release: &Value, original: Option<&str>) -> bool {
+        !self.keep_present_original_audio
+            || self.preserve_original_audio
+            || original.is_none_or(|language| release_languages(release).contains(language))
     }
 
     fn effective_retag_options(
@@ -3625,8 +3743,8 @@ impl ApiClient {
             bail!("proof override requires exactly one unprepared candidate");
         }
         let label = self.kind.label();
-        let original = if self.preserve_original_audio && proof.is_none() {
-            Some(self.original_language_for_target(target)?)
+        let original = if proof.is_none() {
+            self.replacement_original(target, requirements)?
         } else {
             None
         };
@@ -3647,6 +3765,9 @@ impl ApiClient {
                 prefer_non_torrent,
                 original.as_deref(),
             )
+            .into_iter()
+            .filter(|release| self.present_original_evidenced(release, original.as_deref()))
+            .collect()
         };
         let mut candidates = ReplacementCandidates::new(self, ranked, target, history);
         let mut resolved_history_id = None;
@@ -6891,11 +7012,7 @@ impl ApiClient {
                 let preparation = (|| -> Result<()> {
                     for (target, _, releases, _) in &replacements {
                         let requirements = &effective_by_episode[&target.id()];
-                        let original = if self.preserve_original_audio {
-                            Some(self.original_language_for_target(*target)?)
-                        } else {
-                            None
-                        };
+                        let original = self.replacement_original(*target, requirements)?;
                         let release = verified_release_candidates(
                             releases,
                             *target,
@@ -6905,7 +7022,9 @@ impl ApiClient {
                             original.as_deref(),
                         )
                         .into_iter()
-                        .next()
+                        .find(|release| {
+                            self.present_original_evidenced(release, original.as_deref())
+                        })
                         .ok_or_else(|| anyhow!("no viable replacement to reserve"))?;
                         let release_title = release_title(release)
                             .filter(|title| !title.trim().is_empty())
@@ -7040,11 +7159,7 @@ impl ApiClient {
         if queue_core.is_empty() {
             return Ok(Vec::new());
         }
-        let original = if self.preserve_original_audio {
-            Some(self.original_language_for_target(target)?)
-        } else {
-            None
-        };
+        let original = self.replacement_original(target, requirements)?;
         let ranked = verified_release_candidates(
             releases,
             target,
@@ -7052,7 +7167,10 @@ impl ApiClient {
             options.candidate_policy,
             true,
             original.as_deref(),
-        );
+        )
+        .into_iter()
+        .filter(|release| self.present_original_evidenced(release, original.as_deref()))
+        .collect::<Vec<_>>();
         if ranked.is_empty() {
             return Ok(Vec::new());
         }
@@ -8975,7 +9093,7 @@ fn parse_original_language(metadata: &Value, kind: IntegrationKind) -> Result<St
         .ok_or_else(|| anyhow!("unsupported original language '{name}'"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Target {
     SonarrEpisode { episode_id: i64 },
     RadarrMovie { movie_id: i64 },
@@ -10551,6 +10669,23 @@ mod tests {
             IntegrationKind::Radarr
         )
         .is_err());
+    }
+
+    #[test]
+    fn present_english_original_requires_explicit_release_language() {
+        let mut client = test_client(IntegrationKind::Radarr, "http://127.0.0.1:1".into());
+        client.keep_present_original_audio = true;
+        let hint = json!({"title": "Dual Audio", "languages": [{"name": "Spanish"}]});
+        let explicit =
+            json!({"title": "Dual Audio", "languages": [{"name": "Spanish"}, {"name": "English"}]});
+        assert!(!client.present_original_evidenced(&hint, Some("eng")));
+        assert!(client.present_original_evidenced(&explicit, Some("eng")));
+        assert!(client.present_original_evidenced(&hint, None));
+        client.preserve_original_audio = true;
+        assert!(client.present_original_evidenced(&hint, Some("eng")));
+        client.preserve_original_audio = false;
+        client.keep_present_original_audio = false;
+        assert!(client.present_original_evidenced(&hint, Some("eng")));
     }
 
     #[test]
@@ -14257,6 +14392,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14379,6 +14515,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14480,6 +14617,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14590,6 +14728,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14698,6 +14837,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14799,6 +14939,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -14908,6 +15049,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15007,6 +15149,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15111,6 +15254,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15201,6 +15345,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15273,6 +15418,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15414,6 +15560,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15543,6 +15690,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15630,6 +15778,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15712,6 +15861,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -15751,6 +15901,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap()
@@ -17717,6 +17868,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -17814,6 +17966,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -17874,6 +18027,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
@@ -17933,6 +18087,7 @@ mod tests {
                 proof_title: None,
                 proof_file: None,
                 preserve_original_audio: false,
+                keep_present_original_audio: false,
             },
         )
         .unwrap();
