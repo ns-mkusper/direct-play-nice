@@ -1294,13 +1294,14 @@ mod imp {
         Some((stat_identity(&stat), stat.st_mode & libc::S_IFMT))
     }
 
+    #[allow(clippy::unnecessary_cast)]
     fn open_at(dir: &File, name: &CString, flags: i32, mode: libc::mode_t) -> Result<File> {
         let fd = unsafe {
             libc::openat(
                 dir.as_raw_fd(),
                 name.as_ptr(),
                 flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                mode,
+                mode as libc::c_uint,
             )
         };
         if fd < 0 {

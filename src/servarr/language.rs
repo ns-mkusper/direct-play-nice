@@ -1024,13 +1024,14 @@ mod secure_retag {
         promoted: bool,
     }
 
+    #[allow(clippy::unnecessary_cast)]
     fn open_at(parent: &File, name: &CString, flags: i32, mode: libc::mode_t) -> Result<File> {
         let fd = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
                 name.as_ptr(),
                 flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                mode,
+                mode as libc::c_uint,
             )
         };
         if fd < 0 {
