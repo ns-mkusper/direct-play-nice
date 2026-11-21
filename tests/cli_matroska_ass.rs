@@ -1102,30 +1102,46 @@ fn ocr_sidecars_are_published_without_overwriting_existing_files() {
         .arg(&bitmap_only));
     let original = std::fs::read(&bitmap_only).unwrap();
     let output = dir.path().join("sidecar.mp4");
-    run(
-        Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
-            .args([
-                "--hw-accel",
-                "none",
-                "--delete-source",
-                "false",
-                "--device",
-                "chromecast_1st_gen",
-                "--ocr-engine",
-                "external",
-                "--ocr-external-command",
-                "echo OCR TEXT",
-                "--ocr-write-srt-sidecar",
-                "--subtitle-failure-policy",
-                "fail",
-            ])
-            .arg(&bitmap_only)
-            .arg(&output),
-    );
-    assert!(output.exists());
-    assert!(std::fs::read_to_string(dir.path().join("sidecar.spa.srt"))
-        .unwrap()
-        .contains("OCR TEXT"));
+    let result = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"))
+        .args([
+            "--hw-accel",
+            "none",
+            "--delete-source",
+            "false",
+            "--device",
+            "chromecast_1st_gen",
+            "--ocr-engine",
+            "external",
+            "--ocr-external-command",
+            "echo OCR TEXT",
+            "--ocr-write-srt-sidecar",
+            "--subtitle-failure-policy",
+            "fail",
+        ])
+        .arg(&bitmap_only)
+        .arg(&output)
+        .output()
+        .unwrap();
+    #[cfg(unix)]
+    {
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(output.exists());
+        assert!(std::fs::read_to_string(dir.path().join("sidecar.spa.srt"))
+            .unwrap()
+            .contains("OCR TEXT"));
+    }
+    #[cfg(not(unix))]
+    {
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr)
+            .contains("OCR sidecars cannot be safely rolled back on this platform"));
+        assert!(!output.exists());
+        assert!(!dir.path().join("sidecar.spa.srt").exists());
+    }
     assert_eq!(std::fs::read(&bitmap_only).unwrap(), original);
     assert_no_private_staging(dir.path());
 

@@ -321,6 +321,33 @@ pub fn has_grab_intent(kind: IntegrationKind, noun: &str, id: i64) -> Result<boo
 
 pub struct ProofWorkGuard {
     _file: File,
+    #[cfg(unix)]
+    owner_pid: libc::pid_t,
+}
+
+#[cfg(unix)]
+impl ProofWorkGuard {
+    fn unlock_if_owner(&self) -> std::io::Result<()> {
+        if unsafe { libc::getpid() } != self.owner_pid {
+            return Ok(());
+        }
+        loop {
+            match FileExt::unlock(&self._file) {
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => return result,
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProofWorkGuard {
+    fn drop(&mut self) {
+        // Closing alone leaves flock held while a forked child retains the descriptor.
+        if let Err(err) = self.unlock_if_owner() {
+            log::warn!("failed to release proof-work lock: {err}");
+        }
+    }
 }
 
 /// Serializes cooperative Sonarr proof state transitions with destructive queue work.
@@ -339,7 +366,11 @@ pub fn acquire_proof_work_guard() -> Result<ProofWorkGuard> {
         .with_context(|| format!("opening proof-work lock '{}'", path.display()))?;
     file.try_lock_exclusive()
         .context("proof or queue work is already in progress")?;
-    Ok(ProofWorkGuard { _file: file })
+    Ok(ProofWorkGuard {
+        _file: file,
+        #[cfg(unix)]
+        owner_pid: unsafe { libc::getpid() },
+    })
 }
 
 /// Queue cleanup cannot safely attribute an unknown/shared download while proof work is pending.
@@ -1948,6 +1979,130 @@ mod tests {
         assert!(run_child("no"));
         drop(guard);
         assert!(run_child("yes"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proof_work_guard_releases_when_fork_child_keeps_descriptor() {
+        const CHILD: &str = "DPN_PROOF_WORK_FORK_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "servarr::cache::tests::proof_work_guard_releases_when_fork_child_keeps_descriptor",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        let dir = TempDir::new().unwrap();
+        use_test_cache_paths(
+            dir.path().join("pending.json"),
+            dir.path().join("no-candidates.json"),
+        );
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".into()],
+            subtitles: vec![],
+        };
+        let proof = PendingProof {
+            sha256: "a".repeat(64),
+            series_id: 9,
+            indexer_id: 3,
+            recovery_checkpoint: None,
+            previous_file: None,
+        };
+        let mut intent = GrabIntent::new(
+            IntegrationKind::Sonarr,
+            "episode",
+            77,
+            "proof release",
+            Some("guid".into()),
+            Some(3),
+            Some(dir.path().join("manifest.json")),
+        );
+        intent.proof = Some(IntentProof {
+            identity: proof.clone(),
+            requirements: requirements.clone(),
+            present_original_audio: None,
+        });
+        create_grab_intent(IntegrationKind::Sonarr, &intent).unwrap();
+        let mut pending = PendingGrab::new(
+            IntegrationKind::Sonarr,
+            "episode",
+            77,
+            "proof release",
+            Some("guid".into()),
+            &requirements,
+        );
+        pending.recovery_manifest = intent.recovery_manifest.clone();
+        pending.proof = Some(proof);
+        let guard = acquire_proof_work_guard().unwrap();
+        let mut ready = [0; 2];
+        let mut release = [0; 2];
+        assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe {
+                libc::close(ready[0]);
+                libc::close(release[1]);
+                // Exercise Drop's release path without freeing allocations after fork.
+                if guard.unlock_if_owner().is_err() {
+                    libc::_exit(3);
+                }
+                let byte = [1_u8];
+                if libc::write(ready[1], byte.as_ptr().cast(), 1) != 1 {
+                    libc::_exit(1);
+                }
+                let mut byte = [0_u8];
+                let read = libc::read(release[0], byte.as_mut_ptr().cast(), 1);
+                libc::_exit(if read == 1 { 0 } else { 2 });
+            }
+        }
+        unsafe {
+            libc::close(ready[1]);
+            libc::close(release[0]);
+        }
+        let mut ready = unsafe { File::from_raw_fd(ready[0]) };
+        let mut release = unsafe { File::from_raw_fd(release[1]) };
+        let mut byte = [0_u8];
+        ready.read_exact(&mut byte).unwrap();
+        let blocked_while_held = record_pending_grab(pending.clone());
+        drop(guard);
+        let after_drop = record_pending_grab(pending.clone());
+        let mut status = 0;
+        let child_still_alive = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } == 0;
+        release.write_all(&[1]).unwrap();
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        let contention = blocked_while_held.err().and_then(|err| {
+            err.root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error)
+        });
+        assert_eq!(contention, fs2::lock_contended_error().raw_os_error());
+        assert!(contention.is_some());
+        assert!(child_still_alive);
+        assert!(
+            after_drop.is_ok(),
+            "proof lock remained held: {after_drop:?}"
+        );
+        assert_eq!(
+            pending_grabs_strict(IntegrationKind::Sonarr).unwrap(),
+            vec![pending]
+        );
+        assert_eq!(
+            get_grab_intent(IntegrationKind::Sonarr, "episode", 77).unwrap(),
+            Some(intent)
+        );
     }
 
     #[cfg(unix)]
