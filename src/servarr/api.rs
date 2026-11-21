@@ -1071,6 +1071,7 @@ fn proof_check_file_size(size: u64) -> Result<()> {
 struct ProofLock {
     root_path: PathBuf,
     root: std::fs::File,
+    owner_pid: libc::pid_t,
 }
 
 #[cfg(target_os = "linux")]
@@ -1145,8 +1146,23 @@ fn open_protected_proof_root(path: &Path) -> Result<(PathBuf, std::fs::File)> {
 
 #[cfg(target_os = "linux")]
 impl ProofLock {
+    fn unlock_if_owner(&self) -> std::io::Result<()> {
+        if unsafe { libc::getpid() } != self.owner_pid {
+            return Ok(());
+        }
+        loop {
+            match fs2::FileExt::unlock(&self.root) {
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => return result,
+            }
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
+        if unsafe { libc::getpid() } != self.owner_pid {
+            bail!("proof recovery root lock belongs to a different process");
+        }
         let (_, reopened) = open_protected_proof_root(&self.root_path)?;
         let root = self.root.metadata()?;
         let current_root = reopened.metadata()?;
@@ -1154,6 +1170,16 @@ impl ProofLock {
             bail!("proof recovery root changed; refusing proof verification");
         }
         Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ProofLock {
+    fn drop(&mut self) {
+        // Closing alone leaves flock held while a forked child retains the descriptor.
+        if let Err(err) = self.unlock_if_owner() {
+            log::warn!("failed to release proof recovery root lock: {err}");
+        }
     }
 }
 
@@ -1167,7 +1193,11 @@ fn acquire_proof_lock(root: &Path) -> Result<ProofLock> {
         }
         Err(err) => return Err(err).context("cannot acquire the recovery-root proof lock"),
     }
-    let guard = ProofLock { root_path, root };
+    let guard = ProofLock {
+        root_path,
+        root,
+        owner_pid: unsafe { libc::getpid() },
+    };
     guard.validate()?;
     Ok(guard)
 }
@@ -19848,9 +19878,14 @@ mod tests {
         };
         let result = acquire_proof_lock(Path::new(&root));
         if env::var_os("DPN_TEST_PROOF_LOCK_BUSY").is_some() {
-            assert!(result.is_err());
-        } else {
-            assert!(result.is_ok());
+            let error = match result {
+                Ok(_) => panic!("proof lock unexpectedly available"),
+                Err(err) => err,
+            };
+            assert!(format!("{error:#}")
+                .contains("another proof verification is using this recovery root"));
+        } else if let Err(error) = result {
+            panic!("proof lock unexpectedly unavailable: {error:#}");
         }
     }
 
@@ -19892,6 +19927,86 @@ mod tests {
         run(true);
         drop(guard);
         run(false);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proof_root_lock_releases_when_fork_child_keeps_descriptor() {
+        const CHILD: &str = "DPN_PROOF_ROOT_FORK_TEST";
+        if env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "servarr::api::tests::proof_root_lock_releases_when_fork_child_keeps_descriptor",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        let parent = protected_recovery_test_parent();
+        let root = create_private_recovery_root(parent.path());
+        let mut guard = acquire_proof_lock(&root).unwrap();
+        let owner_pid = guard.owner_pid;
+        guard.owner_pid = -1;
+        let wrong_owner = guard.validate();
+        guard.owner_pid = owner_pid;
+        assert!(wrong_owner.is_err());
+        let mut ready = [0; 2];
+        let mut release = [0; 2];
+        assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe {
+                libc::close(ready[0]);
+                libc::close(release[1]);
+                // Exercise Drop's release path without freeing allocations after fork.
+                if guard.unlock_if_owner().is_err() {
+                    libc::_exit(3);
+                }
+                let byte = [1_u8];
+                if libc::write(ready[1], byte.as_ptr().cast(), 1) != 1 {
+                    libc::_exit(1);
+                }
+                let mut byte = [0_u8];
+                let read = libc::read(release[0], byte.as_mut_ptr().cast(), 1);
+                libc::_exit(if read == 1 { 0 } else { 2 });
+            }
+        }
+        unsafe {
+            libc::close(ready[1]);
+            libc::close(release[0]);
+        }
+        let mut ready = unsafe { std::fs::File::from_raw_fd(ready[0]) };
+        let mut release = unsafe { std::fs::File::from_raw_fd(release[1]) };
+        let mut byte = [0_u8];
+        ready.read_exact(&mut byte).unwrap();
+        let blocked_while_held = acquire_proof_lock(&root)
+            .err()
+            .map(|err| format!("{err:#}"));
+        drop(guard);
+        let after_drop = acquire_proof_lock(&root);
+        let mut status = 0;
+        let child_still_alive = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } == 0;
+        release.write_all(&[1]).unwrap();
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        assert!(blocked_while_held.as_deref().is_some_and(
+            |error| error.contains("another proof verification is using this recovery root")
+        ));
+        assert!(child_still_alive);
+        assert!(
+            after_drop.is_ok(),
+            "proof-root lock remained held: {:#}",
+            after_drop.err().unwrap()
+        );
     }
 
     #[cfg(target_os = "linux")]
