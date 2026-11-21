@@ -1905,7 +1905,7 @@ mod imp {
         fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
             let home =
                 std::env::var_os("HOME").expect("HOME required for protected test directory");
-            let temp = tempfile::tempdir_in(home).unwrap();
+            let temp = tempfile::tempdir_in(fs::canonicalize(home).unwrap()).unwrap();
             let media = temp.path().join("media");
             let root = temp.path().join("recovery");
             fs::create_dir(&media).unwrap();

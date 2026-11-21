@@ -22486,8 +22486,16 @@ mod tests {
         assert!(summary.contains(DUAL_TITLE), "{summary}");
     }
 
+    #[cfg(unix)]
+    fn tempdir_in_canonical_parent(parent: &Path) -> tempfile::TempDir {
+        tempfile::tempdir_in(std::fs::canonicalize(parent).unwrap()).unwrap()
+    }
+
     /// Gives this test thread its own pending-grab and no-candidate caches.
     fn use_temp_caches() -> tempfile::TempDir {
+        #[cfg(unix)]
+        let dir = tempdir_in_canonical_parent(&std::env::temp_dir());
+        #[cfg(not(unix))]
         let dir = tempfile::TempDir::new().unwrap();
         cache::use_test_cache_paths(
             dir.path().join("pending-grabs.json"),
@@ -22571,8 +22579,41 @@ mod tests {
 
     #[cfg(unix)]
     fn protected_recovery_test_parent() -> tempfile::TempDir {
-        tempfile::tempdir_in(std::env::var_os("HOME").expect("HOME for protected recovery tests"))
-            .unwrap()
+        let home = std::fs::canonicalize(
+            std::env::var_os("HOME").expect("HOME for protected recovery tests"),
+        )
+        .unwrap();
+        tempfile::tempdir_in(home).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_fixture_canonicalizes_temporary_parent_without_accepting_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let parent = protected_recovery_test_parent();
+        let alias = parent.path().join("temporary-alias");
+        symlink(parent.path(), &alias).unwrap();
+        let fixture = tempdir_in_canonical_parent(&alias);
+        assert_eq!(
+            fixture.path(),
+            std::fs::canonicalize(fixture.path()).unwrap()
+        );
+        let media = fixture.path().join("media");
+        std::fs::create_dir(&media).unwrap();
+        let source = media.join("episode.mkv");
+        std::fs::write(&source, b"original media").unwrap();
+        let root = create_private_recovery_root(parent.path());
+        let aliased_source = alias
+            .join(fixture.path().file_name().unwrap())
+            .join("media/episode.mkv");
+        let err = super::super::recovery::acquire_recovery_lock(&aliased_source, &root)
+            .err()
+            .expect("a symlinked source path must be rejected");
+        assert!(format!("{err:#}").contains("symlink path is not safe for recovery"));
+        let lock = super::super::recovery::acquire_recovery_lock(&source, &root).unwrap();
+        let manifest = super::super::recovery::backup_current_file(&source, &root, &lock).unwrap();
+        assert!(manifest.is_file());
     }
 
     #[test]

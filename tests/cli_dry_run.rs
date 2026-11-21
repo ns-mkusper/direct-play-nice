@@ -167,7 +167,8 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         temps[0],
         tmp.path()
-            .join(".direct-play-nice-{unique}/output.mkv")
+            .join(".direct-play-nice-{unique}")
+            .join("output.mkv")
             .to_string_lossy()
             .as_ref()
     );
@@ -192,7 +193,8 @@ fn direct_dry_run_json_is_machine_readable() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         ocr_temps[1],
         tmp.path()
-            .join(".direct-play-nice-{unique}/conv.mkv")
+            .join(".direct-play-nice-{unique}")
+            .join("conv.mkv")
             .to_string_lossy()
             .as_ref()
     );
@@ -207,8 +209,14 @@ fn sonarr_dry_run_reports_replacement_paths_and_writes_nothing() -> Result<(), B
     let tmp = TempDir::new()?;
     let (input, _) = gen_problem_input(&tmp);
     let final_path = tmp.path().join("input.fixed.mp4");
-    let temp_path = tmp.path().join(".direct-play-nice-{unique}/output.mp4");
-    let backup_path = tmp.path().join(".direct-play-nice-{unique}/source-backup");
+    let temp_path = tmp
+        .path()
+        .join(".direct-play-nice-{unique}")
+        .join("output.mp4");
+    let backup_path = tmp
+        .path()
+        .join(".direct-play-nice-{unique}")
+        .join("source-backup");
 
     let mut cmd = isolated_cmd(&tmp);
     cmd.env("sonarr_eventtype", "Download")
