@@ -75,6 +75,613 @@ fn gen_direct_play_mp4(path: &Path) {
     );
 }
 
+fn gen_explicit_language_input(path: &Path, language: &str) {
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=25:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=1",
+            "-c:v",
+            "mpeg2video",
+            "-c:a",
+            "flac",
+            "-metadata:s:a:0",
+            &format!("language={language}"),
+            "-shortest",
+        ])
+        .arg(path)
+        .status()
+        .expect("invoke ffmpeg")
+        .success());
+}
+
+fn gen_explicit_dual_language_input(path: &Path) {
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=25:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=500:sample_rate=48000:duration=1",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-map",
+            "2:a:0",
+            "-c:v",
+            "mpeg2video",
+            "-c:a",
+            "flac",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:a:1",
+            "language=jpn",
+            "-shortest"
+        ])
+        .arg(path)
+        .status()
+        .expect("invoke ffmpeg")
+        .success());
+}
+
+fn audio_languages(path: &Path) -> Vec<String> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream_tags=language",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .expect("invoke ffprobe");
+    assert!(output.status.success());
+    let probe: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|stream| stream["tags"]["language"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn mock_explicit_target(
+    server: &mut mockito::Server,
+    kind: &str,
+    input: &Path,
+    original: serde_json::Value,
+) -> Vec<mockito::Mock> {
+    use serde_json::json;
+    match kind {
+        "sonarr" => vec![
+            server
+                .mock("GET", "/api/v3/episode/7")
+                .with_body(json!({"id":7,"seriesId":9,"episodeFileId":3}).to_string())
+                .create(),
+            server
+                .mock("GET", "/api/v3/series/9")
+                .with_body(
+                    json!({"id":9,"title":"Example","originalLanguage":original}).to_string(),
+                )
+                .create(),
+            server
+                .mock("GET", "/api/v3/episodefile/3")
+                .with_body(json!({"id":3,"path":input}).to_string())
+                .create(),
+        ],
+        "radarr" => vec![
+            server
+                .mock("GET", "/api/v3/movie/7")
+                .with_body(json!({"id":7,"movieFileId":3,"originalLanguage":original}).to_string())
+                .create(),
+            server
+                .mock("GET", "/api/v3/moviefile/3")
+                .with_body(json!({"id":3,"path":input}).to_string())
+                .create(),
+        ],
+        _ => unreachable!(),
+    }
+}
+
+fn explicit_download_command(tmp: &TempDir, kind: &str, input: &Path, output: &Path) -> Command {
+    let config = tmp.path().join("empty.toml");
+    fs::write(&config, "").unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", tmp.path())
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path().join("locks"))
+        .env("RUST_LOG", "info")
+        .env(format!("{kind}_eventtype"), "Download")
+        .env(
+            format!(
+                "{kind}_{}_path",
+                if kind == "sonarr" {
+                    "episodefile"
+                } else {
+                    "moviefile"
+                }
+            ),
+            input,
+        )
+        .arg("--config-file")
+        .arg(config)
+        .arg(input)
+        .arg(output);
+    if let Some(value) = std::env::var_os("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", value);
+    }
+    cmd
+}
+
+#[test]
+fn explicit_download_compliant_and_disabled_preserve_the_requested_output() {
+    for kind in ["sonarr", "radarr"] {
+        for (enabled, keep_original) in [(false, true), (true, true), (true, false)] {
+            let tmp = TempDir::new().unwrap();
+            let input = tmp.path().join("input.mkv");
+            let output = tmp.path().join("explicit output ü + 1.mp4");
+            gen_explicit_language_input(&input, if enabled { "eng" } else { "jpn" });
+            let original = fs::read(&input).unwrap();
+            let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+            cmd.arg("--required-audio-languages").arg("eng");
+            if !keep_original {
+                cmd.args(["--servarr-keep-present-original-audio", "false"]);
+            }
+            if enabled {
+                cmd.arg("--servarr-language-check");
+                cmd.env_remove(if kind == "sonarr" {
+                    "sonarr_episodefile_path"
+                } else {
+                    "radarr_moviefile_path"
+                });
+            }
+            let result = cmd.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{kind} enabled={enabled} keep_original={keep_original}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                output.exists(),
+                "requested output was not produced for {kind}"
+            );
+            assert_eq!(fs::read(&input).unwrap(), original);
+            if enabled {
+                assert!(
+                    String::from_utf8_lossy(&result.stderr).contains("passed its language check")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_download_after_double_dash_uses_the_same_parsed_paths() {
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("input with spaces.mkv");
+    let output = tmp.path().join("chosen output.mp4");
+    let config = tmp.path().join("empty.toml");
+    fs::write(&config, "").unwrap();
+    gen_explicit_language_input(&input, "eng");
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", tmp.path())
+        .env("DIRECT_PLAY_NICE_LOCK_DIR", tmp.path().join("locks"))
+        .env("sonarr_eventtype", "Download")
+        .args([
+            "--config-file",
+            config.to_str().unwrap(),
+            "--servarr-language-check",
+            "--required-audio-languages",
+            "eng",
+            "--",
+        ])
+        .arg(&input)
+        .arg(&output);
+    if let Some(value) = std::env::var_os("LD_LIBRARY_PATH") {
+        cmd.env("LD_LIBRARY_PATH", value);
+    }
+    let result = cmd.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.exists());
+    assert!(input.exists());
+}
+
+#[test]
+fn explicit_download_opt_out_still_blocks_a_language_mismatch() {
+    for kind in ["sonarr", "radarr"] {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input.mkv");
+        let output = tmp.path().join("requested-output.mp4");
+        gen_explicit_language_input(&input, "jpn");
+        let original = fs::read(&input).unwrap();
+        let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+        let result = cmd
+            .args([
+                "--servarr-language-check",
+                "--required-audio-languages",
+                "eng",
+                "--servarr-keep-present-original-audio",
+                "false",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("No replacement was requested"));
+        assert!(!output.exists());
+        assert_eq!(fs::read(&input).unwrap(), original);
+    }
+}
+
+#[test]
+fn explicit_download_default_policy_rejects_release_without_present_original() {
+    use mockito::Matcher;
+    use serde_json::json;
+    for kind in ["sonarr", "radarr"] {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input.mkv");
+        let output = tmp.path().join("requested-output.mp4");
+        gen_explicit_language_input(&input, "jpn");
+        let original_bytes = fs::read(&input).unwrap();
+        let mut server = mockito::Server::new();
+        let _target =
+            mock_explicit_target(&mut server, kind, &input, json!({"id":8,"name":"Japanese"}));
+        let release = json!({"title":"Example S01E01 English", "seriesTitle":"Example",
+            "mappedSeriesId":9,"mappedEpisodeInfo":[{"id":7}],"rejected":false,
+            "guid":"replacement","languages":[{"name":"English"}]});
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::Any)
+            .with_body(json!([release]).to_string())
+            .expect(1)
+            .create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+        cmd.env(
+            if kind == "sonarr" {
+                "sonarr_episode_id"
+            } else {
+                "radarr_movie_id"
+            },
+            "7",
+        )
+        .args([
+            "--servarr-language-check",
+            "--required-audio-languages",
+            "eng",
+            "--servarr-language-dry-run",
+            "--servarr-api-url",
+            &server.url(),
+            "--servarr-api-key",
+            "test-key",
+        ]);
+        let result = cmd.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("no replacement was grabbed"));
+        assert!(!output.exists());
+        assert_eq!(fs::read(&input).unwrap(), original_bytes);
+        search.assert();
+        no_post.assert();
+    }
+}
+
+#[test]
+fn explicit_download_default_policy_dry_run_selects_a_matching_release_without_conversion() {
+    use mockito::Matcher;
+    use serde_json::json;
+    for kind in ["sonarr", "radarr"] {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input.mkv");
+        let output = tmp.path().join("requested-output.mp4");
+        gen_explicit_language_input(&input, "jpn");
+        let original_bytes = fs::read(&input).unwrap();
+        let mut server = mockito::Server::new();
+        let _target =
+            mock_explicit_target(&mut server, kind, &input, json!({"id":8,"name":"Japanese"}));
+        let release = json!({"title":"Example S01E01 Dual Audio", "seriesTitle":"Example",
+            "mappedSeriesId":9,"mappedEpisodeInfo":[{"id":7}],"rejected":false,
+            "guid":"replacement","languages":[{"name":"English"},{"name":"Japanese"}]});
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::Any)
+            .with_body(json!([release]).to_string())
+            .expect(1)
+            .create();
+        let _history = server
+            .mock("GET", "/api/v3/history")
+            .match_query(Matcher::Any)
+            .with_body(json!({"records":[],"totalRecords":0}).to_string())
+            .create();
+        let _blocklist = server
+            .mock("GET", "/api/v3/blocklist")
+            .match_query(Matcher::Any)
+            .with_body(json!({"records":[],"totalRecords":0}).to_string())
+            .create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+        cmd.env(
+            if kind == "sonarr" {
+                "sonarr_episode_id"
+            } else {
+                "radarr_movie_id"
+            },
+            "7",
+        )
+        .args([
+            "--servarr-language-check",
+            "--required-audio-languages",
+            "eng",
+            "--servarr-language-dry-run",
+            "--servarr-api-url",
+            &server.url(),
+            "--servarr-api-key",
+            "test-key",
+        ]);
+        let result = cmd.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains("dry-run only"));
+        assert!(!output.exists());
+        assert_eq!(fs::read(&input).unwrap(), original_bytes);
+        search.assert();
+        no_post.assert();
+    }
+}
+
+#[test]
+fn explicit_download_strict_policy_checks_original_before_conversion() {
+    use mockito::Matcher;
+    use serde_json::json;
+    for kind in ["sonarr", "radarr"] {
+        for compliant in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let input = tmp.path().join("input.mkv");
+            let output = tmp.path().join("requested-output.mp4");
+            if compliant {
+                gen_explicit_dual_language_input(&input);
+            } else {
+                gen_explicit_language_input(&input, "eng");
+            }
+            let original_bytes = fs::read(&input).unwrap();
+            let mut server = mockito::Server::new();
+            let _target =
+                mock_explicit_target(&mut server, kind, &input, json!({"id":8,"name":"Japanese"}));
+            let no_search = server
+                .mock("GET", "/api/v3/release")
+                .match_query(Matcher::Any)
+                .expect(0)
+                .create();
+            let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+            let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+            cmd.env(
+                if kind == "sonarr" {
+                    "sonarr_episode_id"
+                } else {
+                    "radarr_movie_id"
+                },
+                "7",
+            )
+            .args([
+                "--servarr-language-check",
+                "--required-audio-languages",
+                "eng",
+                "--servarr-preserve-original-audio",
+                "--servarr-api-url",
+                &server.url(),
+                "--servarr-api-key",
+                "test-key",
+            ]);
+            let result = cmd.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{kind} compliant={compliant}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(output.exists(), compliant);
+            assert_eq!(fs::read(&input).unwrap(), original_bytes);
+            if compliant {
+                assert_eq!(audio_languages(&output), ["eng", "jpn"]);
+            }
+            if !compliant {
+                assert!(String::from_utf8_lossy(&result.stderr)
+                    .contains("No replacement was requested"));
+            }
+            no_search.assert();
+            no_post.assert();
+        }
+    }
+}
+
+#[test]
+fn explicit_download_missing_or_conflicting_identity_fails_before_conversion() {
+    use mockito::Matcher;
+    use serde_json::json;
+    for kind in ["sonarr", "radarr"] {
+        for mismatch in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let input = tmp.path().join("input.mkv");
+            let other = tmp.path().join("other.mkv");
+            let output = tmp.path().join("requested-output.mp4");
+            gen_explicit_language_input(&input, "jpn");
+            fs::write(&other, b"other file").unwrap();
+            let original_bytes = fs::read(&input).unwrap();
+            let mut server = mockito::Server::new();
+            let _target =
+                mock_explicit_target(&mut server, kind, &input, json!({"id":0,"name":"Unknown"}));
+            let no_search = server
+                .mock("GET", "/api/v3/release")
+                .match_query(Matcher::Any)
+                .expect(0)
+                .create();
+            let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+            let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+            if mismatch {
+                cmd.env(
+                    if kind == "sonarr" {
+                        "sonarr_episodefile_path"
+                    } else {
+                        "radarr_moviefile_path"
+                    },
+                    &other,
+                );
+            }
+            cmd.env(
+                if kind == "sonarr" {
+                    "sonarr_episode_id"
+                } else {
+                    "radarr_movie_id"
+                },
+                "7",
+            )
+            .args([
+                "--servarr-language-check",
+                "--required-audio-languages",
+                "eng",
+                "--servarr-language-dry-run",
+                "--servarr-api-url",
+                &server.url(),
+                "--servarr-api-key",
+                "test-key",
+            ]);
+            let result = cmd.output().unwrap();
+            assert!(
+                !result.status.success(),
+                "{kind} mismatch={mismatch}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(!output.exists());
+            assert_eq!(fs::read(&input).unwrap(), original_bytes);
+            no_search.assert();
+            no_post.assert();
+        }
+    }
+}
+
+#[test]
+fn explicit_download_arr_current_file_conflict_fails_before_search() {
+    use mockito::Matcher;
+    use serde_json::json;
+    for kind in ["sonarr", "radarr"] {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input.mkv");
+        let current = tmp.path().join("different-current.mkv");
+        let output = tmp.path().join("requested-output.mp4");
+        gen_explicit_language_input(&input, "jpn");
+        gen_explicit_language_input(&current, "jpn");
+        let mut server = mockito::Server::new();
+        let _target = mock_explicit_target(
+            &mut server,
+            kind,
+            &current,
+            json!({"id":8,"name":"Japanese"}),
+        );
+        let no_search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::Any)
+            .expect(0)
+            .create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+        cmd.env(
+            if kind == "sonarr" {
+                "sonarr_episode_id"
+            } else {
+                "radarr_movie_id"
+            },
+            "7",
+        )
+        .args([
+            "--servarr-language-check",
+            "--required-audio-languages",
+            "eng",
+            "--servarr-language-dry-run",
+            "--servarr-api-url",
+            &server.url(),
+            "--servarr-api-key",
+            "test-key",
+        ]);
+        let result = cmd.output().unwrap();
+        assert!(
+            !result.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stderr)
+            .contains("does not match the current target file"));
+        assert!(!output.exists());
+        no_search.assert();
+        no_post.assert();
+    }
+}
+
+#[test]
+fn explicit_download_never_overwrites_the_supplied_existing_output() {
+    for kind in ["sonarr", "radarr"] {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input.mkv");
+        let output = tmp.path().join("requested-output.mp4");
+        gen_explicit_language_input(&input, "eng");
+        fs::write(&output, b"existing output").unwrap();
+        let mut cmd = explicit_download_command(&tmp, kind, &input, &output);
+        let result = cmd
+            .args([
+                "--servarr-language-check",
+                "--required-audio-languages",
+                "eng",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "{kind}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"existing output");
+    }
+}
+
 #[test]
 fn language_proof_cannot_be_combined_with_probe_mode() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
@@ -287,6 +894,8 @@ fn sonarr_proof_import_requires_explicit_filesystem_attestation_in_production_bi
                 "1",
                 "--required-audio-languages",
                 "eng",
+                "--servarr-keep-present-original-audio",
+                "false",
                 "--servarr-api-url",
                 &server.url(),
                 "--servarr-api-key",

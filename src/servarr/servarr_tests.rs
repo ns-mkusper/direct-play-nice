@@ -250,7 +250,7 @@ mod tests {
         env::set_var("sonarr_episodefile_path", &input);
 
         let view = ArgsView {
-            has_input: false,
+            input: None,
             has_output: false,
             output_extension_override: None,
             streaming_devices: &[&devices::chromecast::CHROMECAST_1ST_GEN],
@@ -290,7 +290,7 @@ mod tests {
         env::set_var("radarr_moviefile_path", &input);
 
         let view = ArgsView {
-            has_input: false,
+            input: None,
             has_output: false,
             output_extension_override: None,
             streaming_devices: &[&devices::chromecast::CHROMECAST_1ST_GEN],

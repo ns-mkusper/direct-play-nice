@@ -159,7 +159,7 @@ impl ReplacePlan {
 #[derive(Debug, Clone)]
 /// Borrowed view of CLI path-related arguments used by Servarr planning.
 pub struct ArgsView<'a> {
-    pub has_input: bool,
+    pub input: Option<&'a std::ffi::CStr>,
     pub has_output: bool,
     pub output_extension_override: Option<&'a str>,
     pub streaming_devices: &'a [&'a StreamingDevice],
@@ -224,8 +224,8 @@ fn prepare_download(
 ) -> Result<IntegrationPreparation> {
     crate::logging::log_relevant_env(kind);
 
-    if view.has_input && view.has_output {
-        // User supplied explicit paths; allow normal CLI behaviour.
+    let explicit_paths = view.input.is_some() && view.has_output;
+    if explicit_paths && !view.language_requirements.enabled {
         info!(
             "{} Download event detected but CLI input/output were provided; using CLI paths.",
             kind.label()
@@ -233,24 +233,27 @@ fn prepare_download(
         return Ok(IntegrationPreparation::None);
     }
 
-    if view.has_input ^ view.has_output {
+    if view.input.is_some() ^ view.has_output {
         bail!(
             "Detected {} Download event but only one of <INPUT_FILE>/<OUTPUT_FILE> was provided. Provide both or rely on integration defaults.",
             kind.label()
         );
     }
 
-    if view.has_input {
-        return Ok(IntegrationPreparation::None);
-    }
-
-    let input_paths = resolve_media_paths(kind).with_context(|| {
-        format!(
-            "{} integration requires ${} to be set for Download events.",
-            kind.label(),
-            kind.episode_path_var()
-        )
-    })?;
+    let input_paths = if explicit_paths {
+        vec![crate::ffmpeg_utils::cstr_to_path_buf(
+            view.input
+                .context("explicit Download input is unavailable")?,
+        )]
+    } else {
+        resolve_media_paths(kind).with_context(|| {
+            format!(
+                "{} integration requires ${} to be set for Download events.",
+                kind.label(),
+                kind.episode_path_var()
+            )
+        })?
+    };
 
     if input_paths.is_empty() {
         bail!(
@@ -259,6 +262,12 @@ fn prepare_download(
         );
     }
 
+    if view.keep_present_original_audio
+        && !view.preserve_original_audio
+        && view.language_requirements.enabled
+    {
+        view.untagged_retag.audio_language = None;
+    }
     let mut original_audio = None;
     if view.preserve_original_audio && view.language_requirements.enabled {
         let (requirements, retag, policy) = api::original_audio_requirements_from_env(
@@ -366,12 +375,37 @@ fn prepare_download(
                 report.present_subtitles.join(", ")
             );
         }
-        match api::trigger_verified_redownload(
+        if explicit_paths {
+            // Only the default preservation path binds the input to Arr's
+            // current file before requesting a replacement.
+            if original_audio.is_some() || !view.keep_present_original_audio {
+                return Ok(IntegrationPreparation::Skip {
+                    reason: format!(
+                        "{} language requirements were not met; cannot safely bind this explicit input to the current Arr target with the selected original-audio policy. No replacement was requested; conversion skipped.",
+                        kind.label()
+                    ),
+                });
+            }
+            let event_paths = resolve_media_paths(kind).with_context(|| {
+                format!("{} cannot associate the explicit input with the Download event; conversion skipped", kind.label())
+            })?;
+            if event_paths.len() != 1
+                || std::fs::canonicalize(&event_paths[0])
+                    .with_context(|| format!("resolving {} Download event input", kind.label()))?
+                    != std::fs::canonicalize(&input_paths[0])
+                        .with_context(|| format!("resolving explicit {} input", kind.label()))?
+            {
+                bail!("{} explicit input does not uniquely match the Download event; conversion skipped", kind.label());
+            }
+        }
+        match api::trigger_verified_redownload_with_present_original(
             kind,
             &view.api_settings,
             &view.language_requirements,
             view.redownload_options,
             original_audio.as_ref(),
+            view.keep_present_original_audio,
+            &input_paths,
         )? {
             api::RedownloadOutcome::Grabbed { title } => {
                 return Ok(IntegrationPreparation::Skip {
@@ -384,7 +418,7 @@ fn prepare_download(
             api::RedownloadOutcome::NoVerifiedRelease { reason } => {
                 return Ok(IntegrationPreparation::Skip {
                     reason: format!(
-                        "{} language requirements were not met, but no replacement was grabbed: {}. Leaving current file untouched.",
+                        "{} language requirements were not met, but no replacement was grabbed: {}. Conversion skipped.",
                         kind.label(), reason
                     ),
                 });
@@ -392,12 +426,20 @@ fn prepare_download(
             api::RedownloadOutcome::DryRun { summary } => {
                 return Ok(IntegrationPreparation::Skip {
                     reason: format!(
-                        "{} language requirements were not met; dry-run only: {}. Leaving current file untouched.",
+                        "{} language requirements were not met; dry-run only: {}. Conversion skipped.",
                         kind.label(), summary
                     ),
                 });
             }
         }
+    }
+
+    if explicit_paths {
+        info!(
+            "{} Download event passed its language check; using the supplied CLI input and output paths.",
+            kind.label()
+        );
+        return Ok(IntegrationPreparation::None);
     }
 
     let mut plans = Vec::new();

@@ -1002,6 +1002,7 @@ fn review_intent(kind: IntegrationKind, command: &str, dry_run: bool) -> Result<
             );
             restored.grabbed_at_unix = intent.created_at_unix;
             restored.recovery_manifest = intent.recovery_manifest.clone();
+            restored.present_original_audio = proof.present_original_audio.clone();
             restored.proof = Some(proof.identity.clone());
             let current = cache::pending_grabs_strict(kind)?
                 .into_iter()
@@ -1461,6 +1462,10 @@ fn run_sonarr_proof_audit(
         .effective_requirements(target, requirements)
         .context("resolving original audio for proof target")?;
     let requirements = &effective;
+    let effective = client
+        .replacement_requirements(target, requirements)
+        .context("resolving present original audio for proof target")?;
+    let requirements = &effective;
     let (proof_hash, report) = proof_file_checked(path, requirements, root)
         .context("verifying bounded proof file and its embedded tracks")?;
     if !report.satisfied() {
@@ -1499,7 +1504,7 @@ fn run_sonarr_proof_audit(
         .and_then(Value::as_i64)
         .filter(|id| *id > 0)
         .ok_or_else(|| anyhow!("target episode has no positive series id"))?;
-    if audit.preserve_original_audio {
+    if audit.preserve_original_audio || audit.keep_present_original_audio {
         client.remember_episode_series(target.id(), &episode, None);
         if client.episode_series.borrow().get(&target.id()) != Some(&Ok(series_id)) {
             bail!("proof episode series changed after original-audio resolution");
@@ -1667,6 +1672,9 @@ pub fn run_sonarr_language_audit(
                 episode_id: proof_pending[0].target_id,
             };
             let effective = client.effective_requirements(target, requirements)?;
+            let effective = client
+                .replacement_requirements(target, &effective)
+                .context("resolving present original audio for pending proof")?;
             return client.sonarr_process_proof_pending(
                 &proof_pending[0],
                 &effective,
@@ -2393,6 +2401,17 @@ fn process_sonarr_missing_language_audit_item(
         claim.clear_backoff = true;
         return;
     }
+    if let Err(err) = client.revalidate_present_original(target, requirements) {
+        summary.errors += 1;
+        warn!(
+            "Cannot safely revalidate original audio for {} {}: {:#}",
+            target.noun(),
+            target.id(),
+            err
+        );
+        claim.clear_backoff = true;
+        return;
+    }
     let history_id = match client.sonarr_current_import_history_id(episode_id) {
         Ok(id) => {
             claim.clear_backoff = true;
@@ -2810,6 +2829,17 @@ fn process_radarr_missing_language_audit_item(
         claim.clear_backoff = true;
         return;
     }
+    if let Err(err) = client.revalidate_present_original(target, requirements) {
+        summary.errors += 1;
+        warn!(
+            "Cannot safely revalidate original audio for {} {}: {:#}",
+            target.noun(),
+            target.id(),
+            err
+        );
+        claim.clear_backoff = true;
+        return;
+    }
     let history_id = match client.radarr_current_import_history_id(movie_id) {
         Ok(id) => {
             claim.clear_backoff = true;
@@ -2860,6 +2890,20 @@ pub fn original_audio_requirements_from_env(
     UntaggedRetagOptions,
     DownloadOriginalAudio,
 )> {
+    let target = download_original_target_from_env(kind)?;
+    let mut client = ApiClient::from_settings(kind, settings)?;
+    client.preserve_original_audio = true;
+    let requirements = client.effective_requirements(target, base)?;
+    let retag = client.effective_retag_options(target, retag);
+    let original = client.original_language_for_target(target)?;
+    Ok((
+        requirements,
+        retag,
+        DownloadOriginalAudio { target, original },
+    ))
+}
+
+fn download_original_target_from_env(kind: IntegrationKind) -> Result<Target> {
     let keys: &[&str] = match kind {
         IntegrationKind::Sonarr => &[
             "sonarr_episodefile_episodeids",
@@ -2890,28 +2934,39 @@ pub fn original_audio_requirements_from_env(
         bail!("original-audio policy requires one unambiguous Download target; multi-target events require review");
     }
     let id = *ids.iter().next().unwrap();
-    let target = match kind {
+    Ok(match kind {
         IntegrationKind::Sonarr => Target::SonarrEpisode { episode_id: id },
         IntegrationKind::Radarr => Target::RadarrMovie { movie_id: id },
-    };
-    let mut client = ApiClient::from_settings(kind, settings)?;
-    client.preserve_original_audio = true;
-    let requirements = client.effective_requirements(target, base)?;
-    let retag = client.effective_retag_options(target, retag);
-    let original = client.original_language_for_target(target)?;
-    Ok((
-        requirements,
-        retag,
-        DownloadOriginalAudio { target, original },
-    ))
+    })
 }
 
+#[cfg(test)]
 pub fn trigger_verified_redownload(
     kind: IntegrationKind,
     settings: &ApiSettings,
     requirements: &LanguageRequirements,
     options: RedownloadOptions,
     original_audio: Option<&DownloadOriginalAudio>,
+) -> Result<RedownloadOutcome> {
+    trigger_verified_redownload_with_present_original(
+        kind,
+        settings,
+        requirements,
+        options,
+        original_audio,
+        false,
+        &[],
+    )
+}
+
+pub fn trigger_verified_redownload_with_present_original(
+    kind: IntegrationKind,
+    settings: &ApiSettings,
+    requirements: &LanguageRequirements,
+    options: RedownloadOptions,
+    original_audio: Option<&DownloadOriginalAudio>,
+    keep_present_original_audio: bool,
+    input_paths: &[PathBuf],
 ) -> Result<RedownloadOutcome> {
     if std::env::var_os("DPN_SERVARR_INTENT_REVIEW").is_some() {
         bail!("redownload is unavailable while DPN_SERVARR_INTENT_REVIEW is set");
@@ -2925,6 +2980,27 @@ pub fn trigger_verified_redownload(
         client.preserve_original_audio = true;
         client.original_override = Some(policy.clone());
     }
+    client.keep_present_original_audio =
+        keep_present_original_audio && requirements.enabled && original_audio.is_none();
+    let effective = if client.keep_present_original_audio {
+        if download_original_target_from_env(kind)? != target || input_paths.len() != 1 {
+            bail!("original-audio preservation requires one unambiguous Download target and path");
+        }
+        let effective = client.replacement_requirements(target, requirements)?;
+        let snapshot = client
+            .present_originals
+            .borrow()
+            .get(&target)
+            .cloned()
+            .context("missing Download original-audio snapshot")?;
+        if std::fs::canonicalize(&input_paths[0])? != std::fs::canonicalize(&snapshot.path)? {
+            bail!("Download input does not match the current target file");
+        }
+        effective
+    } else {
+        requirements.clone()
+    };
+    let requirements = &effective;
     let mut summary = AuditSummary::default();
     let _claim = if options.dry_run {
         None
@@ -2993,6 +3069,30 @@ struct ImportedPendingIdentity {
     imported_file_id: Option<i64>,
 }
 
+#[cfg(unix)]
+type MediaFileIdentity = (u64, u64, u64, i64, i64, i64, i64);
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaFileIdentity {
+    volume: u64,
+    file_id: [u8; 16],
+    size: u64,
+    last_write: i64,
+    change_time: i64,
+}
+#[cfg(not(any(unix, windows)))]
+type MediaFileIdentity = ();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PresentOriginalSnapshot {
+    original: String,
+    present: bool,
+    series_id: Option<i64>,
+    file_id: i64,
+    path: PathBuf,
+    identity: MediaFileIdentity,
+}
+
 #[derive(Debug, Clone)]
 struct ApiClient {
     kind: IntegrationKind,
@@ -3009,7 +3109,7 @@ struct ApiClient {
     audit_finish_errors: RefCell<usize>,
     preserve_original_audio: bool,
     keep_present_original_audio: bool,
-    present_originals: RefCell<BTreeMap<Target, Option<String>>>,
+    present_originals: RefCell<BTreeMap<Target, PresentOriginalSnapshot>>,
     original_override: Option<DownloadOriginalAudio>,
     original_series: RefCell<BTreeMap<i64, Result<String, String>>>,
     episode_series: RefCell<BTreeMap<i64, Result<i64, String>>>,
@@ -3240,33 +3340,117 @@ impl ApiClient {
         if !base.enabled || !self.keep_present_original_audio || self.preserve_original_audio {
             return Ok(base.clone());
         }
-        let original = self.original_language_for_target(target)?;
-        let mut summary = AuditSummary::default();
-        let file = match target {
+        let snapshot = self.present_original_snapshot(target, base)?;
+        let mut result = base.clone();
+        if snapshot.present && !result.audio.contains(&snapshot.original) {
+            result.audio.push(snapshot.original.clone());
+        }
+        self.present_originals.borrow_mut().insert(target, snapshot);
+        Ok(result)
+    }
+
+    fn present_original_snapshot(
+        &self,
+        target: Target,
+        requirements: &LanguageRequirements,
+    ) -> Result<PresentOriginalSnapshot> {
+        let cached_original = self.original_language_for_target(target)?;
+        let (original, series_id, file_id, file) = match target {
             Target::SonarrEpisode { episode_id } => {
-                self.sonarr_current_episode_file(episode_id, &mut summary)
+                let episode = self.sonarr_episode(episode_id)?;
+                if episode.get("id").and_then(Value::as_i64) != Some(episode_id) {
+                    bail!("Sonarr returned a conflicting episode identity");
+                }
+                let series_id = episode
+                    .get("seriesId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                    .context("episode has no valid series identity")?;
+                if self.episode_series.borrow().get(&episode_id) != Some(&Ok(series_id)) {
+                    bail!("episode series changed or conflicts with earlier metadata");
+                }
+                let series = self.get(&format!("{}/api/v3/series/{}", self.base_url, series_id))?;
+                if series.get("id").and_then(Value::as_i64) != Some(series_id) {
+                    bail!("Sonarr returned a conflicting series identity");
+                }
+                let original = parse_original_language(&series, IntegrationKind::Sonarr)?;
+                let file_id = episode
+                    .get("episodeFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                    .context("episode has no current file")?;
+                (
+                    original,
+                    Some(series_id),
+                    file_id,
+                    self.sonarr_episode_file(file_id)?,
+                )
             }
             Target::RadarrMovie { movie_id } => {
-                self.radarr_current_movie_file(movie_id, &mut summary)
+                let movie = self.radarr_movie(movie_id)?;
+                if movie.get("id").and_then(Value::as_i64) != Some(movie_id) {
+                    bail!("Radarr returned a conflicting movie identity");
+                }
+                let original = parse_original_language(&movie, IntegrationKind::Radarr)?;
+                let file_id = movie
+                    .get("movieFileId")
+                    .and_then(Value::as_i64)
+                    .filter(|id| *id > 0)
+                    .context("movie has no current file")?;
+                (original, None, file_id, self.radarr_movie_file(file_id)?)
             }
+        };
+        if original != cached_original {
+            bail!("original language changed or conflicts with earlier metadata");
         }
-        .ok_or_else(|| {
-            anyhow!("cannot establish the current file for original-audio preservation")
-        })?;
-        let report = language_report_from_media_file(&file, base)
+        if file.get("id").and_then(Value::as_i64) != Some(file_id) {
+            bail!("current file identity conflicts with target");
+        }
+        let path = file
+            .get("path")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .context("current file has no absolute path")?;
+        let identity = present_file_identity(&path)?;
+        let report = language_report_from_media_file(&file, requirements)
             .context("cannot verify current file audio for original-audio preservation")?;
-        let present = report
-            .present_audio
-            .iter()
-            .any(|language| language == &original);
-        self.present_originals
-            .borrow_mut()
-            .insert(target, present.then_some(original.clone()));
-        let mut result = base.clone();
-        if present && !result.audio.contains(&original) {
-            result.audio.push(original);
+        if present_file_identity(&path)? != identity {
+            bail!("current file changed while probing original audio");
         }
-        Ok(result)
+        Ok(PresentOriginalSnapshot {
+            present: report.present_audio.contains(&original),
+            original,
+            series_id,
+            file_id,
+            path,
+            identity,
+        })
+    }
+
+    fn revalidate_present_original(
+        &self,
+        target: Target,
+        requirements: &LanguageRequirements,
+    ) -> Result<()> {
+        if !requirements.enabled
+            || !self.keep_present_original_audio
+            || self.preserve_original_audio
+        {
+            return Ok(());
+        }
+        let expected = self
+            .present_originals
+            .borrow()
+            .get(&target)
+            .cloned()
+            .context("original-audio replacement snapshot is unavailable")?;
+        if self.present_original_snapshot(target, requirements)? != expected {
+            bail!(
+                "current file or original audio changed during replacement; retaining for review"
+            );
+        }
+        Ok(())
     }
 
     fn replacement_original(
@@ -3285,12 +3469,40 @@ impl ApiClient {
                 .present_originals
                 .borrow()
                 .get(&target)
-                .cloned()
+                .map(|snapshot| snapshot.present.then(|| snapshot.original.clone()))
                 .ok_or_else(|| {
                     anyhow!("current original audio has not been verified for this replacement")
                 });
         }
         Ok(None)
+    }
+
+    fn pending_original_evidence(
+        &self,
+        target: Target,
+        requirements: &LanguageRequirements,
+    ) -> Result<Option<cache::PresentOriginalAudio>> {
+        if !requirements.enabled
+            || !self.keep_present_original_audio
+            || self.preserve_original_audio
+        {
+            return Ok(None);
+        }
+        let snapshots = self.present_originals.borrow();
+        let snapshot = snapshots
+            .get(&target)
+            .context("original-audio replacement snapshot is unavailable")?;
+        if snapshot.present
+            && !requirements.audio.iter().any(|language| {
+                normalize_language_tag(language).as_deref() == Some(snapshot.original.as_str())
+            })
+        {
+            bail!("replacement requirements do not include the present original audio");
+        }
+        Ok(Some(cache::PresentOriginalAudio {
+            language: snapshot.original.clone(),
+            present: snapshot.present,
+        }))
     }
 
     fn present_original_evidenced(&self, release: &Value, original: Option<&str>) -> bool {
@@ -3304,6 +3516,11 @@ impl ApiClient {
         target: Target,
         options: &UntaggedRetagOptions,
     ) -> UntaggedRetagOptions {
+        if self.keep_present_original_audio && !self.preserve_original_audio {
+            let mut safe = options.clone();
+            safe.audio_language = None;
+            return safe;
+        }
         if !self.preserve_original_audio || options.audio_language.is_none() {
             return options.clone();
         }
@@ -3973,6 +4190,8 @@ impl ApiClient {
         } else {
             None
         };
+        self.revalidate_present_original(target, requirements)?;
+        let present_original_audio = self.pending_original_evidence(target, requirements)?;
         let indexer_id = release.get("indexerId").and_then(Value::as_i64);
         let intent = match prepared_intent {
             Some(intent) => {
@@ -4010,6 +4229,7 @@ impl ApiClient {
                     cache::IntentProof {
                         identity,
                         requirements: requirements.clone(),
+                        present_original_audio: present_original_audio.clone(),
                     }
                 });
                 cache::create_grab_intent(self.kind, &intent)?;
@@ -4027,6 +4247,7 @@ impl ApiClient {
             requirements,
         );
         pending.recovery_manifest = recovery_manifest;
+        pending.present_original_audio = present_original_audio;
         pending.proof = intent.proof.as_ref().map(|proof| proof.identity.clone());
         cache::record_pending_grab(pending)
             .context("saving pending grab after accepted release; intent retained")?;
@@ -4188,6 +4409,26 @@ impl ApiClient {
             forget();
             return;
         };
+        if self.keep_present_original_audio && !self.preserve_original_audio {
+            let evidence = grab.present_original_audio.as_ref();
+            let valid = evidence.is_some_and(|evidence| {
+                let Some(language) = normalize_language_tag(&evidence.language) else {
+                    return false;
+                };
+                grab.requirements.enabled
+                    && (!evidence.present
+                        || grab.requirements.audio.iter().any(|item| {
+                            normalize_language_tag(item).as_deref() == Some(language.as_str())
+                        }))
+                    && self.original_language_for_target(target).ok().as_deref()
+                        == Some(language.as_str())
+            });
+            if !valid {
+                summary.errors += 1;
+                warn!("{} pending grab for {} {} retained for review: present-original evidence is unavailable or inconsistent. Run an audit with DPN_SERVARR_INTENT_REVIEW=show-pending:{}:{}.", label, target.noun(), target.id(), target.noun(), target.id());
+                return;
+            }
+        }
         if self.preserve_original_audio {
             let original = match self.original_language_for_target(target) {
                 Ok(original) => original,
@@ -6140,6 +6381,7 @@ impl ApiClient {
         if cache::has_grab_intent(IntegrationKind::Sonarr, "episode", grab.target_id)? {
             bail!("unresolved intent requires review before proof import");
         }
+        self.revalidate_present_original(target, requirements)?;
         let root = pending_proof_recovery_root(
             self.recovery_root.as_deref(),
             grab.recovery_manifest.as_deref(),
@@ -6191,6 +6433,7 @@ impl ApiClient {
         intent.proof = Some(cache::IntentProof {
             identity: proof.clone(),
             requirements: grab.requirements.clone(),
+            present_original_audio: grab.present_original_audio.clone(),
         });
         intent.proof_import = Some(cache::ProofImportIntent {
             queue_id,
@@ -6209,6 +6452,7 @@ impl ApiClient {
         });
         cache::create_grab_intent(IntegrationKind::Sonarr, &intent)?;
         let final_check = (|| -> Result<()> {
+            self.revalidate_present_original(target, requirements)?;
             if cache::get_grab_intent(IntegrationKind::Sonarr, "episode", grab.target_id)?.as_ref()
                 != Some(&intent)
             {
@@ -6330,7 +6574,8 @@ impl ApiClient {
                 continue;
             }
             let target = Target::SonarrEpisode { episode_id };
-            if self.preserve_original_audio
+            if (self.preserve_original_audio
+                || (self.keep_present_original_audio && requirements.enabled))
                 && !sonarr_queue_item_episode_ids_strict(queue_item)
                     .is_some_and(|ids| ids.len() == 1 && ids.contains(&episode_id))
             {
@@ -6391,6 +6636,27 @@ impl ApiClient {
                 }
             };
             if current_report.satisfied() {
+                continue;
+            }
+            let Some(replacement) =
+                audit_target_replacement_requirements(self, target, requirements, &mut summary)
+            else {
+                continue;
+            };
+            let requirements = &replacement;
+            if self.keep_present_original_audio
+                && !self.preserve_original_audio
+                && requirements.enabled
+                && self
+                    .present_originals
+                    .borrow()
+                    .get(&target)
+                    .is_none_or(|snapshot| snapshot.file_id != current_file_id)
+            {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr pending import retained: current file identity conflicts with queue."
+                );
                 continue;
             }
             let title = queue_item
@@ -6500,6 +6766,14 @@ impl ApiClient {
             ) {
                 continue;
             }
+            if self
+                .revalidate_present_original(target, requirements)
+                .is_err()
+            {
+                summary.errors += 1;
+                warn!("Sonarr pending import retained: current original audio or file changed.");
+                continue;
+            }
             if !pending_import_satisfies(IntegrationKind::Sonarr, &item, queue_item, requirements) {
                 continue;
             }
@@ -6524,6 +6798,14 @@ impl ApiClient {
                     continue;
                 }
             };
+            if let Err(err) = self.revalidate_present_original(target, requirements) {
+                summary.errors += 1;
+                warn!(
+                    "Sonarr pending import retained after preparing intent: {:#}",
+                    err
+                );
+                continue;
+            }
             // Sonarr's ManualImport command replaces the existing episode file
             // itself, so the current file is only removed once the replacement
             // has actually been imported.
@@ -6780,7 +7062,11 @@ impl ApiClient {
             let Some(queue_id) = queue_item.get("id").and_then(Value::as_i64) else {
                 continue;
             };
-            if self.preserve_original_audio && reason != "stale zero-size torrent queue item" {
+            let mut non_stale_snapshots = Vec::new();
+            if (self.preserve_original_audio
+                || (self.keep_present_original_audio && requirements.enabled))
+                && reason != "stale zero-size torrent queue item"
+            {
                 let Some(ids) =
                     sonarr_queue_item_episode_ids_strict(queue_item).filter(|ids| !ids.is_empty())
                 else {
@@ -6791,20 +7077,24 @@ impl ApiClient {
                     continue;
                 };
                 for episode_id in ids {
-                    if audit_target_requirements(
-                        self,
-                        Target::SonarrEpisode { episode_id },
-                        requirements,
-                        summary,
-                    )
-                    .is_none()
-                    {
+                    let target = Target::SonarrEpisode { episode_id };
+                    let Some(effective) =
+                        audit_target_requirements(self, target, requirements, summary)
+                    else {
                         continue 'items;
-                    }
+                    };
+                    let Some(replacement) =
+                        audit_target_replacement_requirements(self, target, &effective, summary)
+                    else {
+                        continue 'items;
+                    };
+                    non_stale_snapshots.push((target, replacement));
                 }
             }
             let episode_ids = if reason == "stale zero-size torrent queue item" {
-                let episode_ids = if self.preserve_original_audio {
+                let episode_ids = if self.preserve_original_audio
+                    || (self.keep_present_original_audio && requirements.enabled)
+                {
                     let Some(ids) = sonarr_queue_item_episode_ids_strict(queue_item) else {
                         warn!(
                             "Sonarr queue item {} retained: episode identities are invalid.",
@@ -6846,6 +7136,11 @@ impl ApiClient {
                     let target = Target::SonarrEpisode { episode_id };
                     let Some(effective) =
                         audit_target_requirements(self, target, requirements, summary)
+                    else {
+                        continue 'items;
+                    };
+                    let Some(effective) =
+                        audit_target_replacement_requirements(self, target, &effective, summary)
                     else {
                         continue 'items;
                     };
@@ -6932,6 +7227,11 @@ impl ApiClient {
             if reason == "stale zero-size torrent queue item" {
                 for (target, history_id, releases, claim) in &mut replacements {
                     let requirements = &effective_by_episode[&target.id()];
+                    if let Err(err) = self.revalidate_present_original(*target, requirements) {
+                        summary.errors += 1;
+                        warn!("Sonarr queue item {} retained: {:#}", queue_id, err);
+                        continue 'items;
+                    }
                     match self.stale_replacement_feasible(
                         releases,
                         *target,
@@ -7050,6 +7350,10 @@ impl ApiClient {
                         prepared_intents.insert(target.id(), intent);
                     }
                     for (target, history_id, _, _) in &replacements {
+                        self.revalidate_present_original(
+                            *target,
+                            &effective_by_episode[&target.id()],
+                        )?;
                         if self.validated_current_import_history_id(*target, *history_id)?
                             != Some(*history_id)
                         {
@@ -7086,6 +7390,35 @@ impl ApiClient {
                     }
                     warn!("Sonarr queue cleanup is deferred because proof work appeared during preflight.");
                     continue;
+                }
+                if !non_stale_snapshots.is_empty() {
+                    let current = self.get(&format!(
+                        "{}/api/v3/queue?page=1&pageSize=100&includeSeries=true&includeEpisode=true",
+                        self.base_url
+                    ));
+                    let unchanged = current
+                        .ok()
+                        .and_then(|response| {
+                            let records = response.get("records")?.as_array()?;
+                            let mut matches = records.iter().filter(|item| {
+                                item.get("id").and_then(Value::as_i64) == Some(queue_id)
+                            });
+                            let item = matches.next()?;
+                            (matches.next().is_none() && item == queue_item).then_some(())
+                        })
+                        .is_some();
+                    if !unchanged {
+                        summary.errors += 1;
+                        warn!("Sonarr queue item {} retained: queue identity or state changed or could not be checked.", queue_id);
+                        continue 'items;
+                    }
+                }
+                for (target, requirements) in &non_stale_snapshots {
+                    if let Err(err) = self.revalidate_present_original(*target, requirements) {
+                        summary.errors += 1;
+                        warn!("Sonarr queue item {} retained: {:#}", queue_id, err);
+                        continue 'items;
+                    }
                 }
                 self.sonarr_delete_queue_item_with_options(queue_id, true, true)?;
                 removed_items += 1;
@@ -7373,7 +7706,9 @@ impl ApiClient {
             if state != "importPending" || status != "completed" {
                 continue;
             }
-            if self.preserve_original_audio && !radarr_queue_movie_identity_consistent(&queue_item)
+            if (self.preserve_original_audio
+                || (self.keep_present_original_audio && requirements.enabled))
+                && !radarr_queue_movie_identity_consistent(&queue_item)
             {
                 summary.errors += 1;
                 warn!("Radarr pending import has conflicting or invalid movie identities; retaining it for review.");
@@ -7481,6 +7816,27 @@ impl ApiClient {
             if current_report.satisfied() {
                 continue;
             }
+            let Some(replacement) =
+                audit_target_replacement_requirements(self, target, requirements, &mut summary)
+            else {
+                continue;
+            };
+            let requirements = &replacement;
+            if self.keep_present_original_audio
+                && !self.preserve_original_audio
+                && requirements.enabled
+                && self
+                    .present_originals
+                    .borrow()
+                    .get(&target)
+                    .is_none_or(|snapshot| snapshot.file_id != current_file_id)
+            {
+                summary.errors += 1;
+                warn!(
+                    "Radarr pending import retained: current file identity conflicts with queue."
+                );
+                continue;
+            }
             let manual_items = self.radarr_manual_import_items(&download_id, movie_id)?;
             let Some(item) = manual_items.into_iter().find(|item| {
                 pending_import_satisfies(IntegrationKind::Radarr, item, &queue_item, requirements)
@@ -7519,6 +7875,14 @@ impl ApiClient {
             ) {
                 continue;
             }
+            if self
+                .revalidate_present_original(target, requirements)
+                .is_err()
+            {
+                summary.errors += 1;
+                warn!("Radarr pending import retained: current original audio or file changed.");
+                continue;
+            }
             if !pending_import_satisfies(IntegrationKind::Radarr, &item, &queue_item, requirements)
             {
                 continue;
@@ -7539,6 +7903,14 @@ impl ApiClient {
                     continue;
                 }
             };
+            if let Err(err) = self.revalidate_present_original(target, requirements) {
+                summary.errors += 1;
+                warn!(
+                    "Radarr pending import retained after preparing intent: {:#}",
+                    err
+                );
+                continue;
+            }
             if let Err(err) =
                 self.radarr_command_manual_import(item, movie_id, current_file_id, &queue_item)
             {
@@ -7906,6 +8278,7 @@ impl ApiClient {
             requirements,
         );
         pending.download_id = intent.guid.clone();
+        pending.present_original_audio = self.pending_original_evidence(target, requirements)?;
         pending.recovery_manifest = intent.recovery_manifest.clone();
         cache::record_pending_grab(pending)?;
         cache::remove_grab_intent(self.kind, intent)
@@ -8177,6 +8550,106 @@ impl ApiClient {
         };
         read_json_response(response)
     }
+}
+
+#[cfg(unix)]
+fn present_file_identity(path: &Path) -> Result<MediaFileIdentity> {
+    backup_file_identity(path)
+}
+
+#[cfg(windows)]
+fn present_file_identity(path: &Path) -> Result<MediaFileIdentity> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::{AsRawHandle, RawHandle};
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    #[repr(C)]
+    struct FileIdInfo {
+        volume: u64,
+        file_id: [u8; 16],
+    }
+    #[repr(C)]
+    struct FileBasicInfo {
+        creation_time: i64,
+        last_access: i64,
+        last_write: i64,
+        change_time: i64,
+        attributes: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(
+            file: RawHandle,
+            info_class: i32,
+            info: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(0x7)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .with_context(|| format!("opening current file identity '{}'", path.display()))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        bail!(
+            "current file '{}' is not a regular non-reparse file",
+            path.display()
+        );
+    }
+    let mut id = std::mem::MaybeUninit::<FileIdInfo>::zeroed();
+    let mut basic = std::mem::MaybeUninit::<FileBasicInfo>::zeroed();
+    // FileIdInfo and FileBasicInfo are read from the same open handle.
+    let id_ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            18,
+            id.as_mut_ptr().cast(),
+            std::mem::size_of::<FileIdInfo>() as u32,
+        )
+    };
+    let basic_ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            0,
+            basic.as_mut_ptr().cast(),
+            std::mem::size_of::<FileBasicInfo>() as u32,
+        )
+    };
+    if id_ok == 0 || basic_ok == 0 {
+        bail!(
+            "cannot establish Windows file identity for '{}'",
+            path.display()
+        );
+    }
+    let id = unsafe { id.assume_init() };
+    let basic = unsafe { basic.assume_init() };
+    if id.volume == 0
+        || id.file_id == [0; 16]
+        || basic.last_write == 0
+        || basic.change_time == 0
+        || basic.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        bail!(
+            "Windows file identity is unavailable or unsafe for '{}'",
+            path.display()
+        );
+    }
+    Ok(MediaFileIdentity {
+        volume: id.volume,
+        file_id: id.file_id,
+        size: metadata.len(),
+        last_write: basic.last_write,
+        change_time: basic.change_time,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn present_file_identity(_path: &Path) -> Result<MediaFileIdentity> {
+    bail!("current file identity verification is unsupported on this platform")
 }
 
 #[cfg(unix)]
@@ -10671,6 +11144,615 @@ mod tests {
         .is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn present_windows_identity_detects_replacement_and_modification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("media.mkv");
+        let alias = dir.path().join("alias.mkv");
+        std::fs::write(&path, b"original").unwrap();
+        let before = present_file_identity(&path).unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        assert_eq!(
+            present_file_identity(&alias).unwrap().file_id,
+            before.file_id
+        );
+        std::fs::write(&path, b"modified content").unwrap();
+        assert_ne!(present_file_identity(&path).unwrap(), before);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"original").unwrap();
+        assert_ne!(
+            present_file_identity(&path).unwrap().file_id,
+            before.file_id
+        );
+        assert!(present_file_identity(&dir.path().join("missing")).is_err());
+        assert!(present_file_identity(dir.path()).is_err());
+    }
+
+    #[test]
+    fn present_original_legacy_pending_is_retained_without_rewriting() {
+        for kind in [IntegrationKind::Sonarr, IntegrationKind::Radarr] {
+            for dry_run in [true, false] {
+                let _caches = use_temp_caches();
+                let noun = if kind == IntegrationKind::Sonarr {
+                    "episode"
+                } else {
+                    "movie"
+                };
+                let pending = PendingGrab::new(
+                    kind,
+                    noun,
+                    77,
+                    "legacy",
+                    Some("guid".into()),
+                    &english_audio(),
+                );
+                cache::record_pending_grab(pending.clone()).unwrap();
+                let mut server = mockito::Server::new();
+                let no_get = server.mock("GET", Matcher::Any).expect(0).create();
+                let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+                let mut client = test_client(kind, server.url());
+                client.keep_present_original_audio = true;
+                let mut summary = AuditSummary::default();
+                client.verify_pending_grabs(
+                    dry_run,
+                    &UntaggedRetagOptions::default(),
+                    &mut summary,
+                );
+                assert_eq!(summary.errors, 1);
+                assert_eq!(cache::pending_grabs_strict(kind).unwrap(), vec![pending]);
+                no_get.assert();
+                no_post.assert();
+            }
+        }
+    }
+
+    #[test]
+    fn present_original_pending_checks_evidence_and_imported_snapshot() {
+        use_mock_audit_media_for_test();
+        for (case, present, original, include_original, imported) in [
+            ("present", true, "Japanese", true, "eng/jpn"),
+            ("absent", false, "Japanese", false, "eng"),
+            ("missing", true, "Japanese", true, "eng"),
+            ("changed metadata", true, "Korean", true, "eng/jpn"),
+            ("inconsistent snapshot", true, "Japanese", false, "eng"),
+        ] {
+            let _caches = use_temp_caches();
+            let mut pending = pending_grab(MULTI_TITLE, 3_600);
+            if include_original {
+                pending.requirements.audio.push("jpn".into());
+            }
+            pending.present_original_audio = Some(cache::PresentOriginalAudio {
+                language: "jpn".into(),
+                present,
+            });
+            cache::record_pending_grab(pending.clone()).unwrap();
+            let mut server = mockito::Server::new();
+            let _history =
+                mock_sonarr_episode_history(&mut server, imported_grab_history(MULTI_TITLE));
+            let _files = mock_sonarr_episode_file(&mut server, imported);
+            let id = if original == "Japanese" { 8 } else { 21 };
+            let _series = server
+                .mock("GET", "/api/v3/series/1")
+                .with_body(json!({"id":1,"originalLanguage":{"id":id,"name":original}}).to_string())
+                .expect(usize::from(case != "inconsistent snapshot"))
+                .create();
+            let failed = server
+                .mock("POST", "/api/v3/history/failed/1200")
+                .expect(usize::from(case == "missing"))
+                .create();
+            let mut client = test_client(IntegrationKind::Sonarr, server.url());
+            client.keep_present_original_audio = true;
+            let mut summary = AuditSummary::default();
+            client.verify_pending_grabs(false, &UntaggedRetagOptions::default(), &mut summary);
+            if matches!(case, "changed metadata" | "inconsistent snapshot") {
+                assert_eq!(summary.errors, 1, "{case}");
+                assert_eq!(
+                    cache::pending_grabs_strict(IntegrationKind::Sonarr).unwrap(),
+                    vec![pending]
+                );
+            } else {
+                assert_eq!(summary.errors, 0, "{case}");
+                assert_eq!(summary.rejected_imports, usize::from(case == "missing"));
+                assert!(cache::pending_grabs_strict(IntegrationKind::Sonarr)
+                    .unwrap()
+                    .is_empty());
+            }
+            failed.assert();
+        }
+    }
+
+    #[test]
+    fn present_original_manual_import_persists_pre_replacement_evidence() {
+        for present in [true, false] {
+            let _caches = use_temp_caches();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("current.mkv");
+            std::fs::write(&path, b"current").unwrap();
+            stub_probe(
+                path.to_str().unwrap(),
+                if present { &["jpn"] } else { &["eng"] },
+                &[],
+            );
+            let mut server = mockito::Server::new();
+            let _movie = server
+                .mock("GET", "/api/v3/movie/7")
+                .with_body(
+                    json!({"id":7,"movieFileId":3,"originalLanguage":{"id":8,"name":"Japanese"}})
+                        .to_string(),
+                )
+                .create();
+            let _file = server
+                .mock("GET", "/api/v3/moviefile/3")
+                .with_body(json!({"id":3,"path":path}).to_string())
+                .create();
+            let mut client = test_client(IntegrationKind::Radarr, server.url());
+            client.keep_present_original_audio = true;
+            let target = Target::RadarrMovie { movie_id: 7 };
+            let requirements = client
+                .replacement_requirements(target, &english_audio())
+                .unwrap();
+            let intent = cache::GrabIntent::new(
+                IntegrationKind::Radarr,
+                "movie",
+                7,
+                "download",
+                Some("download-id".into()),
+                None,
+                None,
+            );
+            cache::create_grab_intent(IntegrationKind::Radarr, &intent).unwrap();
+            client
+                .finish_manual_import_intent(target, &intent, &requirements)
+                .unwrap();
+            let pending = cache::pending_grabs_strict(IntegrationKind::Radarr).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].requirements, requirements);
+            assert_eq!(
+                pending[0].present_original_audio,
+                Some(cache::PresentOriginalAudio {
+                    language: "jpn".into(),
+                    present
+                })
+            );
+            assert!(cache::get_grab_intent(IntegrationKind::Radarr, "movie", 7)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn present_original_non_stale_queue_rechecks_before_delete() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for scenario in ["unchanged", "original changed", "queue changed"] {
+            let changed = scenario == "original changed";
+            let queue_changed = scenario == "queue changed";
+            let _caches = use_temp_caches();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("current.mkv");
+            std::fs::write(&path, b"current").unwrap();
+            stub_probe(path.to_str().unwrap(), &["jpn"], &[]);
+            let queue = json!({"id":99,"episodeId":77,"title":"wrong episode",
+                "status":"completed","trackedDownloadStatus":"warning",
+                "statusMessages":[{"messages":["Invalid season or episode"]}]});
+            let mut server = mockito::Server::new();
+            let _episode = server
+                .mock("GET", "/api/v3/episode/77")
+                .with_body(json!({"id":77,"seriesId":1,"episodeFileId":3}).to_string())
+                .create();
+            let _file = server
+                .mock("GET", "/api/v3/episodefile/3")
+                .with_body(json!({"id":3,"path":path}).to_string())
+                .create();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let count = requests.clone();
+            let series = server
+                .mock("GET", "/api/v3/series/1")
+                .with_chunked_body(move |writer| {
+                    let n = count.fetch_add(1, Ordering::SeqCst);
+                    let original = if changed && n >= 2 {
+                        json!({"id":21,"name":"Korean"})
+                    } else {
+                        json!({"id":8,"name":"Japanese"})
+                    };
+                    write!(writer, "{}", json!({"id":1,"originalLanguage":original}))
+                })
+                .expect(if queue_changed { 2 } else { 3 })
+                .create();
+            let mut fresh_queue = queue.clone();
+            if queue_changed {
+                fresh_queue["episodeId"] = json!(78);
+            }
+            let queue_check = server
+                .mock("GET", "/api/v3/queue")
+                .match_query(Matcher::Any)
+                .with_body(json!({"records":[fresh_queue]}).to_string())
+                .expect(1)
+                .create();
+            let delete = server
+                .mock("DELETE", Matcher::Any)
+                .match_query(Matcher::Any)
+                .with_status(200)
+                .with_body("{}")
+                .expect(usize::from(scenario == "unchanged"))
+                .create();
+            let mut client = test_client(IntegrationKind::Sonarr, server.url());
+            client.keep_present_original_audio = true;
+            let mut summary = AuditSummary::default();
+            let removed = client
+                .sonarr_remove_bad_queue_items(
+                    &[queue],
+                    &english_audio(),
+                    apply_options(),
+                    0,
+                    0,
+                    0,
+                    1,
+                    &mut summary,
+                )
+                .unwrap();
+            assert_eq!(removed, usize::from(scenario == "unchanged"));
+            assert_eq!(summary.errors, usize::from(scenario != "unchanged"));
+            series.assert();
+            queue_check.assert();
+            delete.assert();
+        }
+    }
+
+    #[test]
+    fn present_original_requirements_use_current_tracks_for_both_arrs() {
+        for kind in [IntegrationKind::Sonarr, IntegrationKind::Radarr] {
+            for (original_id, name, audio, desired, expected) in [
+                (1, "English", vec!["eng"], "eng", vec!["eng"]),
+                (1, "English", vec!["eng"], "spa", vec!["spa", "eng"]),
+                (8, "Japanese", vec!["eng", "jpn"], "eng", vec!["eng", "jpn"]),
+                (21, "Korean", vec!["kor"], "spa", vec!["spa", "kor"]),
+                (8, "Japanese", vec!["eng"], "eng", vec!["eng"]),
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("current.mkv");
+                std::fs::write(&path, b"fixture").unwrap();
+                stub_probe(path.to_str().unwrap(), &audio, &[]);
+                let mut server = mockito::Server::new();
+                let file = json!({"id":3,"path":path});
+                let target = match kind {
+                    IntegrationKind::Sonarr => {
+                        let _episode = server
+                            .mock("GET", "/api/v3/episode/7")
+                            .with_body(json!({"id":7,"seriesId":9,"episodeFileId":3}).to_string())
+                            .create();
+                        let _series = server
+                            .mock("GET", "/api/v3/series/9")
+                            .with_body(
+                                json!({"id":9,"originalLanguage":{"id":original_id,"name":name}})
+                                    .to_string(),
+                            )
+                            .create();
+                        let _file = server
+                            .mock("GET", "/api/v3/episodefile/3")
+                            .with_body(file.to_string())
+                            .create();
+                        // Mocks stay active for the lifetime of the server.
+                        Target::SonarrEpisode { episode_id: 7 }
+                    }
+                    IntegrationKind::Radarr => {
+                        let _movie = server.mock("GET", "/api/v3/movie/7")
+                            .with_body(json!({"id":7,"movieFileId":3,"originalLanguage":{"id":original_id,"name":name}}).to_string()).create();
+                        let _file = server
+                            .mock("GET", "/api/v3/moviefile/3")
+                            .with_body(file.to_string())
+                            .create();
+                        Target::RadarrMovie { movie_id: 7 }
+                    }
+                };
+                let mut client = test_client(kind, server.url());
+                client.keep_present_original_audio = true;
+                let base = LanguageRequirements {
+                    enabled: true,
+                    audio: vec![desired.into()],
+                    subtitles: vec!["eng".into()],
+                };
+                let effective = client.replacement_requirements(target, &base).unwrap();
+                assert_eq!(effective.audio, expected);
+                assert_eq!(effective.subtitles, base.subtitles);
+                let evidence = client
+                    .pending_original_evidence(target, &effective)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(evidence.language, normalize_language_tag(name).unwrap());
+                assert_eq!(
+                    evidence.present,
+                    audio.contains(&evidence.language.as_str())
+                );
+                client
+                    .revalidate_present_original(target, &effective)
+                    .unwrap();
+                std::fs::write(&path, b"changed fixture").unwrap();
+                assert!(client
+                    .revalidate_present_original(target, &effective)
+                    .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn present_original_unknown_metadata_only_blocks_a_missing_item() {
+        for kind in [IntegrationKind::Sonarr, IntegrationKind::Radarr] {
+            for compliant in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("current.mkv");
+                std::fs::write(&path, b"fixture").unwrap();
+                stub_probe(
+                    path.to_str().unwrap(),
+                    &["jpn"],
+                    if compliant { &["eng"] } else { &[] },
+                );
+                let mut server = mockito::Server::new();
+                let _episode = server
+                    .mock("GET", "/api/v3/episode/7")
+                    .with_body(json!({"id":7,"seriesId":9}).to_string())
+                    .create();
+                let _series = server
+                    .mock("GET", "/api/v3/series/9")
+                    .with_body(
+                        json!({"id":9,"originalLanguage":{"id":0,"name":"Unknown"}}).to_string(),
+                    )
+                    .create();
+                let _movie = server
+                    .mock("GET", "/api/v3/movie/7")
+                    .with_body(
+                        json!({"id":7,"originalLanguage":{"id":0,"name":"Unknown"}}).to_string(),
+                    )
+                    .create();
+                let no_search = server
+                    .mock("GET", "/api/v3/release")
+                    .match_query(Matcher::Any)
+                    .expect(0)
+                    .create();
+                let mut client = test_client(kind, server.url());
+                client.keep_present_original_audio = true;
+                let base = LanguageRequirements {
+                    enabled: true,
+                    audio: vec![],
+                    subtitles: vec!["eng".into()],
+                };
+                let file = json!({"id":3,"path":path});
+                let mut summary = AuditSummary::default();
+                let mut searched = 0;
+                match kind {
+                    IntegrationKind::Sonarr => process_sonarr_language_audit_item(
+                        &client,
+                        7,
+                        None,
+                        file,
+                        &base,
+                        apply_options(),
+                        1,
+                        0,
+                        &UntaggedRetagOptions::default(),
+                        &BTreeSet::new(),
+                        &mut searched,
+                        &mut summary,
+                    ),
+                    IntegrationKind::Radarr => process_radarr_language_audit_item(
+                        &client,
+                        7,
+                        None,
+                        file,
+                        &base,
+                        apply_options(),
+                        1,
+                        0,
+                        &BTreeSet::new(),
+                        &mut searched,
+                        &mut summary,
+                    ),
+                }
+                assert_eq!(
+                    (summary.checked, summary.missing, summary.errors, searched),
+                    (1, usize::from(!compliant), usize::from(!compliant), 0)
+                );
+                no_search.assert();
+            }
+        }
+    }
+
+    #[test]
+    fn present_original_radarr_pending_import_checks_downloaded_tracks() {
+        for (download_audio, accepted) in [(vec!["spa"], false), (vec!["spa", "kor"], true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let old = temp.path().join("old.mkv");
+            let downloaded = temp.path().join("download.mkv");
+            std::fs::write(&old, b"fixture").unwrap();
+            std::fs::write(&downloaded, b"fixture").unwrap();
+            stub_probe(old.to_str().unwrap(), &["kor"], &[]);
+            stub_probe(downloaded.to_str().unwrap(), &download_audio, &[]);
+            let mut queue = radarr_pending_queue_item();
+            queue["movie"]["originalLanguage"] = json!({"id":21,"name":"Korean"});
+            queue["movie"]["movieFile"]["path"] = json!(old);
+            let mut server = mockito::Server::new();
+            let _movie = server
+                .mock("GET", "/api/v3/movie/88")
+                .with_body(queue["movie"].to_string())
+                .create();
+            let _file = server
+                .mock("GET", "/api/v3/moviefile/999")
+                .with_body(queue["movie"]["movieFile"].to_string())
+                .create();
+            let manual = server
+                .mock("GET", "/api/v3/manualimport")
+                .match_query(Matcher::Any)
+                .with_body(
+                    json!([{"path":downloaded,"languages":[{"name":"Spanish"},{"name":"Korean"}]}])
+                        .to_string(),
+                )
+                .expect(1)
+                .create();
+            let mut client = test_client(IntegrationKind::Radarr, server.url());
+            client.keep_present_original_audio = true;
+            let base = LanguageRequirements {
+                enabled: true,
+                audio: vec!["spa".into()],
+                subtitles: vec![],
+            };
+            let summary = client
+                .radarr_force_import_pending_language_upgrades(
+                    &[queue],
+                    &base,
+                    RedownloadOptions {
+                        dry_run: true,
+                        ..apply_options()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                (summary.dry_run, summary.errors),
+                (usize::from(accepted), 0)
+            );
+            manual.assert();
+        }
+    }
+
+    #[test]
+    fn present_original_sonarr_pending_import_checks_downloaded_tracks() {
+        for (download_audio, accepted) in [(vec!["eng"], false), (vec!["eng", "jpn"], true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let old = temp.path().join("old.mkv");
+            let downloaded = temp.path().join("download.mkv");
+            std::fs::write(&old, b"fixture").unwrap();
+            std::fs::write(&downloaded, b"fixture").unwrap();
+            stub_probe(old.to_str().unwrap(), &["jpn"], &[]);
+            stub_probe(downloaded.to_str().unwrap(), &download_audio, &[]);
+            let queue = sonarr_pending_queue_item();
+            let mut server = mockito::Server::new();
+            let _episode = server
+                .mock("GET", "/api/v3/episode/77")
+                .with_body(json!({"id":77,"seriesId":1,"episodeFileId":555}).to_string())
+                .create();
+            let _series = server
+                .mock("GET", "/api/v3/series/1")
+                .with_body(
+                    json!({"id":1,"title":"Example","originalLanguage":{"id":8,"name":"Japanese"}})
+                        .to_string(),
+                )
+                .create();
+            let _file = server
+                .mock("GET", "/api/v3/episodefile/555")
+                .with_body(json!({"id":555,"path":old}).to_string())
+                .create();
+            let _parse = server
+                .mock("GET", "/api/v3/parse")
+                .match_query(Matcher::Any)
+                .with_body(json!({"series":{"id":1}}).to_string())
+                .create();
+            let manual = server.mock("GET", "/api/v3/manualimport").match_query(Matcher::Any)
+                .with_body(json!([{"path":downloaded,"episodeIds":[77],"languages":[{"name":"English"},{"name":"Japanese"}]}]).to_string()).expect(1).create();
+            let mut client = test_client(IntegrationKind::Sonarr, server.url());
+            client.keep_present_original_audio = true;
+            let summary = client
+                .sonarr_force_import_pending_language_upgrades(
+                    &[queue],
+                    &english_audio(),
+                    RedownloadOptions {
+                        dry_run: true,
+                        ..apply_options()
+                    },
+                    &[],
+                )
+                .unwrap();
+            assert_eq!(
+                (summary.dry_run, summary.errors),
+                (usize::from(accepted), 0)
+            );
+            manual.assert();
+        }
+    }
+
+    #[test]
+    fn present_original_download_hook_checks_path_and_original_evidence() {
+        let _guard = env_lock();
+        let previous_id = env::var_os("radarr_movie_id");
+        let previous_file_id = env::var_os("radarr_moviefile_movie_id");
+        env::set_var("radarr_movie_id", "7");
+        env::remove_var("radarr_moviefile_movie_id");
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old.mkv");
+        let other = temp.path().join("other.mkv");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        stub_probe(old.to_str().unwrap(), &["eng"], &[]);
+        let mut server = mockito::Server::new();
+        let _movie = server
+            .mock("GET", "/api/v3/movie/7")
+            .with_body(
+                json!({"id":7,"movieFileId":3,"originalLanguage":{"id":1,"name":"English"}})
+                    .to_string(),
+            )
+            .create();
+        let _file = server
+            .mock("GET", "/api/v3/moviefile/3")
+            .with_body(json!({"id":3,"path":old}).to_string())
+            .create();
+        let search = server
+            .mock("GET", "/api/v3/release")
+            .match_query(Matcher::Any)
+            .with_body(
+                json!([{"title":"Dual Audio", "languages":[{"name":"Spanish"}]}]).to_string(),
+            )
+            .expect(1)
+            .create();
+        let settings = ApiSettings {
+            url: Some(server.url()),
+            api_key: Some("test-key".into()),
+            recovery_root: None,
+        };
+        let base = LanguageRequirements {
+            enabled: true,
+            audio: vec!["spa".into()],
+            subtitles: vec![],
+        };
+        let options = RedownloadOptions {
+            dry_run: true,
+            candidate_policy: ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+        };
+        assert!(trigger_verified_redownload_with_present_original(
+            IntegrationKind::Radarr,
+            &settings,
+            &base,
+            options,
+            None,
+            true,
+            &[other]
+        )
+        .is_err());
+        let result = trigger_verified_redownload_with_present_original(
+            IntegrationKind::Radarr,
+            &settings,
+            &base,
+            options,
+            None,
+            true,
+            &[old],
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            RedownloadOutcome::NoVerifiedRelease { .. }
+        ));
+        search.assert();
+        match previous_id {
+            Some(value) => env::set_var("radarr_movie_id", value),
+            None => env::remove_var("radarr_movie_id"),
+        }
+        match previous_file_id {
+            Some(value) => env::set_var("radarr_moviefile_movie_id", value),
+            None => env::remove_var("radarr_moviefile_movie_id"),
+        }
+    }
+
     #[test]
     fn present_english_original_requires_explicit_release_language() {
         let mut client = test_client(IntegrationKind::Radarr, "http://127.0.0.1:1".into());
@@ -12468,6 +13550,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::LatestMissing,
                 max_searches: 2,
                 no_candidate_cooldown_days: 0,
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             };
             let summary =
@@ -12596,6 +13679,7 @@ mod tests {
             scope: ServarrLanguageAuditScope::LatestMissing,
             max_searches: 1,
             no_candidate_cooldown_days: 0,
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         let summary =
@@ -12810,6 +13894,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::LatestMissing,
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             };
             let summary =
@@ -12879,6 +13964,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::LatestMissing,
                 max_searches: 1,
                 no_candidate_cooldown_days: 0,
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             };
             let summary =
@@ -12961,6 +14047,7 @@ mod tests {
             max_searches: 1,
             stale_queue_days: 1,
             no_candidate_cooldown_days: 0,
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         let summary = run_sonarr_language_audit(
@@ -13063,6 +14150,7 @@ mod tests {
                     max_searches: budget,
                     stale_queue_days: 1,
                     no_candidate_cooldown_days: 0,
+                    keep_present_original_audio: false,
                     ..AuditOptions::default()
                 };
                 let summary = run_sonarr_language_audit(
@@ -13156,6 +14244,7 @@ mod tests {
             max_searches: 1,
             stale_queue_days: 1,
             no_candidate_cooldown_days: 0,
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         let summary =
@@ -13891,6 +14980,138 @@ mod tests {
         blocklist.assert();
         delete.assert();
         grab.assert();
+    }
+
+    #[test]
+    fn present_original_stale_pack_keeps_item_if_one_episode_lacks_its_original() {
+        let _caches = use_temp_caches();
+        let media = tempfile::tempdir().unwrap();
+        let first_path = media.path().join("first.mkv");
+        let second_path = media.path().join("second.mkv");
+        std::fs::write(&first_path, b"first").unwrap();
+        std::fs::write(&second_path, b"second").unwrap();
+        stub_probe(first_path.to_str().unwrap(), &["jpn"], &[]);
+        stub_probe(second_path.to_str().unwrap(), &["kor"], &[]);
+        let item = json!({"id":99,"episodeIds":[77,78],"title":"Example Stale Torrent",
+            "status":"queued","trackedDownloadState":"downloading","trackedDownloadStatus":"ok",
+            "protocol":"torrent","size":0,"sizeleft":0,"added":iso_date_days_ago(10)});
+        let mut server = mockito::Server::new();
+        let _series1 = server
+            .mock("GET", "/api/v3/series/1")
+            .with_body(
+                json!({"id":1,"title":"Example","originalLanguage":{"id":8,"name":"Japanese"}})
+                    .to_string(),
+            )
+            .create();
+        let _series2 = server
+            .mock("GET", "/api/v3/series/2")
+            .with_body(
+                json!({"id":2,"title":"Example","originalLanguage":{"id":21,"name":"Korean"}})
+                    .to_string(),
+            )
+            .create();
+        for (episode_id, series_id, file_id, path, languages) in [
+            (
+                77,
+                1,
+                50,
+                &first_path,
+                json!([{"name":"Spanish"},{"name":"Japanese"}]),
+            ),
+            (78, 2, 51, &second_path, json!([{"name":"Spanish"}])),
+        ] {
+            let _episode = server
+                .mock("GET", format!("/api/v3/episode/{episode_id}").as_str())
+                .with_body(
+                    json!({"id":episode_id,"seriesId":series_id,"episodeFileId":file_id})
+                        .to_string(),
+                )
+                .create();
+            let _file = server
+                .mock("GET", format!("/api/v3/episodefile/{file_id}").as_str())
+                .with_body(json!({"id":file_id,"path":path}).to_string())
+                .create();
+            let _history = server.mock("GET", "/api/v3/history")
+                .match_query(Matcher::UrlEncoded("episodeId".into(), episode_id.to_string()))
+                .with_body(json!({"totalRecords":1,"records":[{"id":episode_id * 10,
+                    "episodeId":episode_id,"eventType":"downloadFolderImported",
+                    "sourceTitle":format!("Example Original {episode_id}"),"data":{"fileId":file_id.to_string()}}]}).to_string()).create();
+            let mut release = multi_audio_release(
+                &format!("Example S01E{:02} New", episode_id - 76),
+                10,
+                &format!("guid-{episode_id}"),
+            );
+            release["mappedSeriesId"] = json!(series_id);
+            release["mappedEpisodeInfo"] = json!([{"id":episode_id}]);
+            release["seriesTitle"] = json!("Example");
+            release["languages"] = languages;
+            let _search = server
+                .mock("GET", "/api/v3/release")
+                .match_query(Matcher::UrlEncoded(
+                    "episodeId".into(),
+                    episode_id.to_string(),
+                ))
+                .with_body(json!([release]).to_string())
+                .expect(1)
+                .create();
+        }
+        let _blocklist = server
+            .mock("GET", "/api/v3/blocklist")
+            .match_query(Matcher::Any)
+            .with_body(json!({"totalRecords":0,"records":[]}).to_string())
+            .create();
+        let no_delete = server.mock("DELETE", Matcher::Any).expect(0).create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let mut client = test_client(IntegrationKind::Sonarr, server.url());
+        client.keep_present_original_audio = true;
+        client.set_audit_preflight_limit(2);
+        let requirements = LanguageRequirements {
+            enabled: true,
+            audio: vec!["spa".into()],
+            subtitles: vec![],
+        };
+        let options = RedownloadOptions {
+            dry_run: true,
+            candidate_policy: ServarrLanguageCandidatePolicy::Strict,
+        };
+        let mut summary = AuditSummary::default();
+        let removed = client
+            .sonarr_remove_bad_queue_items(
+                &[item],
+                &requirements,
+                options,
+                1,
+                0,
+                0,
+                2,
+                &mut summary,
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                removed,
+                summary.searched,
+                summary.no_candidate,
+                summary.errors
+            ),
+            (0, 2, 1, 0)
+        );
+        assert_eq!(
+            client
+                .replacement_original(Target::SonarrEpisode { episode_id: 77 }, &requirements)
+                .unwrap()
+                .as_deref(),
+            Some("jpn")
+        );
+        assert_eq!(
+            client
+                .replacement_original(Target::SonarrEpisode { episode_id: 78 }, &requirements)
+                .unwrap()
+                .as_deref(),
+            Some("kor")
+        );
+        no_delete.assert();
+        no_post.assert();
     }
 
     #[cfg(unix)]
@@ -16659,9 +17880,156 @@ mod tests {
             AuditOptions {
                 episode_ids: vec![11865],
                 max_searches: 1,
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             },
         )
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ffmpeg-cli-tests"))]
+    #[test]
+    fn present_original_proof_pending_keeps_historical_snapshot_when_requirements_differ() {
+        use std::sync::{atomic::AtomicBool, Arc};
+        let fixture = proof_import_fixture();
+        let mut server = mockito::Server::new();
+        let _mocks = mock_proof_import_server(
+            &mut server,
+            &fixture,
+            vec![proof_import_queue()],
+            vec![proof_import_manual(&fixture.download)],
+            vec![proof_import_grab_history()],
+            Arc::new(AtomicBool::new(false)),
+            false,
+        );
+        let _series = server
+            .mock("GET", "/api/v3/series/9")
+            .with_body(json!({"id":9,"originalLanguage":{"id":8,"name":"Japanese"}}).to_string())
+            .create();
+        let no_post = server.mock("POST", Matcher::Any).expect(0).create();
+        let settings = ApiSettings {
+            url: Some(server.url()),
+            api_key: Some("test-key".into()),
+            recovery_root: Some(fixture.root.clone()),
+        };
+        let audit = AuditOptions {
+            episode_ids: vec![11865],
+            max_searches: 1,
+            ..AuditOptions::default()
+        };
+        let error = run_sonarr_language_audit(&settings, &english_audio(), apply_options(), audit)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("matching requirements"));
+        assert!(cache::pending_grabs_strict(IntegrationKind::Sonarr)
+            .unwrap()
+            .contains(&fixture.pending));
+        no_post.assert();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ffmpeg-cli-tests"))]
+    #[test]
+    fn present_original_proof_import_uses_exact_stored_requirements() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let mut fixture = proof_import_fixture();
+        let dual = fixture._download_dir.path().join("dual.mkv");
+        assert!(std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&fixture.download)
+            .arg("-i")
+            .arg(&fixture.source)
+            .args([
+                "-map",
+                "0:a:0",
+                "-map",
+                "1:a:0",
+                "-c",
+                "copy",
+                "-metadata:s:a:0",
+                "language=eng",
+                "-metadata:s:a:1",
+                "language=jpn"
+            ])
+            .arg(&dual)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::rename(&dual, &fixture.download).unwrap();
+        assert!(
+            cache::remove_pending_grab_exact(IntegrationKind::Sonarr, &fixture.pending).unwrap()
+        );
+        fixture.pending.requirements.audio.push("jpn".into());
+        fixture.pending.proof.as_mut().unwrap().sha256 = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(&fixture.download).unwrap())
+        );
+        cache::record_pending_grab(fixture.pending.clone()).unwrap();
+
+        let mut server = mockito::Server::new();
+        let imported = Arc::new(AtomicBool::new(false));
+        let _mocks = mock_proof_import_server(
+            &mut server,
+            &fixture,
+            vec![proof_import_queue()],
+            vec![proof_import_manual(&fixture.download)],
+            vec![proof_import_grab_history()],
+            imported.clone(),
+            false,
+        );
+        let _series = server
+            .mock("GET", "/api/v3/series/9")
+            .with_body(json!({"id":9,"originalLanguage":{"id":8,"name":"Japanese"}}).to_string())
+            .create();
+        let state = imported.clone();
+        let command = server
+            .mock("POST", "/api/v3/command")
+            .with_status(201)
+            .with_chunked_body(move |writer| {
+                state.store(true, Ordering::SeqCst);
+                write!(writer, "{{\"id\":9}}")
+            })
+            .expect(1)
+            .create();
+        let _status = server
+            .mock("GET", "/api/v3/command/9")
+            .with_body(json!({"id":9,"status":"completed"}).to_string())
+            .create();
+        let no_failed = server
+            .mock("POST", Matcher::Regex("^/api/v3/history/failed/".into()))
+            .expect(0)
+            .create();
+        let settings = ApiSettings {
+            url: Some(server.url()),
+            api_key: Some("test-key".into()),
+            recovery_root: Some(fixture.root.clone()),
+        };
+        let audit = AuditOptions {
+            episode_ids: vec![11865],
+            max_searches: 1,
+            ..AuditOptions::default()
+        };
+        let dry = run_sonarr_language_audit(
+            &settings,
+            &english_audio(),
+            RedownloadOptions {
+                dry_run: true,
+                ..apply_options()
+            },
+            audit.clone(),
+        )
+        .unwrap();
+        assert_eq!((dry.dry_run, dry.grabbed), (1, 0));
+        let result =
+            run_sonarr_language_audit(&settings, &english_audio(), apply_options(), audit).unwrap();
+        assert_eq!(result.grabbed, 1);
+        let mut expected = fixture.pending.clone();
+        expected.download_id = Some("download-1".into());
+        assert!(cache::pending_grabs_strict(IntegrationKind::Sonarr)
+            .unwrap()
+            .contains(&expected));
+        command.assert();
+        no_failed.assert();
     }
 
     #[cfg(all(target_os = "linux", feature = "ffmpeg-cli-tests"))]
@@ -16678,6 +18046,7 @@ mod tests {
         intent.proof = Some(cache::IntentProof {
             identity: fixture.pending.proof.clone().unwrap(),
             requirements: fixture.pending.requirements.clone(),
+            present_original_audio: fixture.pending.present_original_audio.clone(),
         });
         let identity = backup_file_identity(&fixture.download).unwrap();
         let output = proof_output_folder(
@@ -16865,6 +18234,7 @@ mod tests {
                 intent.proof = Some(cache::IntentProof {
                     identity: fixture.pending.proof.clone().unwrap(),
                     requirements: fixture.pending.requirements.clone(),
+                    present_original_audio: fixture.pending.present_original_audio.clone(),
                 });
                 cache::create_grab_intent(IntegrationKind::Sonarr, &intent).unwrap();
             }
@@ -18296,6 +19666,10 @@ mod tests {
                     previous_file: None,
                 },
                 requirements: english_audio(),
+                present_original_audio: Some(cache::PresentOriginalAudio {
+                    language: "jpn".into(),
+                    present: false,
+                }),
             };
             intent.proof = Some(proof.clone());
             cache::create_grab_intent(IntegrationKind::Sonarr, &intent).unwrap();
@@ -18308,6 +19682,7 @@ mod tests {
                 &proof.requirements,
             );
             pending.recovery_manifest = intent.recovery_manifest.clone();
+            pending.present_original_audio = proof.present_original_audio.clone();
             pending.proof = Some(proof.identity.clone());
             if scenario == "conflict" {
                 pending.guid = Some("different-guid".into());
@@ -18416,6 +19791,7 @@ mod tests {
             max_searches: 1,
             proof_title: Some("release".into()),
             proof_file: Some(caches.path().join("missing")),
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         for redownload in [
@@ -18893,6 +20269,7 @@ mod tests {
             max_searches: 1,
             proof_title: Some(title.into()),
             proof_file: Some(proof),
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         let result = run_sonarr_language_audit(
@@ -19258,6 +20635,7 @@ mod tests {
                 max_searches: 1,
                 proof_title: Some(title.into()),
                 proof_file: Some(selected_proof.clone()),
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             };
             let settings = ApiSettings {
@@ -19487,6 +20865,7 @@ mod tests {
                 max_searches: 1,
                 proof_title: Some(title.into()),
                 proof_file: Some(proof.clone()),
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             };
             let settings = ApiSettings {
@@ -19604,6 +20983,7 @@ mod tests {
             max_searches: 1,
             proof_title: Some(title.into()),
             proof_file: Some(proof.clone()),
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         let search_state = cache::last_searches(IntegrationKind::Sonarr, "episode").unwrap();
@@ -19884,6 +21264,7 @@ mod tests {
         unresolved.proof = Some(cache::IntentProof {
             identity: pending[0].proof.clone().unwrap(),
             requirements: pending[0].requirements.clone(),
+            present_original_audio: pending[0].present_original_audio.clone(),
         });
         cache::create_grab_intent(IntegrationKind::Sonarr, &unresolved).unwrap();
         let mut uncertain = AuditSummary::default();
@@ -19939,6 +21320,7 @@ mod tests {
             proof_file: Some(PathBuf::from(
                 env::var_os("DPN_TEST_PROOF_CRASH_FILE").unwrap(),
             )),
+            keep_present_original_audio: false,
             ..AuditOptions::default()
         };
         run_sonarr_language_audit(&settings, &english_audio(), apply_options(), options).unwrap();
@@ -21109,6 +22491,7 @@ mod tests {
             download_id: None,
             grabbed_at_unix: current_unix_secs() - age_secs,
             requirements: english_audio(),
+            present_original_audio: None,
             recovery_manifest: None,
             proof: None,
         }
@@ -23985,6 +25368,7 @@ mod tests {
                 scope: ServarrLanguageAuditScope::Inventory,
                 no_candidate_cooldown_days: 14,
                 episode_ids: vec![77],
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             },
         )
@@ -24350,6 +25734,7 @@ mod tests {
             },
             AuditOptions {
                 scope: ServarrLanguageAuditScope::History,
+                keep_present_original_audio: false,
                 ..AuditOptions::default()
             },
         )

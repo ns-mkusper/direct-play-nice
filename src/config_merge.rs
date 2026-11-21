@@ -473,6 +473,33 @@ mod tests {
     }
 
     #[test]
+    fn keep_present_original_defaults_on_and_respects_cli_and_config() {
+        let (mut args, matches) = parse_args(&["direct_play_nice"]);
+        assert!(args.servarr_keep_present_original_audio);
+        let cfg: config::Config =
+            toml::from_str("servarr_keep_present_original_audio = false").unwrap();
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.servarr_keep_present_original_audio);
+
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--servarr-keep-present-original-audio",
+            "true",
+        ]);
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(args.servarr_keep_present_original_audio);
+        let (mut args, matches) = parse_args(&[
+            "direct_play_nice",
+            "--servarr-keep-present-original-audio",
+            "false",
+        ]);
+        let cfg: config::Config =
+            toml::from_str("servarr_keep_present_original_audio = true").unwrap();
+        apply_config_overrides(&mut args, &cfg, &matches);
+        assert!(!args.servarr_keep_present_original_audio);
+    }
+
+    #[test]
     fn original_audio_config_and_cli_precedence() {
         let (mut args, matches) = parse_args(&["direct_play_nice"]);
         assert!(!args.servarr_preserve_original_audio);

@@ -264,7 +264,31 @@ allowed; a file with English plus Japanese audio still satisfies
 dub is required. Leave `required_subtitle_languages` empty if missing subtitles
 are acceptable.
 
-For a library with multiple languages, opt in to per-title original audio with
+When language checking is enabled, DPN preserves original-language audio that it
+finds in the current file before it initiates a replacement. This policy is on by
+default. It does not require English unless English is configured or is the
+original language already present. It does not search just because the original
+track is absent. Configured audio and subtitle requirements still apply.
+
+DPN checks the current file's tracks and Arr's original-language identity before
+a replacement. If either is unavailable or conflicting, DPN leaves the item for
+review. An already-compliant file does not need original-language metadata for
+this policy. To opt out, set `servarr_keep_present_original_audio = false` or
+pass `--servarr-keep-present-original-audio false`. Automatic release selection
+requires explicit Arr language metadata for a present original track. That
+metadata is not proof of the downloaded bytes. DPN probes files before it asks
+Arr to import them, but Arr can import a download independently before that
+check. Recovery copies are optional and are not restored automatically. Existing
+pending records retain their historical requirements; records without preservation
+evidence remain for review.
+
+The default policy disables inference for untagged audio during language checks,
+so an inferred tag cannot become evidence of a pre-existing original track.
+Subtitle inference is independent. Opt out of the default policy if the library
+relies on configured audio inference.
+
+For a library with multiple languages, opt in to the stricter original-audio
+policy with
 `servarr_preserve_original_audio = true` or `--servarr-preserve-original-audio`.
 The option is off by default. When language checking is enabled, DPN requires
 English and the title's original language from Sonarr or Radarr, in addition to
@@ -293,7 +317,8 @@ is not itself evidence of a language.
 
 Untagged streams are handled conservatively. By default, `und`/empty language
 metadata does not satisfy a required language. If a library is known to be
-English-native, set `servarr_untagged_audio_language = "eng"` or pass
+English-native and the default preservation policy is disabled, set
+`servarr_untagged_audio_language = "eng"` or pass
 `--servarr-untagged-audio-language eng` to remux unknown audio streams with an
 English tag before DPN searches for replacement releases. The remux uses stream
 copy, writes through a temporary file, and never overwrites an explicit

@@ -58,10 +58,19 @@ pub struct PendingGrab {
     pub download_id: Option<String>,
     pub grabbed_at_unix: u64,
     pub requirements: LanguageRequirements,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present_original_audio: Option<PresentOriginalAudio>,
     #[serde(default)]
     pub recovery_manifest: Option<PathBuf>,
     #[serde(default)]
     pub proof: Option<PendingProof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresentOriginalAudio {
+    pub language: String,
+    pub present: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +110,7 @@ impl PendingGrab {
             download_id: None,
             grabbed_at_unix: now_unix_secs(),
             requirements: requirements.clone(),
+            present_original_audio: None,
             recovery_manifest: None,
             proof: None,
         }
@@ -155,6 +165,8 @@ pub struct ProofImportIntent {
 pub struct IntentProof {
     pub identity: PendingProof,
     pub requirements: LanguageRequirements,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present_original_audio: Option<PresentOriginalAudio>,
 }
 
 impl GrabIntent {
@@ -359,6 +371,7 @@ pub fn finish_proof_import(
         || intent.proof.as_ref().is_none_or(|proof| {
             expected.proof.as_ref() != Some(&proof.identity)
                 || expected.requirements != proof.requirements
+                || expected.present_original_audio != proof.present_original_audio
         })
     {
         anyhow::bail!("proof import intent or pending target changed");
@@ -1389,6 +1402,7 @@ mod tests {
                 audio: vec!["eng".into()],
                 subtitles: vec!["eng".into()],
             },
+            present_original_audio: None,
         });
         let legacy_proof = serde_json::to_value(&intent).unwrap();
         assert!(legacy_proof["proof"]["identity"]

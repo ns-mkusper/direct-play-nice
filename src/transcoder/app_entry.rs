@@ -315,7 +315,7 @@ fn require_one_shot_outcome(errors: usize, completed: usize) -> Result<()> {
 fn prepare_servarr(args: &Args) -> Result<IntegrationPreparation> {
     let streaming_devices = resolve_streaming_devices(args.streaming_devices.as_deref())?;
     let servarr_view = ServeArrArgsView {
-        has_input: args.input_file.is_some(),
+        input: args.input_file.as_deref(),
         has_output: args.output_file.is_some(),
         output_extension_override: args.servarr_output_extension.as_deref(),
         streaming_devices: &streaming_devices,
