@@ -54,6 +54,11 @@ pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     if args.dry_run {
         enable_dry_run(&mut args);
     }
+    servarr::reject_explicit_language_checked_download(
+        args.input_file.is_some(),
+        args.output_file.is_some(),
+        args.servarr_language_check,
+    )?;
     if maybe_handle_probe_modes(&args)? {
         return Ok(());
     }

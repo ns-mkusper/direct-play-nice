@@ -178,11 +178,14 @@ class OfflineSeedTests(unittest.TestCase):
                     self.assertEqual(seed["entity_id"], 1)
                     self.assertEqual(json.loads((root / "data/seed.json").read_text()), seed)
                     self.assertEqual(len(seed["policy"]), len(harness.POLICY_CASES))
-                    self.assertEqual(len({case["entity_id"] for case in seed["policy"]}), len(harness.POLICY_CASES))
+                    self.assertEqual(len(seed["default_policy"]), len(harness.DEFAULT_POLICY_CASES))
+                    self.assertEqual(len({case["entity_id"] for case in seed["policy"] + seed["default_policy"]}),
+                                     len(harness.POLICY_CASES) + len(harness.DEFAULT_POLICY_CASES))
                     with sqlite3.connect(database) as db:
                         table = "Series" if app == "sonarr" else "MovieMetadata"
                         languages = db.execute(f'SELECT OriginalLanguage FROM {table} ORDER BY Id').fetchall()
-                        self.assertEqual(languages, [(1,)] + [(case[1],) for case in harness.POLICY_CASES])
+                        self.assertEqual(languages, [(1,)] + [(case[1],) for case in harness.POLICY_CASES]
+                                         + [(case[1],) for case in harness.DEFAULT_POLICY_CASES])
                     with self.assertRaisesRegex(harness.HarnessError, "nonempty library"):
                         harness.seed_offline(app, root / "config.xml", root / "data", os.getuid(), os.getgid())
 
@@ -326,6 +329,18 @@ class MediaTests(unittest.TestCase):
                     harness.verify_media(path, "mpeg4", "blue", ("eng",))
 
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg tools unavailable")
+    def test_real_synthetic_subtitle_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "subtitle.mkv"
+            harness.generate_fixture(path, "blue", os.getuid(), os.getgid(), ("jpn",), ("eng",))
+            media = harness.verify_media(path, "mpeg4", "blue", ("jpn",), ("eng",))
+            self.assertEqual(media["audio_languages"], ["jpn"])
+            self.assertEqual(media["subtitle_languages"], ["eng"])
+            with self.assertRaisesRegex(harness.HarnessError, "Unexpected subtitle tracks"):
+                harness.verify_media(path, "mpeg4", "blue", ("jpn",))
+
+
 class PolicyTests(unittest.TestCase):
     def cases_and_records(self, app):
         cases, records, warnings = [], [], []
@@ -388,6 +403,60 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(len(upstream_calls), 1)
                 self.assertEqual([item["blocked"] for item in calls], [False, True, True, True])
                 self.assertNotIn("unit-secret", json.dumps(calls))
+
+    def test_synthetic_release_is_target_scoped_and_never_forwarded(self):
+        for app, collection, key, value in (("sonarr", "series", "episodeId", 17),
+                                             ("radarr", "movie", "movieId", 7)):
+            upstream = [{"id": 7, "originalLanguage": {"id": 8, "name": "Japanese"}},
+                        {"id": 8, "originalLanguage": {"id": 1, "name": "English"}}]
+            target = {"entity_id": 7, "episode_id": 17}
+            release = [{"title": "synthetic"}]
+            with self.subTest(app=app), http_fixture(upstream) as (base, upstream_calls):
+                with harness.audit_proxy(app, None, base.rstrip("/"), target, release) as (proxy, calls, _):
+                    with urllib.request.urlopen(proxy + f"/api/v3/{collection}") as response:
+                        self.assertEqual(json.load(response), [upstream[0]])
+                    with urllib.request.urlopen(proxy + f"/api/v3/release?{key}={value}") as response:
+                        self.assertEqual(json.load(response), release)
+                    for path, method in ((f"/api/v3/release?{key}=999", "GET"),
+                                         (f"/api/v3/release?{key}={value}", "POST"),
+                                         ("/api/v3/command", "POST")):
+                        with self.assertRaises(urllib.error.HTTPError) as error:
+                            urllib.request.urlopen(urllib.request.Request(proxy + path, method=method), timeout=5)
+                        self.assertEqual(error.exception.code, 403)
+                    self.assertEqual(len(upstream_calls), 1)
+                    self.assertTrue(calls[1]["mock_release"])
+                    self.assertEqual([call["blocked"] for call in calls], [False, False, True, True, True])
+
+    def test_default_outcomes_require_assessment_and_synthetic_search(self):
+        for spec in harness.DEFAULT_POLICY_CASES:
+            name, _, _, tracks, subtitles, audio, required_subtitles, _, expected = spec
+            case = {"name": name, "entity_id": 7, "file_path": f"/data/{name}.mkv"}
+            record = {"path": case["file_path"],
+                      "requirements": {"enabled": True, "audio": list(audio), "subtitles": list(required_subtitles)},
+                      "report": {"present_audio": list(tracks), "present_subtitles": list(subtitles),
+                                 "missing_audio": sorted(set(audio) - set(tracks)),
+                                 "missing_subtitles": sorted(set(required_subtitles) - set(subtitles))}}
+            searches = int(expected in {"selected", "rejected"})
+            counts = {"checked": 1, "missing": int(expected != "compliant"), "searched": searches,
+                      "dry_run": int(expected == "selected"), "grabbed": 0,
+                      "no_candidate": int(expected == "rejected"), "skipped_no_candidate_cooldown": 0,
+                      "rejected_imports": 0, "errors": int(expected == "invalid")}
+            log = "language audit complete: " + ", ".join(f"{k}={v}" for k, v in counts.items())
+            title = f"DPN Synthetic {name} candidate"
+            if expected == "selected": log += f"\nwould grab '{title}'"
+            if expected == "invalid": log += "\ncannot safely preserve current original audio"
+            calls = [{"method": "GET", "path": "/api/v3/movie", "blocked": False, "mock_release": False}]
+            if searches:
+                calls.append({"method": "GET", "path": "/api/v3/release", "blocked": False, "mock_release": True})
+            conflicts = [7] if name == "conflict-replacement" else []
+            with self.subTest(name=name):
+                result = harness.check_default_policy(case, spec, title, [record], log, calls, conflicts)
+                self.assertEqual(result["expected"], expected)
+                with self.assertRaises(harness.HarnessError):
+                    harness.check_default_policy(case, spec, title, [], log, calls, conflicts)
+                bad_calls = calls + [{"method": "POST", "path": "/api/v3/release", "blocked": True, "mock_release": False}]
+                with self.assertRaises(harness.HarnessError):
+                    harness.check_default_policy(case, spec, title, [record], log, bad_calls, conflicts)
 
     def test_proxy_refuses_non_loopback_upstream(self):
         with self.assertRaisesRegex(harness.HarnessError, "loopback"):

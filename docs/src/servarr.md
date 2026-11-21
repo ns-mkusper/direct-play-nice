@@ -123,6 +123,11 @@ Example command in Sonarr custom script:
 
 ## Optional language mismatch replacement
 
+A Sonarr/Radarr `Download` event cannot use explicit CLI input and output paths
+when language checking is enabled. Remove both paths and let DPN resolve them
+from the event. When language checking is disabled, explicit paths retain direct
+CLI behavior.
+
 Language checks are off by default. When enabled on a Sonarr/Radarr `Download`
 event, `direct-play-nice` inspects the imported file before conversion. If any
 configured audio or subtitle language is missing, conversion is skipped and DPN
