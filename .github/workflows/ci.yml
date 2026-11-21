@@ -422,7 +422,20 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
-        run: choco install ffmpeg nasm strawberryperl -y
+        run: |
+          # The PSNR baselines and generated fixtures use the FFmpeg 8.0.1 CLI.
+          # FFmpeg 9 changes both fixture pixels and the PSNR scaling oracle.
+          choco install ffmpeg --version=8.0.1 -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          choco install nasm strawberryperl -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($tool in @('ffmpeg', 'ffprobe')) {
+            $version = & $tool -version
+            if ($LASTEXITCODE -ne 0 -or $version[0] -notmatch "^$tool version 8\.0\.1(?:\s|-)") {
+              throw "Expected $tool 8.0.1 on PATH; found: $($version[0])"
+            }
+            Write-Host "$((Get-Command $tool).Source): $($version[0])"
+          }
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-win
