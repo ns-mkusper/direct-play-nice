@@ -12950,18 +12950,33 @@ mod tests {
     }
 
     #[test]
-    fn configured_recovery_root_is_kept_for_safe_actions() {
+    fn configured_recovery_root_is_platform_checked() {
         let settings = ApiSettings {
             url: Some("http://localhost".into()),
             api_key: Some("test-key".into()),
             recovery_root: Some(PathBuf::from("/recovery")),
         };
         for kind in [IntegrationKind::Sonarr, IntegrationKind::Radarr] {
-            let client = ApiClient::from_settings(kind, &settings).unwrap();
-            assert_eq!(
-                client.recovery_root.as_deref(),
-                Some(Path::new("/recovery"))
-            );
+            #[cfg(unix)]
+            {
+                let client = ApiClient::from_settings(kind, &settings).unwrap();
+                assert_eq!(
+                    client.recovery_root.as_deref(),
+                    Some(Path::new("/recovery"))
+                );
+            }
+            #[cfg(not(unix))]
+            {
+                let err = ApiClient::from_settings(kind, &settings).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    "recovery mode requires Unix durable storage and recovery support"
+                );
+                let mut without_recovery = settings.clone();
+                without_recovery.recovery_root = None;
+                let client = ApiClient::from_settings(kind, &without_recovery).unwrap();
+                assert!(client.recovery_root.is_none());
+            }
         }
     }
 

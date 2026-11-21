@@ -700,6 +700,13 @@ pub struct PreflightClaim {
     _target_lock: Option<File>,
 }
 
+fn preflight_lock_contended(err: &std::io::Error) -> bool {
+    matches!(
+        (err.raw_os_error(), fs2::lock_contended_error().raw_os_error()),
+        (Some(actual), Some(expected)) if actual == expected
+    )
+}
+
 /// Claims a target before its import-history lookup. A failed lookup remains on
 /// a short cooldown; an abandoned claim expires. A per-target file lock keeps
 /// an active claim exclusive even when its lease expires.
@@ -753,7 +760,7 @@ pub fn claim_preflight(
         .with_context(|| format!("opening preflight target lock '{}'", lock_path.display()))?;
     match FileExt::try_lock_exclusive(&lock) {
         Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+        Err(err) if preflight_lock_contended(&err) => return Ok(None),
         Err(err) => {
             return Err(err)
                 .with_context(|| format!("locking preflight target '{}'", lock_path.display()))
@@ -1516,6 +1523,56 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert!(claim_preflight(IntegrationKind::Sonarr, "episode", 77, false).is_err());
         assert_eq!(fs::read_to_string(path).unwrap(), "not json");
+    }
+
+    #[test]
+    fn preflight_lock_contention_is_platform_specific() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("target.lock");
+        let first = File::create(&path).unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        FileExt::try_lock_exclusive(&first).unwrap();
+        let err = FileExt::try_lock_exclusive(&second).unwrap_err();
+        assert!(preflight_lock_contended(&err));
+        assert_eq!(
+            err.raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        assert!(!preflight_lock_contended(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "unrelated error",
+        )));
+        assert!(!preflight_lock_contended(&std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "no operating system error",
+        )));
+        #[cfg(windows)]
+        assert!(preflight_lock_contended(
+            &std::io::Error::from_raw_os_error(33)
+        ));
+        drop(first);
+        FileExt::try_lock_exclusive(&second).unwrap();
+    }
+
+    #[test]
+    fn preflight_target_lock_open_failure_is_not_contention() {
+        let dir = TempDir::new().unwrap();
+        use_test_cache_paths(
+            dir.path().join("pending.json"),
+            dir.path().join("no-candidates.json"),
+        );
+        let path = resolve_preflight_cache_path().unwrap();
+        let lock_path = path.with_file_name("servarr-language-preflight-Sonarr-episode-77.lock");
+        fs::create_dir(&lock_path).unwrap();
+        let err = claim_preflight(IntegrationKind::Sonarr, "episode", 77, false)
+            .err()
+            .expect("opening a directory as a lock must fail");
+        assert!(err.to_string().contains("opening preflight target lock"));
+        assert!(!path.exists());
     }
 
     #[test]

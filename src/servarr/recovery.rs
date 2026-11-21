@@ -418,7 +418,31 @@ mod imp {
         root: PathBuf,
         root_identity: (u64, u64),
         name: CString,
+        owner_pid: libc::pid_t,
         checkpoint: RefCell<Option<RecoveryCheckpoint>>,
+    }
+
+    impl RecoveryTargetLock {
+        fn unlock_if_owner(&self) -> std::io::Result<()> {
+            if unsafe { libc::getpid() } != self.owner_pid {
+                return Ok(());
+            }
+            loop {
+                match FileExt::unlock(&self.file) {
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                    result => return result,
+                }
+            }
+        }
+    }
+
+    impl Drop for RecoveryTargetLock {
+        fn drop(&mut self) {
+            // Closing alone does not release flock while a forked child holds the descriptor.
+            if let Err(err) = self.unlock_if_owner() {
+                log::warn!("failed to release recovery target lock: {err}");
+            }
+        }
     }
 
     pub(super) fn acquire(source: &Path, root: &Path) -> Result<RecoveryTargetLock> {
@@ -472,7 +496,17 @@ mod imp {
         }
         file.try_lock_exclusive()
             .context("acquiring recovery target lock")?;
-        if entry_identity(&root_handle, &name) != Some((identity(&file.metadata()?), libc::S_IFREG))
+        let lock = RecoveryTargetLock {
+            file,
+            source,
+            root,
+            root_identity,
+            name,
+            owner_pid: unsafe { libc::getpid() },
+            checkpoint: RefCell::new(None),
+        };
+        if entry_identity(&root_handle, &lock.name)
+            != Some((identity(&lock.file.metadata()?), libc::S_IFREG))
         {
             bail!("recovery target lock was replaced");
         }
@@ -481,17 +515,13 @@ mod imp {
                 .sync_all()
                 .context("syncing recovery lock directory")?;
         }
-        Ok(RecoveryTargetLock {
-            file,
-            source,
-            root,
-            root_identity,
-            name,
-            checkpoint: RefCell::new(None),
-        })
+        Ok(lock)
     }
 
     fn validate_target_lock(source: &Path, root: &Path, lock: &RecoveryTargetLock) -> Result<()> {
+        if unsafe { libc::getpid() } != lock.owner_pid {
+            bail!("recovery lock belongs to a different process");
+        }
         let source = absolute_no_aliases(source)?;
         let root = absolute_no_aliases(root)?;
         let root_handle = open_protected_root(&root)?;
@@ -1938,6 +1968,98 @@ mod imp {
                 );
                 assert_eq!(result.is_ok(), case == "unchanged", "{case}: {result:?}");
             }
+        }
+
+        #[test]
+        fn recovery_lock_is_released_while_fork_child_retains_descriptor() {
+            const CHILD: &str = "DPN_RECOVERY_FORK_LOCK_TEST";
+            if std::env::var_os(CHILD).is_none() {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "servarr::recovery::imp::tests::recovery_lock_is_released_while_fork_child_retains_descriptor",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+                return;
+            }
+
+            use std::os::fd::FromRawFd;
+            let (_temp, source, root) = setup();
+            let mut lock = super::super::acquire_recovery_lock(&source, &root).unwrap();
+            let owner_pid = lock.owner_pid;
+            lock.owner_pid = -1;
+            let wrong_owner_is_rejected = validate_target_lock(&source, &root, &lock).is_err();
+            lock.owner_pid = owner_pid;
+            assert!(wrong_owner_is_rejected);
+            let mut ready = [0; 2];
+            let mut release = [0; 2];
+            assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+            assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                unsafe {
+                    libc::close(ready[0]);
+                    libc::close(release[1]);
+                    // This is the same release path used by Drop, without freeing Rust
+                    // allocations in the child of a multithreaded process.
+                    if lock.unlock_if_owner().is_err() {
+                        libc::_exit(3);
+                    }
+                    let byte = [1_u8];
+                    if libc::write(ready[1], byte.as_ptr().cast(), 1) != 1 {
+                        libc::_exit(1);
+                    }
+                    let mut byte = [0_u8];
+                    let read = libc::read(release[0], byte.as_mut_ptr().cast(), 1);
+                    libc::_exit(if read == 1 { 0 } else { 2 });
+                }
+            }
+            unsafe {
+                libc::close(ready[1]);
+                libc::close(release[0]);
+            }
+            let mut ready = unsafe { File::from_raw_fd(ready[0]) };
+            let mut release = unsafe { File::from_raw_fd(release[1]) };
+            let mut byte = [0_u8];
+            ready.read_exact(&mut byte).unwrap();
+            let blocked_while_held = match super::super::acquire_recovery_lock(&source, &root) {
+                Ok(_) => false,
+                Err(err) => matches!(
+                    (
+                        err.root_cause()
+                            .downcast_ref::<std::io::Error>()
+                            .and_then(std::io::Error::raw_os_error),
+                        fs2::lock_contended_error().raw_os_error(),
+                    ),
+                    (Some(actual), Some(expected)) if actual == expected
+                ),
+            };
+            drop(lock);
+            let after_drop = super::super::acquire_recovery_lock(&source, &root);
+            let mut child_status = 0;
+            let child_still_alive =
+                unsafe { libc::waitpid(pid, &mut child_status, libc::WNOHANG) } == 0;
+            release.write_all(&[1]).unwrap();
+            assert_eq!(unsafe { libc::waitpid(pid, &mut child_status, 0) }, pid);
+            assert!(libc::WIFEXITED(child_status) && libc::WEXITSTATUS(child_status) == 0);
+            assert!(
+                blocked_while_held,
+                "the active guard must exclude other acquisitions"
+            );
+            assert!(
+                child_still_alive,
+                "the child must retain the inherited descriptor"
+            );
+            assert!(
+                after_drop.is_ok(),
+                "dropping the guard must release the lock: {:?}",
+                after_drop.err()
+            );
         }
 
         #[test]
