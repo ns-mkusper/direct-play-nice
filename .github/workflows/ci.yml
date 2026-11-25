@@ -423,7 +423,29 @@ jobs:
 
       - name: Install dependencies
         shell: pwsh
-        run: choco install ffmpeg nasm strawberryperl -y
+        run: |
+          # FFmpeg 9.1 changes generated fixture pixels and the PSNR scaling oracle.
+          # The Windows baselines pass with the 8.0.1 CLI; this is separate from vcpkg FFmpeg.
+          $ErrorActionPreference = 'Stop'
+          $packageDir = Join-Path $env:RUNNER_TEMP 'ffmpeg-package'
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          $package = Join-Path $packageDir 'ffmpeg.8.0.1.nupkg'
+          Invoke-WebRequest -Uri 'https://community.chocolatey.org/api/v2/package/ffmpeg/8.0.1' -OutFile $package
+          $expectedHash = 'e176e8e49344d9a3695c24573890a14da5f9d8256a3796d07f33054f6cddd6e0'
+          if ((Get-FileHash -Path $package -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw 'FFmpeg 8.0.1 Chocolatey package checksum mismatch'
+          }
+          choco install ffmpeg --version=8.0.1 --source $packageDir -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          choco install nasm strawberryperl -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($tool in @('ffmpeg', 'ffprobe')) {
+            $version = & $tool -version
+            if ($LASTEXITCODE -ne 0 -or $version[0] -notmatch "^$tool version 8\.0\.1(?:\s|-)") {
+              throw "Expected $tool 8.0.1 on PATH; found: $($version[0])"
+            }
+            Write-Host "$((Get-Command $tool).Source): $($version[0])"
+          }
 
       - name: Cache cargo-vcpkg binary
         id: cargo-vcpkg-cache-win
@@ -612,7 +634,9 @@ jobs:
           $start = Get-Date
           $threads = [Math]::Max(1, [int]$env:NUMBER_OF_PROCESSORS)
           cargo test -q --lib --bins --tests -- --test-threads $threads
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --features ffmpeg-cli-tests -- --test-threads $threads
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $elapsed = (Get-Date) - $start
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Windows runtime"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Toolchain: stable"
