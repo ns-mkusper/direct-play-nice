@@ -224,7 +224,7 @@ fn decoded_scene_frames(path: &Path) -> Result<Vec<SceneFrame>, Box<dyn Error>> 
         .chunks_exact(frame_bytes)
         .map(|frame| {
             let mut mean = [0.0; 3];
-            for pixel in frame.chunks_exact(3) {
+            for pixel in frame.as_chunks::<3>().0 {
                 for channel in 0..3 {
                     mean[channel] += f64::from(pixel[channel]) / SAMPLE_PIXELS as f64;
                 }
