@@ -3,6 +3,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use common::frame_order::{check_scene_frames, create_scene_cut_clip, decoded_scene_frames};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -114,143 +115,6 @@ fn probe_output(path: &Path) -> Result<String, Box<dyn Error>> {
     }
 }
 
-const SCENE_FRAMES: usize = 12;
-const SCENE_COUNT: usize = 4;
-const SAMPLE_WIDTH: usize = 160;
-const SAMPLE_HEIGHT: usize = 90;
-const SAMPLE_PIXELS: usize = SAMPLE_WIDTH * SAMPLE_HEIGHT;
-
-fn create_scene_cut_clip(path: &Path) -> Result<(), Box<dyn Error>> {
-    // Six binary blocks identify each of the 48 frames even within one scene.
-    let mut filter = "[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0".to_string();
-    for bit in 0..6 {
-        let x = 24 + bit * 80;
-        filter.push_str(&format!(
-            ",drawbox=x={x}:y=24:w=48:h=48:color=black:t=fill,drawbox=x={x}:y=24:w=48:h=48:color=white:t=fill:enable='bitand(n,{})'",
-            1 << bit
-        ));
-    }
-    filter.push_str("[v]");
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(["red", "blue", "green", "yellow"].iter().flat_map(|color| {
-            [
-                "-f".to_string(),
-                "lavfi".to_string(),
-                "-i".to_string(),
-                format!("color={color}:size=960x540:rate=24:duration=0.5"),
-            ]
-        }))
-        .args([
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=1000:sample_rate=48000:duration=2",
-            "-filter_complex",
-        ])
-        .arg(&filter)
-        .args([
-            "-map",
-            "[v]",
-            "-map",
-            "4:a:0",
-            "-c:a",
-            "aac",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "fast",
-            "-bf",
-            "3",
-            "-g",
-            "96",
-            "-x264-params",
-            "b-adapt=0:scenecut=0",
-        ])
-        .arg(path)
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "ffmpeg scene-cut generation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    Ok(())
-}
-
-// Decode in presentation order. The RGB mean identifies the scene; the six
-// binary blocks identify the individual frame despite lossy encoding.
-struct SceneFrame {
-    mean: [f64; 3],
-    marker: usize,
-}
-
-fn decoded_scene_frames(path: &Path) -> Result<Vec<SceneFrame>, Box<dyn Error>> {
-    let output = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
-        .arg(path)
-        .args([
-            "-map",
-            "0:v:0",
-            "-vf",
-            "scale=160:90",
-            "-fps_mode",
-            "passthrough",
-            "-pix_fmt",
-            "rgb24",
-            "-f",
-            "rawvideo",
-            "-threads",
-            "1",
-            "pipe:1",
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "ffmpeg frame decode failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    let frame_bytes = SAMPLE_PIXELS * 3;
-    if output.stdout.len() % frame_bytes != 0 {
-        return Err("ffmpeg returned a partial RGB frame".into());
-    }
-    Ok(output
-        .stdout
-        .chunks_exact(frame_bytes)
-        .map(|frame| {
-            let mut mean = [0.0; 3];
-            for pixel in frame.as_chunks::<3>().0 {
-                for channel in 0..3 {
-                    mean[channel] += f64::from(pixel[channel]) / SAMPLE_PIXELS as f64;
-                }
-            }
-            let mut marker = 0;
-            for bit in 0..6 {
-                // The boxes are centred at (48 + 80 * bit, 48) in 960x540.
-                let x = (48 + 80 * bit) * SAMPLE_WIDTH / 960;
-                let y = 48 * SAMPLE_HEIGHT / 540;
-                let offset = (y * SAMPLE_WIDTH + x) * 3;
-                let brightness = u32::from(frame[offset])
-                    + u32::from(frame[offset + 1])
-                    + u32::from(frame[offset + 2]);
-                if brightness > 3 * 128 {
-                    marker |= 1 << bit;
-                }
-            }
-            SceneFrame { mean, marker }
-        })
-        .collect())
-}
-
-fn color_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    (0..3).map(|channel| (a[channel] - b[channel]).abs()).sum()
-}
-
 #[test]
 fn nvenc_native_h264_cuda_preserves_scene_order() -> Result<(), Box<dyn Error>> {
     if !nvenc_tests_enabled() {
@@ -319,6 +183,13 @@ fn nvenc_native_h264_cuda_preserves_scene_order() -> Result<(), Box<dyn Error>> 
             String::from_utf8_lossy(&conversion.stderr)
         );
         assert!(conversion.status.success(), "conversion failed: {logs}");
+        let source = decoded_scene_frames(&input)?;
+        let converted = decoded_scene_frames(&output_path)?;
+        check_scene_frames(&source, &converted)
+            .map_err(|message| format!("{backend} transcode: {message}"))?;
+        common::assert_video_timestamps_match(&input, &output_path, 0.025);
+        common::assert_audio_packet_range_matches(&input, &output_path, 0.1);
+
         for expected in [
             "Selected decoder 'h264' for stream 0 (codec h264)",
             "Configured CUDA hardware decoder 'h264' for stream 0",
@@ -366,56 +237,6 @@ fn nvenc_native_h264_cuda_preserves_scene_order() -> Result<(), Box<dyn Error>> 
             !logs.to_ascii_lowercase().contains("retrying with software"),
             "conversion retried on CPU: {logs}"
         );
-
-        let source = decoded_scene_frames(&input)?;
-        let converted = decoded_scene_frames(&output_path)?;
-        assert_eq!(source.len(), SCENE_FRAMES * SCENE_COUNT);
-        assert_eq!(
-            source.len(),
-            converted.len(),
-            "output must retain every decoded frame"
-        );
-        common::assert_video_timestamps_match(&input, &output_path, 0.025);
-        let scenes: Vec<_> = (0..SCENE_COUNT)
-            .map(|scene| source[scene * SCENE_FRAMES + SCENE_FRAMES / 2].mean)
-            .collect();
-        for (scene, reference) in scenes.iter().enumerate() {
-            for (other, other_reference) in scenes.iter().enumerate().skip(scene + 1) {
-                assert!(
-                    color_distance(*reference, *other_reference) > 100.0,
-                    "fixture scenes {scene} and {other} are not distinct"
-                );
-            }
-        }
-        let classify = |frame: [f64; 3]| {
-            scenes
-                .iter()
-                .enumerate()
-                .map(|(scene, reference)| (scene, color_distance(frame, *reference)))
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .unwrap()
-        };
-        for (index, frame) in source.iter().enumerate() {
-            assert_eq!(
-                classify(frame.mean).0,
-                index / SCENE_FRAMES,
-                "fixture frame {index}"
-            );
-            assert_eq!(frame.marker, index, "fixture marker at frame {index}");
-        }
-
-        for (index, (source_frame, output_frame)) in source.iter().zip(&converted).enumerate() {
-            let expected = classify(source_frame.mean).0;
-            let (actual, distance) = classify(output_frame.mean);
-            assert_eq!(
-                output_frame.marker, source_frame.marker,
-                "{backend} frame marker mismatch at {index}"
-            );
-            assert!(
-            expected == actual && distance < 75.0,
-            "{backend} frame mismatch at {index}: expected scene {expected}, got {actual}, RGB distance {distance:.1}"
-        );
-        }
     }
     Ok(())
 }

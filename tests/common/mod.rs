@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod frame_order;
+
 use predicates::str;
 use rsmpeg::avformat::AVFormatContextInput;
 use rsmpeg::ffi;
