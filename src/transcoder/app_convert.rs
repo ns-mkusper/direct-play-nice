@@ -33,6 +33,13 @@ impl ConversionParams<'_> {
     pub(crate) fn with_hw_accel(self, hw_accel: HwAccel) -> Self {
         Self { hw_accel, ..self }
     }
+
+    pub(crate) fn with_resize_backend(self, resize_backend: ResizeBackend) -> Self {
+        Self {
+            resize_backend,
+            ..self
+        }
+    }
 }
 
 pub(crate) fn convert_video_file(
@@ -90,11 +97,13 @@ pub(crate) fn convert_video_file(
     let is_constant_quality_mode = requested_video_quality == VideoQuality::MatchSource;
 
     let allow_cuda_hw_decode = matches!(hw_accel, HwAccel::Auto | HwAccel::Nvenc);
-    let shared_hw_device = if allow_cuda_hw_decode {
-        acquire_hw_device(hw_accel)
+    let shared_hw_device_owner = if allow_cuda_hw_decode {
+        // acquire_hw_device transfers ownership of the returned FFmpeg reference.
+        acquire_hw_device(hw_accel).map(|buffer| unsafe { OwnedBufferRef::from_raw(buffer) })
     } else {
         None
     };
+    let shared_hw_device = shared_hw_device_owner.as_ref().map(OwnedBufferRef::as_ptr);
 
     if log::log_enabled!(Level::Debug) {
         if let Ok(dav1d_name) = CString::new("libdav1d") {
@@ -166,7 +175,10 @@ pub(crate) fn convert_video_file(
         let mut hw_decoder_active = false;
         let mut need_software_retry = false;
         if prefer_hw_decode
-            && (decoder_name_owned.contains("cuvid") || decoder_name_owned.contains("nvdec"))
+            && (decoder_name_owned.contains("cuvid")
+                || decoder_name_owned.contains("nvdec")
+                || (input_codec_id == ffi::AV_CODEC_ID_H264
+                    && decoder_supports_cuda_device(&decoder)))
         {
             if let Some(device) = shared_hw_device {
                 match configure_cuda_hw_decoder(&mut decode_context, device) {
@@ -279,7 +291,7 @@ pub(crate) fn convert_video_file(
         let media_type: ffi::AVMediaType;
         let mut frame_buffer: Option<AVAudioFifo> = None;
         let mut resample_context: Option<SwrContext> = None;
-        let mut hw_device_ctx_ptr: Option<*mut ffi::AVBufferRef> = None;
+        let mut hw_device_ctx_ptr: Option<OwnedBufferRef> = None;
         let mut encoder_name_for_video: Option<String> = None;
         let mut target_h264_profile: Option<H264Profile> = None;
         let mut target_h264_level: Option<H264Level> = None;
@@ -335,6 +347,10 @@ pub(crate) fn convert_video_file(
                 // Prefer HW encoder when available and requested
                 let (maybe_hw_encoder, maybe_hw_dev) =
                     find_hw_encoder(target_video_codec, hw_accel, shared_hw_device);
+                // find_hw_encoder returns an owned reference, including for a shared device.
+                let hw_device_owner =
+                    maybe_hw_dev.map(|buffer| unsafe { OwnedBufferRef::from_raw(buffer) });
+                let maybe_hw_dev = hw_device_owner.as_ref().map(OwnedBufferRef::as_ptr);
                 let (encoder, using_hw_encoder) = match maybe_hw_encoder {
                     Some(enc) => (enc, true),
                     None => (
@@ -357,7 +373,7 @@ pub(crate) fn convert_video_file(
                     unsafe {
                         (*encode_context.as_mut_ptr()).hw_device_ctx = ffi::av_buffer_ref(buf);
                     }
-                    hw_device_ctx_ptr = Some(buf);
+                    hw_device_ctx_ptr = hw_device_owner;
                 }
                 media_type = ffi::AVMEDIA_TYPE_VIDEO;
 
@@ -730,10 +746,6 @@ pub(crate) fn convert_video_file(
         hardware_encoder_used,
     })?;
 
-    if let Some(device) = shared_hw_device {
-        unref_buffer_ref(device);
-    }
-
     Ok(ConversionOutcome { h264_verification })
 }
 
@@ -970,6 +982,8 @@ fn flush_stream_contexts(
     for context in stream_contexts {
         match context.media_type {
             ffi::AVMEDIA_TYPE_VIDEO => {
+                flush_video_decoder(context, output_format_context)
+                    .context("Failed to flush video decoder.")?;
                 encode_and_write_frame(
                     &mut context.encode_context,
                     output_format_context,
@@ -978,9 +992,6 @@ fn flush_stream_contexts(
                     &mut context.last_written_dts,
                 )
                 .context("Failed to flush video encoder.")?;
-                if let Some(dev) = context.hw_device_ctx {
-                    unref_buffer_ref(dev);
-                }
             }
             ffi::AVMEDIA_TYPE_AUDIO => {
                 if let Some(fifo) = context.frame_buffer.as_mut() {

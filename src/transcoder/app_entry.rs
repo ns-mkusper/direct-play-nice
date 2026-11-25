@@ -30,12 +30,17 @@ use crate::transcoder::dry_run::{DryRunAction, DryRunReport, SourceHandling};
 use crate::transcoder::h264::{DecoderError, HwEncoderInitError, HwProfileLevelMismatch};
 use crate::transcoder::helpers::{describe_bitrate, describe_resolution, devices_support_codec};
 use crate::transcoder::pipeline::{
-    assess_direct_play_compatibility, AudioDecodeErrorLimits, DirectPlayConstraints,
+    assess_direct_play_compatibility, AudioDecodeErrorLimits, CudaResizeInputNotCuda,
+    DirectPlayConstraints,
 };
 use crate::transcoder::quality::{QualityLimits, VideoCodecPreference};
 use crate::transcoder::verification::{validate_output_file, OutputValidationOptions};
 use crate::transcoder::ConversionOutcome;
-use crate::types::{OcrFormat, OutputFormat};
+use crate::types::{OcrFormat, OutputFormat, ResizeBackend};
+
+fn should_retry_software_resize(err: &anyhow::Error, backend: ResizeBackend) -> bool {
+    backend == ResizeBackend::Auto && err.downcast_ref::<CudaResizeInputNotCuda>().is_some()
+}
 
 pub(crate) fn run(mut args: Args, matches_snapshot: ArgMatches) -> Result<()> {
     let plex_refresher = prepare_runtime_configuration(&mut args, &matches_snapshot)?;
@@ -751,6 +756,7 @@ fn run_conversion(
         hw_accel: args.hw_accel,
     };
 
+    let mut retry_params = conversion_params;
     let mut conversion_result = if needs_conversion {
         let disable_cuda_pin = should_ocr && ocr_multi_gpu_requested();
         let prev_cuda_pin = if disable_cuda_pin {
@@ -761,7 +767,17 @@ fn run_conversion(
             None
         };
         let _conversion_slot = acquire_slot()?;
-        let result = convert_video_file(input_file, conversion_output_file, conversion_params);
+        let mut result = convert_video_file(input_file, conversion_output_file, conversion_params);
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|err| should_retry_software_resize(err, args.resize_backend))
+        {
+            warn!("CUDA decoding fell back to software; retrying with software resize");
+            cleanup_partial_output(conversion_output_file);
+            retry_params = retry_params.with_resize_backend(ResizeBackend::Software);
+            result = convert_video_file(input_file, conversion_output_file, retry_params);
+        }
         if let Some(prev) = prev_cuda_pin {
             if let Some(value) = prev {
                 std::env::set_var("DPN_DISABLE_CUDA_VISIBLE_DEVICES_PIN", value);
@@ -776,14 +792,16 @@ fn run_conversion(
 
     if needs_conversion {
         if let Err(err0) = conversion_result {
-            if target_video_codec == ffi::AV_CODEC_ID_H264 {
+            if err0.downcast_ref::<CudaResizeInputNotCuda>().is_some() {
+                conversion_result = Err(err0);
+            } else if target_video_codec == ffi::AV_CODEC_ID_H264 {
                 conversion_result = match err0.downcast::<HwProfileLevelMismatch>() {
                     Ok(mismatch) => handle_hw_profile_mismatch(
                         mismatch,
                         &args,
                         input_file,
                         conversion_output_file,
-                        conversion_params,
+                        retry_params,
                     ),
                     Err(err1) => match err1.downcast::<HwEncoderInitError>() {
                         Ok(init_err) => handle_hw_encoder_init_error(
@@ -791,7 +809,7 @@ fn run_conversion(
                             &args,
                             input_file,
                             conversion_output_file,
-                            conversion_params,
+                            retry_params,
                         ),
                         Err(err2) => match err2.downcast::<DecoderError>() {
                             Ok(dec_err) => Err(anyhow!(dec_err)),
@@ -804,7 +822,7 @@ fn run_conversion(
                                 retry_with_software_encoder(
                                     input_file,
                                     conversion_output_file,
-                                    conversion_params,
+                                    retry_params,
                                 )
                             }
                         },
@@ -1080,6 +1098,21 @@ mod tests {
     use clap::Parser;
     use std::ffi::CString;
     use std::path::PathBuf;
+
+    #[test]
+    fn software_resize_retry_only_applies_to_automatic_backend() {
+        let error = anyhow!(CudaResizeInputNotCuda { format: 1 });
+        assert!(should_retry_software_resize(&error, ResizeBackend::Auto));
+        assert!(!should_retry_software_resize(&error, ResizeBackend::Cuda));
+        assert!(!should_retry_software_resize(
+            &error,
+            ResizeBackend::Software
+        ));
+        assert!(!should_retry_software_resize(
+            &anyhow!("unrelated error"),
+            ResizeBackend::Auto
+        ));
+    }
 
     fn make_plan(tag: &str) -> ReplacePlan {
         let input_path = PathBuf::from(format!("/tmp/{tag}.mkv"));

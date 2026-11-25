@@ -22,6 +22,105 @@ pub fn ensure_ffmpeg_present() {
     }
 }
 
+pub fn assert_video_timestamps_match(source: &Path, output: &Path, tolerance: f64) {
+    fn timestamps(path: &Path) -> Vec<f64> {
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_frames",
+                "-show_entries",
+                "frame=best_effort_timestamp_time",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .expect("run ffprobe for frame timestamps");
+        assert!(
+            probe.status.success(),
+            "ffprobe frame timestamp probe failed"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        value["frames"]
+            .as_array()
+            .expect("frame timestamp array")
+            .iter()
+            .map(|frame| {
+                frame["best_effort_timestamp_time"]
+                    .as_str()
+                    .expect("frame timestamp")
+                    .parse::<f64>()
+                    .expect("numeric frame timestamp")
+            })
+            .collect()
+    }
+
+    let source = timestamps(source);
+    let output = timestamps(output);
+    assert_eq!(source.len(), output.len(), "frame timestamp count");
+    assert!(!source.is_empty(), "no video frame timestamps");
+    assert!(
+        output.windows(2).all(|pair| pair[0] < pair[1]),
+        "output frame timestamps must strictly increase"
+    );
+    for (index, (src, dst)) in source.iter().zip(&output).enumerate() {
+        assert!(
+            (src - dst).abs() <= tolerance,
+            "frame {index} timestamp changed from {src:.6} to {dst:.6}"
+        );
+    }
+}
+
+pub fn assert_audio_packet_range_matches(source: &Path, output: &Path, tolerance: f64) {
+    fn range(path: &Path) -> (f64, f64) {
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_packets",
+                "-show_entries",
+                "packet=pts_time,duration_time",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .expect("run ffprobe for audio packet timestamps");
+        assert!(probe.status.success(), "ffprobe audio packet probe failed");
+        let value: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let packets = value["packets"].as_array().expect("audio packet array");
+        let timestamp = |packet: &serde_json::Value, field: &str| {
+            packet[field]
+                .as_str()
+                .expect("audio packet timestamp")
+                .parse::<f64>()
+                .expect("numeric audio packet timestamp")
+        };
+        let first = packets.first().expect("first audio packet");
+        let last = packets.last().expect("last audio packet");
+        (
+            timestamp(first, "pts_time"),
+            timestamp(last, "pts_time") + timestamp(last, "duration_time"),
+        )
+    }
+
+    let (source_start, source_end) = range(source);
+    let (output_start, output_end) = range(output);
+    assert!(
+        (source_start - output_start).abs() <= tolerance,
+        "audio start changed from {source_start:.6} to {output_start:.6}"
+    );
+    assert!(
+        (source_end - output_end).abs() <= tolerance,
+        "audio end changed from {source_end:.6} to {output_end:.6}"
+    );
+}
+
 fn mk_subs_file(path: &Path) {
     let mut f = File::create(path).expect("create srt");
     writeln!(

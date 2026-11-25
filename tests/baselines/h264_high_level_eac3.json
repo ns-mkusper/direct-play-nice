@@ -19,9 +19,9 @@
       "height": 1080,
       "pix_fmt": "yuv420p",
       "fps": 23.976,
-      "packets": 46,
+      "packets": 48,
       "first_pts_s": 0.0,
-      "last_end_s": 1.919
+      "last_end_s": 2.002
     },
     {
       "index": 1,

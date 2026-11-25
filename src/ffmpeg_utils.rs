@@ -787,7 +787,7 @@ pub(crate) struct StreamProcessingContext {
     /// Packet and drop counters for audio streams; unused for other media types.
     pub(crate) audio_decode_errors: AudioDecodeErrorTracker,
     #[allow(dead_code)]
-    pub(crate) hw_device_ctx: Option<*mut ffi::AVBufferRef>,
+    pub(crate) hw_device_ctx: Option<crate::transcoder::ffmpeg_ext::OwnedBufferRef>,
     pub(crate) decoder_name: String,
     pub(crate) resize_quality: ResizeQuality,
     pub(crate) resize_backend: ResizeBackend,

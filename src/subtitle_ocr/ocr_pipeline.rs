@@ -769,8 +769,8 @@ fn may_use_bitmap_lines(
 ) -> bool {
     // Direct lines do not retain detector training metadata or run the forced
     // Tesseract fallback, so use the detector path for either policy.
-    !training_requested
-        && !(force_tesseract_non_english
+    !(training_requested
+        || force_tesseract_non_english
             && !is_english_language(params.language)
             && language_uses_spaces(params.language))
         && params.stream_codec_id == ffi::AV_CODEC_ID_HDMV_PGS_SUBTITLE
