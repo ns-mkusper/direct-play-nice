@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0-beta.13] - 2026-11-25
+
+### Video Conversion
+
+- Avoid incorrect frames from later scenes when decoding H.264 with CUDA, and
+  retain delayed video frames at the end of a conversion. (#237, #238)
+- Retry automatic CUDA resizing with software resizing when the decoder returns
+  software frames, while retaining the selected encoder. (#238)
+
+### Servarr Language Audits
+
+- Allow the no-candidate cooldown to double after repeated misses, up to a
+  configured maximum. (#232)
+
 ## [1.1.0-beta.12] - 2026-11-13
 
 ### Bitmap Subtitle OCR
