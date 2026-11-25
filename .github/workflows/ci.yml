@@ -255,14 +255,13 @@ jobs:
             tesseract --list-langs 2>/dev/null | grep -Fx "$language"
           done
 
-          # The dynamic ort binding needs a CPU runtime. This is the same ORT
-          # version supported by the project's legacy runtime configuration.
-          ort_archive="$RUNNER_TEMP/onnxruntime-linux-x64-1.16.3.tgz"
+          # The dynamic ort binding needs the legacy CPU runtime version.
+          ort_archive="$RUNNER_TEMP/microsoft.ml.onnxruntime.1.16.3.nupkg"
           curl --fail --location --retry 3 --output "$ort_archive" \
-            https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-          echo "b072f989d6315ac0e22dcb4771b083c5156d974a3496ac3504c77f4062eb248e  $ort_archive" | sha256sum --check
-          tar -xzf "$ort_archive" -C "$RUNNER_TEMP"
-          export ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so"
+            https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.16.3/microsoft.ml.onnxruntime.1.16.3.nupkg
+          echo "84d247f3650fa15c00a4568a80f304050e1da4dca540bbe6d17493da8350242a  $ort_archive" | sha256sum --check
+          unzip -q "$ort_archive" 'runtimes/linux-x64/native/libonnxruntime.so' -d "$RUNNER_TEMP/onnxruntime-1.16.3"
+          export ORT_DYLIB_PATH="$RUNNER_TEMP/onnxruntime-1.16.3/runtimes/linux-x64/native/libonnxruntime.so"
           test -f "$ORT_DYLIB_PATH"
 
           # Provision into a new private directory, never the shared model cache.
@@ -403,8 +402,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: rustfmt
 
       - name: Set up sccache
@@ -652,7 +652,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
 
       - name: Set up sccache
         id: sccache-setup
@@ -833,7 +835,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
       - name: Install dependencies
         run: |
           sudo apt-get update -y

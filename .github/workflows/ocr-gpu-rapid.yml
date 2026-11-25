@@ -46,7 +46,9 @@ jobs:
         run: mkdir -p "$HOME" "$CARGO_HOME" "$RUSTUP_HOME"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
 
       - name: Install cargo-vcpkg
         shell: bash
