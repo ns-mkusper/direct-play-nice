@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 - Retry automatic CUDA resizing with software resizing when the decoder returns
   software frames, while retaining the selected encoder. (#238)
 
-### Servarr Language Audits
+### Language Audit Cooldowns
 
 - Allow the no-candidate cooldown to double after repeated misses, up to a
   configured maximum. (#232)
