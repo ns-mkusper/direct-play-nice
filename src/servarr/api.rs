@@ -4157,6 +4157,14 @@ fn title_indicates_audio(release: &Value, required_audio: &[String], loose: bool
     {
         return true;
     }
+    // Scene releases mark two audio tracks (original plus English) with a
+    // bare DUAL tag, e.g. "S01E21.1080p.NF.WEB-DL.DUAL.AAC2.0".
+    if title
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == "dual")
+    {
+        return true;
+    }
     if required_audio.iter().any(|l| l == "eng")
         && (title.contains("english dub") || title.contains("eng dub"))
     {
@@ -6774,6 +6782,30 @@ mod tests {
             false,
         )
         .is_some());
+    }
+
+    #[test]
+    fn title_policy_accepts_bare_dual_tag() {
+        let req = LanguageRequirements {
+            enabled: true,
+            audio: vec!["eng".to_string()],
+            subtitles: Vec::new(),
+        };
+        let select = |title: &str| {
+            select_verified_release_for_target(
+                &[json!({ "title": title, "rejected": false })],
+                Target::SonarrEpisode { episode_id: 1 },
+                &req,
+                ServarrLanguageCandidatePolicy::CustomFormatOrTitle,
+                false,
+            )
+            .is_some()
+        };
+
+        assert!(select("Show.S01E21.1080p.NF.WEB-DL.DUAL.AAC2.0.H.264-GRP"));
+        assert!(select("[GRP] Show - 21 [1080p][DUAL]"));
+        assert!(!select("Show.S01E21.1080p.NF.WEB-DL.AAC2.0.H.264-GRP"));
+        assert!(!select("Show.S01E21.Dualism.1080p.WEB-DL.AAC2.0-GRP"));
     }
 
     #[test]
