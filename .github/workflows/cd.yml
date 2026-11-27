@@ -30,8 +30,9 @@ jobs:
           token: ${{ env.EFFECTIVE_GITHUB_TOKEN }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy
 
       - name: Install cargo-audit

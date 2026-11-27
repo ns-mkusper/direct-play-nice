@@ -106,6 +106,104 @@ fn cli_preserves_low_res_source_by_default() {
     assert_eq!(video_dimensions(&output), (640, 360));
 }
 
+fn h264_frame_count(path: &Path) -> (usize, usize) {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=has_b_frames,nb_read_frames",
+            "-of",
+            "default=nw=1",
+        ])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    assert!(output.status.success(), "ffprobe failed");
+    let text = String::from_utf8(output.stdout).unwrap();
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_else(|| panic!("missing {key} in {text}"))
+            .parse::<usize>()
+            .unwrap()
+    };
+    (value("has_b_frames="), value("nb_read_frames="))
+}
+
+#[test]
+fn cli_flushes_delayed_h264_frames_at_end_of_input() {
+    for audio_duration in ["1.5", "2", "3"] {
+        assert_delayed_frames_survive(audio_duration);
+    }
+}
+
+fn assert_delayed_frames_survive(audio_duration: &str) {
+    common::ensure_ffmpeg_present();
+    let tmp = TempDir::new().unwrap();
+    let input = tmp.path().join("b-frames.mkv");
+    let output = tmp.path().join("converted.mp4");
+    let audio = format!("sine=frequency=1000:sample_rate=48000:duration={audio_duration}");
+    let generated = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=960x540:rate=24:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            audio.as_str(),
+            "-c:v",
+            "libx264",
+            "-bf",
+            "3",
+            "-g",
+            "48",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+        ])
+        .arg(&input)
+        .status()
+        .expect("generate H.264 fixture");
+    assert!(generated.success(), "fixture generation failed");
+    let (b_frames, source_frames) = h264_frame_count(&input);
+    assert!(b_frames > 0, "fixture must use B-frames");
+    assert_eq!(source_frames, 48);
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("direct_play_nice"));
+    cmd.env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .args([
+            "--device",
+            "chromecast",
+            "--hw-accel",
+            "none",
+            "--video-quality",
+            "360p",
+            "--delete-source",
+            "false",
+        ])
+        .arg(&input)
+        .arg(&output);
+    common::assert_cli_success(cmd);
+    assert_eq!(h264_frame_count(&output).1, source_frames);
+    common::assert_video_timestamps_match(&input, &output, 0.025);
+    common::assert_audio_packet_range_matches(&input, &output, 0.1);
+    assert!(
+        common::probe_duration_ms(&input).abs_diff(common::probe_duration_ms(&output)) <= 100,
+        "output duration changed with audio duration {audio_duration}"
+    );
+}
+
 #[test]
 fn cli_downscales_source_that_exceeds_quality_target() {
     common::ensure_ffmpeg_present();

@@ -48,7 +48,8 @@ pub(crate) fn enable_strict_decode_failure(ctx: &mut AVCodecContext) {
 
 const AV1_HW_DECODER_NAMES: &[&str] = &["av1_cuvid", "av1_nvdec"];
 const AV1_SW_DECODER_NAMES: &[&str] = &["libdav1d", "libaom-av1", "av1"];
-const H264_HW_DECODER_NAMES: &[&str] = &["h264_cuvid"];
+// h264_cuvid can substitute frames at scene changes; use native H.264 with CUDA instead.
+const H264_HW_DECODER_NAMES: &[&str] = &["h264"];
 const H264_SW_DECODER_NAMES: &[&str] = &["h264"];
 const HEVC_HW_DECODER_NAMES: &[&str] = &["hevc_cuvid"];
 const HEVC_SW_DECODER_NAMES: &[&str] = &["hevc"];
@@ -112,7 +113,15 @@ pub(crate) fn find_decoder_with_fallback(
         }
     }
 
-    AVCodec::find_decoder(codec_id)
+    let decoder = AVCodec::find_decoder(codec_id);
+    if codec_id == ffi::AV_CODEC_ID_H264
+        && decoder
+            .as_ref()
+            .is_some_and(|decoder| decoder.name().to_bytes() == b"h264_cuvid")
+    {
+        return None;
+    }
+    decoder
 }
 
 unsafe extern "C" fn select_cuda_hw_format(
@@ -130,6 +139,23 @@ unsafe extern "C" fn select_cuda_hw_format(
         ptr = ptr.add(1);
     }
     *pix_fmts
+}
+
+fn is_cuda_device_config(config: &ffi::AVCodecHWConfig) -> bool {
+    config.device_type == ffi::AV_HWDEVICE_TYPE_CUDA
+        && config.pix_fmt == ffi::AV_PIX_FMT_CUDA
+        && config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32 != 0
+}
+
+pub(crate) fn decoder_supports_cuda_device(decoder: &AVCodecRef<'_>) -> bool {
+    let mut index = 0;
+    while let Some(config) = decoder.hw_config(index) {
+        if is_cuda_device_config(&config) {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 pub(crate) fn configure_cuda_hw_decoder(
@@ -171,4 +197,40 @@ pub(crate) fn describe_h264_level(level: i32) -> String {
     H264Level::try_from(level)
         .map(|l| l.ffmpeg_name().to_string())
         .unwrap_or_else(|_| format!("level({})", level))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_decoder_preference_does_not_use_cuvid() {
+        assert_eq!(
+            preferred_decoder_names(ffi::AV_CODEC_ID_H264, true),
+            &["h264"]
+        );
+        assert_eq!(
+            preferred_decoder_names(ffi::AV_CODEC_ID_H264, false),
+            &["h264"]
+        );
+    }
+
+    #[test]
+    fn cuda_decoder_requires_cuda_frames_and_device_context_support() {
+        let mut config = ffi::AVCodecHWConfig {
+            pix_fmt: ffi::AV_PIX_FMT_CUDA,
+            methods: ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32,
+            device_type: ffi::AV_HWDEVICE_TYPE_CUDA,
+        };
+        assert!(is_cuda_device_config(&config));
+
+        config.methods = ffi::AV_CODEC_HW_CONFIG_METHOD_INTERNAL as i32;
+        assert!(!is_cuda_device_config(&config));
+        config.methods = ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32;
+        config.pix_fmt = ffi::AV_PIX_FMT_YUV420P;
+        assert!(!is_cuda_device_config(&config));
+        config.pix_fmt = ffi::AV_PIX_FMT_CUDA;
+        config.device_type = ffi::AV_HWDEVICE_TYPE_NONE;
+        assert!(!is_cuda_device_config(&config));
+    }
 }

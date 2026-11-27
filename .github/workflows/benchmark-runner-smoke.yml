@@ -72,7 +72,9 @@ jobs:
           touch "$HOME/.write-test" "$CARGO_HOME/.write-test" "$RUSTUP_HOME/.write-test"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
 
       - name: Check Rust tools
         shell: bash
