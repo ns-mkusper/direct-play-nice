@@ -50,20 +50,24 @@ FROM debian:trixie-slim AS runtime
 ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl libva2 libva-drm2 va-driver-all \
+    ca-certificates curl unzip libva2 libva-drm2 va-driver-all \
     && rm -rf /var/lib/apt/lists/*
 
-# ONNX Runtime shared library for subtitle OCR (version matching the ort pin).
+# Microsoft's CPU runtime package; update the checksum when changing the version.
 ARG ORT_VERSION=1.16.3
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) ort_arch=x64 ;; \
-      arm64) ort_arch=aarch64 ;; \
+      arm64) ort_arch=arm64 ;; \
       *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac; \
-    curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ort_arch}-${ORT_VERSION}.tgz" \
-      | tar -xz -C /opt; \
-    mv "/opt/onnxruntime-linux-${ort_arch}-${ORT_VERSION}" /opt/onnxruntime
+    curl -fsSL --retry 3 -o /tmp/onnxruntime.nupkg \
+      "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_VERSION}/microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg"; \
+    echo '84d247f3650fa15c00a4568a80f304050e1da4dca540bbe6d17493da8350242a  /tmp/onnxruntime.nupkg' | sha256sum --check; \
+    mkdir -p /opt/onnxruntime/lib; \
+    unzip -q -j /tmp/onnxruntime.nupkg "runtimes/linux-${ort_arch}/native/libonnxruntime.so" -d /opt/onnxruntime/lib; \
+    test -s /opt/onnxruntime/lib/libonnxruntime.so; \
+    rm /tmp/onnxruntime.nupkg
 
 COPY --from=builder /src/target/dist/direct_play_nice /usr/local/bin/direct_play_nice
 COPY --from=builder /opt/libva /opt/libva

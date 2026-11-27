@@ -111,7 +111,7 @@ pub(crate) fn process_video_stream(
     input_stream: &AVStreamRef,
     output_format_context: &mut AVFormatContextOutput,
     packet: &mut AVPacket,
-    mut progress: Option<&mut ProgressTracker>,
+    progress: Option<&mut ProgressTracker>,
 ) -> Result<()> {
     packet.rescale_ts(
         input_stream.time_base,
@@ -144,6 +144,22 @@ pub(crate) fn process_video_stream(
         }
     }
 
+    drain_video_decoder(
+        stream_processing_context,
+        output_format_context,
+        progress,
+        Some(packet),
+    )?;
+    Ok(())
+}
+
+fn drain_video_decoder(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+    mut progress: Option<&mut ProgressTracker>,
+    last_packet: Option<&AVPacket>,
+) -> Result<usize> {
+    let mut decoded_frames = 0;
     let mut warned_drain = false;
 
     loop {
@@ -170,9 +186,9 @@ pub(crate) fn process_video_stream(
                     "Video decoder receive_frame failure on stream {} (decoder='{}', last-packet pts={}, dts={}, duration={}, tb={}/{}): {}",
                     stream_processing_context.input_stream_index,
                     stream_processing_context.decoder_name,
-                    packet.pts,
-                    packet.dts,
-                    packet.duration,
+                    last_packet.map_or(ffi::AV_NOPTS_VALUE, |packet| packet.pts),
+                    last_packet.map_or(ffi::AV_NOPTS_VALUE, |packet| packet.dts),
+                    last_packet.map_or(0, |packet| packet.duration),
                     stream_processing_context.decode_context.time_base.num,
                     stream_processing_context.decode_context.time_base.den,
                     e
@@ -185,6 +201,7 @@ pub(crate) fn process_video_stream(
             }
         };
 
+        decoded_frames += 1;
         if let Some(progress) = progress.as_deref_mut() {
             progress.report(
                 frame.best_effort_timestamp,
@@ -216,8 +233,56 @@ pub(crate) fn process_video_stream(
         )?;
     }
 
+    Ok(decoded_frames)
+}
+
+pub(crate) fn flush_video_decoder(
+    stream_processing_context: &mut StreamProcessingContext,
+    output_format_context: &mut AVFormatContextOutput,
+) -> Result<()> {
+    loop {
+        match stream_processing_context.decode_context.send_packet(None) {
+            Ok(()) | Err(RsmpegError::DecoderFlushedError) => break,
+            Err(e) if is_eagain_error(&e) => {
+                if drain_video_decoder(
+                    stream_processing_context,
+                    output_format_context,
+                    None,
+                    None,
+                )? == 0
+                {
+                    bail!("Video decoder could not accept end of stream or produce a frame");
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!(DecoderError::new(
+                    stream_processing_context.decoder_name.clone(),
+                    stream_processing_context.input_stream_index.as_i32(),
+                    format!("video decoder flush failed: {}", e),
+                )));
+            }
+        }
+    }
+    drain_video_decoder(stream_processing_context, output_format_context, None, None)?;
     Ok(())
 }
+
+#[derive(Debug)]
+pub(crate) struct CudaResizeInputNotCuda {
+    pub(crate) format: i32,
+}
+
+impl std::fmt::Display for CudaResizeInputNotCuda {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CUDA resize requires CUDA input frames, but the decoder returned format {}",
+            self.format
+        )
+    }
+}
+
+impl std::error::Error for CudaResizeInputNotCuda {}
 
 fn resize_cuda_frame(
     stream_processing_context: &mut StreamProcessingContext,
@@ -225,10 +290,10 @@ fn resize_cuda_frame(
     rescaled_pts: i64,
 ) -> Result<AVFrame> {
     if frame.format != ffi::AV_PIX_FMT_CUDA {
-        bail!(
-            "CUDA resize backend selected but decoded frame is not CUDA (format {}). Use --resize-backend=software to force CPU resize.",
-            frame.format
-        );
+        return Err(CudaResizeInputNotCuda {
+            format: frame.format,
+        }
+        .into());
     }
 
     let source_width = frame.width;

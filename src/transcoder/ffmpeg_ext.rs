@@ -54,10 +54,23 @@ pub(crate) fn clear_decoder_hardware_state(ctx: &mut rsmpeg::avcodec::AVCodecCon
     }
 }
 
-/// Releases an owned FFmpeg buffer reference if present.
-pub(crate) fn unref_buffer_ref(mut buffer: *mut ffi::AVBufferRef) {
-    unsafe {
-        ffi::av_buffer_unref(&mut buffer);
+/// Owns an FFmpeg buffer reference and releases it on every return path.
+pub(crate) struct OwnedBufferRef(*mut ffi::AVBufferRef);
+
+impl OwnedBufferRef {
+    /// `buffer` must be an owned FFmpeg buffer reference or null.
+    pub(crate) unsafe fn from_raw(buffer: *mut ffi::AVBufferRef) -> Self {
+        Self(buffer)
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut ffi::AVBufferRef {
+        self.0
+    }
+}
+
+impl Drop for OwnedBufferRef {
+    fn drop(&mut self) {
+        unsafe { ffi::av_buffer_unref(&mut self.0) }
     }
 }
 
@@ -75,4 +88,23 @@ pub(crate) fn copy_payload_into_packet(
         std::ptr::copy_nonoverlapping(payload.as_ptr(), (*packet.as_mut_ptr()).data, payload.len());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_buffer_releases_its_reference() {
+        unsafe {
+            let buffer = ffi::av_buffer_alloc(1);
+            assert!(!buffer.is_null());
+            let mut other = ffi::av_buffer_ref(buffer);
+            assert!(!other.is_null());
+            assert_eq!(ffi::av_buffer_get_ref_count(other), 2);
+            drop(OwnedBufferRef::from_raw(buffer));
+            assert_eq!(ffi::av_buffer_get_ref_count(other), 1);
+            ffi::av_buffer_unref(&mut other);
+        }
+    }
 }

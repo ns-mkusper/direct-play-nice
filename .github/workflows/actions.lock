@@ -5,18 +5,18 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/benchmark-runner-smoke.yml':
         - 'actions/checkout@v7.0.1'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
     '.github/workflows/benchmarks-manual.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/cd.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'release-plz/action@v0.5.148'
         - 'taiki-e/install-action@v2.90.3'
     '.github/workflows/ci-full.yml':
@@ -24,7 +24,6 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
         - 'dtolnay/rust-toolchain@master'
-        - 'dtolnay/rust-toolchain@stable'
         - 'mozilla-actions/sccache-action@v0.0.11'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/ci.yml':
@@ -32,7 +31,6 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
         - 'dtolnay/rust-toolchain@master'
-        - 'dtolnay/rust-toolchain@stable'
         - 'mozilla-actions/sccache-action@v0.0.11'
         - 'swatinem/rust-cache@v2.9.3'
         - 'taiki-e/install-action@v2.90.3'
@@ -59,7 +57,7 @@ workflows:
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'actions/upload-artifact@v7.0.2'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/release-readiness.yml':
         - 'actions/checkout@v7.0.1'
@@ -71,7 +69,7 @@ workflows:
         - 'actions/upload-artifact@v7.0.2'
     '.github/workflows/security.yml':
         - 'actions/checkout@v7.0.1'
-        - 'dtolnay/rust-toolchain@stable'
+        - 'dtolnay/rust-toolchain@master'
         - 'gitleaks/gitleaks-action@v3.0.0'
         - 'taiki-e/install-action@v2.90.3'
     '.github/workflows/servarr-e2e.yml':
@@ -153,11 +151,6 @@ dependencies:
     'dtolnay/rust-toolchain@master':
         ref: 'master'
         commit: 'sha1-683b588c487a69d01f6c6ddf40f036ff682cc2c8'
-        owner_id: 1940490
-        repo_id: 260749683
-    'dtolnay/rust-toolchain@stable':
-        ref: 'stable'
-        commit: 'sha1-39008827e6b4319a349e9a42dfc90579dd25f1ca'
         owner_id: 1940490
         repo_id: 260749683
     'gitleaks/gitleaks-action@v3.0.0':
